@@ -66,6 +66,23 @@ Linux with neither `DISPLAY` nor `WAYLAND_DISPLAY` set it starts nothing
 and says so. Not found, it names the path it looked at and both
 `cargo install --locked --path crates/trellis-cli` and `cargo install
 --locked --path desktop`.
+*As built 2026-10-07 (#561):* bare `trellis` at a terminal (the routes
+`bare_route` sends to the interface or the start screen) starts the desktop
+through #374's launcher, with `--root` only for the root it found, prints
+the overview's text to stdout and exits 0. Outside a repository, with a
+desktop found and a display, the start screen is skipped; inside one whose
+configuration names no model, first-run's picker runs in the terminal
+first, and quitting it starts nothing, as in the TUI. With no desktop
+beside `current_exe()`, no display on Linux, or a spawn that fails, one
+stderr line says which (for a missing desktop, the path it looked at and
+both `cargo install` commands) and ends "falling back to the terminal"; the
+overview follows, then the start screen and the TUI as before, and the
+desktop is not tried again in that process. `--tui` is checked before the
+decision and never reaches it; `trellis tui`, a pipe, a redirect and `--dsk`
+are unchanged. The decision is `launch_route` in `main.rs`, beside
+`bare_route`, whose tests are unchanged. `trellis --help` lists `trellis` as
+the desktop and the overview, `--tui` as the terminal interface and `--dsk`
+as the desktop only.
 
 ### 2. A first run with no model
 

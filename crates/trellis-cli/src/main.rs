@@ -76,14 +76,14 @@ pub(crate) use run_cmd::{
     // first thing `trellis --help` says is that `trellis` alone is enough.
     help_template = "{about-with-newline}\n{usage-heading} {usage}\n\n\
                      Start:\n  \
-                     trellis          open the terminal interface\n  \
-                     trellis --tui    the same, said explicitly\n  \
-                     trellis --dsk    open the desktop window\n  \
+                     trellis          open the desktop window and print the overview\n  \
+                     trellis --tui    open the terminal interface\n  \
+                     trellis --dsk    open the desktop window only\n  \
                      trellis --web    serve the desktop's page on 127.0.0.1\n\n\
                      {all-args}{after-help}"
 )]
 struct Cli {
-    /// Open the terminal interface; what bare `trellis` does (ADR 0050).
+    /// Open the terminal interface rather than the desktop (ADR 0050).
     #[arg(long, hide = true, conflicts_with_all = ["dsk", "web"])]
     tui: bool,
 
@@ -494,7 +494,7 @@ fn main() -> Result<()> {
     // appeared to start something it cannot is worse than one that says so.
     if cli.web {
         anyhow::bail!(
-            "the web view is not built yet (ADR 0050, story S19); `trellis` opens the terminal interface"
+            "the web view is not built yet (ADR 0050, story S19); `trellis --tui` opens the terminal interface"
         );
     }
     let json = match &cli.log_json {
@@ -595,6 +595,10 @@ fn main() -> Result<()> {
         std::io::stdout().is_terminal(),
         std::io::stderr().is_terminal(),
     );
+    // ADR 0050 §1 (#561): bare `trellis` at a terminal opens the desktop;
+    // `--tui` keeps the terminal. Once a fallback has been said, the
+    // terminal path runs and the desktop is not tried, or said, again.
+    let mut terminal_only = cli.tui;
     let root = match cli.root {
         Some(r) => r,
         None => match discover_root() {
@@ -608,6 +612,14 @@ fn main() -> Result<()> {
                 if bare_route(ttys.0, ttys.1, ttys.2, cli.command.is_none(), false)
                     == Route::StartScreen =>
             {
+                // With a desktop to open, it opens with no root and the
+                // start screen is skipped: the desktop shows its own.
+                if !terminal_only
+                    && bare_desktop(Route::StartScreen, None, &std::env::current_dir()?)?
+                {
+                    return Ok(());
+                }
+                terminal_only = true;
                 match start_screen::offer()? {
                     Some(r) => r,
                     None => return Ok(()),
@@ -675,16 +687,20 @@ fn main() -> Result<()> {
     }
 
     let Some(command) = cli.command else {
-        // Bare `trellis` opens the full-screen interface. It used to open the
-        // line session, and people kept typing `trellis` expecting the thing
-        // they had been shown — which is a fair expectation to have of the
-        // default surface.
+        // Bare `trellis` at a terminal opens the desktop on this root and
+        // prints the overview (ADR 0050 §1, the owner's decision of
+        // 2026-10-07, #561). Without a desktop to open, and for `--tui`, it
+        // opens the full-screen interface.
         //
         // The line session is still there as `trellis session`, and is still
         // what runs when there is no terminal to take over: a pipe, a
         // redirect, or CI.
+        let route = bare_route(ttys.0, ttys.1, ttys.2, true, true);
+        if !terminal_only && bare_desktop(route, Some(&root), &root)? {
+            return Ok(());
+        }
         let spec = config::RepoConfig::load(&root).ok().and_then(|c| c.model());
-        if bare_route(ttys.0, ttys.1, ttys.2, true, true) == Route::Tui {
+        if route == Route::Tui {
             return tui_run::run(&root, None, spec, false);
         }
         return session::Session::open(&root, None)?.run();
@@ -936,6 +952,73 @@ fn bare_route(
         (true, false) if stdin_tty && stdout_tty && stderr_tty => Route::StartScreen,
         (_, false) => Route::Refuse,
     }
+}
+
+/// What bare `trellis` does about the desktop once `bare_route` has decided
+/// (ADR 0050 §1, as built 2026-10-07, #561).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Launch {
+    /// Start the desktop, print the overview and exit; `root` says whether
+    /// it is given the root found.
+    Desktop { root: bool },
+    /// Say on one stderr line why the desktop cannot start, print the
+    /// overview, then go on as the route went before.
+    Fallback(Route),
+    /// Not bare `trellis` at a terminal: the route, as before.
+    Unchanged(Route),
+}
+
+/// The desktop decision, apart from the process. Only the two routes with a
+/// person at a terminal take the desktop: the interface's, in a repository,
+/// and the start screen's, outside one. `desktop` is the one found beside
+/// this executable; `display` is false on Linux with no display to open it
+/// on. The `--tui` flag is checked by the caller and never reaches here.
+fn launch_route(route: Route, desktop: Option<&Path>, display: bool) -> Launch {
+    let root = match route {
+        Route::Tui => true,
+        Route::StartScreen => false,
+        other => return Launch::Unchanged(other),
+    };
+    if desktop.is_some() && display {
+        Launch::Desktop { root }
+    } else {
+        Launch::Fallback(route)
+    }
+}
+
+/// Bare `trellis` at a terminal: starts the desktop on `root` and prints
+/// the overview of `here`, returning true when the caller is done. On a
+/// fallback, says why on stderr, prints the overview and returns false for
+/// the terminal path to run.
+fn bare_desktop(route: Route, root: Option<&Path>, here: &Path) -> Result<bool> {
+    let exe = std::env::current_exe().context("cannot find the running trellis executable")?;
+    let found = launch::find_desktop(&exe);
+    let display = launch::display();
+    let started = match launch_route(route, found.as_deref().ok(), display) {
+        Launch::Unchanged(_) => return Ok(false),
+        Launch::Desktop { root: rooted } => {
+            // ADR 0050 §2: with no model, the picker runs here, in the
+            // terminal, before the window opens. A config that does not load
+            // says why rather than reading as "no model", and quitting the
+            // picker starts nothing, both as in `tui_run`.
+            if rooted
+                && let Some(r) = root
+                && config::RepoConfig::load(r)?.model().is_none()
+                && first_run::offer()?.is_none()
+            {
+                return Ok(true);
+            }
+            launch::launch_bare(&found, display, &exe, root)
+        }
+        // `launch_bare` starts nothing here: one of the checks `launch_route`
+        // made failed, and it returns that check's line.
+        Launch::Fallback(_) => launch::launch_bare(&found, display, &exe, root),
+    };
+    if let Err(line) = &started {
+        let _ = writeln!(std::io::stderr(), "{line}");
+    }
+    overview::run(here, false, &mut std::io::stdout().lock())?;
+    Ok(started.is_ok())
 }
 
 /// `trellis run --agents`, parsed (ADR 0045 §3).
@@ -1358,5 +1441,83 @@ mod startup_seam_tests {
             );
         }
         assert_eq!(bare_route(true, true, true, false, false), Route::Refuse);
+    }
+
+    /// A desktop path for `launch_route`, which only asks whether there is one.
+    fn desktop() -> Option<&'static Path> {
+        Some(Path::new("trellis-desktop"))
+    }
+
+    #[test]
+    fn launch_route_desktop_and_root_opens_the_desktop_on_the_root() {
+        // The risk: bare `trellis` in a repository still taking over the
+        // terminal when the owner asked for the window (ADR 0050 §1, #561).
+        assert_eq!(
+            launch_route(Route::Tui, desktop(), true),
+            Launch::Desktop { root: true }
+        );
+    }
+
+    #[test]
+    fn launch_route_desktop_and_no_root_skips_the_start_screen() {
+        // The risk: a start screen in the terminal asking where to go while
+        // the desktop, which can ask the same, is right there.
+        assert_eq!(
+            launch_route(Route::StartScreen, desktop(), true),
+            Launch::Desktop { root: false }
+        );
+    }
+
+    #[test]
+    fn launch_route_desktop_missing_falls_back_to_the_terminal_path() {
+        // The risk: no desktop installed leaving bare `trellis` with nothing
+        // to open; it says so, then goes where it went before.
+        assert_eq!(
+            launch_route(Route::Tui, None, true),
+            Launch::Fallback(Route::Tui)
+        );
+        assert_eq!(
+            launch_route(Route::StartScreen, None, true),
+            Launch::Fallback(Route::StartScreen)
+        );
+    }
+
+    #[test]
+    fn launch_route_no_display_falls_back_to_the_terminal_path() {
+        // The risk: a window started on a headless Linux box, failing out of
+        // sight while the terminal shows nothing.
+        assert_eq!(
+            launch_route(Route::Tui, desktop(), false),
+            Launch::Fallback(Route::Tui)
+        );
+        assert_eq!(
+            launch_route(Route::StartScreen, desktop(), false),
+            Launch::Fallback(Route::StartScreen)
+        );
+    }
+
+    #[test]
+    fn launch_route_tui_subcommand_keeps_the_terminal_interface() {
+        // The risk: `trellis tui`, a subcommand, opening the desktop. The
+        // `--tui` flag never reaches `launch_route` (`main` checks it first);
+        // `launch_route_tui_flag_*` in tests/cli.rs holds that end.
+        assert_eq!(
+            launch_route(Route::Command, desktop(), true),
+            Launch::Unchanged(Route::Command)
+        );
+    }
+
+    #[test]
+    fn launch_route_no_terminal_keeps_the_line_session_and_the_refusal() {
+        // The risk: a pipe, a redirect or CI starting a window nobody asked
+        // for. Without a terminal behaviour is unchanged (ADR 0050 §1).
+        assert_eq!(
+            launch_route(Route::Session, desktop(), true),
+            Launch::Unchanged(Route::Session)
+        );
+        assert_eq!(
+            launch_route(Route::Refuse, desktop(), true),
+            Launch::Unchanged(Route::Refuse)
+        );
     }
 }

@@ -5394,15 +5394,26 @@ fn client_contract_overview_lists_what_the_overview_object_carries() {
 /// mutants job until its per-mutant limit.
 #[cfg(unix)]
 fn under_pty(name: &str, cwd: &Path, redirect: &str, input: &str) -> (bool, String) {
+    let exe = PathBuf::from(env!("CARGO_BIN_EXE_trellis"));
+    under_pty_as(&exe, name, cwd, redirect, input)
+}
+
+/// [`under_pty`] running `exe`, followed by `after` (arguments or a
+/// redirection). `DISPLAY` is set, so whether bare `trellis` opens the
+/// desktop turns on what is beside `exe` alone, never on the machine
+/// running the suite (#561).
+#[cfg(unix)]
+fn under_pty_as(exe: &Path, name: &str, cwd: &Path, after: &str, input: &str) -> (bool, String) {
     use std::io::Write as _;
     use std::process::Stdio;
     let user = scratch(&format!("{name}-user"));
     let shown = user.join("terminal.txt");
-    let cmd = format!("'{}'{redirect}", env!("CARGO_BIN_EXE_trellis"));
+    let cmd = format!("'{}'{after}", exe.display());
     let mut child = Command::new("script")
         .args(["-qfec", &cmd, "/dev/null"])
         .current_dir(cwd)
         .env("NO_COLOR", "1")
+        .env("DISPLAY", ":0")
         // Plain line input: no editor escape sequences to read around.
         .env("TERM", "dumb")
         .env("SHELL", "/bin/sh")
@@ -5483,4 +5494,139 @@ fn startup_pty_bare_trellis_with_stdout_redirected_in_a_repository_opens_the_ses
     assert!(banner.contains("/exit to leave"), "{banner}\n{s}");
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(out.parent().unwrap());
+}
+
+// ---------------------------------------------------------------------------
+// bare `trellis` opens the desktop (ADR 0050 §1, as built 2026-10-07, #561)
+// ---------------------------------------------------------------------------
+
+/// A copy of the built `trellis` in a fresh directory, with a stub
+/// `trellis-desktop` beside it that writes its arguments, one per line, to
+/// `args.txt` there (through a rename, so a reader never sees half of it).
+/// A copy, so no stub ever sits beside the build's own binary.
+#[cfg(unix)]
+fn trellis_with_stub_desktop(name: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = scratch(name);
+    let exe = bin.join("trellis");
+    std::fs::copy(env!("CARGO_BIN_EXE_trellis"), &exe).unwrap();
+    let stub = bin.join("trellis-desktop");
+    std::fs::write(
+        &stub,
+        "#!/bin/sh\nd=$(dirname \"$0\")\n\
+         printf '%s\n' \"$@\" > \"$d/args.tmp\" && mv \"$d/args.tmp\" \"$d/args.txt\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    exe
+}
+
+/// The stub's arguments, or `None` when it has not written them within
+/// `wait`: it runs detached, so trellis may exit before it writes.
+#[cfg(unix)]
+fn stub_args(exe: &Path, wait: std::time::Duration) -> Option<Vec<String>> {
+    let file = exe.parent().unwrap().join("args.txt");
+    let start = std::time::Instant::now();
+    loop {
+        if let Ok(t) = std::fs::read_to_string(&file) {
+            return Some(t.lines().map(str::to_string).collect());
+        }
+        if start.elapsed() > wait {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// Whether two paths name the same file, whichever way each was spelled.
+#[cfg(unix)]
+fn same_file(a: &str, b: &Path) -> bool {
+    Path::new(a).canonicalize().ok() == b.canonicalize().ok()
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_pty_bare_opens_overview() {
+    // The owner's goal (ADR 0050 §1, 2026-10-07): bare `trellis` in a
+    // repository at a terminal starts the desktop on that repository,
+    // prints the overview and exits 0, leaving the terminal free.
+    let d = repo("pty-bare-desktop");
+    std::fs::create_dir_all(d.join(".trellis")).unwrap();
+    // A model configured, so first-run's picker does not run first.
+    std::fs::write(
+        d.join(".trellis/config.toml"),
+        "[model]\nspec = \"llamacpp:http://127.0.0.1:1\"\n",
+    )
+    .unwrap();
+    let exe = trellis_with_stub_desktop("pty-bare-desktop-bin");
+    let (ok, s) = under_pty_as(&exe, "pty-bare-desktop", &d, "", "");
+    assert!(ok, "{s}");
+    assert!(s.contains("recent repositories:"), "{s}");
+    assert!(s.contains("repository: "), "{s}");
+    assert!(s.contains("last run: no runs yet"), "{s}");
+    assert!(!s.contains("falling back"), "{s}");
+    let args = stub_args(&exe, std::time::Duration::from_secs(20))
+        .unwrap_or_else(|| panic!("the stub desktop never ran: {s}"));
+    assert_eq!(args.len(), 4, "{args:?}");
+    assert_eq!(args[0], "--trellis");
+    assert!(same_file(&args[1], &exe), "{args:?}");
+    assert_eq!(args[2], "--root");
+    assert!(same_file(&args[3], &d), "{args:?}");
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(exe.parent().unwrap());
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_pty_bare_outside_a_repository_opens_the_desktop_with_no_root() {
+    // With a desktop to open, the start screen is skipped: the desktop
+    // shows its own, and is given no root it did not find.
+    let d = scratch("pty-bare-desktop-no-repo");
+    let exe = trellis_with_stub_desktop("pty-bare-desktop-no-repo-bin");
+    let (ok, s) = under_pty_as(&exe, "pty-bare-desktop-no-repo", &d, "", "");
+    assert!(ok, "{s}");
+    assert!(s.contains("so only the recent list is shown"), "{s}");
+    assert!(!s.contains("or q to quit"), "{s}");
+    let args = stub_args(&exe, std::time::Duration::from_secs(20))
+        .unwrap_or_else(|| panic!("the stub desktop never ran: {s}"));
+    assert_eq!(args.len(), 2, "{args:?}");
+    assert_eq!(args[0], "--trellis");
+    assert!(same_file(&args[1], &exe), "{args:?}");
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(exe.parent().unwrap());
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_pty_bare_with_no_desktop_says_so_then_falls_back() {
+    // No desktop beside the build's binary: one line saying where it
+    // looked and what to install, the overview, then today's start screen.
+    let d = scratch("pty-bare-no-desktop");
+    let (ok, s) = under_pty("pty-bare-no-desktop", &d, "", "q\n");
+    assert!(ok, "{s}");
+    let line = s
+        .find("the desktop is not installed beside this trellis")
+        .unwrap_or_else(|| panic!("no fallback line: {s}"));
+    let overview = s.find("recent repositories:").expect(&s);
+    let screen = s.find("or q to quit").expect(&s);
+    assert!(line < overview && overview < screen, "{s}");
+    assert!(s.contains("cargo install --locked --path desktop"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[cfg(unix)]
+#[test]
+fn launch_route_tui_flag_keeps_the_terminal() {
+    // The risk: `--tui`, the way back to the terminal interface, opening
+    // the desktop anyway. Outside a repository it is today's start screen,
+    // with no overview and no desktop started.
+    let d = scratch("pty-tui-flag");
+    let exe = trellis_with_stub_desktop("pty-tui-flag-bin");
+    let (ok, s) = under_pty_as(&exe, "pty-tui-flag", &d, " --tui", "q\n");
+    assert!(ok, "{s}");
+    assert!(s.contains("or q to quit"), "{s}");
+    assert!(!s.contains("recent repositories:"), "{s}");
+    assert!(stub_args(&exe, std::time::Duration::from_secs(2)).is_none());
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(exe.parent().unwrap());
 }
