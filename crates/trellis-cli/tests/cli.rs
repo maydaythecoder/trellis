@@ -5500,17 +5500,24 @@ fn startup_pty_bare_trellis_with_stdout_redirected_in_a_repository_opens_the_ses
 // bare `trellis` opens the desktop (ADR 0050 §1, as built 2026-10-07, #561)
 // ---------------------------------------------------------------------------
 
-/// A copy of the built `trellis` in a fresh directory, with a stub
-/// `trellis-desktop` beside it that writes its arguments, one per line, to
-/// `args.txt` there (through a rename, so a reader never sees half of it).
-/// A copy, so no stub ever sits beside the build's own binary.
+/// A copy of the built `trellis` alone in a fresh directory: nothing is
+/// beside it, whatever was built beside the original.
+#[cfg(unix)]
+fn trellis_copy(name: &str) -> PathBuf {
+    let exe = scratch(name).join("trellis");
+    std::fs::copy(env!("CARGO_BIN_EXE_trellis"), &exe).unwrap();
+    exe
+}
+
+/// [`trellis_copy`] with a stub `trellis-desktop` beside it that writes its
+/// arguments, one per line, to `args.txt` there (through a rename, so a
+/// reader never sees half of it). A copy, so no stub ever sits beside the
+/// build's own binary.
 #[cfg(unix)]
 fn trellis_with_stub_desktop(name: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
-    let bin = scratch(name);
-    let exe = bin.join("trellis");
-    std::fs::copy(env!("CARGO_BIN_EXE_trellis"), &exe).unwrap();
-    let stub = bin.join("trellis-desktop");
+    let exe = trellis_copy(name);
+    let stub = exe.parent().unwrap().join("trellis-desktop");
     std::fs::write(
         &stub,
         "#!/bin/sh\nd=$(dirname \"$0\")\n\
@@ -5599,10 +5606,12 @@ fn startup_pty_bare_outside_a_repository_opens_the_desktop_with_no_root() {
 #[cfg(unix)]
 #[test]
 fn startup_pty_bare_with_no_desktop_says_so_then_falls_back() {
-    // No desktop beside the build's binary: one line saying where it
-    // looked and what to install, the overview, then today's start screen.
+    // No desktop beside the binary: one line saying where it looked and
+    // what to install, the overview, then today's start screen. A copy, so
+    // a desktop built beside the original cannot open a window here.
     let d = scratch("pty-bare-no-desktop");
-    let (ok, s) = under_pty("pty-bare-no-desktop", &d, "", "q\n");
+    let exe = trellis_copy("pty-bare-no-desktop-bin");
+    let (ok, s) = under_pty_as(&exe, "pty-bare-no-desktop", &d, "", "q\n");
     assert!(ok, "{s}");
     let line = s
         .find("the desktop is not installed beside this trellis")
@@ -5612,6 +5621,7 @@ fn startup_pty_bare_with_no_desktop_says_so_then_falls_back() {
     assert!(line < overview && overview < screen, "{s}");
     assert!(s.contains("cargo install --locked --path desktop"), "{s}");
     let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(exe.parent().unwrap());
 }
 
 #[cfg(unix)]
