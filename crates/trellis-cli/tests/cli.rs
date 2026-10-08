@@ -3729,6 +3729,87 @@ fn start_screen_is_for_bare_trellis_only_and_run_still_refuses() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// `trellis <args>` in `root`, with `user` as the user config directory and,
+/// when given, `temp` as the temporary directory the binary sees.
+fn run_recording(root: &Path, user: &Path, temp: Option<&Path>, args: &[&str]) -> Output {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_trellis"));
+    c.args(args)
+        .current_dir(root)
+        .env("NO_COLOR", "1")
+        .env("TRELLIS_CONFIG_DIR", user);
+    if let Some(t) = temp {
+        // `std::env::temp_dir` reads TMPDIR on Unix and TMP, then TEMP, on
+        // Windows.
+        c.env("TMPDIR", t).env("TMP", t).env("TEMP", t);
+    }
+    c.output().unwrap()
+}
+
+/// The repositories `user/recent.json` lists, resolved, so a link in the
+/// temporary directory's path does not decide a comparison.
+fn recorded(user: &Path) -> Vec<PathBuf> {
+    let Ok(text) = std::fs::read_to_string(user.join("recent.json")) else {
+        return Vec::new();
+    };
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    v["repositories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            let p = PathBuf::from(p.as_str().unwrap());
+            std::fs::canonicalize(&p).unwrap_or(p)
+        })
+        .collect()
+}
+
+#[test]
+fn start_screen_home_a_root_under_the_temp_directory_is_not_recorded() {
+    // The risk (the owner's first run): test fixtures and scratch checkouts
+    // under the temporary directory fill the start screen's list, and are
+    // gone by the time the person sees it.
+    let d = repo("home-temp-root");
+    let user = scratch("home-temp-root-user");
+    let out = run_recording(&d, &user, None, &[]);
+    assert!(
+        recorded(&user).is_empty(),
+        "{}
+{:?}",
+        combined(&out),
+        std::fs::read_to_string(user.join("recent.json"))
+    );
+    for p in [&d, &user] {
+        let _ = std::fs::remove_dir_all(p);
+    }
+}
+
+#[test]
+fn start_screen_home_index_does_not_record_while_bare_trellis_does() {
+    // The risk: every command records its root, so a script running
+    // `trellis index` over many checkouts decides what the start screen
+    // offers. Only an interface start is a person opening trellis. The
+    // binary is given another temporary directory, so the repository is
+    // outside the one it skips.
+    let d = repo("home-index");
+    let user = scratch("home-index-user");
+    let temp = scratch("home-index-temp");
+    let want = std::fs::canonicalize(&d).unwrap();
+
+    let out = run_recording(&d, &user, Some(&temp), &["index"]);
+    assert!(out.status.success(), "{}", combined(&out));
+    assert!(
+        !recorded(&user).contains(&want),
+        "index recorded its root: {}",
+        combined(&out)
+    );
+
+    let out = run_recording(&d, &user, Some(&temp), &[]);
+    assert_eq!(recorded(&user), vec![want], "{}", combined(&out));
+    for p in [&d, &user, &temp] {
+        let _ = std::fs::remove_dir_all(p);
+    }
+}
+
 fn trellis_out(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_trellis"))
         .args(args)
@@ -4492,4 +4573,115 @@ fn vault_dates_says_there_is_no_file_and_seed_makes_one_dated_from_the_files() {
     let day = doc["notes"]["root.md"]["created"]["day"].as_str();
     assert!(day.is_some_and(|d| d.len() == 10), "{doc}");
     let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// bare `trellis` at a terminal (ADR 0050 §3), Unix only
+// ---------------------------------------------------------------------------
+//
+// Every other test here runs the binary on pipes, which is the one case bare
+// `trellis` never routes to a terminal surface. util-linux `script` gives it a
+// pseudo-terminal instead, and a shell redirection inside the command takes
+// one stream back off it. Windows has no std route to a ConPTY and a pty crate
+// needs an ADR, so there `bare_route`'s unit tests are the coverage (#556).
+
+/// Runs `'<trellis>'<redirect>` under `script -qfec … /dev/null` in `cwd`,
+/// feeding `input` to the terminal, and returns the exit status (`-e` passes
+/// trellis's own through) with what the terminal showed.
+///
+/// The user level is a fresh directory, so the start screen's list is empty
+/// whoever runs the suite. A deadline rather than a bare wait: a mutant that
+/// opens the wrong surface fails here in seconds instead of holding the
+/// mutants job until its per-mutant limit.
+#[cfg(unix)]
+fn under_pty(name: &str, cwd: &Path, redirect: &str, input: &str) -> (bool, String) {
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let user = scratch(&format!("{name}-user"));
+    let shown = user.join("terminal.txt");
+    let cmd = format!("'{}'{redirect}", env!("CARGO_BIN_EXE_trellis"));
+    let mut child = Command::new("script")
+        .args(["-qfec", &cmd, "/dev/null"])
+        .current_dir(cwd)
+        .env("NO_COLOR", "1")
+        // Plain line input: no editor escape sequences to read around.
+        .env("TERM", "dumb")
+        .env("SHELL", "/bin/sh")
+        .env("TRELLIS_CONFIG_DIR", &user)
+        .stdin(Stdio::piped())
+        .stdout(std::fs::File::create(&shown).unwrap())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("util-linux `script` must be on PATH for the pty tests");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "`{cmd}` did not exit within 60 s: {}",
+                std::fs::read_to_string(&shown).unwrap_or_default()
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let s = std::fs::read_to_string(&shown).unwrap();
+    let _ = std::fs::remove_dir_all(&user);
+    (status.success(), s)
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_pty_bare_trellis_outside_a_repository_asks_where_to_go() {
+    // The start screen, not the refusal: with a person at a terminal, bare
+    // `trellis` outside a repository offers somewhere to go, and `q` leaves.
+    let d = scratch("pty-no-repo");
+    let (ok, s) = under_pty("pty-no-repo", &d, "", "q\n");
+    assert!(ok, "quitting the start screen is not a failure: {s}");
+    assert!(s.contains("is not inside a git repository"), "{s}");
+    assert!(!s.contains("no git repository found"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_pty_bare_trellis_with_stderr_redirected_refuses() {
+    // The start screen prompts on stderr. Sent nowhere, the prompt would
+    // wait for an answer to a question nobody saw, so this is the refusal.
+    let d = scratch("pty-no-stderr");
+    let (ok, s) = under_pty("pty-no-stderr", &d, " 2>/dev/null", "q\n");
+    assert!(!ok, "bare trellis with no one to ask must refuse: {s}");
+    assert!(!s.contains("is not inside a git repository"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_pty_bare_trellis_with_stdout_redirected_in_a_repository_opens_the_session() {
+    // stdin is a terminal and stdout a file: the full-screen interface
+    // cannot draw, so the line session runs and its banner lands in the
+    // file.
+    let d = repo("pty-session");
+    let out = scratch("pty-session-out").join("stdout.txt");
+    let (ok, s) = under_pty(
+        "pty-session",
+        &d,
+        &format!(" >'{}'", out.display()),
+        "/exit\n",
+    );
+    assert!(ok, "{s}");
+    let banner = std::fs::read_to_string(&out).unwrap();
+    assert!(banner.contains("TRELLIS  ·"), "{banner}\n{s}");
+    assert!(banner.contains("/exit to leave"), "{banner}\n{s}");
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(out.parent().unwrap());
 }
