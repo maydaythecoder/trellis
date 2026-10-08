@@ -423,31 +423,31 @@ enum ModelAction {
     Path { name: Option<String> },
 }
 
-fn main() -> Result<()> {
-    // `Targets` rather than `EnvFilter`.
-    //
-    // `EnvFilter` parses field and span predicates, which needs `matchers` and
-    // therefore the whole regex engine. Measured two ways, because they answer
-    // different questions and were confused for each other once already:
-    // `cargo bloat --release --crates` attributed 184 KiB of `regex_syntax`
-    // plus 146 KiB of `regex_automata` to the `.text` section, and the release
-    // binary on disk fell 5,855,232 -> 4,810,240 bytes, the larger figure
-    // being the Unicode tables in `.rdata` that `.text` does not count.
-    //
-    // This project only ever filters as `target=level`, and `Targets` matches
-    // targets by prefix exactly as `EnvFilter` did, so `trellis_loop=trace`
-    // and `trellis_loop::adapter=trace` behave identically.
-    //
-    // Two forms behave differently and neither is used here: a span-field
-    // predicate (`[span{field=x}]`) fails to parse and falls back to the
-    // default below, and a target with a field predicate (`trellis[{turn}]=…`)
-    // parses but matches nothing, silently. Named because "the trade is
-    // recorded" is only true if the record is accurate.
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
+/// The log filter from `RUST_LOG`, read by the caller so this stays pure.
+///
+/// `Targets` rather than `EnvFilter`.
+///
+/// `EnvFilter` parses field and span predicates, which needs `matchers` and
+/// therefore the whole regex engine. Measured two ways, because they answer
+/// different questions and were confused for each other once already:
+/// `cargo bloat --release --crates` attributed 184 KiB of `regex_syntax`
+/// plus 146 KiB of `regex_automata` to the `.text` section, and the release
+/// binary on disk fell 5,855,232 -> 4,810,240 bytes, the larger figure
+/// being the Unicode tables in `.rdata` that `.text` does not count.
+///
+/// This project only ever filters as `target=level`, and `Targets` matches
+/// targets by prefix exactly as `EnvFilter` did, so `trellis_loop=trace`
+/// and `trellis_loop::adapter=trace` behave identically.
+///
+/// Two forms behave differently and neither is used here: a span-field
+/// predicate (`[span{field=x}]`) fails to parse and falls back to the
+/// default below, and a target with a field predicate (`trellis[{turn}]=…`)
+/// parses but matches nothing, silently. Named because "the trade is
+/// recorded" is only true if the record is accurate.
+fn log_filter(rust_log: Result<String, std::env::VarError>) -> tracing_subscriber::filter::Targets {
     let default =
         || tracing_subscriber::filter::Targets::new().with_target("trellis", tracing::Level::INFO);
-    let filter = match std::env::var("RUST_LOG") {
+    match rust_log {
         // Set but empty means "say nothing", which is what `EnvFilter` did
         // with it. Parsing it as a directive instead yields one empty
         // directive, which `Targets` reads as ERROR for every target in the
@@ -455,7 +455,13 @@ fn main() -> Result<()> {
         Ok(s) if s.trim().is_empty() => tracing_subscriber::filter::Targets::new(),
         Ok(s) => s.parse().unwrap_or_else(|_| default()),
         Err(_) => default(),
-    };
+    }
+}
+
+fn main() -> Result<()> {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    let filter = log_filter(std::env::var("RUST_LOG"));
     // Parsed first so `--log-json` is known before the subscriber is built.
     let matches =
         Cli::command().get_matches_from(subcommand_lowercased(std::env::args_os().collect()));
@@ -562,6 +568,14 @@ fn main() -> Result<()> {
         cli.command,
         Some(Command::Init | Command::Model { .. } | Command::Install { .. })
     ) && !matches!(&cli.command, Some(Command::Vault(a)) if a.is_init());
+    // Read once, so the start screen and the interface decide from the same
+    // three facts (`bare_route`).
+    use std::io::IsTerminal;
+    let ttys = (
+        std::io::stdin().is_terminal(),
+        std::io::stdout().is_terminal(),
+        std::io::stderr().is_terminal(),
+    );
     let root = match cli.root {
         Some(r) => r,
         None => match discover_root() {
@@ -571,10 +585,15 @@ fn main() -> Result<()> {
             // instead. Only bare `trellis`, and only with someone to answer:
             // a pipe, a redirect or CI gets the refusal below, as every
             // other command does.
-            Err(_) if cli.command.is_none() && interactive() => match start_screen::offer()? {
-                Some(r) => r,
-                None => return Ok(()),
-            },
+            Err(_)
+                if bare_route(ttys.0, ttys.1, ttys.2, cli.command.is_none(), false)
+                    == Route::StartScreen =>
+            {
+                match start_screen::offer()? {
+                    Some(r) => r,
+                    None => return Ok(()),
+                }
+            }
             Err(e) => return Err(e.context("cannot determine the repository root")),
         },
     };
@@ -634,8 +653,7 @@ fn main() -> Result<()> {
         // what runs when there is no terminal to take over: a pipe, a
         // redirect, or CI.
         let spec = config::RepoConfig::load(&root).ok().and_then(|c| c.model());
-        use std::io::IsTerminal;
-        if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        if bare_route(ttys.0, ttys.1, ttys.2, true, true) == Route::Tui {
             return tui_run::run(&root, None, spec, false);
         }
         return session::Session::open(&root, None)?.run();
@@ -826,33 +844,66 @@ fn subcommand_lowercased(mut args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsS
             std::iter::once(c.get_name().to_string()).chain(c.get_all_aliases().map(str::to_string))
         })
         .collect();
-    let mut i = 1;
-    while i < args.len() {
-        let Some(a) = args[i].to_str() else { break };
-        if TAKES_VALUE.contains(&a) {
-            i += 2;
+    // A flag and a skip rather than an index stepped by hand: every element
+    // is visited at most once, so no edit to this loop can make it endless
+    // (#556: a mutated `i += 1` that never advanced ran until killed).
+    let mut value_next = false;
+    for a in args.iter_mut().skip(1) {
+        if std::mem::take(&mut value_next) {
             continue;
         }
-        if a.starts_with('-') {
-            i += 1;
+        let Some(s) = a.to_str() else { break };
+        if TAKES_VALUE.contains(&s) {
+            value_next = true;
             continue;
         }
-        let lower = a.to_lowercase();
-        if lower != a && names.contains(&lower) {
-            args[i] = lower.into();
+        if s.starts_with('-') {
+            continue;
+        }
+        let lower = s.to_lowercase();
+        if lower != s && names.contains(&lower) {
+            *a = lower.into();
         }
         break;
     }
     args
 }
 
-/// Whether there is a person at a terminal: stdin and stdout for the
-/// interface, stderr for the start screen's prompt (ADR 0050 §3).
-fn interactive() -> bool {
-    use std::io::IsTerminal;
-    std::io::stdin().is_terminal()
-        && std::io::stdout().is_terminal()
-        && std::io::stderr().is_terminal()
+/// Where `trellis` goes once it knows whether it has a root (ADR 0050 §3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Route {
+    /// A subcommand, with a root to run it in.
+    Command,
+    /// No root and no one to ask: the refusal every command gives.
+    Refuse,
+    /// Bare `trellis`, no root, a person at a terminal: ask where to go.
+    StartScreen,
+    /// Bare `trellis` in a repository with a terminal to take over.
+    Tui,
+    /// Bare `trellis` in a repository behind a pipe, a redirect or CI.
+    Session,
+}
+
+/// The routing decision, apart from the process so every combination can be
+/// tested. `has_root` is false only for a command that needs a repository
+/// and found none; an exempt command never asks.
+///
+/// The interface needs stdin and stdout. The start screen needs stderr too,
+/// since its prompt goes there, and a prompt nobody can see reads as a hang.
+fn bare_route(
+    stdin_tty: bool,
+    stdout_tty: bool,
+    stderr_tty: bool,
+    command_is_none: bool,
+    has_root: bool,
+) -> Route {
+    match (command_is_none, has_root) {
+        (false, true) => Route::Command,
+        (true, true) if stdin_tty && stdout_tty => Route::Tui,
+        (true, true) => Route::Session,
+        (true, false) if stdin_tty && stdout_tty && stderr_tty => Route::StartScreen,
+        (_, false) => Route::Refuse,
+    }
 }
 
 /// `trellis run --agents`, parsed (ADR 0045 §3).
@@ -1169,5 +1220,111 @@ mod backstop_tests {
             !lines.iter().any(|l| l.contains("not queried")),
             "{lines:#?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod startup_seam_tests {
+    use super::*;
+
+    fn lowered(args: &[&str]) -> Vec<String> {
+        subcommand_lowercased(args.iter().map(std::ffi::OsString::from).collect())
+            .into_iter()
+            .map(|a| a.into_string().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn startup_seam_a_flag_value_is_skipped_and_the_subcommand_after_it_lowered() {
+        // `x` is `--root`'s value, not the subcommand: losing the skip would
+        // compare `x`, stop there, and leave `RUN` for clap to reject.
+        assert_eq!(
+            lowered(&["trellis", "--root", "x", "RUN"]),
+            ["trellis", "--root", "x", "run"]
+        );
+    }
+
+    #[test]
+    fn startup_seam_a_flag_without_a_value_is_passed_over_one_place() {
+        assert_eq!(
+            lowered(&["trellis", "--json", "RUN"]),
+            ["trellis", "--json", "run"]
+        );
+    }
+
+    #[test]
+    fn startup_seam_a_name_clap_does_not_know_is_left_as_typed() {
+        // ADR 0050 §4 lowers only a known subcommand, so a typo is reported
+        // as typed rather than as a lowercase word nobody wrote.
+        assert_eq!(lowered(&["trellis", "NOPE"]), ["trellis", "NOPE"]);
+    }
+
+    #[test]
+    fn startup_seam_an_empty_or_blank_rust_log_says_nothing() {
+        // Parsed as a directive, an empty value is one empty directive, which
+        // `Targets` reads as ERROR for every target: silence asked for,
+        // error logging given.
+        use std::env::VarError;
+        use tracing::Level;
+        for set in ["", "  "] {
+            let f = log_filter(Ok(set.to_string()));
+            assert!(
+                !f.would_enable("trellis", &Level::ERROR),
+                "RUST_LOG={set:?}"
+            );
+        }
+        let unset = log_filter(Err(VarError::NotPresent));
+        assert!(unset.would_enable("trellis", &Level::INFO));
+        assert!(!unset.would_enable("trellis", &Level::DEBUG));
+        let set = log_filter(Ok("trellis_loop=trace".to_string()));
+        assert!(set.would_enable("trellis_loop::adapter", &Level::TRACE));
+        assert!(!set.would_enable("trellis", &Level::INFO));
+    }
+
+    #[test]
+    fn startup_seam_bare_route_follows_adr_0050_over_all_32_combinations() {
+        // The three rules, stated as properties rather than a copy of the
+        // function: a subcommand goes by its root; bare `trellis` with no
+        // root asks only when stdin, stdout and stderr are all terminals;
+        // with one, the interface needs stdin and stdout and the line
+        // session takes the rest.
+        for bits in 0u8..32 {
+            let [i, o, e, bare, root] = [0, 1, 2, 3, 4].map(|b| bits & (1 << b) != 0);
+            let want = match (bare, root) {
+                (false, true) => Route::Command,
+                (false, false) => Route::Refuse,
+                (true, false) if i && o && e => Route::StartScreen,
+                (true, false) => Route::Refuse,
+                (true, true) if i && o => Route::Tui,
+                (true, true) => Route::Session,
+            };
+            assert_eq!(
+                bare_route(i, o, e, bare, root),
+                want,
+                "stdin {i} stdout {o} stderr {e} bare {bare} root {root}"
+            );
+        }
+    }
+
+    #[test]
+    fn startup_seam_with_no_root_one_redirected_stream_refuses() {
+        // A pipe, a redirect or CI gets the refusal every other command
+        // gets: a prompt nobody can see would read as a hang.
+        assert_eq!(
+            bare_route(true, true, true, true, false),
+            Route::StartScreen
+        );
+        for (i, o, e) in [
+            (false, true, true),
+            (true, false, true),
+            (true, true, false),
+        ] {
+            assert_eq!(
+                bare_route(i, o, e, true, false),
+                Route::Refuse,
+                "{i} {o} {e}"
+            );
+        }
+        assert_eq!(bare_route(true, true, true, false, false), Route::Refuse);
     }
 }
