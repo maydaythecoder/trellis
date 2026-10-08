@@ -181,6 +181,16 @@ Windows and Linux on x86-64, both tested with the full suite. macOS is built
 in CI and has never been run by a human on this project; nothing is claimed
 about it. See `dist/QUICKSTART.md`.
 
+## Installing from source with the desktop
+
+`trellis desktop` looks for `trellis-desktop` only in the directory that holds
+`trellis` itself. To install both from a checkout, run
+`scripts/install-local.sh` (add `--force` to replace an earlier install,
+`--dry-run` to see the commands). It installs the two one after the other
+into cargo's bin directory with `CARGO_BUILD_JOBS` capped at 2, since a cold
+build at full parallelism can exhaust memory on Windows, and checks that they
+landed side by side.
+
 ## Licence
 
 Apache-2.0. See `LICENSE`.
