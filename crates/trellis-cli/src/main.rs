@@ -18,6 +18,7 @@ mod hosted;
 mod image_input;
 mod index_cmd;
 mod install;
+mod launch;
 mod liveness;
 mod log_cmd;
 mod models_cmd;
@@ -491,11 +492,6 @@ fn main() -> Result<()> {
     // Accepted by the parser so the surface ADR 0050 records is the one
     // people learn, and refused here until it is built: a flag that
     // appeared to start something it cannot is worse than one that says so.
-    if cli.dsk {
-        anyhow::bail!(
-            "the desktop is not built yet (ADR 0048, story S19); `trellis` opens the terminal interface"
-        );
-    }
     if cli.web {
         anyhow::bail!(
             "the web view is not built yet (ADR 0050, story S19); `trellis` opens the terminal interface"
@@ -580,10 +576,17 @@ fn main() -> Result<()> {
     // `install` joins them too: packages are user state (ADR 0039).
     // `overview` too: outside a repository it prints the recent list, and
     // reads nothing under the directory it fell back to (ADR 0050 §3).
-    let needs_repo = !matches!(
-        cli.command,
-        Some(Command::Init | Command::Model { .. } | Command::Install { .. } | Command::Overview)
-    ) && !matches!(&cli.command, Some(Command::Vault(a)) if a.is_init());
+    //
+    // `--dsk` too: outside a repository the desktop opens on its overview
+    // (ADR 0050 section 3), so there is nothing to refuse.
+    let needs_repo = !cli.dsk
+        && !matches!(
+            cli.command,
+            Some(
+                Command::Init | Command::Model { .. } | Command::Install { .. } | Command::Overview
+            )
+        )
+        && !matches!(&cli.command, Some(Command::Vault(a)) if a.is_init());
     // Read once, so the start screen and the interface decide from the same
     // three facts (`bare_route`).
     use std::io::IsTerminal;
@@ -661,6 +664,14 @@ fn main() -> Result<()> {
             "root:     {} (repository root)",
             root.display()
         );
+    }
+
+    // ADR 0050 section 1: the desktop, started and left running. A root it
+    // fell back to (the working directory, outside any repository) is not
+    // one it found, so the desktop is given none.
+    if cli.dsk {
+        let found = explicit || root.join(".git").exists();
+        return launch::launch_desktop(found.then_some(root.as_path()));
     }
 
     let Some(command) = cli.command else {
