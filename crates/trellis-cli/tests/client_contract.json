@@ -91,5 +91,60 @@
     "optional": {
       "trail.factual.label": "when the session was named"
     }
+  },
+  "overview": {
+    "about": "`trellis [--root <repo>] --json overview` prints one object (ADR 0050 section 3, ADR 0025 section 4, both amended 2026-10-07; #558), held by client_contract_overview_lists_what_the_overview_object_carries in tests/cli.rs. Outside a repository, or with a root that has no .git entry, it carries only the keys under outside_a_repository. A last_run, in recent or at the top, is null when there is no trail, {\"error\": <why>} when the newest trail will not parse, and otherwise the fields below. codebase is null when the cache is missing or stale, codebase_reason saying which (null when current). pr_ci.available false carries reason in place of pull_requests and runs. Strings from trails, the queue and gh are data written by others.",
+    "outside_a_repository": ["recent"],
+    "always": [
+      "recent[].path",
+      "recent[].last_run.run_id",
+      "recent[].last_run.started_at",
+      "recent[].last_run.outcome",
+      "recent[].last_run.integrity",
+      "recent[].last_run.task",
+      "root",
+      "last_run.run_id",
+      "last_run.started_at",
+      "last_run.outcome",
+      "last_run.integrity",
+      "last_run.task",
+      "last_run.turns",
+      "last_run.edits",
+      "last_run.checks[].kind",
+      "last_run.checks[].passed",
+      "last_run.verified",
+      "last_run.reviewed",
+      "last_run.tier",
+      "codebase.modules_indexed",
+      "codebase.bound_call_sites",
+      "codebase.ambiguous",
+      "codebase.unresolved",
+      "codebase.modules",
+      "codebase_reason",
+      "board.tasks[].id",
+      "board.tasks[].state",
+      "board.tasks[].task",
+      "board.pr_ci.available",
+      "board.pr_ci.pull_requests[].number",
+      "board.pr_ci.pull_requests[].title",
+      "board.pr_ci.pull_requests[].head",
+      "board.pr_ci.pull_requests[].draft",
+      "board.pr_ci.pull_requests[].checks.passed",
+      "board.pr_ci.pull_requests[].checks.failed",
+      "board.pr_ci.pull_requests[].checks.pending",
+      "board.pr_ci.pull_requests[].checks.other",
+      "board.pr_ci.runs[].id",
+      "board.pr_ci.runs[].workflow",
+      "board.pr_ci.runs[].branch",
+      "board.pr_ci.runs[].status",
+      "board.pr_ci.runs[].conclusion",
+      "board.pr_ci.runs[].created_at"
+    ],
+    "optional": {
+      "recent_error": "when the recent list cannot be read; recent is then empty",
+      "last_run.error": "in place of the other last_run fields, when the newest trail will not parse",
+      "board.tasks_error": "when the queue cannot be read; tasks is then null",
+      "board.pr_ci.reason": "when available is false"
+    }
   }
 }
