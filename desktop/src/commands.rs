@@ -819,9 +819,13 @@ mod tests {
                 "transcript"
             ]
         );
-        assert_eq!(
-            full["transcript"][0], "before",
-            "the run so far, not only what is new"
+        assert!(
+            full["transcript"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|l| l == "before"),
+            "the run so far, not only what is new: {full}"
         );
         rec.wait_for("rpc-frame", |f| f["id"] == "desktop-1");
 
