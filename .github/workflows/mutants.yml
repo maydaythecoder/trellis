@@ -31,11 +31,16 @@ on:
         default: linux
         type: choice
         options: [linux, windows]
+      file:
+        description: "Optional source file to mutate (-f), e.g. crates/trellis-cli/src/main.rs; one file's mutants fit in one job, unsharded"
+        required: false
+        default: ""
+        type: string
 
 # A second dispatch of the same shard queues behind the first; neither is
 # cancelled, since a cancelled run throws away hours of verdicts.
 concurrency:
-  group: ${{ github.workflow }}-${{ inputs.os }}-${{ inputs.crate }}-${{ inputs.shard }}
+  group: ${{ github.workflow }}-${{ inputs.os }}-${{ inputs.crate }}-${{ inputs.shard }}-${{ inputs.file }}
   cancel-in-progress: false
 
 # Nothing here writes to the repository; the results leave as an artifact.
@@ -107,6 +112,7 @@ jobs:
           CRATE: ${{ inputs.crate }}
           SHARD: ${{ inputs.shard }}
           OS: ${{ inputs.os }}
+          FILE: ${{ inputs.file }}
         run: |
           set -euo pipefail
           if ! printf '%s\n' "$CRATE" | grep -Eqx '[A-Za-z0-9_-]+'; then
@@ -126,6 +132,20 @@ jobs:
               exit 1
             fi
             name="$name-shard-$k-of-$n"
+          fi
+          # A relative path inside the checkout: no option, no climbing out.
+          if [ -n "$FILE" ]; then
+            if ! printf '%s\n' "$FILE" | grep -Eqx '[A-Za-z0-9_][A-Za-z0-9_./-]*' ||
+              printf '%s\n' "$FILE" | grep -Fq '..'; then
+              echo "::error::file '$FILE' is not a relative path in the repository"
+              exit 1
+            fi
+            if [ ! -f "$FILE" ]; then
+              echo "::error::file '$FILE' does not exist at this commit"
+              exit 1
+            fi
+            stem=${FILE##*/}
+            name="$name-file-${stem%.*}"
           fi
           echo "artifact=$name" >> "$GITHUB_OUTPUT"
 
@@ -149,11 +169,13 @@ jobs:
         env:
           CRATE: ${{ inputs.crate }}
           SHARD: ${{ inputs.shard }}
+          FILE: ${{ inputs.file }}
         run: |
           set -euo pipefail
           rm -rf mutants.out mutants.out.old
           args=(-p "$CRATE" --test-workspace true --timeout 300 --no-shuffle -j 1 --cargo-arg=--locked)
           if [ -n "$SHARD" ]; then args+=(--shard "$SHARD"); fi
+          if [ -n "$FILE" ]; then args+=(-f "$FILE"); fi
           cargo mutants "${args[@]}"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
