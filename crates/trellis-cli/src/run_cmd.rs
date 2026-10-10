@@ -2187,7 +2187,7 @@ fn partition_task(task: &str, mine: &[String], partitions: usize) -> String {
 /// nothing uncommitted. Read, never restored: the rollback is
 /// `run_integrated`'s, and this only reports on it. A tree that cannot be
 /// read is not one known to be restored.
-fn back_at(root: &Path, base: &str) -> bool {
+fn is_restored_to(root: &Path, base: &str) -> bool {
     head_of(root).is_ok_and(|h| h == base) && trellis_vcs::pending(root).is_ok_and(|p| p.is_empty())
 }
 
@@ -2519,7 +2519,7 @@ fn run_partitioned(p: Partitioned<'_>, out: &mut (dyn std::io::Write + Send)) ->
             "INTERRUPTED. The partitions were stopped and the root rolled back to its \
              snapshot; nothing is accepted on an abort."
         );
-        let restored = back_at(root, &base);
+        let restored = is_restored_to(root, &base);
         let _ = writeln!(out, "Worktree restored: {restored}.");
         let plan_actions = std::mem::take(&mut trail.plan);
         match record_trail(
@@ -2553,7 +2553,7 @@ fn run_partitioned(p: Partitioned<'_>, out: &mut (dyn std::io::Write + Send)) ->
             // A merge that failed part-way, or a rollback that did: the
             // message says which, and how to finish a failed one by hand.
             let _ = writeln!(out, "\nNOT CONVERGED: {e}");
-            let restored = back_at(root, &base);
+            let restored = is_restored_to(root, &base);
             let _ = writeln!(out, "Worktree restored: {restored}.");
             let plan_actions = std::mem::take(&mut trail.plan);
             match record_trail(
@@ -2595,15 +2595,12 @@ fn run_partitioned(p: Partitioned<'_>, out: &mut (dyn std::io::Write + Send)) ->
                 let _ = writeln!(out, "  {line}");
             }
         }
-        plan_actions.push(trellis_trail::Action {
-            turn: after,
-            tool: "integrated_check".to_string(),
-            target: format!("{kind} on whole repository"),
-            outcome: if v.passed() { "passed" } else { "failed" }.to_string(),
-            wrote: false,
-            changed: Vec::new(),
-            changed_count: 0,
-        });
+        plan_actions.push(read_only_action(
+            after,
+            "integrated_check".to_string(),
+            format!("{kind} on whole repository"),
+            if v.passed() { "passed" } else { "failed" }.to_string(),
+        ));
         integrated_checks.push(trellis_trail::CheckOutcome {
             kind,
             passed: v.passed(),
@@ -2674,7 +2671,7 @@ fn run_partitioned(p: Partitioned<'_>, out: &mut (dyn std::io::Write + Send)) ->
         trellis_loop::Integration::RolledBack(why) => {
             let _ = writeln!(out);
             let _ = writeln!(out, "NOT CONVERGED: {why}.");
-            let restored = back_at(root, &base);
+            let restored = is_restored_to(root, &base);
             let _ = writeln!(out, "Rolled back to {base}. Worktree restored: {restored}.");
             // After the rollback, as in `run_body`: the rollback cleans
             // untracked files, and the trail is one until it is committed.
@@ -2726,15 +2723,12 @@ impl PartitionedTrail {
         run: Option<PartitionRun>,
     ) {
         let offset = u32::try_from(self.turns.len()).unwrap_or(u32::MAX);
-        self.plan.push(trellis_trail::Action {
-            turn: offset.saturating_add(1),
-            tool: "partition".to_string(),
-            target: format!("{} ({})", id.0, names.join(", ")),
-            outcome: summarise(status),
-            wrote: false,
-            changed: Vec::new(),
-            changed_count: 0,
-        });
+        self.plan.push(read_only_action(
+            offset.saturating_add(1),
+            "partition".to_string(),
+            format!("{} ({})", id.0, names.join(", ")),
+            summarise(status),
+        ));
         // A partition that never ran counts nothing, and a sum over the
         // ones that did would be part of the run presented as all of it.
         let (tokens, prompt_tokens) = run
@@ -3379,6 +3373,26 @@ pub(crate) fn action_from(index: usize, t: &trellis_loop::Turn) -> trellis_trail
     .with_changed(&t.changed)
 }
 
+/// A trail action that changed no file: a check, a partition, an approval,
+/// a gate's refusal or a compaction. One constructor so these records
+/// cannot disagree on what "wrote nothing" looks like in the trail.
+pub(crate) fn read_only_action(
+    turn: u32,
+    tool: String,
+    target: String,
+    outcome: String,
+) -> trellis_trail::Action {
+    trellis_trail::Action {
+        turn,
+        tool,
+        target,
+        outcome,
+        wrote: false,
+        changed: Vec::new(),
+        changed_count: 0,
+    }
+}
+
 /// An observation reduced to one line a person can read in a list.
 pub(crate) fn summarise(observation: &str) -> String {
     const MAX: usize = 120;
@@ -3576,14 +3590,13 @@ fn record_trail(
         .enumerate()
         .flat_map(|(i, t)| {
             let act = action_from(i, t);
-            let decision = t.human.map(|approved| trellis_trail::Action {
-                turn: act.turn,
-                tool: "approval".to_string(),
-                target: format!("{} {}", act.tool, act.target),
-                outcome: if approved { "approved" } else { "declined" }.to_string(),
-                wrote: false,
-                changed: Vec::new(),
-                changed_count: 0,
+            let decision = t.human.map(|approved| {
+                read_only_action(
+                    act.turn,
+                    "approval".to_string(),
+                    format!("{} {}", act.tool, act.target),
+                    if approved { "approved" } else { "declined" }.to_string(),
+                )
             });
             // A named gate's refusal, the same way: its own action, under
             // the turn and before the call it refused. None on a run where
@@ -3591,14 +3604,13 @@ fn record_trail(
             let denied: Vec<trellis_trail::Action> = gates
                 .iter()
                 .filter(|g| g.call == act.turn)
-                .map(|g| trellis_trail::Action {
-                    turn: act.turn,
-                    tool: g.gate.clone(),
-                    target: summarise(&g.target),
-                    outcome: summarise(&format!("denied: {}", g.reason)),
-                    wrote: false,
-                    changed: Vec::new(),
-                    changed_count: 0,
+                .map(|g| {
+                    read_only_action(
+                        act.turn,
+                        g.gate.clone(),
+                        summarise(&g.target),
+                        summarise(&format!("denied: {}", g.reason)),
+                    )
                 })
                 .collect();
             let at = act.turn;

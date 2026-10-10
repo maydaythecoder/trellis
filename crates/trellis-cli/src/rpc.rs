@@ -682,7 +682,7 @@ pub(crate) fn serve(root: &Path, input: impl BufRead, sink: Sink, mode: Mode) ->
                 continue;
             }
         };
-        if !s.handle(&cmd) {
+        if !s.dispatch_command(&cmd) {
             return Ok(());
         }
     }
@@ -1063,7 +1063,7 @@ impl Server {
     }
 
     /// Returns false to stop serving.
-    fn handle(&mut self, cmd: &Value) -> bool {
+    fn dispatch_command(&mut self, cmd: &Value) -> bool {
         let id = cmd.get("id").and_then(Value::as_str).map(str::to_string);
         let id = id.as_deref();
         let kind = cmd.get("type").and_then(Value::as_str).unwrap_or("");
@@ -1121,7 +1121,7 @@ impl Server {
             }
             "set_model" => {
                 let r = match cmd.get("model").and_then(Value::as_str) {
-                    Some(m) => check_spec(m).map(|()| {
+                    Some(m) => validate_model_spec(m).map(|()| {
                         self.model = Some(m.to_string());
                         json!({"model": m})
                     }),
@@ -1279,7 +1279,7 @@ impl Server {
         };
         let model_from_user = self.model.is_some();
         let model = self.model(None)?;
-        check_spec(&model)?;
+        validate_model_spec(&model)?;
         let spec: trellis_model::ModelSpec = model.parse().map_err(|e| format!("{e}"))?;
         // With `?`, as the TUI loads it: a default in its place would refuse
         // the user's own provider as the repository's choice.
@@ -1375,7 +1375,7 @@ impl Server {
         // repository did (`[model] spec`); ADR 0024 §3 treats them differently.
         let model_from_user = text("model").is_some() || self.model.is_some();
         let model = self.model(text("model").as_deref())?;
-        check_spec(&model)?;
+        validate_model_spec(&model)?;
         let flag = match text("control").as_deref() {
             None => None,
             Some("auto") => Some(config::ControlMode::Auto),
@@ -1509,7 +1509,7 @@ impl Chain {
             }
             started = true;
             let cur = self.current();
-            self.one(&task, &cur);
+            self.run_one_task(&task, &cur);
             let unsent = cur.steering.close();
             if self.abort.requested() {
                 // Queued before this run's own, so received before them.
@@ -1546,7 +1546,7 @@ impl Chain {
     }
 
     /// One run, as `trellis run` runs it.
-    fn one(&self, task: &str, cur: &Current) {
+    fn run_one_task(&self, task: &str, cur: &Current) {
         if let Ok(mut t) = TURNS.lock() {
             t.clear();
         }
@@ -1653,7 +1653,7 @@ impl Chain {
             a.clear();
         }
         if let Ok(mut l) = self.last.lock() {
-            *l = Some(summary(&r, rid.as_deref()));
+            *l = Some(run_end_response(&r, rid.as_deref()));
         }
     }
 }
@@ -1697,7 +1697,7 @@ fn respond_on(sink: &Sink, id: Option<&str>, command: &str, result: Result<Value
 }
 
 /// `get_state`'s view of how the last run ended.
-fn summary(r: &Result<RunExit>, id: Option<&str>) -> Value {
+fn run_end_response(r: &Result<RunExit>, id: Option<&str>) -> Value {
     let mut v = output::run_end(r, None, id);
     if let Some(o) = v.as_object_mut() {
         o.remove("type");
@@ -1706,7 +1706,7 @@ fn summary(r: &Result<RunExit>, id: Option<&str>) -> Value {
 }
 
 /// A spec that parses, and for a script, a file that exists.
-fn check_spec(spec: &str) -> Result<(), String> {
+fn validate_model_spec(spec: &str) -> Result<(), String> {
     let parsed: trellis_model::ModelSpec = spec.parse().map_err(|e| format!("{e}"))?;
     if let trellis_model::ModelSpec::Scripted(p) = &parsed
         && !p.is_file()
@@ -1719,6 +1719,7 @@ fn check_spec(spec: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::sh;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
@@ -2004,16 +2005,6 @@ mod tests {
             std::fs::read_to_string(dir.join("a.py")).unwrap(),
             "def f():\n    return 1\n"
         );
-    }
-
-    /// A shell argv for `script`, as TOML, with literal strings so a Windows
-    /// path's backslashes are not escapes.
-    fn sh(script: &str) -> String {
-        if cfg!(windows) {
-            format!("['cmd', '/C', '{script}']")
-        } else {
-            format!("['sh', '-c', '{script}']")
-        }
     }
 
     /// Where `fixture(name, ..)` puts its repository, known before it is

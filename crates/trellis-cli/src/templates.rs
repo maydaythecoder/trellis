@@ -117,7 +117,7 @@ pub(crate) fn render(root: &Path, name: &str, args: Option<&str>) -> Result<Stri
     let split = args.map(split_args).transpose()?;
     // The name guard and the "known templates" message live in
     // `RepoConfig::prompt`; read through it so there is one of each.
-    let raw = raw(root, name)?;
+    let raw = read_template_source(root, name)?;
     Ok(render_text(&raw, split.as_deref()))
 }
 
@@ -147,7 +147,7 @@ pub(crate) fn task_text(
 
 /// The file as written, through `RepoConfig::prompt_raw`'s name check and
 /// real-path check: one reader, so a link refused there is refused here.
-fn raw(root: &Path, name: &str) -> Result<String> {
+fn read_template_source(root: &Path, name: &str) -> Result<String> {
     crate::config::RepoConfig::prompt_raw(root, name)
 }
 

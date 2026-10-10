@@ -38,7 +38,7 @@ pub(crate) const NO_MODEL: &str = concat!(
 
 /// [`NO_MODEL`], ending with where the user config file is.
 pub(crate) fn no_model() -> String {
-    match crate::user_config::file() {
+    match crate::user_config::user_config_path() {
         Some(f) => format!("{NO_MODEL}{}", f.display()),
         None => format!("{NO_MODEL}which needs TRELLIS_CONFIG_DIR set to say where"),
     }
@@ -258,8 +258,8 @@ pub(crate) fn choose(
 
 /// [`choose`] against the default runtimes and the user's config file, on
 /// the process's stdin and stderr. The caller has checked both are terminals.
-pub(crate) fn offer() -> Result<Option<String>> {
-    let file = crate::user_config::file().context(concat!(
+pub(crate) fn offer_model_choice() -> Result<Option<String>> {
+    let file = crate::user_config::user_config_path().context(concat!(
         "no model configured, and no user config directory to save one in: ",
         "set TRELLIS_CONFIG_DIR, or pass --model to `trellis tui`"
     ))?;

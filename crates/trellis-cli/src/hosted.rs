@@ -773,21 +773,18 @@ pub(crate) fn compaction_line(events: &[Compacted]) -> Option<String> {
 /// One compaction as a trail action (ADR 0024 §5): what the model was shown,
 /// recorded as a fact, under the turn whose request was compacted.
 pub(crate) fn compaction_action(e: &Compacted) -> trellis_trail::Action {
-    trellis_trail::Action {
-        turn: e.turn,
-        tool: "compaction".to_string(),
-        target: format!("turns 1-{}", e.elided_turns),
-        outcome: format!(
+    crate::run_cmd::read_only_action(
+        e.turn,
+        "compaction".to_string(),
+        format!("turns 1-{}", e.elided_turns),
+        format!(
             "elided {} B of observations; request {} B, budget {} B{}",
             e.elided_bytes,
             e.request_bytes,
             e.budget,
             if e.fits { "" } else { ", still over" }
         ),
-        wrote: false,
-        changed: Vec::new(),
-        changed_count: 0,
-    }
+    )
 }
 
 /// The run's `context:` line for compactions a client asked for, when any
@@ -807,18 +804,15 @@ pub(crate) fn requested_compaction_line(events: &[RequestedCompaction]) -> Optio
 /// A compaction a client asked for, as a trail action (ADR 0024 §5, ADR
 /// 0025 §5). No budget is named, because none was in force for it.
 pub(crate) fn requested_compaction_action(e: &RequestedCompaction) -> trellis_trail::Action {
-    trellis_trail::Action {
-        turn: e.turn,
-        tool: "compaction".to_string(),
-        target: format!("turns 1-{}", e.elided_turns),
-        outcome: format!(
+    crate::run_cmd::read_only_action(
+        e.turn,
+        "compaction".to_string(),
+        format!("turns 1-{}", e.elided_turns),
+        format!(
             "requested over rpc: elided {} B of observations; request {} B, was {} B",
             e.elided_bytes, e.bytes_after, e.bytes_before
         ),
-        wrote: false,
-        changed: Vec::new(),
-        changed_count: 0,
-    }
+    )
 }
 
 #[cfg(test)]

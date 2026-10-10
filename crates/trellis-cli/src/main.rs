@@ -10,42 +10,42 @@
 //! only judgement stubbed, which is what makes the loop's control flow
 //! testable without inference. Results from it are never a model floor (S7).
 
-mod ask;
-mod config;
-mod doctor_cmd;
-mod first_run;
-mod hosted;
-mod image_input;
-mod index_cmd;
-mod install;
-mod launch;
-mod liveness;
-mod log_cmd;
-mod models_cmd;
-mod orchestrate;
-mod overview;
-mod process_agent;
-mod run_cmd;
-mod services;
-mod session;
-mod start_screen;
+// One line per module: what it holds. Alphabetical; a command's
+// implementation lives in its `*_cmd` module or in the module it names.
+mod ask; // a question answered, as distinct from a task run
+mod config; // `.trellis/config.toml`
+mod context_files; // context files, system prompt and skills a run's prompt takes (ADR 0025)
+mod doctor_cmd; // `doctor`, `check` and `init`
+mod doctor_extra; // `doctor`'s lines on user config, context, trust, profiles and vault
+mod first_run; // choosing a model on a first run with none configured (ADR 0050 §2)
+mod hosted; // hosted providers: a spec resolved against the user's config (ADR 0024)
+mod image_input; // `run --image` (ADR 0041)
+mod index_cmd; // `index`, `radius` and `partitions`
+mod install; // `install`: skills and prompt templates from a package source
+mod launch; // starting the desktop from `--dsk` (ADR 0050 §1, ADR 0048)
+mod liveness; // whether a pid is running on this machine
+mod log_cmd; // `log` and `why`, and `plain`, the terminal-safe printer
+mod models_cmd; // `model`: fetched weights
+mod orchestrate; // `agents` and `routines` (ADR 0026)
+mod output; // where output goes, and the JSONL framing of `--json` and `rpc`
+mod overview; // `overview` (ADR 0050 §3)
+mod process_agent; // process agents and the carry-back of what they wrote
+mod rpc; // `rpc`: JSONL commands on stdin
+mod run_cmd; // `run` and `resume`, and the trail a run writes
+mod services; // services an agent profile declares (ADR 0026 §12)
+mod session; // the interactive session: bare `trellis` in a repository
+mod session_extra; // the session's slash commands, `!cmd` and in-flight stdin
+mod start_screen; // bare `trellis` outside a repository (ADR 0050 §3)
+mod templates; // prompt templates with arguments (ADR 0025 §3)
 #[cfg(test)]
-mod testutil;
-mod tooling;
-mod trust_cmd;
-mod tui_bridge;
-mod tui_run;
-mod vault_cmd;
-mod work;
-// ADR 0025 (W-D).
-mod context_files;
-mod output;
-mod rpc;
-mod session_extra;
-mod templates;
-mod user_config;
-// Integration across waves (doctor's report of the inputs above).
-mod doctor_extra;
+mod testutil; // fixtures shared by this crate's tests
+mod tooling; // what a run may execute beyond its checks
+mod trust_cmd; // `trust` (ADR 0023 §4)
+mod tui_bridge; // the agent loop as a stream of TUI messages
+mod tui_run; // `tui <task>`
+mod user_config; // the user-level configuration directory and its layering
+mod vault_cmd; // `vault` (ADR 0022)
+mod work; // `queue` and `work` (ADR 0020, ADR 0026)
 
 use anyhow::{Context, Result};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
@@ -620,7 +620,7 @@ fn main() -> Result<()> {
                     return Ok(());
                 }
                 terminal_only = true;
-                match start_screen::offer()? {
+                match start_screen::offer_start_screen()? {
                     Some(r) => r,
                     None => return Ok(()),
                 }
@@ -643,7 +643,7 @@ fn main() -> Result<()> {
     if interface_start
         && root.join(".git").exists()
         && !start_screen::is_temporary(&root, &std::env::temp_dir())
-        && let Some(file) = start_screen::file()
+        && let Some(file) = start_screen::recent_dirs_file()
         && let Err(e) = start_screen::record(&file, &root)
     {
         tracing::debug!(error = %format!("{e:#}"), "recent repositories not recorded");
@@ -1004,7 +1004,7 @@ fn bare_desktop(route: Route, root: Option<&Path>, here: &Path) -> Result<bool> 
             if rooted
                 && let Some(r) = root
                 && config::RepoConfig::load(r)?.model().is_none()
-                && first_run::offer()?.is_none()
+                && first_run::offer_model_choice()?.is_none()
             {
                 return Ok(true);
             }

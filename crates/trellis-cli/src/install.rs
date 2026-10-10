@@ -164,7 +164,7 @@ pub(crate) fn install(config: &Path, spec: &str, out: &mut dyn Write) -> Result<
     let staging = Staging::new(&dir)?;
     let bare = staging.path.join("clone");
     clone_bare(&source, &bare)?;
-    let commit = resolve(&bare, reference)?;
+    let commit = resolve_ref(&bare, reference)?;
     let listing = ls_tree(&bare, &commit)?;
     let plan = select(&listing);
     if plan.copy.is_empty() {
@@ -630,7 +630,7 @@ fn clone_bare(source: &str, into: &Path) -> Result<()> {
     Ok(())
 }
 
-fn resolve(bare: &Path, reference: &str) -> Result<String> {
+fn resolve_ref(bare: &Path, reference: &str) -> Result<String> {
     let out = git_out(
         git()
             .arg("-C")

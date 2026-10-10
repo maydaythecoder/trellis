@@ -1,3 +1,8 @@
+//! `trellis doctor`, `check` and `init`: tier, batching and tooling
+//! probes, and the checks run on their own. What doctor reports about a
+//! run's inputs (user config, context files, trust, profiles, routines,
+//! the vault) is in `doctor_extra.rs`.
+
 use crate::index_cmd::graph_lines;
 use crate::plain;
 use crate::{config, doctor_extra, hosted};
@@ -1090,7 +1095,7 @@ fn repo_lines(root: &Path, cfg: &config::RepoConfig) -> Vec<String> {
 
     // Integrated (ADR 0021 wave I): the user config, context files, user
     // skills, trust, profiles and routines, and the vault.
-    out.extend(doctor_extra::lines(root, cfg));
+    out.extend(doctor_extra::input_report_lines(root, cfg));
 
     out
 }
