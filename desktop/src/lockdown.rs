@@ -340,7 +340,8 @@ mod tests {
         // The risk: a rail button that shows nothing, or a section no
         // button reaches; a later view shown before it is built, or a run
         // section that says it is not built. Six sections (#300 as amended
-        // 2026-10-07), overview first and the one shown at load.
+        // 2026-10-07), overview first and the one shown at load; run and
+        // overview (#562) are built.
         let page = page();
         let navs: Vec<usize> = (0..page.len()).filter(|&i| page[i].tag == "nav").collect();
         assert_eq!(navs.len(), 1, "one nav");
@@ -371,7 +372,7 @@ mod tests {
             );
             assert_eq!(
                 s.text.contains("Not built yet"),
-                id != "run",
+                !["run", "overview"].contains(&id),
                 "#{id} and \"Not built yet\""
             );
         }
@@ -440,6 +441,231 @@ mod tests {
         );
     }
 
+    /// `overview.js` with its `//` comments removed, so a field named only
+    /// in a comment does not count as read. It has no string or regex that
+    /// holds `//`, which this would cut short.
+    fn overview_code() -> String {
+        ui_file("overview.js")
+            .lines()
+            .map(|l| l.split_once("//").map_or(l, |(code, _)| code))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Every key `v` and its arrays' objects carry, at any depth.
+    fn keys_of(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::Object(o) => {
+                for (k, v) in o {
+                    out.push(k.clone());
+                    keys_of(v, out);
+                }
+            }
+            Value::Array(a) => a.iter().for_each(|v| keys_of(v, out)),
+            _ => {}
+        }
+    }
+
+    /// What `trellis --json overview` prints for a repository with one
+    /// trail, one queued chain and `gh` logged in (client_contract.json's
+    /// `overview` entry, #558), and the `pr_ci` it prints when `gh` cannot
+    /// be used.
+    fn overview_fixture() -> (Value, Value) {
+        let available = json!({
+            "recent": [{"path": "/w/app", "last_run": {
+                "run_id": "20261007-093000-000", "started_at": "2026-10-07T09:30:00Z",
+                "outcome": "converged", "integrity": "intact", "task": "rename the parser"}}],
+            "root": "/w/app",
+            "last_run": {
+                "run_id": "20261007-093000-000", "started_at": "2026-10-07T09:30:00Z",
+                "outcome": "converged", "integrity": "intact", "task": "rename the parser",
+                "turns": 6, "edits": 2, "checks": [{"kind": "pytest", "passed": true}],
+                "verified": 3, "reviewed": 1, "tier": "constrained"},
+            "codebase": {"modules_indexed": 12, "bound_call_sites": 90, "ambiguous": 4,
+                "unresolved": 7, "modules": [], "modules_not_drawn": 0},
+            "codebase_reason": null,
+            "board": {
+                "tasks": [{"id": "q-2", "state": "pending", "status": "todo", "priority": "p2",
+                    "task": "tidy the parser", "labels": [], "assignee": null,
+                    "waiting": "after q-1", "blockers": ["q-1"], "parent": "q-0"}],
+                "pr_ci": {"available": true,
+                    "pull_requests": [{"number": 41, "title": "<b>parser</b>", "head": "t41",
+                        "draft": true,
+                        "checks": {"passed": 2, "failed": 1, "pending": 0, "other": 0}}],
+                    "runs": [{"id": 900, "workflow": "ci", "branch": "t41",
+                        "status": "completed", "conclusion": "failure",
+                        "created_at": "2026-10-07T09:31:00Z"}]}}
+        });
+        let unavailable =
+            json!({"available": false, "reason": "gh is not logged in; run gh auth login"});
+        (available, unavailable)
+    }
+
+    #[test]
+    fn eagle_eye_section_has_four_labelled_panes() {
+        // The risk: an overview pane a screen reader cannot name, a pane
+        // missing, or overview.js drawing into an id the page lacks, so a
+        // part of the overview trellis printed is never shown.
+        let page = page();
+        let overview = index_of(&page, "overview");
+        let regions: Vec<usize> = (0..page.len())
+            .filter(|&i| page[i].attr("role") == Some("region") && within(&page, i, overview))
+            .collect();
+        let titles: Vec<String> = regions
+            .iter()
+            .map(|&i| {
+                let label = page[i]
+                    .attr("aria-labelledby")
+                    .expect("an overview pane with no aria-labelledby");
+                let h = index_of(&page, label);
+                assert!(within(&page, h, i), "#{label} is outside its pane");
+                page[h].text.trim().to_string()
+            })
+            .collect();
+        assert_eq!(
+            titles,
+            ["Recent repositories", "Last run", "Codebase", "Board"],
+            "the overview's panes, in order"
+        );
+        let js = overview_code();
+        for (&region, id) in
+            regions
+                .iter()
+                .zip(["ov-recent", "ov-last-run", "ov-codebase", "ov-board"])
+        {
+            assert!(
+                within(&page, index_of(&page, id), region),
+                "#{id} is outside its pane"
+            );
+            assert!(
+                js.contains(&format!("\"{id}\"")),
+                "overview.js draws no {id}"
+            );
+        }
+        assert!(
+            !page[overview].text.contains("Not built yet"),
+            "#overview still says it is not built"
+        );
+    }
+
+    #[test]
+    fn eagle_eye_overview_js_parses_no_html() {
+        // The risk: a trail task, a queue task or a PR title from `gh`
+        // written as markup, so text someone else wrote runs or reshapes
+        // the page (ADR 0007, S10).
+        let js = ui_file("overview.js");
+        for bad in [
+            "innerHTML",
+            "outerHTML",
+            "insertAdjacentHTML",
+            "document.write",
+            "eval(",
+            "Function(",
+            "DOMParser",
+            "createContextualFragment",
+        ] {
+            assert!(!js.contains(bad), "overview.js uses {bad}");
+        }
+        assert!(js.contains("textContent"), "overview.js writes no text");
+    }
+
+    #[test]
+    fn eagle_eye_overview_is_the_first_rail_button() {
+        // The risk: the window landing on another section, or an overview
+        // section nothing draws, so bare `trellis` opens on an empty page.
+        let page = page();
+        let first = page
+            .iter()
+            .find(|e| e.tag == "button" && e.attr("aria-controls").is_some())
+            .expect("a rail button");
+        assert_eq!(first.attr("aria-controls"), Some("overview"));
+        assert_eq!(first.attr("aria-current"), Some("page"));
+        assert!(
+            !page[index_of(&page, "overview")]
+                .attrs
+                .contains_key("hidden"),
+            "#overview is hidden at load"
+        );
+        let main = ui_file("main.js");
+        assert!(
+            main.contains(r#"import { drawOverview } from "./overview.js";"#),
+            "main.js does not load overview.js"
+        );
+        assert!(
+            main.contains(r#"listen("overview""#) && main.contains(r#"invoke("get_overview")"#),
+            "main.js draws neither the overview event nor get_overview"
+        );
+    }
+
+    #[test]
+    fn eagle_eye_board_draws_pr_ci_entries_and_the_unavailable_reason() {
+        // The risk: the board drops a PR or CI field `gh` reported, or,
+        // with `gh` missing or logged out, shows nothing and says nothing.
+        // No JavaScript runs under cargo test, so this holds overview.js to
+        // reading every field the fixture's `pr_ci` carries, each as a
+        // property, and to the words it puts before the reason.
+        let (o, unavailable) = overview_fixture();
+        let js = overview_code();
+        let mut keys = vec!["tasks".to_string(), "pr_ci".to_string()];
+        keys_of(&o["board"]["pr_ci"], &mut keys);
+        keys_of(&unavailable, &mut keys);
+        // A task's chain and how it reads; its labels, assignee and status
+        // are the queue view's, not the board's.
+        keys.extend(
+            [
+                "id", "state", "priority", "task", "waiting", "blockers", "parent",
+            ]
+            .map(String::from),
+        );
+        keys.sort();
+        keys.dedup();
+        let missing: Vec<&String> = keys
+            .iter()
+            .filter(|k| !js.contains(&format!(".{k}")))
+            .collect();
+        assert!(missing.is_empty(), "overview.js reads no {missing:?}");
+        assert!(
+            js.contains("pr.available === true"),
+            "the PR and CI lists are drawn only when gh was available"
+        );
+        assert!(
+            js.contains("PR and CI state unavailable: ${str(pr.reason)"),
+            "the unavailable reason is drawn after its label"
+        );
+        for k in ["pull_requests", "runs"] {
+            assert!(
+                js.contains(&format!("list(pr.{k})")),
+                "pr_ci.{k} is not drawn as a list"
+            );
+        }
+    }
+
+    #[test]
+    fn eagle_eye_last_run_draws_every_field_and_says_what_it_lacks() {
+        // The risk: a last-run figure the overview carries left undrawn,
+        // or one it does not carry (budget, approvals) drawn as a number.
+        let (o, _) = overview_fixture();
+        let js = overview_code();
+        let mut keys = Vec::new();
+        keys_of(&o["last_run"], &mut keys);
+        keys_of(&o["codebase"], &mut keys);
+        keys.retain(|k| !["modules", "modules_not_drawn"].contains(&k.as_str()));
+        let missing: Vec<&String> = keys
+            .iter()
+            .filter(|k| !js.contains(&format!(".{k}")))
+            .collect();
+        assert!(missing.is_empty(), "overview.js reads no {missing:?}");
+        for row in [
+            r#"["budget", "not reported in the overview"]"#,
+            r#"["approvals", "not reported in the overview"]"#,
+        ] {
+            assert!(js.contains(row), "overview.js lacks {row}");
+        }
+        for bad in ["/ c.", "/ t.", "%"] {
+            assert!(!js.contains(bad), "overview.js computes a ratio: {bad}");
+        }
+    }
+
     #[test]
     fn page_has_no_style_attribute() {
         // The risk: an inline style, which the CSP's `style-src 'self'`
@@ -450,7 +676,7 @@ mod tests {
             assert!(!e.attrs.contains_key("style"), "<{} style=...>", e.tag);
             assert_ne!(e.tag, "style", "a <style> element");
         }
-        for name in ["main.js", "render.js"] {
+        for name in ["main.js", "render.js", "overview.js"] {
             let js = ui_file(name);
             for bad in [".style", "cssText", "\"style\"", "'style'"] {
                 assert!(!js.contains(bad), "{name} writes a style: {bad}");

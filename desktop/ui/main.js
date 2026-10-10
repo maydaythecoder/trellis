@@ -1,8 +1,9 @@
 // The TRELLIS desktop page's entry module (ADR 0048 section 5).
 //
 // It switches the rail's sections and hands what the desktop's Rust core
-// emits to render.js, and computes nothing: the run panes the core's
-// reducer sends as `view` events, which child started or why none did.
+// emits to render.js and overview.js, and computes nothing: the run panes
+// the core's reducer sends as `view` events, which child started or why
+// none did, and the overview object trellis printed.
 // There is no bundler, so it reaches Tauri through the global
 // window.__TAURI__ rather than an import of @tauri-apps/api.
 //
@@ -11,6 +12,7 @@
 // characters, never parsed.
 
 import { drawView } from "./render.js";
+import { drawOverview } from "./overview.js";
 
 function show(id, text) {
   document.getElementById(id).textContent = text;
@@ -39,16 +41,44 @@ function wireRail() {
 // Asks the child for its state. The core answers a forwarded get_state by
 // sending every pane in the next view event, so a page that loaded late or
 // reloaded gets the run back. A refusal is the core's reason there is no
-// child: still starting, no repository found, or the child exited.
+// child: still starting, no repository found, or the child exited. Says
+// whether the line was forwarded, so a child is known to be running.
 async function askState(tauri) {
   try {
     await tauri.core.invoke("rpc_send", {
       line: { id: "desktop-state", type: "get_state" },
     });
+    return true;
   } catch (err) {
     show("status", String(err));
+    return false;
   }
 }
+
+// The overview's actions: "Open" on a recent repository. Success needs no
+// drawing here: the new child's `child-started` reads the overview again.
+function overviewActions(tauri) {
+  return {
+    open: (path) => {
+      tauri.core.invoke("open_repository", { path }).catch((err) => show("status", String(err)));
+    },
+  };
+}
+
+// Reads the overview for the open repository and draws it. Each read runs
+// trellis once, and `gh` within it, so it is asked for only when what it
+// shows has changed: a child started, or a run ended.
+async function readOverview(tauri) {
+  try {
+    drawOverview(document, await tauri.core.invoke("get_overview"), overviewActions(tauri));
+  } catch (err) {
+    show("ov-root", `The overview could not be read: ${err}`);
+  }
+}
+
+// The last run outcome a view carried, as JSON, so only a new one rereads
+// the overview.
+let lastOutcome = null;
 
 async function main() {
   wireRail();
@@ -58,11 +88,19 @@ async function main() {
   // for, so no answer arrives before something listens for it.
   await tauri.event.listen("view", (event) => {
     drawView(document, event.payload);
+    // A run's end is a new newest trail, so the last run pane is stale. A
+    // get_state reply resends the same outcome, which changes nothing.
+    const o = event.payload && event.payload.outcome;
+    if (o !== null && typeof o === "object" && json(o) !== lastOutcome) {
+      lastOutcome = json(o);
+      readOverview(tauri);
+    }
   });
   await tauri.event.listen("child-started", (event) => {
     const c = event.payload;
     show("status", `${c.version ?? "trellis (version unknown)"} rpc on ${c.root}`);
     askState(tauri);
+    readOverview(tauri);
   });
   await tauri.event.listen("no-child", (event) => {
     show("status", String(event.payload));
@@ -70,13 +108,18 @@ async function main() {
   await tauri.event.listen("rpc-exited", (event) => {
     show("status", `trellis rpc exited: ${json(event.payload)}`);
   });
-  // The overview's own drawing is #562's; until then only a failure to
-  // read it is said, in the status line.
+  // With no root the core emits the overview once at startup.
+  await tauri.event.listen("overview", (event) => {
+    drawOverview(document, event.payload, overviewActions(tauri));
+  });
   await tauri.event.listen("overview-error", (event) => {
-    show("status", `The overview could not be read: ${event.payload}`);
+    show("ov-root", `The overview could not be read: ${event.payload}`);
   });
 
-  await askState(tauri);
+  // A page loaded after its child started (a reload) sees no
+  // child-started, so it reads the overview itself; before then the core
+  // has no root yet, and the overview it read would say none is open.
+  if (await askState(tauri)) readOverview(tauri);
 }
 
 if (document.readyState === "loading") {

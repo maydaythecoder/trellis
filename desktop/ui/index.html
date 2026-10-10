@@ -6,12 +6,13 @@
   desktop/ui/ with no Node, npm or bundler. It carries no inline script, no
   style attribute and no inline event handler, so the CSP the shell sets
   never needs 'unsafe-inline'. Every string it shows is written by
-  render.js and main.js through textContent or createElement, never parsed
-  as HTML (ADR 0007, S10).
+  render.js, overview.js and main.js through textContent or createElement,
+  never parsed as HTML (ADR 0007, S10).
 
   The rail's buttons each name, with aria-controls, the one section they
   show; the others carry the hidden attribute. The overview section is the
-  landing section, and drawing it is #562's.
+  landing section: its four panes (recent repositories, last run, codebase,
+  board) are drawn by overview.js from trellis's overview object (#562).
 -->
 <html lang="en">
   <head>
@@ -35,7 +36,25 @@
 
       <section id="overview" aria-labelledby="overview-title">
         <h2 id="overview-title">Overview</h2>
-        <p class="unbuilt">Not built yet</p>
+        <p id="ov-root" class="muted">Reading the overview.</p>
+        <div class="overview-grid">
+          <div class="pane" role="region" aria-labelledby="ov-recent-title">
+            <h3 id="ov-recent-title">Recent repositories</h3>
+            <ul id="ov-recent" class="rows"></ul>
+          </div>
+          <div class="pane" role="region" aria-labelledby="ov-last-run-title">
+            <h3 id="ov-last-run-title">Last run</h3>
+            <div id="ov-last-run"></div>
+          </div>
+          <div class="pane" role="region" aria-labelledby="ov-codebase-title">
+            <h3 id="ov-codebase-title">Codebase</h3>
+            <div id="ov-codebase"></div>
+          </div>
+          <div class="pane" role="region" aria-labelledby="ov-board-title">
+            <h3 id="ov-board-title">Board</h3>
+            <div id="ov-board"></div>
+          </div>
+        </div>
       </section>
 
       <section id="run" aria-labelledby="run-title" hidden>
