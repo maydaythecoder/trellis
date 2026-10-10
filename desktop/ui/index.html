@@ -18,11 +18,16 @@
   the approval dialog and the "trellis messages" pane, trellis's stderr
   shown as text and never read as data, are dialogs.js's (#302).
 
-  The model pane (#564), open at launch above every section, asks which
-  model this window's prompts run on; model.js draws it from the child's
-  list_models answer, with the configured spec preselected. Until the child
-  has taken a set_model, the composer's textarea, Send and control are
-  disabled, as served here, and the core refuses a prompt.
+  The status bar (#306), status.js's, says which trellis runs, on which
+  root, with which model and from where, whether a run is in flight, and
+  the child's state. The model pane (#564), open at launch above every
+  section, is the model picker: model.js draws the choices settings.js
+  makes ("repository default", the user's configured spec, local runtimes,
+  a typed spec), with the configured spec preselected; settings.js draws
+  the catalogue and the open-repository control. Until the child has taken
+  a set_model, the composer's textarea, Send and control are disabled, as
+  served here, and the core refuses a prompt. The page has no key field and
+  no endpoint field.
 
   The composer (#301) sits below every section, so a task can be sent from
   whichever one is shown. composer.js sends a prompt while no run is in
@@ -49,6 +54,13 @@
     </nav>
     <main>
       <p id="status" class="status"></p>
+      <dl id="status-bar" class="status-bar" aria-label="Status">
+        <dt>trellis</dt><dd id="status-trellis">not started yet</dd>
+        <dt>root</dt><dd id="status-root">none open</dd>
+        <dt>model</dt><dd id="status-model">none chosen yet</dd>
+        <dt>run</dt><dd id="status-run">no run in flight</dd>
+        <dt>child</dt><dd id="status-child">not started yet</dd>
+      </dl>
       <div id="alert" class="alert" role="alert" hidden>
         <p id="alert-text"></p>
         <button type="button" id="alert-dismiss">Dismiss</button>
@@ -74,6 +86,16 @@
           <ul id="model-probed" class="rows" aria-labelledby="model-probed-title"></ul>
           <h3 id="model-providers-title">Your providers</h3>
           <ul id="model-providers" class="rows" aria-labelledby="model-providers-title"></ul>
+          <h3 id="model-catalog-title">Catalogue: weights trellis model pull fetches</h3>
+          <ul id="model-catalog" class="rows" aria-labelledby="model-catalog-title"></ul>
+        </form>
+        <form id="repo-form" class="model-form" aria-label="Open another repository">
+          <label for="repo-path">Open another repository (its path)</label>
+          <input id="repo-path" name="path" type="text" spellcheck="false" autocomplete="off">
+          <div class="composer-row">
+            <button type="submit" id="repo-open">Open</button>
+          </div>
+          <p id="repo-note" class="muted" role="status"></p>
         </form>
       </details>
 

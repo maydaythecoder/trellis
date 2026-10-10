@@ -57,9 +57,13 @@ pub enum Pane {
     /// The prompt and completion tokens of this child's runs, per model,
     /// as its last `get_session_stats` answer gave them (#313).
     SessionTokens,
+    /// The child's configured specs and the model catalog, from its answer
+    /// to the core's own [`MODELS_ID`] question: what the picker offers
+    /// (#306), from the same answer the model guard reads.
+    Available,
 }
 
-const PANES: [Pane; 17] = [
+const PANES: [Pane; 18] = [
     Pane::Transcript,
     Pane::Actions,
     Pane::Edits,
@@ -77,6 +81,7 @@ const PANES: [Pane; 17] = [
     Pane::Model,
     Pane::Models,
     Pane::SessionTokens,
+    Pane::Available,
 ];
 
 /// The panes a run starts afresh: everything but the transcript, which,
@@ -120,6 +125,7 @@ impl Pane {
             Pane::Model => "model",
             Pane::Models => "models",
             Pane::SessionTokens => "session_tokens",
+            Pane::Available => "available",
         }
     }
 
@@ -321,6 +327,41 @@ impl Configured {
     }
 }
 
+/// One entry of `get_available_models`' `catalog`: weights `trellis model
+/// pull` fetches. Shown, never sent: a catalogue name is not a spec, and
+/// runs under a runtime the user starts (#306).
+#[derive(Debug, Clone, PartialEq)]
+struct CatalogEntry {
+    name: String,
+    license: Option<String>,
+    /// As trellis rounded it; `None` when it sent no number.
+    download_gib: Option<f64>,
+    default: bool,
+}
+
+impl CatalogEntry {
+    /// The answer's `catalog`, or an empty list when it carries none. An
+    /// entry with no string `name` cannot be shown by name, so it is skipped.
+    fn list_from(data: Option<&Value>) -> Vec<Self> {
+        let Some(list) = data
+            .and_then(|d| d.get("catalog"))
+            .and_then(Value::as_array)
+        else {
+            return Vec::new();
+        };
+        list.iter()
+            .filter_map(|e| {
+                Some(Self {
+                    name: e.get("name")?.as_str()?.to_string(),
+                    license: e.get("license").and_then(Value::as_str).map(str::to_string),
+                    download_gib: e.get("download_gib").and_then(Value::as_f64),
+                    default: e.get("default").and_then(Value::as_bool) == Some(true),
+                })
+            })
+            .collect()
+    }
+}
+
 /// The session's model, as the child's last successful `set_model` answer
 /// gave it (#564). Until one has come, `rpc.rs` refuses every `prompt`, and
 /// so does `rpc_send`; the page keeps prompt input disabled.
@@ -482,9 +523,12 @@ pub struct DesktopState {
     /// (no run has decided one) or not yet asked for. Never guessed.
     tier: Option<String>,
     /// The child's answer to [`MODELS_ID`]; `None` until it arrives, after
-    /// a malformed one, and from each child's start. No pane shows it: it
-    /// is what `rpc_send`'s model guard reads.
+    /// a malformed one, and from each child's start. `rpc_send`'s model
+    /// guard reads it, and the picker shows it (`available`, #306), so the
+    /// page offers the user's configured spec exactly as the guard has it.
     configured: Option<Configured>,
+    /// The same answer's catalogue; empty while `configured` is `None`.
+    catalog: Vec<CatalogEntry>,
     /// The prompt templates the last `get_commands` answer listed; `None`
     /// until one has come, or after a refused one.
     starters: Option<Vec<Starter>>,
@@ -554,6 +598,7 @@ impl DesktopState {
                 // It changes no pane; a refusal still reaches the
                 // transcript below. It is a snapshot from the child's start:
                 // a config edited later takes effect on the next child.
+                let mut c = Changed::default();
                 if r.command.as_deref() == Some("get_available_models")
                     && r.id.as_deref() == Some(MODELS_ID)
                 {
@@ -562,12 +607,16 @@ impl DesktopState {
                     } else {
                         None
                     };
+                    self.catalog = match self.configured {
+                        Some(_) => CatalogEntry::list_from(r.data.as_ref()),
+                        None => Vec::new(),
+                    };
+                    c = c.with(Pane::Available);
                 }
                 // The composer's two answers (#301): the starters a
                 // `get_commands` lists, and the text an `abort` hands back.
                 // A refused `get_commands` leaves no starters to offer; its
                 // reason reaches the transcript below.
-                let mut c = Changed::default();
                 match (r.command.as_deref(), r.success) {
                     (Some("get_commands"), Some(true)) => {
                         self.starters = Starter::list_from(r.data.as_ref());
@@ -693,6 +742,7 @@ impl DesktopState {
         self.running = false;
         self.approvals.clear();
         self.configured = None;
+        self.catalog.clear();
         // The model was that child's session's; the next child has none.
         self.model = None;
         self.models = None;
@@ -705,6 +755,7 @@ impl DesktopState {
             Pane::Model,
             Pane::Models,
             Pane::SessionTokens,
+            Pane::Available,
         ])
     }
 
@@ -737,6 +788,7 @@ impl DesktopState {
     /// its session had is not the new session's.
     pub fn forget_models(&mut self) {
         self.configured = None;
+        self.catalog.clear();
         self.model = None;
         self.models = None;
     }
@@ -749,11 +801,13 @@ impl DesktopState {
     pub fn clear(&mut self) -> Changed {
         let running = self.running;
         let configured = self.configured.take();
+        let catalog = std::mem::take(&mut self.catalog);
         let model = self.model.take();
         let models = self.models.take();
         *self = Self {
             running,
             configured,
+            catalog,
             model,
             models,
             ..Self::default()
@@ -839,8 +893,19 @@ impl DesktopState {
             Pane::Stderr => json!(self.stderr),
             Pane::Model => match &self.model {
                 Some(m) => json!({"spec": m.spec, "configured": m.configured,
-                                  "saved_to": m.saved_to}),
+                                  "saved_to": m.saved_to, "source": self.source(m)}),
                 None => Value::Null,
+            },
+            Pane::Available => match &self.configured {
+                None => Value::Null,
+                Some(c) => json!({
+                    "configured": {"repository": c.repository, "user": c.user,
+                                   "session": c.session},
+                    "catalog": self.catalog.iter().map(|e| json!({
+                        "name": e.name, "license": e.license,
+                        "download_gib": e.download_gib, "default": e.default,
+                    })).collect::<Vec<_>>(),
+                }),
             },
             Pane::SessionTokens => match &self.session_tokens {
                 None => Value::Null,
@@ -880,6 +945,31 @@ impl DesktopState {
                 }),
                 None => Value::Null,
             },
+        }
+    }
+
+    /// Where the session's model came from, for the status bar (#306), in
+    /// `get_available_models`' words: for a spec `set_model` named, `user`
+    /// when it is the user's configured spec byte for byte and `session`
+    /// otherwise; for the configured spec confirmed, `repository` or `user` by
+    /// which of the child's own `configured` specs it is byte for byte, the
+    /// repository's first since its file wins (ADR 0025 §7). `None` when it
+    /// is neither, or the child gave no `configured` answer: never guessed.
+    fn source(&self, m: &Chosen) -> Option<&'static str> {
+        let c = self.configured.as_ref();
+        if !m.configured {
+            // Named by the picker's "your configured spec": the user's own,
+            // byte for byte, as the model guard compares it.
+            let users = c.and_then(|c| c.user.as_deref()) == Some(m.spec.as_str());
+            return Some(if users { "user" } else { "session" });
+        }
+        let c = c?;
+        if c.repository.as_deref() == Some(m.spec.as_str()) {
+            Some("repository")
+        } else if c.user.as_deref() == Some(m.spec.as_str()) {
+            Some("user")
+        } else {
+            None
         }
     }
 
@@ -1783,7 +1873,7 @@ mod tests {
         assert_eq!(
             all(&s)["model"],
             json!({"spec": "vllm:http://127.0.0.1:11434#qwen3:8b", "configured": false,
-                   "saved_to": "/home/u/.config/trellis/config.toml"})
+                   "saved_to": "/home/u/.config/trellis/config.toml", "source": "session"})
         );
         // A run, a clear and a refused change leave it: it is the session's.
         feed(&mut s, &run_start("p"));
@@ -1805,13 +1895,108 @@ mod tests {
         );
         assert_eq!(
             all(&s)["model"],
-            json!({"spec": "scripted:x", "configured": true, "saved_to": null})
+            json!({"spec": "scripted:x", "configured": true, "saved_to": null,
+                   "source": null}),
+            "no configured answer to name its source by"
         );
         s.forget_models();
         assert!(!s.model_chosen());
         // A refused list says why, in place of the list.
         feed(&mut s, &response("list_models", false, json!("bad config")));
         assert_eq!(all(&s)["models"], json!({"error": "bad config"}));
+    }
+
+    #[test]
+    fn model_source_is_the_child_s_own_word_never_a_guess() {
+        // The risk (#306): the status bar names a model's source the child
+        // never reported: a confirmed spec called the user's when it is the
+        // repository's, whose endpoint then reads as one the user chose.
+        let models = |repository: Value, user: Value| {
+            json!({"type": "response", "command": "get_available_models", "id": MODELS_ID,
+                   "success": true,
+                   "data": {"catalog": [],
+                            "configured": {"repository": repository, "user": user,
+                                           "session": null}}})
+            .to_string()
+        };
+        let chose = |spec: &str, configured: bool| {
+            response(
+                "set_model",
+                true,
+                json!({"model": spec, "configured": configured, "saved_to": null}),
+            )
+        };
+        let source = |s: &DesktopState| all(s)["model"]["source"].clone();
+        for (repository, user, spec, want) in [
+            (json!("r:x"), json!("u:y"), "r:x", json!("repository")),
+            (Value::Null, json!("u:y"), "u:y", json!("user")),
+            // Both files name it: the repository's wins the layering.
+            (
+                json!("same:z"),
+                json!("same:z"),
+                "same:z",
+                json!("repository"),
+            ),
+            // Reformatted, or from a config edited since: not known.
+            (json!("r:x"), json!("u:y"), "r:x ", Value::Null),
+        ] {
+            let mut s = DesktopState::default();
+            feed(&mut s, &models(repository, user));
+            feed(&mut s, &chose(spec, true));
+            assert_eq!(source(&s), want, "{spec:?}");
+        }
+        // A spec set_model named is the session's, even the repository's,
+        // which rpc then counts as the user's choice; the user's own spec
+        // named is the user's.
+        let mut s = DesktopState::default();
+        feed(&mut s, &models(json!("r:x"), json!("u:y")));
+        feed(&mut s, &chose("r:x", false));
+        assert_eq!(source(&s), json!("session"));
+        feed(&mut s, &chose("u:y", false));
+        assert_eq!(source(&s), json!("user"));
+        feed(&mut s, &chose("u:y ", false));
+        assert_eq!(source(&s), json!("session"), "byte for byte");
+    }
+
+    #[test]
+    fn picker_available_comes_only_from_the_core_s_own_models_answer() {
+        // The risk (#306): the picker offers a spec the child never
+        // reported as the user's, or a catalogue figure trellis did not
+        // send, or keeps the last child's list for a new repository.
+        let mut s = DesktopState::default();
+        assert_eq!(all(&s)["available"], Value::Null);
+        let answer = |id: &str| {
+            json!({"type": "response", "command": "get_available_models", "id": id,
+                   "success": true,
+                   "data": {"catalog": [
+                                {"name": "bonsai-2-27b", "license": "Apache-2.0",
+                                 "download_gib": 5.3, "default": true},
+                                {"name": "<b>x</b>", "license": null},
+                                {"license": "MIT"}],
+                            "configured": {"repository": "r:x", "user": "u:y",
+                                           "session": null}}})
+            .to_string()
+        };
+        // The page's own ask is not the core's: it changes nothing.
+        assert!(!feed(&mut s, &answer("page")).has(Pane::Available));
+        assert_eq!(all(&s)["available"], Value::Null);
+        let c = feed(&mut s, &answer(MODELS_ID));
+        assert!(c.has(Pane::Available), "{c:?}");
+        assert_eq!(
+            all(&s)["available"],
+            json!({"configured": {"repository": "r:x", "user": "u:y", "session": null},
+                   "catalog": [
+                       {"name": "bonsai-2-27b", "license": "Apache-2.0", "download_gib": 5.3,
+                        "default": true},
+                       {"name": "<b>x</b>", "license": null, "download_gib": null,
+                        "default": false}]})
+        );
+        // The child's exit, or a new child, empties it.
+        s.child_exited();
+        assert_eq!(all(&s)["available"], Value::Null);
+        feed(&mut s, &answer(MODELS_ID));
+        s.forget_models();
+        assert_eq!(all(&s)["available"], Value::Null);
     }
 
     /// A `get_session_stats` answer as `rpc.rs` writes it, in the shape
