@@ -75,3 +75,38 @@ repository's.
   nowhere but the app's own origin.
 - **No kill.** Closing the window sends `quit` to trellis and waits, so a run
   in flight rolls back and writes its trail.
+- **No live token count while a reply arrives** (colibri's COL-UI-41, its
+  pulsing `N tokens` badge). `trellis rpc` writes events to stdout through a
+  layer fixed at `trellis=info` (`crates/trellis-cli/src/main.rs`), so that a
+  `RUST_LOG` meant for debugging cannot change what a machine reader
+  receives, and the loop emits one INFO `turn` event per completed turn
+  (`crates/trellis-loop/src/agent.rs`). That event carries the step's output
+  tokens and the model call's wall time, never a count while the reply
+  arrives. Nothing streams replies today; if COL-13 (#280) streams loopback
+  colibri replies, it emits each delta at DEBUG for this reason, since at
+  INFO one reply would put one line per token on every `--json` and rpc
+  reader.
+- **No time to first token** (colibri's COL-UI-43, its `TTFT` badge), for
+  the same reason: the one `turn` event per completed turn carries the
+  step's output tokens and the model call's wall time, never when a first
+  token arrived, and the `trellis=info` stdout layer passes no per-token
+  event that could time one.
+
+## Where the token figures it does show come from
+
+- **Each turn's output tokens, tokens per second and queue wait**, from the
+  `turn` event when the turn ends: the latest turn's three in the run
+  section's Budget pane, and each turn's output tokens in Turns (#312). The
+  rate is output tokens over the model call's wall time less the queue wait,
+  so it includes prompt processing and reads below colibri's decode rate; the
+  queue wait is colibri's `x-colibri-queue-wait-ms` header, shown only when
+  every reply carried it. A figure the turn did not report is left out of the
+  line, never drawn as 0.
+- **The session's prompt and completion tokens per model**, from
+  `get_session_stats`, drawn in the run section's Session tokens pane
+  (#313). trellis sums them per model from the trails of the runs that
+  `trellis rpc` process started, two figures never added together, and
+  `unknown` where a run of that model reported none. The desktop adds up no
+  turn itself. One `trellis rpc` runs per repository, so the figures cover
+  the runs since the repository was opened, and start empty for each
+  repository opened.
