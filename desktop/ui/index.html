@@ -10,7 +10,9 @@
   never parsed as HTML (ADR 0007, S10). The run section's action graph is
   SVG that graph.js builds with createElementNS from the layout the core
   computes (#303); render.js imports it, and the page loads it as a module
-  of its own, which the browser evaluates once either way.
+  of its own, which the browser evaluates once either way. The codebase
+  section is drawn by codebase.js from the layout the core computes from a
+  get_codebase answer (#307).
 
   The rail's buttons each name, with aria-controls, the one section they
   show; the others carry the hidden attribute. The overview section is the
@@ -25,6 +27,7 @@
     <link rel="stylesheet" href="style.css">
     <script type="module" src="main.js"></script>
     <script type="module" src="graph.js"></script>
+    <script type="module" src="codebase.js"></script>
   </head>
   <body>
     <nav class="rail" aria-label="Views">
@@ -111,7 +114,25 @@
 
       <section id="codebase" aria-labelledby="codebase-title" hidden>
         <h2 id="codebase-title">Codebase</h2>
-        <p class="unbuilt">Not built yet</p>
+        <p id="cb-status" class="muted" role="status">Open a repository to see its graph.</p>
+        <div class="cb-bar">
+          <ol id="cb-crumbs" class="cb-crumbs" aria-label="Codebase breadcrumb"></ol>
+          <button type="button" id="cb-back" disabled>Back</button>
+        </div>
+        <div class="cb-grid">
+          <div class="pane cb-canvas" role="region" aria-labelledby="cb-graph-title">
+            <h3 id="cb-graph-title">Module graph</h3>
+            <p id="cb-keys" class="muted">Drag, or the arrow keys, to pan; + and - to zoom; Escape to reset.</p>
+            <div id="cb-graph" tabindex="0" aria-describedby="cb-keys"></div>
+          </div>
+          <div class="pane" role="region" aria-labelledby="cb-details-title">
+            <h3 id="cb-details-title">Module</h3>
+            <div id="cb-details"></div>
+            <label for="cb-search">Search module names</label>
+            <input id="cb-search" type="search" autocomplete="off" spellcheck="false">
+            <ul id="cb-results" class="rows"></ul>
+          </div>
+        </div>
       </section>
 
       <section id="board" aria-labelledby="board-title" hidden>

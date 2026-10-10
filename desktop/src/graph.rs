@@ -58,11 +58,11 @@ const FOCUS_R: f64 = 7.0;
 /// The graph's text is 12-unit monospace (`style.css`), so a string's width
 /// is its length in characters times this, which is what makes a label's
 /// box a measurement rather than a guess.
-const CHAR_W: f64 = 7.2;
+pub(crate) const CHAR_W: f64 = 7.2;
 /// A label's box: from its ascender above the baseline to its descender
 /// below.
-const LABEL_ASCENT: f64 = 11.0;
-const LABEL_H: f64 = 14.0;
+pub(crate) const LABEL_ASCENT: f64 = 11.0;
+pub(crate) const LABEL_H: f64 = 14.0;
 /// A tool name is cut to this many characters, so it ends before the
 /// widest count text begins.
 const NAME_CHARS: usize = 16;
@@ -181,13 +181,13 @@ pub struct Layout {
 }
 
 /// One decimal place: enough for a `viewBox`, and the JSON stays short.
-fn round(v: f64) -> f64 {
+pub(crate) fn round(v: f64) -> f64 {
     (v * 10.0).round() / 10.0
 }
 
 /// `s` cut to `max` characters, saying so with an ellipsis rather than
 /// letting it run under the next column.
-fn cut(s: &str, max: usize) -> String {
+pub(crate) fn cut(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }
@@ -359,7 +359,7 @@ pub fn layout<'a>(actions: impl IntoIterator<Item = Called<'a>>) -> Layout {
 }
 
 impl Text {
-    fn to_json(&self) -> Value {
+    pub(crate) fn to_json(&self) -> Value {
         json!({"text": self.text, "x": self.x, "y": self.y, "anchor": self.anchor})
     }
 }
@@ -393,6 +393,51 @@ impl Layout {
             "aria_label": self.aria_label,
         })
     }
+}
+
+/// For the page tests: how many rules in `ui/style.css` sit under a
+/// selector containing `word` (an `@media` block's rules count under it),
+/// and those of them that declare a `transition` or an `animation`.
+#[cfg(test)]
+pub(crate) fn motion_in_rules_naming(word: &str) -> (usize, Vec<String>) {
+    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/style.css");
+    let css = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    let mut text = String::new();
+    let mut rest = css.as_str();
+    while let Some(i) = rest.find("/*") {
+        text.push_str(&rest[..i]);
+        let end = rest[i..].find("*/").expect("an unclosed CSS comment");
+        rest = &rest[i + end + 2..];
+    }
+    text.push_str(rest);
+
+    // Each open block's selector, outermost first, and the declarations
+    // written directly inside the innermost.
+    let mut open: Vec<String> = Vec::new();
+    let mut segment = String::new();
+    let (mut rules, mut moving) = (0, Vec::new());
+    for c in text.chars() {
+        match c {
+            '{' => {
+                open.push(segment.trim().to_string());
+                segment.clear();
+            }
+            '}' => {
+                if open.iter().any(|s| s.contains(word)) {
+                    rules += 1;
+                    let body = segment.to_lowercase();
+                    if body.contains("transition") || body.contains("animation") {
+                        moving.push(format!("{:?}: {}", open.last(), segment.trim()));
+                    }
+                }
+                open.pop().expect("an unbalanced }");
+                segment.clear();
+            }
+            _ => segment.push(c),
+        }
+    }
+    assert!(open.is_empty(), "an unclosed CSS block");
+    (rules, moving)
 }
 
 #[cfg(test)]
@@ -647,46 +692,8 @@ mod tests {
     fn graph_styles_have_no_motion() {
         // The risk: an animated graph, which a user who asked for reduced
         // motion still sees moving; nothing in it needs to move.
-        let css = ui_file("style.css");
-        let mut text = String::new();
-        let mut rest = css.as_str();
-        while let Some(i) = rest.find("/*") {
-            text.push_str(&rest[..i]);
-            let end = rest[i..].find("*/").expect("an unclosed CSS comment");
-            rest = &rest[i + end + 2..];
-        }
-        text.push_str(rest);
-
-        // Each block's selector, outermost first (an @media block holds
-        // rules), and the declarations written directly inside it.
-        let mut open: Vec<String> = Vec::new();
-        let mut segment = String::new();
-        let mut graph_rules = 0;
-        for c in text.chars() {
-            match c {
-                '{' => {
-                    open.push(segment.trim().to_string());
-                    segment.clear();
-                }
-                '}' => {
-                    if open.iter().any(|s| s.contains("graph")) {
-                        graph_rules += 1;
-                        let body = segment.to_lowercase();
-                        for bad in ["transition", "animation"] {
-                            assert!(
-                                !body.contains(bad),
-                                "{:?} declares {bad}: {segment}",
-                                open.last()
-                            );
-                        }
-                    }
-                    open.pop().expect("an unbalanced }");
-                    segment.clear();
-                }
-                _ => segment.push(c),
-            }
-        }
-        assert!(open.is_empty(), "an unclosed CSS block");
-        assert!(graph_rules > 0, "style.css has no rule naming the graph");
+        let (rules, moving) = motion_in_rules_naming("graph");
+        assert!(rules > 0, "style.css has no rule naming the graph");
+        assert!(moving.is_empty(), "graph rules that move: {moving:?}");
     }
 }

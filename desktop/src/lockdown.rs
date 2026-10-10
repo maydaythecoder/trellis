@@ -212,6 +212,10 @@ mod tests {
     /// 2026-10-07; overview is the landing section).
     const SECTIONS: [&str; 6] = ["overview", "run", "trails", "codebase", "board", "vault"];
 
+    /// The sections that are built, and so do not read "Not built yet":
+    /// run (#300), overview (#562) and codebase (#307).
+    const BUILT: [&str; 3] = ["run", "overview", "codebase"];
+
     #[test]
     fn csp_has_no_unsafe_source_and_no_network_origin() {
         // The risk: a CSP edit that lets inline or eval'd script run, or
@@ -340,8 +344,8 @@ mod tests {
         // The risk: a rail button that shows nothing, or a section no
         // button reaches; a later view shown before it is built, or a run
         // section that says it is not built. Six sections (#300 as amended
-        // 2026-10-07), overview first and the one shown at load; run and
-        // overview (#562) are built.
+        // 2026-10-07), overview first and the one shown at load; the ones
+        // in BUILT are built.
         let page = page();
         let navs: Vec<usize> = (0..page.len()).filter(|&i| page[i].tag == "nav").collect();
         assert_eq!(navs.len(), 1, "one nav");
@@ -372,7 +376,7 @@ mod tests {
             );
             assert_eq!(
                 s.text.contains("Not built yet"),
-                !["run", "overview"].contains(&id),
+                !BUILT.contains(&id),
                 "#{id} and \"Not built yet\""
             );
         }
@@ -439,6 +443,51 @@ mod tests {
                 .any(|(i, e)| e.parent == Some(graph) && i != graph),
             "#graph has children"
         );
+    }
+
+    #[test]
+    fn codebase_section_holds_what_codebase_js_draws() {
+        // The risk (#307): codebase.js drawing into an id the page lacks,
+        // so the graph or the details never show; a search box with no
+        // label; or the codebase section still saying it is not built.
+        let page = page();
+        let section = index_of(&page, "codebase");
+        let js = ui_file("codebase.js");
+        for id in [
+            "cb-status",
+            "cb-crumbs",
+            "cb-back",
+            "cb-graph",
+            "cb-details",
+            "cb-search",
+            "cb-results",
+        ] {
+            assert!(
+                js.contains(&format!("\"{id}\"")),
+                "codebase.js draws no {id}"
+            );
+            assert!(
+                within(&page, index_of(&page, id), section),
+                "#{id} is outside #codebase"
+            );
+        }
+        let label = page
+            .iter()
+            .find(|e| e.tag == "label" && e.attr("for") == Some("cb-search"))
+            .expect("the search box has a label");
+        assert!(!label.text.trim().is_empty(), "an empty label");
+        assert_eq!(
+            page[index_of(&page, "cb-back")].tag,
+            "button",
+            "Back is a button"
+        );
+        let graph = index_of(&page, "cb-graph");
+        assert_eq!(
+            page[graph].attr("tabindex"),
+            Some("0"),
+            "the graph takes keys"
+        );
+        assert!(!page[section].text.contains("Not built yet"));
     }
 
     /// `overview.js` with its `//` comments removed, so a field named only
@@ -676,7 +725,13 @@ mod tests {
             assert!(!e.attrs.contains_key("style"), "<{} style=...>", e.tag);
             assert_ne!(e.tag, "style", "a <style> element");
         }
-        for name in ["main.js", "render.js", "overview.js", "graph.js"] {
+        for name in [
+            "main.js",
+            "render.js",
+            "overview.js",
+            "graph.js",
+            "codebase.js",
+        ] {
             let js = ui_file(name);
             for bad in [".style", "cssText", "\"style\"", "'style'"] {
                 assert!(!js.contains(bad), "{name} writes a style: {bad}");
