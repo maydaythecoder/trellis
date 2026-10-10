@@ -198,7 +198,7 @@ fn none_shown(total: usize) -> String {
 fn elided_note(turn: &crate::agent::Turn) -> String {
     format!(
         "elided: {}, {} bytes",
-        crate::gate::label(&turn.call),
+        crate::gate::call_summary(&turn.call),
         turn.observation.len()
     )
 }
@@ -1140,7 +1140,7 @@ impl Model for RuntimeModel {
                             "it as the model failing to terminate. Text was {}"
                         ),
                         completion.tokens,
-                        truncate(&completion.text)
+                        excerpt_for_error(&completion.text)
                     )
                 } else if completion.text.trim().is_empty() {
                     // Not a formatting failure at all, and reporting it as one
@@ -1174,7 +1174,7 @@ impl Model for RuntimeModel {
                             "no JSON object in output at all, which is what an ",
                             "ignored schema looks like. Text was {}"
                         ),
-                        truncate(&completion.text)
+                        excerpt_for_error(&completion.text)
                     )
                 };
                 tracing::warn!(attempt, error = %last, "malformed tool call; retrying");
@@ -1184,7 +1184,7 @@ impl Model for RuntimeModel {
             // model may pick a tool it can actually use.
             match t.repo.tools.parse(json) {
                 Ok(s) => return Ok(s),
-                Err(e) => last = format!("{e}; text was {}", truncate(json)),
+                Err(e) => last = format!("{e}; text was {}", excerpt_for_error(json)),
             }
             tracing::warn!(attempt, error = %last, "invalid tool call; retrying");
         }
@@ -1253,10 +1253,10 @@ pub struct HostedModel {
     /// Per turn index, the provider's own call id and assistant message, so
     /// history goes back as the provider sent it (reasoning blocks and their
     /// signatures included) rather than rebuilt.
-    issued: Vec<Option<Issued>>,
+    issued: Vec<Option<IssuedCall>>,
     /// The call returned by the last `next_step`, waiting to be matched to
     /// the turn the loop appends for it.
-    pending: Option<(usize, Issued)>,
+    pending: Option<(usize, IssuedCall)>,
     /// Set, and said once, when thinking was withheld from a request.
     thinking_withheld: bool,
     /// `trellis run --image`, sent with the first user message of every
@@ -1269,7 +1269,7 @@ pub struct HostedModel {
 }
 
 #[derive(Debug, Clone)]
-struct Issued {
+struct IssuedCall {
     call: ToolCall,
     id: String,
     replay: serde_json::Value,
@@ -1388,10 +1388,10 @@ fn hosted_system(t: &Transcript) -> String {
 /// conversation is built from it, and so is [`every_turn_replayed`], which
 /// the thinking warning reads without building a conversation.
 fn issued_for<'a>(
-    issued: &'a [Option<Issued>],
+    issued: &'a [Option<IssuedCall>],
     i: usize,
     turn: &crate::agent::Turn,
-) -> Option<&'a Issued> {
+) -> Option<&'a IssuedCall> {
     issued
         .get(i)
         .and_then(Option::as_ref)
@@ -1401,7 +1401,7 @@ fn issued_for<'a>(
 /// Whether every turn goes back as the provider's own reply: what
 /// `trellis_model::every_turn_replayed` would say of [`conversation`]'s
 /// result, decided by the same [`issued_for`], without building one.
-fn every_turn_replayed(t: &Transcript, issued: &[Option<Issued>]) -> bool {
+fn every_turn_replayed(t: &Transcript, issued: &[Option<IssuedCall>]) -> bool {
     t.turns
         .iter()
         .enumerate()
@@ -1412,7 +1412,7 @@ fn every_turn_replayed(t: &Transcript, issued: &[Option<Issued>]) -> bool {
 /// replaced by their one-line notes.
 fn conversation(
     t: &Transcript,
-    issued: &[Option<Issued>],
+    issued: &[Option<IssuedCall>],
     protocol: Protocol,
     elided: usize,
     images: &[trellis_model::Image],
@@ -1647,7 +1647,7 @@ impl Model for HostedModel {
                     if let Step::Call(c) = &step {
                         self.pending = Some((
                             t.turns.len(),
-                            Issued {
+                            IssuedCall {
                                 call: c.clone(),
                                 id: call.id,
                                 replay: reply.replay,
@@ -1703,7 +1703,9 @@ impl Model for HostedModel {
     }
 }
 
-fn truncate(s: &str) -> String {
+/// The first 200 characters of model output, for an error message: enough
+/// to recognise the reply without putting all of it on one line.
+fn excerpt_for_error(s: &str) -> String {
     s.chars().take(200).collect()
 }
 
@@ -3072,7 +3074,7 @@ mod compaction_and_hosted_tests {
         // build a whole conversation to ask this. It must still say what
         // the body builder would, on every shape of history.
         let issued = |call: ToolCall| {
-            Some(Issued {
+            Some(IssuedCall {
                 call,
                 id: "toolu_1".into(),
                 replay: json!({"role": "assistant", "content": []}),

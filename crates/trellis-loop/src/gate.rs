@@ -388,7 +388,7 @@ impl ToolGate for ApprovalGate {
                         detail,
                     )
                 }
-                other => (label(other), String::new()),
+                other => (call_summary(other), String::new()),
             };
             let (reply, rx) = oneshot::channel();
             if self
@@ -423,8 +423,10 @@ impl ToolGate for ApprovalGate {
     }
 }
 
-/// A call in a few words, for a question, a log line or the trail.
-pub(crate) fn label(call: &ToolCall) -> String {
+/// A call in a few words, for a question, a log line or the trail. The
+/// agent's per-turn tracing uses `agent::turn_event_label`, which defers
+/// to this for every call but `run_checks`.
+pub(crate) fn call_summary(call: &ToolCall) -> String {
     match call {
         ToolCall::BlastRadius { symbol } => format!("blast_radius {symbol}"),
         ToolCall::ReadFile { path } => format!("read_file {path}"),
