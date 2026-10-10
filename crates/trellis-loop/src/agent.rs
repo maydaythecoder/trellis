@@ -650,8 +650,10 @@ impl Transcript {
 ///
 /// `{call:?}` would put a file's whole old and new text on one log line,
 /// which is unreadable in a terminal and enormous in a log. The shape and its
-/// subject are what a reader watching a run actually wants.
-fn call_label(call: &ToolCall) -> String {
+/// subject are what a reader watching a run actually wants. Differs from
+/// [`crate::gate::call_summary`] only for `run_checks`, logged with the
+/// kinds' debug form; every other call is summarised there.
+fn turn_event_label(call: &ToolCall) -> String {
     match call {
         ToolCall::BlastRadius { symbol } => format!("blast_radius {symbol}"),
         ToolCall::ReadFile { path } => format!("read_file {path}"),
@@ -665,7 +667,7 @@ fn call_label(call: &ToolCall) -> String {
             format!("run_checks {kinds:?} {what}")
         }
         ToolCall::ReadSkill { name } => format!("read_skill {name}"),
-        other => crate::gate::label(other),
+        other => crate::gate::call_summary(other),
     }
 }
 
@@ -908,7 +910,7 @@ pub async fn run_seeded<M: Model>(
                         // about what ran is worse than either alone.
                         tracing::info!(
                             turn = iterations,
-                            call = %call_label(&ToolCall::RunChecks {
+                            call = %turn_event_label(&ToolCall::RunChecks {
                                 paths: Vec::new(),
                                 kinds: vec![CheckKind::Governance],
                             }),
@@ -1059,7 +1061,7 @@ pub async fn run_seeded<M: Model>(
                 };
                 tracing::info!(
                     turn = iterations,
-                    call = %call_label(&call),
+                    call = %turn_event_label(&call),
                     verdict = ?verdict_passed,
                     check_kind = check_kind.as_deref().unwrap_or(""),
                     observation = %tail(&observation, 6),
@@ -1309,7 +1311,7 @@ pub(crate) fn shown_line(line: Option<usize>) -> String {
 
 /// A rendered radius and what the selector did to fit it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RadiusRendering {
+pub(crate) struct SiteListing {
     pub text: String,
     /// Call sites shown one per line.
     pub listed: u32,
@@ -1420,7 +1422,7 @@ fn collapsed_line(sites: u32, files: usize) -> String {
 pub(crate) fn render_radius(
     report: &trellis_index::radius::RadiusReport,
     sites: &[RadiusSite],
-) -> RadiusRendering {
+) -> SiteListing {
     let listed: Vec<ListedSite> = sites.iter().map(ListedSite::from).collect();
     render_listing(
         radius_header(report),
@@ -1441,11 +1443,7 @@ pub(crate) fn render_radius(
 /// cannot all fit even with no entry listed do the files left over collapse
 /// into one final count. Every call site is either listed or counted:
 /// nothing is dropped without a number (CLAUDE.md rule 3).
-pub(crate) fn render_listing(
-    header: String,
-    heading: &str,
-    sites: &[ListedSite],
-) -> RadiusRendering {
+pub(crate) fn render_listing(header: String, heading: &str, sites: &[ListedSite]) -> SiteListing {
     let mut sorted: Vec<&ListedSite> = sites.iter().collect();
     sorted.sort_by(|a, b| {
         b.certain
@@ -1457,7 +1455,7 @@ pub(crate) fn render_listing(
 
     let mut text = header;
     if sorted.is_empty() {
-        return RadiusRendering {
+        return SiteListing {
             text,
             listed: 0,
             summarised: 0,
@@ -1471,7 +1469,7 @@ pub(crate) fn render_listing(
         for l in &lines {
             text.push_str(l);
         }
-        return RadiusRendering {
+        return SiteListing {
             text,
             listed: sorted.len() as u32,
             summarised: 0,
@@ -1556,7 +1554,7 @@ pub(crate) fn render_listing(
             text.push_str(&collapsed_line(left_sites, files.len() - shown));
         }
     }
-    RadiusRendering {
+    SiteListing {
         text,
         listed: listed as u32,
         summarised: (n - listed) as u32,
@@ -4065,7 +4063,7 @@ mod selector_tests {
 
     /// What the observation accounts for, read back from its text: entry
     /// lines, the per-file counts, the collapsed count, and the stated
-    /// summarised total. Parsed rather than taken from `RadiusRendering`,
+    /// summarised total. Parsed rather than taken from `SiteListing`,
     /// because the model reads the text and the text is what must add up.
     struct Accounted {
         listed: usize,

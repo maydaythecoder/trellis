@@ -1075,7 +1075,7 @@ impl TrustStore {
             });
         }
         let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        Ok(match self.read()?.repos.get(&key(root)) {
+        Ok(match self.read()?.repos.get(&store_key(root)) {
             None => TrustState::Unknown,
             Some(e) if e.sha256 == fp.sha256 => TrustState::Trusted,
             Some(_) => TrustState::Changed,
@@ -1094,7 +1094,7 @@ impl TrustStore {
         fp: &Fingerprint,
     ) -> Result<TrustDiagnosis, TrustStoreError> {
         let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let Some(entry) = self.read()?.repos.remove(&key(root)) else {
+        let Some(entry) = self.read()?.repos.remove(&store_key(root)) else {
             return Ok(TrustDiagnosis::NotRecorded);
         };
         if entry.items.is_empty() {
@@ -1126,7 +1126,7 @@ impl TrustStore {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         f.repos.insert(
-            key(root),
+            store_key(root),
             Entry {
                 sha256: fp.sha256.clone(),
                 trusted_at: now,
@@ -1140,7 +1140,7 @@ impl TrustStore {
     pub fn revoke(&self, root: &Path) -> Result<bool, TrustStoreError> {
         let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let mut f = self.read()?;
-        let had = f.repos.remove(&key(root)).is_some();
+        let had = f.repos.remove(&store_key(root)).is_some();
         if had {
             self.write(&f)?;
         }
@@ -1149,7 +1149,7 @@ impl TrustStore {
 }
 
 /// The canonical repository root, so `C:\r` and `c:\r\.` are one entry.
-fn key(root: &Path) -> String {
+fn store_key(root: &Path) -> String {
     std::fs::canonicalize(root)
         .unwrap_or_else(|_| root.to_path_buf())
         .to_string_lossy()

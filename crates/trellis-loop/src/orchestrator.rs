@@ -479,11 +479,11 @@ impl Orchestrator {
             match req {
                 Request::BlastRadius { symbol, reply } => {
                     let call = ToolCall::BlastRadius { symbol };
-                    let _ = reply.send(self.gated(call, None, false).await.result);
+                    let _ = reply.send(self.dispatch_gated(call, None, false).await.result);
                 }
                 Request::ReadFile { path, reply } => {
                     let call = ToolCall::ReadFile { path };
-                    let _ = reply.send(self.gated(call, None, false).await.result);
+                    let _ = reply.send(self.dispatch_gated(call, None, false).await.result);
                 }
                 Request::ApplyEdit {
                     path,
@@ -492,7 +492,7 @@ impl Orchestrator {
                     reply,
                 } => {
                     let call = ToolCall::Edit { path, old, new };
-                    let _ = reply.send(self.gated(call, None, false).await.result);
+                    let _ = reply.send(self.dispatch_gated(call, None, false).await.result);
                 }
                 Request::RunChecks {
                     paths,
@@ -500,7 +500,7 @@ impl Orchestrator {
                     reply,
                 } => {
                     let call = ToolCall::RunChecks { paths, kinds };
-                    let _ = reply.send(self.gated(call, None, false).await.result);
+                    let _ = reply.send(self.dispatch_gated(call, None, false).await.result);
                 }
                 Request::Call {
                     call,
@@ -508,7 +508,7 @@ impl Orchestrator {
                     reply,
                 } => {
                     self.calls += 1;
-                    let _ = reply.send(self.gated(call, budget_left, true).await);
+                    let _ = reply.send(self.dispatch_gated(call, budget_left, true).await);
                 }
                 Request::GateLog { reply } => {
                     let _ = reply.send(self.gate_log.clone());
@@ -527,10 +527,11 @@ impl Orchestrator {
         self
     }
 
-    /// [`gated_inner`](Self::gated_inner), then `turn_end` when `turn`, then
-    /// the trust guard, read on the way out whichever way the call ended: a
-    /// `pre_tool` hook refused by the guard returns early as a denial, and
-    /// that is a breach as much as a `bash` command that rewrote a hook.
+    /// [`run_gates_and_tool`](Self::run_gates_and_tool), then `turn_end`
+    /// when `turn`, then the trust guard, read on the way out whichever way
+    /// the call ended: a `pre_tool` hook refused by the guard returns early
+    /// as a denial, and that is a breach as much as a `bash` command that
+    /// rewrote a hook.
     ///
     /// Only a model's call is a turn; the audit at convergence and the
     /// direct requests are not, so `turn_end` does not run for them.
@@ -541,14 +542,14 @@ impl Orchestrator {
     /// the hook's spawn (about 19 KB of future) was held inline; the boxing
     /// in `Hooks::turn_end` is what fixed that then. `turn_end` is folded in
     /// here rather than wrapped around this so it adds no layer of its own.
-    async fn gated(
+    async fn dispatch_gated(
         &mut self,
         call: ToolCall,
         budget_left: Option<Duration>,
         turn: bool,
     ) -> Dispatched {
         let tool = turn.then(|| tool_name(&call).to_string());
-        let mut d = self.gated_inner(call, budget_left).await;
+        let mut d = self.run_gates_and_tool(call, budget_left).await;
         if let Some(tool) = tool {
             d.may_have_changed_tree |= self.turn_end(&tool, &d.result).await;
         }
@@ -673,7 +674,11 @@ impl Orchestrator {
     /// Consults the gates in order, then dispatches. The first `Deny` wins
     /// and nothing after it is asked — a human should not be asked about a
     /// call a rule has already refused.
-    async fn gated_inner(&mut self, call: ToolCall, budget_left: Option<Duration>) -> Dispatched {
+    async fn run_gates_and_tool(
+        &mut self,
+        call: ToolCall,
+        budget_left: Option<Duration>,
+    ) -> Dispatched {
         let received = Instant::now();
         let mut human = None;
         let name = tool_name(&call);
@@ -753,7 +758,7 @@ impl Orchestrator {
                     self.gate_log.push(GateDenial {
                         call: self.calls,
                         gate: gate.to_string(),
-                        target: crate::gate::label(&call),
+                        target: crate::gate::call_summary(&call),
                         reason: reason.clone(),
                     });
                 }
