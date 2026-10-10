@@ -185,6 +185,41 @@ impl Budget {
     }
 }
 
+/// The id of the `get_available_models` the core writes first to every
+/// child it starts (#305); only the answer to it is recorded.
+pub const MODELS_ID: &str = "desktop-models";
+
+/// `get_available_models`'s `configured` specs, by source, as the child
+/// sent them. `None` is a source with no spec (`null`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Configured {
+    pub repository: Option<String>,
+    /// The user's own config's `[model] spec`: the only hosted spec the
+    /// core forwards as the user's choice (ADR 0048 section 4).
+    pub user: Option<String>,
+    pub session: Option<String>,
+}
+
+impl Configured {
+    /// The answer's `data`, or `None` when it is not the shape `rpc.rs`
+    /// sends: `configured` an object whose three sources are each a string
+    /// or `null`. A malformed answer records nothing, so the guard stays
+    /// shut rather than reading a source it cannot trust.
+    fn from_data(data: Option<&Value>) -> Option<Self> {
+        let c = data?.get("configured")?.as_object()?;
+        let source = |k: &str| match c.get(k) {
+            None | Some(Value::Null) => Some(None),
+            Some(Value::String(s)) => Some(Some(s.clone())),
+            Some(_) => None,
+        };
+        Some(Self {
+            repository: source("repository")?,
+            user: source("user")?,
+            session: source("session")?,
+        })
+    }
+}
+
 /// The desktop's run panes.
 #[derive(Debug, Default)]
 pub struct DesktopState {
@@ -202,6 +237,10 @@ pub struct DesktopState {
     /// `get_state`'s `tier`, as trellis labels it; `None` while it is null
     /// (no run has decided one) or not yet asked for. Never guessed.
     tier: Option<String>,
+    /// The child's answer to [`MODELS_ID`]; `None` until it arrives, after
+    /// a malformed one, and from each child's start. No pane shows it: it
+    /// is what `rpc_send`'s model guard reads.
+    configured: Option<Configured>,
 }
 
 impl DesktopState {
@@ -238,6 +277,20 @@ impl DesktopState {
                 Changed::of(&[Pane::Running, Pane::Approvals, Pane::Outcome])
             }
             Frame::Response(r) => {
+                // The core's own models question: its answer is recorded,
+                // and anything but a well-formed success records nothing.
+                // It changes no pane; a refusal still reaches the
+                // transcript below. It is a snapshot from the child's start:
+                // a config edited later takes effect on the next child.
+                if r.command.as_deref() == Some("get_available_models")
+                    && r.id.as_deref() == Some(MODELS_ID)
+                {
+                    self.configured = if r.success == Some(true) {
+                        Configured::from_data(r.data.as_ref())
+                    } else {
+                        None
+                    };
+                }
                 // A refused command is said in the transcript; a successful
                 // answer changes no run pane but the tier a `get_state`
                 // reports.
@@ -282,6 +335,7 @@ impl DesktopState {
     pub fn child_exited(&mut self) -> Changed {
         self.running = false;
         self.approvals.clear();
+        self.configured = None;
         Changed::of(&[Pane::Running, Pane::Approvals])
     }
 
@@ -291,14 +345,29 @@ impl DesktopState {
         self.running
     }
 
+    /// The configured specs the current child reported, `None` until it
+    /// has answered [`MODELS_ID`].
+    pub fn configured(&self) -> Option<&Configured> {
+        self.configured.as_ref()
+    }
+
+    /// A new child is starting: what the last one reported is not its
+    /// answer, so the guard is shut until it gives its own.
+    pub fn forget_models(&mut self) {
+        self.configured = None;
+    }
+
     /// Clears the whole view, transcript included: colibri's New chat and
-    /// Clear. Whether a run is in flight is the child's fact, not the
-    /// view's, so it is kept. Returns every pane, so the view event that
-    /// follows carries all of them.
+    /// Clear. Whether a run is in flight, and which specs the child
+    /// reported, are the child's facts, not the view's, so they are kept.
+    /// Returns every pane, so the view event that follows carries all of
+    /// them.
     pub fn clear(&mut self) -> Changed {
         let running = self.running;
+        let configured = self.configured.take();
         *self = Self {
             running,
+            configured,
             ..Self::default()
         };
         Changed::of(&PANES)
