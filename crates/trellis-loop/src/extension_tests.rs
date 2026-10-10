@@ -3,28 +3,17 @@
 //! real files, real processes.
 
 use crate::agent::{NotConverged, Outcome, RepoContext, Seed, ToolCall, run, run_seeded};
-use crate::budget::Budget;
 use crate::exec::shell_argv;
 use crate::gate::{ApprovalGate, BashPolicyGate};
 use crate::hooks::{HookConfig, Hooks, fence_before_run};
 use crate::orchestrator::Orchestrator;
 use crate::registry::{BashSettings, CustomTool, ToolSelection, ToolSet};
 use crate::scripted::ScriptedModel;
+use crate::testutil::{budget, repo};
 use crate::tools::ToolResult;
 use std::path::Path;
 use std::time::Duration;
 use trellis_checks::CheckConfig;
-
-fn repo() -> tempfile::TempDir {
-    let d = tempfile::tempdir().expect("tempdir");
-    std::fs::create_dir_all(d.path().join("app")).unwrap();
-    std::fs::write(
-        d.path().join("app/util.py"),
-        "def helper():\n    return 1\n",
-    )
-    .unwrap();
-    d
-}
 
 /// A repository under git, for the tools that ask git: a copy of one built
 /// once per process (`testutil`). Each writer still gets its own clone of
@@ -44,13 +33,6 @@ fn git_repo() -> tempfile::TempDir {
         })
     })
     .instance()
-}
-
-fn budget() -> Budget {
-    Budget {
-        max_iterations: 10,
-        ..Budget::default()
-    }
 }
 
 /// The platform shell as `[tools] shell` would name it.

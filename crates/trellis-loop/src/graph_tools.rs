@@ -13,7 +13,7 @@
 //! header the selector never shortens and every call site is listed or
 //! counted within `RADIUS_OBSERVATION_BYTES`.
 
-use crate::agent::{ListedSite, SiteLocator, render_listing};
+use crate::agent::{ListedSite, MODULE_SCOPE, SiteLocator, render_listing, shown_line};
 use crate::tools::ToolResult;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -103,7 +103,7 @@ pub(crate) fn callers_of(index: &Index, root: &Path, sym: SymbolId) -> ToolResul
                 path: "?".to_string(),
                 line: None,
                 offset: 0,
-                label: "<module>".to_string(),
+                label: MODULE_SCOPE.to_string(),
                 certain,
             },
         };
@@ -158,7 +158,7 @@ pub(crate) fn callers_of(index: &Index, root: &Path, sym: SymbolId) -> ToolResul
 /// two methods called `run` apart; where each is defined does.
 fn callee(index: &Index, locate: &mut SiteLocator<'_>, t: SymbolId) -> String {
     let (path, line) = locate.definition(&index.symbols[t.index()]);
-    let line = line.map_or_else(|| "?".to_string(), |n| n.to_string());
+    let line = shown_line(line);
     format!("{} at {path}:{line}", qualified(index, t))
 }
 
@@ -299,10 +299,8 @@ Call sites bound to no definition (path:line enclosing-symbol reason):",
     );
     let mut locate = SiteLocator::new(index, root);
     for s in d.sites.iter().take(COVERAGE_REPORT_SITES) {
-        let line = locate
-            .line_in(&s.path, s.offset)
-            .map_or_else(|| "?".to_string(), |n| n.to_string());
-        let enclosing = s.enclosing.as_deref().unwrap_or("<module>");
+        let line = shown_line(locate.line_in(&s.path, s.offset));
+        let enclosing = s.enclosing.as_deref().unwrap_or(MODULE_SCOPE);
         text.push_str(&format!(
             "
 {}:{line} {enclosing} {}",
