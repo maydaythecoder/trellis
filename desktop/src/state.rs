@@ -49,9 +49,14 @@ pub enum Pane {
     Alert,
     /// trellis's stderr, its human text, kept apart from the transcript.
     Stderr,
+    /// The model this child's session runs prompts on, as its last
+    /// successful `set_model` answer said; `null` until one (#564).
+    Model,
+    /// What the child's last `list_models` answer offered to choose from.
+    Models,
 }
 
-const PANES: [Pane; 14] = [
+const PANES: [Pane; 16] = [
     Pane::Transcript,
     Pane::Actions,
     Pane::Edits,
@@ -66,6 +71,8 @@ const PANES: [Pane; 14] = [
     Pane::Undelivered,
     Pane::Alert,
     Pane::Stderr,
+    Pane::Model,
+    Pane::Models,
 ];
 
 /// The panes a run starts afresh: everything but the transcript, which,
@@ -106,6 +113,8 @@ impl Pane {
             Pane::Undelivered => "undelivered",
             Pane::Alert => "alert",
             Pane::Stderr => "stderr",
+            Pane::Model => "model",
+            Pane::Models => "models",
         }
     }
 
@@ -306,6 +315,105 @@ impl Configured {
     }
 }
 
+/// The session's model, as the child's last successful `set_model` answer
+/// gave it (#564). Until one has come, `rpc.rs` refuses every `prompt`, and
+/// so does `rpc_send`; the page keeps prompt input disabled.
+#[derive(Debug, Clone, PartialEq)]
+struct Chosen {
+    spec: String,
+    /// Whether it was the configured spec confirmed, not one named.
+    configured: bool,
+    /// The user config file it was written to, when the user asked.
+    saved_to: Option<String>,
+}
+
+impl Chosen {
+    /// The answer's `data`, or `None` when it does not carry the spec as a
+    /// string: an answer the core cannot name a model from opens nothing.
+    fn from_data(data: Option<&Value>) -> Option<Self> {
+        let d = data?;
+        Some(Self {
+            spec: d.get("model")?.as_str()?.to_string(),
+            configured: d.get("configured").and_then(Value::as_bool) == Some(true),
+            saved_to: d
+                .get("saved_to")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        })
+    }
+}
+
+/// One address `list_models` probed, and why it gave no model if it did not.
+#[derive(Debug, Clone, PartialEq)]
+struct Probe {
+    runtime: String,
+    address: String,
+    error: Option<String>,
+}
+
+/// A user-config provider `list_models` named: its name and the variable a
+/// key would be read from, never a value (#564).
+#[derive(Debug, Clone, PartialEq)]
+struct Provider {
+    name: String,
+    variable: Option<String>,
+}
+
+/// What the child's `list_models` answer offered to choose from.
+#[derive(Debug, Clone, PartialEq)]
+struct ModelList {
+    configured: Option<String>,
+    local: Vec<String>,
+    probed: Vec<Probe>,
+    providers: Vec<Provider>,
+}
+
+impl ModelList {
+    /// The answer's `data`, or `None` when it is not the shape `rpc.rs`
+    /// sends. An entry missing a string the pane would show is skipped, as
+    /// a starter with no name is, rather than drawn with a gap.
+    fn from_data(data: Option<&Value>) -> Option<Self> {
+        let d = data?.as_object()?;
+        let text = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+        Some(Self {
+            configured: match d.get("configured")? {
+                Value::Null => None,
+                Value::String(s) => Some(s.clone()),
+                _ => return None,
+            },
+            local: d
+                .get("local")?
+                .as_array()?
+                .iter()
+                .filter_map(|s| s.as_str().map(str::to_string))
+                .collect(),
+            probed: d
+                .get("probed")?
+                .as_array()?
+                .iter()
+                .filter_map(|p| {
+                    Some(Probe {
+                        runtime: text(p, "runtime")?,
+                        address: text(p, "address")?,
+                        error: text(p, "error"),
+                    })
+                })
+                .collect(),
+            providers: d
+                .get("providers")?
+                .as_array()?
+                .iter()
+                .filter_map(|p| {
+                    Some(Provider {
+                        name: text(p, "name")?,
+                        variable: text(p, "key_variable"),
+                    })
+                })
+                .collect(),
+        })
+    }
+}
+
 /// The desktop's run panes.
 #[derive(Debug, Default)]
 pub struct DesktopState {
@@ -339,6 +447,12 @@ pub struct DesktopState {
     /// trellis's stderr lines, shown as human text and never read as data
     /// (ADR 0048 section 2, amended by ADR 0052), capped at [`STDERR_CAP`].
     stderr: VecDeque<String>,
+    /// The session's model; `None` until this child has taken one, which
+    /// is what keeps prompt input shut (#564).
+    model: Option<Chosen>,
+    /// The last `list_models` answer: what it offered, or why it was
+    /// refused. `None` until one has come.
+    models: Option<Result<ModelList, String>>,
 }
 
 impl DesktopState {
@@ -407,6 +521,29 @@ impl DesktopState {
                     (Some("get_commands"), _) => {
                         self.starters = None;
                         c = c.with(Pane::Starters);
+                    }
+                    // The model pane's two answers (#564). A refused
+                    // `set_model` leaves the model the child already had, as
+                    // `rpc.rs` does; its reason reaches the alert below.
+                    (Some("set_model"), Some(true)) => {
+                        if let Some(m) = Chosen::from_data(r.data.as_ref()) {
+                            self.model = Some(m);
+                            c = c.with(Pane::Model);
+                        }
+                    }
+                    (Some("list_models"), Some(true)) => {
+                        self.models =
+                            Some(ModelList::from_data(r.data.as_ref()).ok_or_else(|| {
+                                "trellis answered list_models in a shape this desktop does not \
+                                read"
+                                    .to_string()
+                            }));
+                        c = c.with(Pane::Models);
+                    }
+                    (Some("list_models"), _) => {
+                        let why = r.error.clone().unwrap_or_else(|| "no reason given".into());
+                        self.models = Some(Err(why));
+                        c = c.with(Pane::Models);
                     }
                     (Some("abort"), Some(true)) => {
                         if let Some(u) = Undelivered::list_from(r.data.as_ref()) {
@@ -487,7 +624,10 @@ impl DesktopState {
         self.running = false;
         self.approvals.clear();
         self.configured = None;
-        Changed::of(&[Pane::Running, Pane::Approvals])
+        // The model was that child's session's; the next child has none.
+        self.model = None;
+        self.models = None;
+        Changed::of(&[Pane::Running, Pane::Approvals, Pane::Model, Pane::Models])
     }
 
     /// Whether a run is in flight, from `run_start` to `run_end` or the
@@ -508,23 +648,36 @@ impl DesktopState {
         self.configured.as_ref()
     }
 
+    /// Whether this child's session has a model, from its own answer to a
+    /// `set_model`: what `rpc_send` lets a `prompt` through on (#564).
+    pub fn model_chosen(&self) -> bool {
+        self.model.is_some()
+    }
+
     /// A new child is starting: what the last one reported is not its
-    /// answer, so the guard is shut until it gives its own.
+    /// answer, so the guard is shut until it gives its own, and the model
+    /// its session had is not the new session's.
     pub fn forget_models(&mut self) {
         self.configured = None;
+        self.model = None;
+        self.models = None;
     }
 
     /// Clears the whole view, transcript included: colibri's New chat and
-    /// Clear. Whether a run is in flight, and which specs the child
-    /// reported, are the child's facts, not the view's, so they are kept.
-    /// Returns every pane, so the view event that follows carries all of
-    /// them.
+    /// Clear. Whether a run is in flight, which specs the child reported,
+    /// and the model its session has and offered, are the child's facts,
+    /// not the view's, so they are kept. Returns every pane, so the view
+    /// event that follows carries all of them.
     pub fn clear(&mut self) -> Changed {
         let running = self.running;
         let configured = self.configured.take();
+        let model = self.model.take();
+        let models = self.models.take();
         *self = Self {
             running,
             configured,
+            model,
+            models,
             ..Self::default()
         };
         Changed::of(&PANES)
@@ -606,6 +759,25 @@ impl DesktopState {
             ),
             Pane::Alert => json!(self.alert),
             Pane::Stderr => json!(self.stderr),
+            Pane::Model => match &self.model {
+                Some(m) => json!({"spec": m.spec, "configured": m.configured,
+                                  "saved_to": m.saved_to}),
+                None => Value::Null,
+            },
+            Pane::Models => match &self.models {
+                None => Value::Null,
+                Some(Err(e)) => json!({"error": e}),
+                Some(Ok(l)) => json!({
+                    "configured": l.configured,
+                    "local": l.local,
+                    "probed": l.probed.iter().map(|p| json!({
+                        "runtime": p.runtime, "address": p.address, "error": p.error,
+                    })).collect::<Vec<_>>(),
+                    "providers": l.providers.iter().map(|p| json!({
+                        "name": p.name, "key_variable": p.variable,
+                    })).collect::<Vec<_>>(),
+                }),
+            },
             Pane::Outcome => match &self.outcome {
                 Some(e) => json!({
                     "outcome": e.outcome,
@@ -1453,6 +1625,102 @@ mod tests {
         // A run's start leaves it: it is the process's text, not the run's.
         feed(&mut s, &run_start("p"));
         assert_eq!(all(&s)["stderr"].as_array().unwrap().len(), STDERR_CAP);
+    }
+
+    #[test]
+    fn model_gate_composer_enables_only_after_a_model_is_set() {
+        // The risk (#564): prompt input opens before the user has chosen a
+        // model, on a list answer, a refused choice or the last child's
+        // choice, so a prompt runs on whatever the repository's config
+        // names with the user's keys in the child's environment. The page
+        // enables the composer on the view's `model` alone, so it must stay
+        // null until this child has taken a `set_model`.
+        let mut s = DesktopState::default();
+        assert_eq!(all(&s)["model"], Value::Null, "shut at launch");
+        assert!(!s.model_chosen());
+        // What there is to choose from opens nothing.
+        let c = feed(
+            &mut s,
+            &response(
+                "list_models",
+                true,
+                json!({"configured": "vllm:http://127.0.0.1:8000#<b>q</b>",
+                       "local": ["vllm:http://127.0.0.1:11434#qwen3:8b", 7],
+                       "probed": [{"runtime": "Ollama",
+                                   "address": "http://127.0.0.1:11434/api/tags",
+                                   "error": null},
+                                  {"runtime": "vLLM"}],
+                       "providers": [{"name": "mine", "key_variable": "TRELLIS_TEST_VAR"},
+                                     {"key_variable": "X"}]}),
+            ),
+        );
+        assert_eq!(c, Changed::of(&[Pane::Models]));
+        assert_eq!(
+            all(&s)["models"],
+            json!({"configured": "vllm:http://127.0.0.1:8000#<b>q</b>",
+                   "local": ["vllm:http://127.0.0.1:11434#qwen3:8b"],
+                   "probed": [{"runtime": "Ollama",
+                               "address": "http://127.0.0.1:11434/api/tags",
+                               "error": null}],
+                   "providers": [{"name": "mine", "key_variable": "TRELLIS_TEST_VAR"}]}),
+            "text as text, and nothing it did not send whole"
+        );
+        assert_eq!(all(&s)["model"], Value::Null, "a list is not a choice");
+        // A refused choice, or an answer naming no spec, opens nothing.
+        feed(
+            &mut s,
+            &response("set_model", false, json!("choose a model first")),
+        );
+        feed(
+            &mut s,
+            &response("set_model", true, json!({"configured": true})),
+        );
+        assert_eq!(all(&s)["model"], Value::Null);
+        assert!(!s.model_chosen());
+        // The child's own yes opens it.
+        let c = feed(
+            &mut s,
+            &response(
+                "set_model",
+                true,
+                json!({"model": "vllm:http://127.0.0.1:11434#qwen3:8b", "configured": false,
+                       "saved_to": "/home/u/.config/trellis/config.toml"}),
+            ),
+        );
+        assert!(c.has(Pane::Model), "{c:?}");
+        assert!(s.model_chosen());
+        assert_eq!(
+            all(&s)["model"],
+            json!({"spec": "vllm:http://127.0.0.1:11434#qwen3:8b", "configured": false,
+                   "saved_to": "/home/u/.config/trellis/config.toml"})
+        );
+        // A run, a clear and a refused change leave it: it is the session's.
+        feed(&mut s, &run_start("p"));
+        s.clear();
+        feed(&mut s, &response("set_model", false, json!("not a spec")));
+        assert!(s.model_chosen());
+        // The child's exit shuts it, and so does a new child's start.
+        let c = s.child_exited();
+        assert!(c.has(Pane::Model) && c.has(Pane::Models), "{c:?}");
+        assert_eq!(all(&s)["model"], Value::Null);
+        assert_eq!(all(&s)["models"], Value::Null);
+        feed(
+            &mut s,
+            &response(
+                "set_model",
+                true,
+                json!({"model": "scripted:x", "configured": true, "saved_to": null}),
+            ),
+        );
+        assert_eq!(
+            all(&s)["model"],
+            json!({"spec": "scripted:x", "configured": true, "saved_to": null})
+        );
+        s.forget_models();
+        assert!(!s.model_chosen());
+        // A refused list says why, in place of the list.
+        feed(&mut s, &response("list_models", false, json!("bad config")));
+        assert_eq!(all(&s)["models"], json!({"error": "bad config"}));
     }
 
     #[test]
