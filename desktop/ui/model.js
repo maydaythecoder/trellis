@@ -7,7 +7,7 @@
 // one is chosen. This pane is where it asks, and it is the model picker: the
 // choices are settings.js's `modelChoices`, from the core's own models
 // answer (the view's `available`) and the child's `list_models` answer (the
-// view's `models`), with the configured spec preselected. Where trellis
+// view's `models`), with the user's configured spec preselected. Where trellis
 // looked for local runtimes, and the user's own providers by the variable a
 // key would be read from (never a value), are listed beside them.
 //

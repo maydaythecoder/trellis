@@ -53,10 +53,10 @@ trellis-desktop [--root <repo>] [--trellis <path>]
   control, which refuses a path with no `.git` entry and refuses while a
   run is in flight.
 
-After launch the window asks which model to use, with the configured spec
-preselected, and keeps prompt input disabled until one is chosen (ADR 0048
-§5, amended). A model it saves goes to your own config file, never the
-repository's.
+After launch the window asks which model to use, with your own configured
+spec preselected (or, with none, the repository's), and keeps prompt input
+disabled until one is chosen (ADR 0048 §5, amended). A model it saves goes
+to your own config file, never the repository's.
 
 ## What it does not do
 

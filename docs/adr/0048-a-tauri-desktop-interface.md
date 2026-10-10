@@ -127,7 +127,10 @@ model first" until `set_model` has given the session a model, and answers
 `list_models` with the configured spec, `first_run`'s probed specs and the
 user's providers by name and key variable (ADR 0025 §5, added 2026-10-10).
 The desktop's model pane (`ui/model.js`), open at launch, lists them with
-the configured spec preselected. The page is served with the composer's
+the user's configured spec preselected, or with none the configured spec
+(*corrected 2026-10-10, #564 review:* it had preselected the spec the
+configuration resolves to, where the repository's wins over the user's).
+The page is served with the composer's
 textarea, Send and control `disabled`, and opens them only once the view's
 `model`, the core's record of the child's successful `set_model` answer, is
 set; `rpc_send` refuses a `prompt` before then. Choosing the configured
