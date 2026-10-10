@@ -16,7 +16,9 @@
 //!   (`overview-error` says why when it could not be read);
 //! - `codebase`: the codebase view's layout (`codebase.rs`), once per
 //!   `get_codebase` answer, or `{"error"}` with trellis's reason when it
-//!   was refused (#307).
+//!   was refused (#307);
+//! - `radius`: a `get_radius` answer as reach and doubt (`radius.rs`), or
+//!   `{"error"}`, with the answer's `id` (#308).
 //!
 //! The first line the core writes to every child is
 //! `{"id":"desktop-models","type":"get_available_models"}`. Its answer's
@@ -39,6 +41,7 @@
 use crate::child::{Child, Lines, Output, Trellis};
 use crate::codebase;
 use crate::frames::{self, Frame};
+use crate::radius;
 use crate::state::{Changed, Configured, DesktopState, MODELS_ID};
 use serde_json::{Value, json};
 use std::io;
@@ -52,8 +55,8 @@ pub const LINE_CAP: usize = 65_536;
 /// The `type`s `rpc_send` forwards: `rpc.rs`'s `COMMANDS` as #296 lists
 /// them, without `quit`, which only the core sends, and with each read-only
 /// command a desktop view reads through (ADR 0048 section 10) as that view
-/// is built: `get_codebase` (#307).
-pub const FORWARDED: [&str; 12] = [
+/// is built: `get_codebase` (#307), `get_radius` (#308).
+pub const FORWARDED: [&str; 13] = [
     "prompt",
     "abort",
     "get_state",
@@ -66,6 +69,7 @@ pub const FORWARDED: [&str; 12] = [
     "compact",
     "get_commands",
     "get_codebase",
+    "get_radius",
 ];
 
 /// The most trails `get_trails` asks for.
@@ -234,12 +238,14 @@ impl Core {
             _ => self.sink.emit("rpc-unparsed", json!(line)),
         }
         let frame = frames::parse_stdout(line);
-        // The codebase view is laid out here, not in the page (ADR 0048
-        // section 5), whichever line asked for it.
-        if let Frame::Response(r) = &frame
-            && r.command.as_deref() == Some("get_codebase")
-        {
-            self.sink.emit("codebase", codebase::event(r));
+        // The read-only views' answers are typed here, not in the page
+        // (ADR 0048 section 5), whichever line asked for them.
+        if let Frame::Response(r) = &frame {
+            match r.command.as_deref() {
+                Some("get_codebase") => self.sink.emit("codebase", codebase::event(r)),
+                Some("get_radius") => self.sink.emit("radius", radius::event(r)),
+                _ => {}
+            }
         }
         self.feed(&mut s, frame);
     }
@@ -1359,6 +1365,52 @@ mod tests {
             "get_codebase wrote under the repository"
         );
         for d in [&repo, &plain, &config] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn rpc_send_forwards_get_radius() {
+        // The risk (#308): the radius view asks for a radius the core
+        // refuses to forward, or the answer reaches the page untyped, so
+        // the page decides how reach and doubt are shown; or an unknown
+        // symbol's refusal is lost.
+        let repo = scratch("radius-repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join("a.py"), "def f():\n    return 1\n").unwrap();
+        std::fs::write(
+            repo.join("b.py"),
+            "from a import f\n\ndef g(x):\n    return f() + f() + x.go()\n",
+        )
+        .unwrap();
+        let config = scratch("radius-config");
+        let (core, rec) = core_with(&config);
+        core.start(&repo).unwrap();
+        rec.wait_for("child-started", |_| true);
+
+        let ask = json!({"id": "desktop-radius-1", "type": "get_radius", "symbol": "f"});
+        assert_eq!(core.send(&ask), Ok(()));
+        let v = rec.wait_for("radius", |v| v["id"] == "desktop-radius-1");
+        assert_eq!(v.get("error"), None, "{v}");
+        assert_eq!(v["symbol"], "a.f", "{v}");
+        assert_eq!(v["reach"]["resolved"], 2, "{v}");
+        assert!(v["doubt"]["unbound_in_touched_files"].is_u64(), "{v}");
+        assert!(v["doubt"]["touched_files"].is_u64(), "{v}");
+
+        let ask = json!({"id": "desktop-radius-2", "type": "get_radius", "symbol": "nope"});
+        core.send(&ask).unwrap();
+        let v = rec.wait_for("radius", |v| v["id"] == "desktop-radius-2");
+        let err = v["error"].as_str().unwrap_or_else(|| panic!("{v}"));
+        assert!(
+            err.contains("no first-party definition matches `nope`"),
+            "{err}"
+        );
+        finish(&core).unwrap();
+        assert!(
+            !repo.join(".trellis").exists(),
+            "get_radius wrote under the repository"
+        );
+        for d in [&repo, &config] {
             let _ = std::fs::remove_dir_all(d);
         }
     }

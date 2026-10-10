@@ -490,6 +490,33 @@ mod tests {
         assert!(!page[section].text.contains("Not built yet"));
     }
 
+    #[test]
+    fn radius_pane_holds_what_radius_js_draws() {
+        // The risk (#308): radius.js drawing into an id the page lacks, so
+        // a radius trellis answered is never shown; a symbol field with no
+        // label; or the pane outside the section the rail shows it in.
+        let page = page();
+        let section = index_of(&page, "codebase");
+        let js = ui_file("radius.js");
+        for id in ["rd-form", "rd-symbol", "rd-status", "rd-result"] {
+            assert!(js.contains(&format!("\"{id}\"")), "radius.js draws no {id}");
+            assert!(
+                within(&page, index_of(&page, id), section),
+                "#{id} is outside #codebase"
+            );
+        }
+        assert!(
+            page.iter()
+                .any(|e| e.tag == "label" && e.attr("for") == Some("rd-symbol")),
+            "the symbol field has no label"
+        );
+        let html = ui_file("index.html");
+        assert!(
+            html.contains(r#"<script type="module" src="radius.js"></script>"#),
+            "index.html does not load radius.js as a module"
+        );
+    }
+
     /// `overview.js` with its `//` comments removed, so a field named only
     /// in a comment does not count as read. It has no string or regex that
     /// holds `//`, which this would cut short.
@@ -731,6 +758,7 @@ mod tests {
             "overview.js",
             "graph.js",
             "codebase.js",
+            "radius.js",
         ] {
             let js = ui_file(name);
             for bad in [".style", "cssText", "\"style\"", "'style'"] {
