@@ -32,6 +32,13 @@ pub const TOOLS: [&str; 4] = ["blast_radius", "read_file", "edit", "run_checks"]
 /// its node labels: past six, labels stop being read and start being noise.
 pub const MAX_LABELS: usize = 6;
 
+/// The most rows a picture draws. A model may call a new tool name every
+/// turn, bounded only by the turn budget, and a row per name would bury
+/// the picture; past this many, the names first called later share the
+/// last row, which counts them. Twenty-four rows is the four offered tools
+/// and twenty others, about 700 units of `viewBox` height.
+pub const MAX_NODES: usize = 24;
+
 /// The layout's coordinate space. The page scales the SVG to its pane, so
 /// these are units of the `viewBox`, not pixels.
 const WIDTH: f64 = 800.0;
@@ -156,6 +163,10 @@ pub struct Node {
     pub name: Text,
     /// Empty for a tool not called: a ring has nothing to count.
     pub counts: Text,
+    /// How many tool names share this row: 0 for a tool's own row, and for
+    /// the last row past [`MAX_NODES`] the names folded into it, whose calls
+    /// and writes it counts.
+    pub folded: u64,
 }
 
 /// The whole picture, in the layout's units.
@@ -224,42 +235,63 @@ pub fn layout<'a>(actions: impl IntoIterator<Item = Called<'a>>) -> Layout {
             tools.push(a.tool);
         }
     }
+    // Past the cap, the last row takes every name from there on. Each
+    // action is counted on the row its tool is drawn on, so no call drops
+    // out of the picture. `TOOLS` is shorter than the cap, so the offered
+    // tools always have rows of their own.
+    let folded = tools.split_off((MAX_NODES - 1).min(tools.len()));
+    let folded = if folded.len() == 1 {
+        tools.push(folded[0]);
+        Vec::new()
+    } else {
+        folded
+    };
+    let rows = tools.len() + usize::from(!folded.is_empty());
+    let row_of =
+        |tool: &str| -> usize { tools.iter().position(|&t| t == tool).unwrap_or(tools.len()) };
 
     // `TOOLS` is never empty, so there is at least one gap.
-    let gaps = (tools.len() - 1) as f64;
+    let gaps = (rows - 1) as f64;
     let height = TOP + BOTTOM + ROW * gaps;
     let row_y = |i: usize| round(TOP + ROW * i as f64);
     let focus = (FOCUS_X, round(TOP + ROW * gaps / 2.0));
 
-    let nodes: Vec<Node> = tools
+    let node = |i: usize, label: String, n_folded: u64| {
+        let y = row_y(i);
+        let on_row: Vec<&Called> = actions.iter().filter(|a| row_of(a.tool) == i).collect();
+        let calls = on_row.len() as u64;
+        let writes = on_row.iter().filter(|a| a.wrote).count() as u64;
+        Node {
+            name: Text {
+                text: cut(&label, NAME_CHARS),
+                x: NAME_X,
+                y: round(y + 4.0),
+                anchor: "start",
+            },
+            tool: label,
+            x: NODE_X,
+            y,
+            mark: if calls == 0 { Mark::Ring } else { Mark::Fill },
+            calls,
+            writes,
+            counts: Text {
+                text: counts_text(calls, writes),
+                x: COUNTS_X,
+                y: round(y + 4.0),
+                anchor: "end",
+            },
+            folded: n_folded,
+        }
+    };
+    let mut nodes: Vec<Node> = tools
         .iter()
         .enumerate()
-        .map(|(i, &tool)| {
-            let y = row_y(i);
-            let calls = actions.iter().filter(|a| a.tool == tool).count() as u64;
-            let writes = actions.iter().filter(|a| a.tool == tool && a.wrote).count() as u64;
-            Node {
-                tool: tool.to_string(),
-                x: NODE_X,
-                y,
-                mark: if calls == 0 { Mark::Ring } else { Mark::Fill },
-                calls,
-                writes,
-                name: Text {
-                    text: cut(tool, NAME_CHARS),
-                    x: NAME_X,
-                    y: round(y + 4.0),
-                    anchor: "start",
-                },
-                counts: Text {
-                    text: counts_text(calls, writes),
-                    x: COUNTS_X,
-                    y: round(y + 4.0),
-                    anchor: "end",
-                },
-            }
-        })
+        .map(|(i, &tool)| node(i, tool.to_string(), 0))
         .collect();
+    if !folded.is_empty() {
+        let n = folded.len() as u64;
+        nodes.push(node(tools.len(), format!("{n} more tools"), n));
+    }
 
     let edges = nodes
         .iter()
@@ -279,8 +311,8 @@ pub fn layout<'a>(actions: impl IntoIterator<Item = Called<'a>>) -> Layout {
         .iter()
         .rev()
         .filter(|a| !a.target.trim().is_empty())
-        .filter_map(|a| {
-            let row = tools.iter().position(|&t| t == a.tool)?;
+        .map(|a| {
+            let row = row_of(a.tool);
             let text = cut(a.target.trim(), TARGET_CHARS);
             let baseline = row_y(row) - 4.0;
             let w = text.chars().count() as f64 * CHAR_W;
@@ -296,7 +328,7 @@ pub fn layout<'a>(actions: impl IntoIterator<Item = Called<'a>>) -> Layout {
                 y: round(baseline),
                 anchor: "start",
             };
-            Some((t, rect))
+            (t, rect)
         })
         .collect();
     let boxes: Vec<Rect> = candidates.iter().map(|(_, r)| *r).collect();
@@ -381,6 +413,7 @@ impl Layout {
                 "writes": n.writes,
                 "name": n.name.to_json(),
                 "counts": n.counts.to_json(),
+                "folded": n.folded,
             })).collect::<Vec<_>>(),
             "edges": self.nodes.iter().zip(&self.edges).map(|(n, e)| json!({
                 "mark": n.mark.key(),
@@ -511,7 +544,8 @@ mod tests {
         // tools there are: past what fits, the picture grows taller.
         let names: Vec<String> = (0..30).map(|i| format!("custom_tool_{i}")).collect();
         let many = layout(names.iter().map(|n| called(n, "", false)));
-        assert_eq!(many.nodes.len(), 34);
+        // Past MAX_NODES the rest fold into one node (#303 review).
+        assert_eq!(many.nodes.len(), MAX_NODES);
         for n in &many.nodes {
             assert!(
                 n.y > 0.0 && n.y < many.height,
@@ -525,6 +559,77 @@ mod tests {
             "rows closer than two lines of text: {ys:?}"
         );
         assert!(many.focus.1 > 0.0 && many.focus.1 < many.height);
+    }
+
+    #[test]
+    fn distinct_tools_past_the_cap_fold_into_one_other_node() {
+        // The risk (#303 review): a node per distinct tool name the model
+        // calls, bounded only by the turn budget, so a model that invents a
+        // name each turn draws hundreds of rows and buries the picture.
+        // Past MAX_NODES the newest names fold into one last node that
+        // counts them; no call is dropped from the picture.
+        assert_eq!(MAX_NODES, 24);
+        let names: Vec<String> = (0..30).map(|i| format!("custom_{i}")).collect();
+        let mut actions: Vec<Called> = names.iter().map(|n| called(n, "", false)).collect();
+        actions.push(called("custom_29", "z.py", true));
+        actions.push(called("read_file", "a.py", false));
+        let l = layout(actions.iter().copied());
+        assert_eq!(l.nodes.len(), MAX_NODES);
+        assert_eq!(l.edges.len(), MAX_NODES, "one edge per node");
+        let tools: Vec<&str> = l.nodes.iter().map(|n| n.tool.as_str()).collect();
+        assert_eq!(&tools[..4], TOOLS, "the offered tools are always drawn");
+        assert_eq!(tools[4], "custom_0", "then the others, first called first");
+        assert_eq!(tools[MAX_NODES - 2], "custom_18");
+        let other = l.nodes.last().unwrap();
+        // custom_19 to custom_29: eleven names, twelve calls, one wrote.
+        assert_eq!(other.folded, 11);
+        assert_eq!(other.tool, "11 more tools");
+        assert_eq!(other.name.text, "11 more tools");
+        assert_eq!((other.calls, other.writes), (12, 1));
+        assert_eq!(other.counts.text, "12 calls · 1 wrote");
+        assert_eq!(other.mark, Mark::Fill);
+        assert!(l.nodes[..MAX_NODES - 1].iter().all(|n| n.folded == 0));
+        let calls: u64 = l.nodes.iter().map(|n| n.calls).sum();
+        assert_eq!(calls, actions.len() as u64, "every call is on a node");
+        // A folded tool's target is labelled on the fold's row.
+        let row = other.y - 4.0;
+        assert!(
+            l.labels.iter().any(|t| t.text == "z.py" && t.y == row),
+            "{:?}",
+            l.labels
+        );
+        let v = l.to_json();
+        assert_eq!(v["nodes"][MAX_NODES - 1]["folded"], 11);
+        assert_eq!(v["nodes"][0]["folded"], 0);
+        assert!(
+            l.aria_label.contains("11 more tools 12 calls"),
+            "{}",
+            l.aria_label
+        );
+
+        // At the cap nothing folds; one past it folds two into the last row.
+        let at: Vec<String> = (0..MAX_NODES - TOOLS.len())
+            .map(|i| format!("t{i}"))
+            .collect();
+        let l = layout(at.iter().map(|n| called(n, "", false)));
+        assert_eq!(l.nodes.len(), MAX_NODES);
+        assert!(
+            l.nodes.iter().all(|n| n.folded == 0),
+            "nothing folded at the cap"
+        );
+        let past: Vec<String> = (0..MAX_NODES - TOOLS.len() + 1)
+            .map(|i| format!("t{i}"))
+            .collect();
+        let l = layout(past.iter().map(|n| called(n, "", false)));
+        assert_eq!(l.nodes.len(), MAX_NODES);
+        assert_eq!(l.nodes.last().unwrap().folded, 2);
+        // A model tool that happens to share the fold's text is its own row.
+        let mut with_lookalike = past.clone();
+        with_lookalike.insert(0, "2 more tools".to_string());
+        let l = layout(with_lookalike.iter().map(|n| called(n, "", false)));
+        assert_eq!(l.nodes[4].tool, "2 more tools");
+        assert_eq!(l.nodes[4].folded, 0);
+        assert_eq!(l.nodes.last().unwrap().folded, 3);
     }
 
     #[test]
