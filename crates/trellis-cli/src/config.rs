@@ -240,7 +240,7 @@ impl RepoConfig {
     pub(crate) fn load(root: &Path) -> Result<Self> {
         // ADR 0025 §7: the user's own file sits under this one. The layering
         // and the repository read are in `user_config.rs`.
-        Self::load_with_user(root, crate::user_config::file().as_deref())
+        Self::load_with_user(root, crate::user_config::user_config_path().as_deref())
     }
 
     pub(crate) fn checks(&self) -> CheckConfig {
@@ -574,6 +574,7 @@ fn file_stems(dir: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::link;
 
     fn write(dir: &Path, body: &str) {
         std::fs::create_dir_all(dir.join(".trellis")).unwrap();
@@ -701,17 +702,6 @@ mod tests {
                 format!("{e}").contains("not a prompt name"),
                 "{bad} must be refused: {e}"
             );
-        }
-    }
-
-    /// A link at `link` to `target`, or `false` with the reason printed.
-    fn link(target: &Path, link: &Path) -> bool {
-        match trellis_core::paths::symlink_for_test(target, link) {
-            Ok(()) => true,
-            Err(why) => {
-                eprintln!("{why}");
-                false
-            }
         }
     }
 

@@ -28,7 +28,7 @@ pub(crate) fn dir() -> Option<PathBuf> {
 }
 
 /// `<dir>/config.toml`.
-pub(crate) fn file() -> Option<PathBuf> {
+pub(crate) fn user_config_path() -> Option<PathBuf> {
     dir().map(|d| d.join("config.toml"))
 }
 

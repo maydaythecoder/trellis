@@ -444,7 +444,7 @@ pub(crate) fn run(
             // not parse arrives here as "no model". Its own error says what
             // is wrong; a picker over it would hide that.
             crate::config::RepoConfig::load(root)?;
-            match crate::first_run::offer()? {
+            match crate::first_run::offer_model_choice()? {
                 Some(spec) => (spec.parse::<trellis_model::ModelSpec>()?, spec),
                 None => return Ok(()),
             }

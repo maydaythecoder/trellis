@@ -27,6 +27,28 @@ pub(crate) fn scratch(name: &str) -> PathBuf {
     dir
 }
 
+/// A shell argv for `script`, as TOML, with literal strings so a Windows
+/// path's backslashes are not escapes.
+pub(crate) fn sh(script: &str) -> String {
+    if cfg!(windows) {
+        format!("['cmd', '/C', '{script}']")
+    } else {
+        format!("['sh', '-c', '{script}']")
+    }
+}
+
+/// A link at `link` to `target`, or `false` with the reason printed
+/// when this host cannot make one (Windows without Developer Mode).
+pub(crate) fn link(target: &Path, link: &Path) -> bool {
+    match trellis_core::paths::symlink_for_test(target, link) {
+        Ok(()) => true,
+        Err(why) => {
+            eprintln!("{why}");
+            false
+        }
+    }
+}
+
 /// `git init` plus the configuration every fixture here needs.
 ///
 /// `core.autocrlf false` is the one that matters and the one that went
