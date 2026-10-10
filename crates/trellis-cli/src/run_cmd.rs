@@ -2933,7 +2933,7 @@ pub(crate) const RUN_THREAD: &str = "trellis-run";
 /// `tests/child_env.rs::checks_bash_custom_tools_and_hooks_inherit_no_key`
 /// run three times per size: 896 KiB overflowed 3/3 and 928 KiB passed 3/3
 /// (sizes between were not tried). The run's root future was 21,064 B,
-/// and #137 measured `gated` at 20,448 B. So the main thread had less than
+/// and #137 measured `gated` (now `dispatch_gated`) at 20,448 B. So the main thread had less than
 /// 128 KiB to spare, less the
 /// frames above `run_body`, and #19 and #137 each had to box a future to
 /// fit. Here the same run has about eight times its measured demand, for
