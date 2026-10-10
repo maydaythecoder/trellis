@@ -431,7 +431,7 @@ pub fn parse_reply(protocol: Protocol, v: &Value) -> Result<Reply, RuntimeError>
                     }
                 }
                 [] => {
-                    let why = no_call(msg["content"].as_str().unwrap_or(""));
+                    let why = no_tool_call_error(msg["content"].as_str().unwrap_or(""));
                     Err(if length_limited {
                         format!("the reply stopped at its length limit before a tool call. {why}")
                     } else {
@@ -478,7 +478,7 @@ pub fn parse_reply(protocol: Protocol, v: &Value) -> Result<Reply, RuntimeError>
                         .filter(|b| b["type"] == "text")
                         .filter_map(|b| b["text"].as_str())
                         .collect();
-                    let why = no_call(&text.join(" "));
+                    let why = no_tool_call_error(&text.join(" "));
                     Err(match v["stop_reason"].as_str() {
                         Some("max_tokens") => {
                             format!("the reply stopped at max_tokens before a tool call. {why}")
@@ -522,15 +522,16 @@ fn anthropic_prompt_tokens(usage: &Value) -> Option<u64> {
     )
 }
 
-fn no_call(text: &str) -> String {
+fn no_tool_call_error(text: &str) -> String {
     format!(
         "the reply called no tool; its text was: {}",
         cut(text.trim())
     )
 }
 
+/// A malformed reply as a shape error quotes it.
 fn cut(s: &str) -> String {
-    s.chars().take(200).collect()
+    transport::excerpt(s, transport::SHAPE_QUOTE_CHARS)
 }
 
 /// Whether an error body is the provider saying the request exceeded the
@@ -880,15 +881,10 @@ impl HostedClient {
                     reply.queue_wait_ms = queue_wait_ms(r.header("x-colibri-queue-wait-ms"));
                     return Ok(reply);
                 }
+                // Before the context-overflow arm: a 401 or 403 body may echo
+                // a masked form of the key, and that arm quotes the body.
                 Ok(r) if matches!(r.status, 401 | 403) => {
-                    // Not the body: OpenAI's echoes a masked form of the key.
-                    return Err(RuntimeError::Auth {
-                        status: r.status,
-                        source_var: self
-                            .key
-                            .as_ref()
-                            .map_or_else(|| "no key".to_string(), |k| k.source().to_string()),
-                    });
+                    return Err(transport::status_error(&r, self.key.as_ref()));
                 }
                 Ok(r) if is_context_overflow(r.status, &r.body) => {
                     return Err(RuntimeError::ContextOverflow(cut(&self.scrub(&r.body))));
@@ -904,10 +900,7 @@ impl HostedClient {
                     d
                 }
                 Ok(r) => {
-                    return Err(RuntimeError::Http {
-                        status: r.status,
-                        body: self.scrub(&r.body).chars().take(400).collect(),
-                    });
+                    return Err(transport::status_error(&r, self.key.as_ref()));
                 }
                 Err(SendError::Broken(e)) if attempt < MAX_ATTEMPTS => {
                     let d = retry_delay(None, attempt);
