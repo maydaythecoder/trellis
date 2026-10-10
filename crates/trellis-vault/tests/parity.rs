@@ -558,7 +558,7 @@ fn edits_keep_an_existing_dates_json_in_step() {
     write(d.path(), "dates.json", "{\"version\":1,\"notes\":{}}");
     let (p, out) = edit::create(d.path(), "Fresh", None).unwrap();
     dates::after_edit(d.path(), &out.touched, "2026-09-27").unwrap();
-    let dates::State::Valid(f) = dates::load(d.path()) else {
+    let dates::DatesState::Valid(f) = dates::load(d.path()) else {
         panic!("dates.json should validate")
     };
     let nd = &f.doc.notes[&p];
@@ -567,7 +567,7 @@ fn edits_keep_an_existing_dates_json_in_step() {
 
     let out = edit::remove(d.path(), "fresh").unwrap();
     dates::after_edit(d.path(), &out.touched, "2026-09-28").unwrap();
-    let dates::State::Valid(f) = dates::load(d.path()) else {
+    let dates::DatesState::Valid(f) = dates::load(d.path()) else {
         panic!("dates.json should validate")
     };
     assert!(!f.doc.notes.contains_key(&p));
@@ -904,7 +904,7 @@ fn a_symlinked_dates_json_is_refused_and_left_unchanged() {
         return;
     }
     match dates::load(d.path()) {
-        dates::State::Invalid(e) => assert!(e.contains("cannot be a symlink"), "{e}"),
+        dates::DatesState::Invalid(e) => assert!(e.contains("cannot be a symlink"), "{e}"),
         other => panic!("a linked dates.json was read: {other:?}"),
     }
     let touched = Touched {

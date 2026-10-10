@@ -140,7 +140,7 @@ pub fn logical_lines(body: &str) -> Result<Vec<&str>, DatesError> {
         .collect())
 }
 
-fn leap(y: u32) -> bool {
+fn is_leap_year(y: u32) -> bool {
     y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400))
 }
 
@@ -163,7 +163,7 @@ pub fn normalize_day(value: &str) -> Option<String> {
     let max = match m {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
-        2 if leap(y) => 29,
+        2 if is_leap_year(y) => 29,
         2 => 28,
         _ => return None,
     };
@@ -499,19 +499,23 @@ fn read_bounded(p: &Path) -> std::io::Result<Option<Vec<u8>>> {
     Ok(Some(raw))
 }
 
+/// The name `trellis-cli` imports. Kept so this rename leaves that crate
+/// untouched; it goes when `vault_cmd.rs` names `DatesState` itself.
+pub type State = DatesState;
+
 /// `dates.json` as found on disk.
 #[derive(Debug)]
-pub enum State {
+pub enum DatesState {
     /// No file. Nothing date-related happens.
     Absent,
     /// Present but unreadable or invalid. Never overwritten.
     Invalid(String),
-    Valid(File),
+    Valid(DatesFile),
 }
 
 /// A validated `dates.json` and the exact bytes it was validated from.
 #[derive(Debug, Clone)]
-pub struct File {
+pub struct DatesFile {
     pub path: PathBuf,
     /// The compare-and-replace guard: a write succeeds only if the file
     /// still holds these bytes.
@@ -519,23 +523,23 @@ pub struct File {
     pub doc: Document,
 }
 
-pub fn load(root: &Path) -> State {
+pub fn load(root: &Path) -> DatesState {
     let p = path(root);
     match read_bounded(&p) {
-        Ok(None) => State::Absent,
-        Err(e) => State::Invalid(format!("Could not read dates.json: {e}")),
+        Ok(None) => DatesState::Absent,
+        Err(e) => DatesState::Invalid(format!("Could not read dates.json: {e}")),
         Ok(Some(raw)) => match parse(&raw) {
-            Ok(doc) => State::Valid(File {
+            Ok(doc) => DatesState::Valid(DatesFile {
                 path: p,
                 snapshot: raw,
                 doc,
             }),
-            Err(e) => State::Invalid(e.to_string()),
+            Err(e) => DatesState::Invalid(e.to_string()),
         },
     }
 }
 
-impl File {
+impl DatesFile {
     /// Validates, then writes atomically if the bytes changed. Returns
     /// whether anything was written.
     pub fn save(&self) -> Result<bool, DatesError> {
@@ -756,13 +760,13 @@ pub fn after_edit(
     today: &str,
 ) -> Result<Option<String>, DatesError> {
     let mut file = match load(root) {
-        State::Absent => return Ok(None),
-        State::Invalid(e) => {
+        DatesState::Absent => return Ok(None),
+        DatesState::Invalid(e) => {
             return Ok(Some(format!(
                 "dates.json left untouched: it does not validate ({e})"
             )));
         }
-        State::Valid(f) => f,
+        DatesState::Valid(f) => f,
     };
     if touched.is_empty() {
         return Ok(None);
@@ -971,7 +975,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = path(d.path());
         std::fs::write(&p, br#"{"version":1,"notes":{}}"#).unwrap();
-        let State::Valid(mut f) = load(d.path()) else {
+        let DatesState::Valid(mut f) = load(d.path()) else {
             panic!("valid")
         };
         std::fs::write(&p, br#"{"version":1,"notes":{} }"#).unwrap();
@@ -1261,10 +1265,10 @@ mod tests {
         let max = MAX_BYTES as usize;
         let d = tempfile::tempdir().unwrap();
         std::fs::write(path(d.path()), raw_of_size(max)).unwrap();
-        assert!(matches!(load(d.path()), State::Valid(_)));
+        assert!(matches!(load(d.path()), DatesState::Valid(_)));
         std::fs::write(path(d.path()), raw_of_size(max + 1)).unwrap();
         match load(d.path()) {
-            State::Invalid(e) => assert!(
+            DatesState::Invalid(e) => assert!(
                 e.contains("not a regular file within the byte limit"),
                 "{e}"
             ),
@@ -1278,7 +1282,7 @@ mod tests {
         // is something wrong, and reading it as absent would hide that.
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir(path(d.path())).unwrap();
-        assert!(matches!(load(d.path()), State::Invalid(_)));
+        assert!(matches!(load(d.path()), DatesState::Invalid(_)));
     }
 
     #[test]
@@ -1296,7 +1300,7 @@ mod tests {
             return;
         }
         match load(d.path()) {
-            State::Invalid(e) => assert!(e.contains("symlink"), "{e}"),
+            DatesState::Invalid(e) => assert!(e.contains("symlink"), "{e}"),
             other => panic!("{other:?}"),
         }
     }
@@ -1418,7 +1422,7 @@ mod tests {
             ..Touched::default()
         };
         after_edit(d.path(), &touched, "2024-05-05").unwrap();
-        let State::Valid(f) = load(d.path()) else {
+        let DatesState::Valid(f) = load(d.path()) else {
             panic!("valid")
         };
         assert_eq!(f.doc.notes["a.md"], old);
@@ -1445,7 +1449,7 @@ mod tests {
         std::fs::write(d.path().join("a.md"), "short\n").unwrap();
         std::fs::write(d.path().join("b.md"), "one\ntwo\n").unwrap();
         seeded_dates(d.path());
-        let State::Valid(f) = load(d.path()) else {
+        let DatesState::Valid(f) = load(d.path()) else {
             panic!("valid")
         };
         let a_before = serde_json::to_vec(&f.doc.notes["a.md"]).unwrap();
@@ -1461,7 +1465,7 @@ mod tests {
             .unwrap();
         assert!(m.contains("a.md"), "{m}");
 
-        let State::Valid(f) = load(d.path()) else {
+        let DatesState::Valid(f) = load(d.path()) else {
             panic!("valid")
         };
         assert_eq!(serde_json::to_vec(&f.doc.notes["a.md"]).unwrap(), a_before);
@@ -1512,7 +1516,7 @@ mod tests {
             .unwrap();
         assert!(m.contains("gone.md"), "{m}");
 
-        let State::Valid(f) = load(d.path()) else {
+        let DatesState::Valid(f) = load(d.path()) else {
             panic!("valid")
         };
         assert!(!f.doc.notes.contains_key("gone.md"));
