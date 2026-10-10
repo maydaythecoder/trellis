@@ -260,7 +260,17 @@ function board(doc, pane, o) {
     out.push(el(doc, "h4", "Queue"));
     out.push(muted(doc, "p", `The queue could not be read: ${str(b.tasks_error) ?? "no reason given"}`));
   }
-  const pr = b.pr_ci && typeof b.pr_ci === "object" ? b.pr_ci : {};
+  out.push(...drawPrCi(doc, b.pr_ci));
+  pane.replaceChildren(...out);
+}
+
+// PR and CI state from the user's own `gh` (`board.pr_ci`), as nodes: the
+// open pull requests and recent runs when `available` is true, or the
+// reason it is not shown. Shared with the board section (queue.js, #311),
+// so the two never draw it differently.
+export function drawPrCi(doc, value) {
+  const pr = value && typeof value === "object" ? value : {};
+  const out = [];
   if (pr.available === true) {
     const prs = list(pr.pull_requests).map((p) => pullRequest(doc, p || {}));
     const runs = list(pr.runs).map((r) => ciRun(doc, r || {}));
@@ -270,7 +280,7 @@ function board(doc, pane, o) {
     out.push(el(doc, "h4", "Pull requests and CI"));
     out.push(muted(doc, "p", `PR and CI state unavailable: ${str(pr.reason) ?? "no reason given"}`));
   }
-  pane.replaceChildren(...out);
+  return out;
 }
 
 // The overview's own line: which repository the panes below describe.

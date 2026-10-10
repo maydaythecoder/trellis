@@ -213,9 +213,9 @@ mod tests {
     const SECTIONS: [&str; 6] = ["overview", "run", "trails", "codebase", "board", "vault"];
 
     /// The sections that are built, and so do not read "Not built yet":
-    /// run (#300), overview (#562), codebase (#307), trails (#304) and
-    /// vault (#309).
-    const BUILT: [&str; 5] = ["run", "overview", "codebase", "trails", "vault"];
+    /// run (#300), overview (#562), codebase (#307), trails (#304), vault
+    /// (#309) and board (#311).
+    const BUILT: [&str; 6] = ["run", "overview", "codebase", "trails", "vault", "board"];
 
     #[test]
     fn csp_has_no_unsafe_source_and_no_network_origin() {
@@ -604,6 +604,147 @@ mod tests {
         assert_eq!(sent, ["vault_graph", "vault_search"], "{sent:?}");
     }
 
+    /// `name` under ui/ with its `//` comments removed, so a word named
+    /// only in a comment does not count. Each file read this way has no
+    /// string that holds `//`.
+    fn code_of(name: &str) -> String {
+        ui_file(name)
+            .lines()
+            .map(|l| l.split_once("//").map_or(l, |(code, _)| code))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn board_section_holds_what_queue_js_draws() {
+        // The risk (#311): queue.js drawing into an id the page lacks, so
+        // the counts or the tasks trellis answered are never shown; a
+        // Refresh with no name; or the section still saying it is not
+        // built.
+        let page = page();
+        let section = index_of(&page, "board");
+        let js = code_of("queue.js");
+        for id in [
+            "qb-status",
+            "qb-refresh",
+            "qb-counts",
+            "qb-tasks",
+            "qb-prci",
+        ] {
+            assert!(js.contains(&format!("\"{id}\"")), "queue.js draws no {id}");
+            assert!(
+                within(&page, index_of(&page, id), section),
+                "#{id} is outside #board"
+            );
+        }
+        assert!(!page[section].text.contains("Not built yet"));
+        let html = ui_file("index.html");
+        assert!(
+            html.contains(r#"<script type="module" src="queue.js"></script>"#),
+            "index.html does not load queue.js as a module"
+        );
+    }
+
+    #[test]
+    fn queue_js_draws_the_view_and_asks_only_for_reads() {
+        // The risk (#311): the board counting tasks itself, so it can
+        // disagree with the core's eight cells or add a sum; a task's text
+        // parsed as markup; or a control that writes the queue, whose
+        // writes are `trellis queue` and `trellis work` (ADR 0020 section
+        // 5). No JavaScript runs under cargo test, so this holds the file
+        // to what it reads and sends.
+        let js = code_of("queue.js");
+        for bad in [
+            "innerHTML",
+            "outerHTML",
+            "insertAdjacentHTML",
+            "createElement(\"a\")",
+            "href",
+            "\"prompt\"",
+            // Arithmetic on the counts: a sum, or a count derived from the
+            // tasks rather than taken from the view.
+            "reduce(",
+            "c.count +",
+            "+ c.count",
+            "+= c",
+            ".length +",
+            "filter((t) => t.status",
+        ] {
+            assert!(!js.contains(bad), "queue.js uses {bad}");
+        }
+        assert!(js.contains("textContent"), "queue.js writes no text");
+        // What each task shows: the ticket's four, and the chain (#559).
+        for field in [
+            "t.task",
+            "t.priority",
+            "t.labels",
+            "t.waiting",
+            "t.blockers",
+            "t.parent",
+            "t.error",
+            "c.count",
+            "c.status",
+        ] {
+            assert!(js.contains(field), "queue.js does not draw {field}");
+        }
+        let sent: Vec<&str> = js
+            .split("type: \"")
+            .skip(1)
+            .map(|rest| &rest[..rest.find('"').unwrap()])
+            .collect();
+        assert_eq!(sent, ["get_queue"], "{sent:?}");
+        let invoked: Vec<&str> = js
+            .split("invoke(\"")
+            .skip(1)
+            .map(|rest| &rest[..rest.find('"').unwrap()])
+            .collect();
+        assert_eq!(invoked, ["rpc_send", "get_overview"], "{invoked:?}");
+        // When it asks: on opening, on Refresh, and after each run_end.
+        assert!(js.contains(r#"aria-controls="board""#), "{js}");
+        assert!(js.contains(r#"getElementById("qb-refresh").addEventListener("click""#));
+        assert!(js.contains(r#"f.type === "run_end") askQueue"#));
+    }
+
+    #[test]
+    fn board_shows_pr_ci_or_its_reason() {
+        // The risk (#311 as amended 2026-10-07): the board drops the PR
+        // and CI state `gh` reported, or, with `gh` missing or logged out,
+        // says nothing; or it draws them differently from the overview.
+        // Both draw through overview.js's drawPrCi, which
+        // eagle_eye_board_draws_pr_ci_entries_and_the_unavailable_reason
+        // holds to every field and the reason.
+        let js = code_of("queue.js");
+        assert!(
+            js.contains(r#"import { drawPrCi } from "./overview.js";"#),
+            "queue.js does not draw PR and CI with overview.js's drawPrCi"
+        );
+        assert!(
+            js.contains("drawPrCi(doc, b.pr_ci)"),
+            "not from board.pr_ci"
+        );
+        assert!(
+            js.contains("PR and CI state unavailable: ${err}"),
+            "an overview that cannot be read is said"
+        );
+        let ov = overview_code();
+        let f = &ov[ov
+            .find("export function drawPrCi")
+            .expect("drawPrCi is exported")..];
+        let f = &f[..f.find("\n}").unwrap()];
+        for want in [
+            "pr.available === true",
+            "PR and CI state unavailable: ${str(pr.reason)",
+            "list(pr.pull_requests)",
+            "list(pr.runs)",
+        ] {
+            assert!(f.contains(want), "drawPrCi lacks {want}");
+        }
+        assert!(
+            ov.contains("out.push(...drawPrCi(doc, b.pr_ci))"),
+            "the overview's board pane draws through drawPrCi too"
+        );
+    }
+
     /// `overview.js` with its `//` comments removed, so a field named only
     /// in a comment does not count as read. It has no string or regex that
     /// holds `//`, which this would cut short.
@@ -848,6 +989,7 @@ mod tests {
             "radius.js",
             "trails.js",
             "vault.js",
+            "queue.js",
         ] {
             let js = ui_file(name);
             for bad in [".style", "cssText", "\"style\"", "'style'"] {

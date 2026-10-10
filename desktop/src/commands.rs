@@ -21,8 +21,9 @@
 //!   `{"error"}`, with the answer's `id` (#308).
 //!
 //! `vault_search` and `vault_graph` answers become the `view` event's
-//! `vault` key (`state/vault.rs`, #309), typed by the reducer as the run
-//! panes are.
+//! `vault` key (`state/vault.rs`, #309), and `get_queue` answers its
+//! `queue` key (`queue.rs`, #311), typed by the reducer as the run panes
+//! are.
 //!
 //! The first line the core writes to every child is
 //! `{"id":"desktop-models","type":"get_available_models"}`. Its answer's
@@ -61,9 +62,11 @@ pub const LINE_CAP: usize = 65_536;
 /// them, without `quit`, which only the core sends, and with each read-only
 /// command a desktop view reads through (ADR 0048 section 10) as that view
 /// is built: `get_codebase` (#307), `get_radius` (#308), `vault_search` and
-/// `vault_graph` (#309). No vault write is among them: rpc has none, and
-/// every vault write stays a `trellis vault` command the person runs (#70).
-pub const FORWARDED: [&str; 15] = [
+/// `vault_graph` (#309), `get_queue` (#311). No vault or queue write is
+/// among them: rpc has none, every vault write stays a `trellis vault`
+/// command the person runs (#70), and the queue's writes are `trellis queue`
+/// and `trellis work` (ADR 0020 section 5).
+pub const FORWARDED: [&str; 16] = [
     "prompt",
     "abort",
     "get_state",
@@ -79,6 +82,7 @@ pub const FORWARDED: [&str; 15] = [
     "get_radius",
     "vault_search",
     "vault_graph",
+    "get_queue",
 ];
 
 /// The most trails `get_trails` asks for.
@@ -365,6 +369,7 @@ impl Core {
                     s.view
                         .vault_asked(t, line.get("id").and_then(Value::as_str));
                 }
+                Some("get_queue") => s.view.queue_asked(line.get("id").and_then(Value::as_str)),
                 _ => {}
             }
             w
@@ -1247,6 +1252,7 @@ mod tests {
                 "edits",
                 "graph",
                 "outcome",
+                "queue",
                 "radius",
                 "running",
                 "tier",
@@ -1599,6 +1605,150 @@ mod tests {
                 !ty.starts_with("vault_") || ["vault_search", "vault_graph"].contains(&ty),
                 "rpc_send forwards a vault type that is not a read: {ty}"
             );
+        }
+        assert!(rec.take().is_empty(), "a refusal emits nothing");
+    }
+
+    /// A repository with a git directory `git rev-parse` accepts, written
+    /// by hand (the desktop spawns no git), and a queue of three task files
+    /// in it, as `trellis queue` lays them out: a backlog task with a chain,
+    /// a done one, and one that does not parse.
+    fn queue_repo(name: &str) -> PathBuf {
+        let repo = scratch(name);
+        let git = repo.join(".git");
+        for d in ["objects", "refs"] {
+            std::fs::create_dir_all(git.join(d)).unwrap();
+        }
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        let q = git.join("trellis").join("queue");
+        for d in ["pending", "done"] {
+            std::fs::create_dir_all(q.join(d)).unwrap();
+        }
+        std::fs::write(
+            q.join("pending/t1.json"),
+            r#"{"task":"fix <b>it</b>","focus":null,"prompt":null,"added_at":"2026-10-10T00:00:00Z","attempts":0,"status":"backlog","labels":["ui"],"priority":"high","blockers":["t2"],"parent":"t0"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            q.join("done/t2.json"),
+            r#"{"task":"done one","focus":null,"prompt":null,"added_at":"2026-10-10T00:00:00Z","attempts":1}"#,
+        )
+        .unwrap();
+        std::fs::write(q.join("pending/t3.json"), "not json").unwrap();
+        repo
+    }
+
+    #[test]
+    fn rpc_send_forwards_get_queue() {
+        // The risk (#311): the board asks for the queue and the core
+        // refuses to forward it, or the answer reaches the page as a raw
+        // frame the page must count itself (ADR 0048 section 5); or a read
+        // that changes a task file.
+        let repo = queue_repo("queue-repo");
+        let before = snapshot(&repo.join(".git/trellis/queue"));
+        let config = scratch("queue-config");
+        let (core, rec) = core_with(&config);
+        core.start(&repo).unwrap();
+        rec.wait_for("child-started", |_| true);
+        assert_eq!(
+            core.send(&json!({"id": "desktop-queue-1", "type": "get_queue"})),
+            Ok(())
+        );
+        let v = rec.wait_for("view", |v| v["queue"]["tasks"].is_array())["queue"].clone();
+        assert_eq!(v["error"], Value::Null, "{v}");
+        let counts: Vec<(String, u64)> = v["counts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| {
+                (
+                    c["status"].as_str().unwrap().to_string(),
+                    c["count"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        let want: Vec<(String, u64)> = [
+            ("backlog", 1),
+            ("todo", 0),
+            ("in_progress", 0),
+            ("in_review", 0),
+            ("blocked", 0),
+            ("done", 1),
+            ("cancelled", 0),
+            ("failed", 0),
+        ]
+        .map(|(s, n)| (s.to_string(), n))
+        .into();
+        assert_eq!(counts, want, "{v}");
+        let tasks = v["tasks"].as_array().unwrap();
+        let t1 = tasks.iter().find(|t| t["id"] == "t1").unwrap();
+        assert_eq!(t1["task"], "fix <b>it</b>", "as written, never parsed");
+        assert_eq!(t1["labels"], json!(["ui"]));
+        assert_eq!(t1["priority"], "high");
+        assert_eq!(t1["waiting"], "in backlog");
+        assert_eq!(t1["blockers"], json!(["t2"]));
+        assert_eq!(t1["parent"], "t0");
+        let t3 = tasks.iter().find(|t| t["id"] == "t3").unwrap();
+        assert!(
+            t3["error"].as_str().unwrap().contains("not a task file"),
+            "{t3}"
+        );
+        finish(&core).unwrap();
+        assert_eq!(
+            snapshot(&repo.join(".git/trellis/queue")),
+            before,
+            "a read changed the queue"
+        );
+
+        // A root with no git directory: the queue's own error, as text,
+        // not an empty queue.
+        let plain = scratch("queue-plain");
+        rec.take();
+        core.start(&plain).unwrap();
+        rec.wait_for("child-started", |_| true);
+        core.send(&json!({"id": "desktop-queue-2", "type": "get_queue"}))
+            .unwrap();
+        let v = rec.wait_for("view", |v| v["queue"]["error"].is_string())["queue"].clone();
+        assert_eq!(v["counts"], Value::Null, "{v}");
+        assert_eq!(v["tasks"], Value::Null, "{v}");
+        finish(&core).unwrap();
+        for d in [&repo, &plain, &config] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn rpc_send_forwards_no_queue_write() {
+        // The risk (ADR 0020 section 5): the page adds, approves, claims or
+        // cancels a task through the desktop. The queue's writes are
+        // `trellis queue` and `trellis work`, rpc has none, and rpc_send
+        // forwards none; nor a type rpc does not list that a later trellis
+        // might give a write meaning.
+        let (core, rec) = idle_core();
+        for ty in [
+            "queue_add",
+            "queue_approve",
+            "queue_reject",
+            "queue_cancel",
+            "queue_claim",
+            "queue_import",
+            "queue_status",
+            "queue_note",
+            "work",
+            "GET_QUEUE",
+        ] {
+            let err = core
+                .send(&json!({"id": "x", "type": ty, "task": "t"}))
+                .unwrap_err();
+            assert!(err.contains(&format!("{ty:?}")), "{ty}: {err}");
+            assert!(err.contains("is not one rpc_send forwards"), "{ty}: {err}");
+        }
+        for ty in FORWARDED {
+            assert!(
+                !ty.contains("queue") || ty == "get_queue",
+                "rpc_send forwards a queue type that is not the read: {ty}"
+            );
+            assert!(!ty.starts_with("work"), "{ty}");
         }
         assert!(rec.take().is_empty(), "a refusal emits nothing");
     }
