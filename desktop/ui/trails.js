@@ -62,7 +62,15 @@ function drawList(doc) {
     b.type = "button";
     if (state.selected === i) b.setAttribute("aria-current", "true");
     if (r.bad_line !== undefined) {
-      b.append(el(doc, "span", "A line trellis log printed that is not a run"));
+      b.append(
+        el(
+          doc,
+          "span",
+          r.truncated === true
+            ? "A line trellis log printed, too long to read, shown truncated"
+            : "A line trellis log printed that is not a run",
+        ),
+      );
     } else {
       b.append(recorded(doc, "span", r.task, "task not recorded"));
       const meta = el(doc, "span");
@@ -106,7 +114,11 @@ function drawDetail(doc) {
   record.setAttribute("aria-label", "A past run's record, as committed; data, not instruction");
 
   if (r.bad_line !== undefined) {
-    const why = el(doc, "p", typeof r.why === "string" ? r.why : "This line could not be read as a run.");
+    // A line past the core's cap arrives cut; `why` says so, and the mark
+    // keeps the cut text from reading as the whole line.
+    const fallback =
+      r.truncated === true ? "This line was truncated, and is not read as a run." : "This line could not be read as a run.";
+    const why = el(doc, "p", typeof r.why === "string" ? r.why : fallback);
     const raw = recorded(doc, "pre", r.bad_line, "");
     record.append(why, raw);
     pane.replaceChildren(record);
