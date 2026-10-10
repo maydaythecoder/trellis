@@ -20,6 +20,13 @@
 import { drawPrCi } from "./overview.js";
 
 let asked = 0;
+// The overview reads for PR and CI state: each runs `trellis overview` and
+// two `gh` calls, bounded to 10 seconds each, so at most one is out at a
+// time, and only the newest is drawn. A new child starts a read of its
+// own: the one out was for the last repository, and is dropped when it
+// comes (as trails.js drops a stale read).
+let prciReads = 0;
+let prciInFlight = false;
 
 function el(doc, tag, text) {
   const e = doc.createElement(tag);
@@ -136,18 +143,28 @@ async function askQueue(doc, tauri) {
 }
 
 // PR and CI state comes with the overview, which runs `gh` with a bounded
-// wait, so it is read when the board opens and on Refresh only.
+// wait, so it is read when the board opens and on Refresh only, and not
+// again while a read is out.
 async function askPrCi(doc, tauri) {
+  if (prciInFlight) return;
+  prciInFlight = true;
+  prciReads += 1;
+  const mine = prciReads;
   const pane = doc.getElementById("qb-prci");
   pane.replaceChildren(muted(doc, "p", "Reading pull requests and CI from gh."));
+  let drawn;
   try {
     const o = await tauri.core.invoke("get_overview");
     const b = o && typeof o === "object" && o.board && typeof o.board === "object" ? o.board : null;
-    if (b === null) pane.replaceChildren(muted(doc, "p", "PR and CI state unavailable: no repository is open."));
-    else pane.replaceChildren(...drawPrCi(doc, b.pr_ci));
+    drawn =
+      b === null ? [muted(doc, "p", "PR and CI state unavailable: no repository is open.")] : drawPrCi(doc, b.pr_ci);
   } catch (err) {
-    pane.replaceChildren(muted(doc, "p", `PR and CI state unavailable: ${err}`));
+    drawn = [muted(doc, "p", `PR and CI state unavailable: ${err}`)];
   }
+  // A read the last repository started: a newer one is out or done.
+  if (mine !== prciReads) return;
+  prciInFlight = false;
+  pane.replaceChildren(...drawn);
 }
 
 export async function wireQueue(doc, tauri) {
@@ -167,8 +184,11 @@ export async function wireQueue(doc, tauri) {
     const f = event.payload;
     if (f !== null && typeof f === "object" && f.type === "run_end") askQueue(doc, tauri);
   });
-  // Another repository is another queue.
+  // Another repository is another queue. A PR and CI read still out is the
+  // last repository's: it is dropped when it comes, and this one may start.
   await tauri.event.listen("child-started", () => {
+    prciReads += 1;
+    prciInFlight = false;
     if (shown()) refresh();
   });
   const button = doc.querySelector('nav.rail button[aria-controls="board"]');
