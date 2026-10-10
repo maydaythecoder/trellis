@@ -1169,12 +1169,15 @@ mod tests {
             assert!(js.contains(&format!("\"{id}\"")), "model.js draws no {id}");
         }
         // The gate is the view's `model`, in composer.js, and nothing else
-        // there sets the four controls' disabled state.
+        // there sets the four controls' disabled state; the form's submit
+        // handler refuses too, so Enter in a control a page bug left open
+        // sends nothing (#564 review).
         let composer_js = ui_file("composer.js");
         for want in [
             "p.text.disabled = !modelChosen",
             "p.send.disabled = !modelChosen",
             "\"model\" in view",
+            "if (!modelChosen)",
         ] {
             assert!(composer_js.contains(want), "composer.js lacks {want}");
         }
@@ -1417,6 +1420,40 @@ mod tests {
         assert!(
             ui_file("model.js").contains(r#"import { modelChoices } from "./settings.js";"#),
             "the picker's choices are not settings.js's"
+        );
+    }
+
+    /// One of `settings.js`'s choices, from `value: <value>,` to its close.
+    fn settings_choice(value: &str) -> String {
+        let settings = code_of("settings.js");
+        let at = settings
+            .find(&format!("value: {value},"))
+            .unwrap_or_else(|| panic!("settings.js offers no {value}"));
+        let rest = &settings[at..];
+        rest[..rest.find("});").expect("a choice closes")].to_string()
+    }
+
+    #[test]
+    fn page_picker_preselects_the_user_s_configured_spec() {
+        // The risk (#564 review): ADR 0048 section 5's owner-directed
+        // amendment asks for the user's configured spec preselected, and
+        // the picker preselected the spec the configuration resolves to,
+        // where the repository's wins over the user's. No JavaScript runs
+        // under cargo test, so this holds the text; a node smoke script
+        // with a fake DOM ran modelChoices (see the commit).
+        assert!(
+            settings_choice(r#""user""#).contains("preselect: true,"),
+            "the user's spec is not preselected"
+        );
+        assert!(
+            settings_choice(r#""default""#)
+                .contains("preselect: user === null && resolved !== null,"),
+            "repository default is preselected over the user's spec"
+        );
+        assert!(
+            settings_choice(r#""typed""#)
+                .contains("preselect: choices.every((c) => !c.preselect),"),
+            "the typed spec is not the last resort"
         );
     }
 

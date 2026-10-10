@@ -302,9 +302,12 @@ on stderr.
 - **`quit` and end of input differ on purpose.**
   - `quit` aborts an in-flight run, waits for its rollback, and exits.
   - End of input waits for the in-flight run to finish, then exits. So
-    `printf '{"type":"prompt",…}\n' | trellis rpc` runs one task to
-    completion. pi disposes the runtime at end of input; here that would make
-    one-shot piping useless.
+    `printf '{"type":"set_model",…}\n{"type":"prompt",…}\n' | trellis rpc`
+    runs one task to completion (*as built 2026-10-10, #564:* a `prompt` is
+    refused until a `set_model` has given the session a model, so the
+    piped example names one first; see "list_models and the model gate"). pi
+    disposes the runtime at end of input; here that would make one-shot
+    piping useless.
   - *Amended after the seventh review of PR #1:* **end of input declines
     every approval.** No `approve` can arrive once input has ended, so
     every question open then, and every one the run asks afterwards, is

@@ -62,9 +62,10 @@ export const REPOSITORY_DEFAULT = "repository default";
 // view's `available` (the core's own models answer) and `models` (the last
 // `list_models` answer); either may be null while unanswered.
 //
-// Preselected, as #564 asks: the configured spec, which is what "repository
-// default" pins; with nothing configured, the user's own spec; with neither,
-// the typed spec.
+// Preselected, as ADR 0048 section 5's owner-directed amendment says: the
+// user's configured spec. With none, the configured spec, which is what
+// "repository default" pins (#564's "the configured spec preselected");
+// with neither, the typed spec. Exactly one choice is preselected.
 export function modelChoices(available, models) {
   const configured = available && typeof available === "object" ? available.configured : null;
   const user = configured && typeof configured === "object" ? str(configured.user) : null;
@@ -75,7 +76,7 @@ export function modelChoices(available, models) {
     value: "default",
     label: `${REPOSITORY_DEFAULT}:`,
     spec: resolved ?? (listed ? "nothing configured" : "not reported yet"),
-    preselect: resolved !== null,
+    preselect: user === null && resolved !== null,
     saves: false,
     line: () => ({ id: lineId(), type: "set_model", configured: true }),
   });
@@ -84,7 +85,7 @@ export function modelChoices(available, models) {
       value: "user",
       label: "your configured spec:",
       spec: user,
-      preselect: resolved === null,
+      preselect: true,
       saves: false,
       line: () => ({ id: lineId(), type: "set_model", model: user }),
     });
