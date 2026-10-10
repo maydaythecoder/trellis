@@ -169,6 +169,13 @@ fn rpc_runs_a_prompt_to_completion_when_input_ends() {
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
     writeln!(stdin, r#"{{"id":"s","type":"get_state"}}"#).unwrap();
+    // A model chosen first, as every client must before a prompt (#564).
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({"id": "m", "type": "set_model", "model": f.spec})
+    )
+    .unwrap();
     writeln!(
         stdin,
         "{}",
@@ -243,6 +250,12 @@ fn rpc_a_backward_clock_step_still_reports_the_run_id_of_the_run() {
     writeln!(
         stdin,
         "{}",
+        serde_json::json!({"id": "m", "type": "set_model", "model": f.spec})
+    )
+    .unwrap();
+    writeln!(
+        stdin,
+        "{}",
         serde_json::json!({"id": "1", "type": "prompt", "task": "change f", "model": f.spec})
     )
     .unwrap();
@@ -270,6 +283,7 @@ fn rpc_approve_mode_asks_on_the_stream_while_input_stays_open() {
     )
     .unwrap();
     let mut rpc = Rpc::start(trellis(&f));
+    rpc.choose(&f.spec);
     rpc.send(serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": f.spec}));
     let q = rpc.next(|v| v["type"] == "approval_request");
     // What the desktop shows a question by (ADR 0048 §6).
@@ -338,6 +352,12 @@ fn rpc_run_whose_client_closes_every_pipe_still_rolls_back_and_writes_its_trail(
             return v;
         }
     };
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({"id": "m", "type": "set_model", "model": spec})
+    )
+    .unwrap();
     writeln!(
         stdin,
         "{}",
@@ -603,6 +623,7 @@ fn rpc_compact_mid_run_folds_the_older_turns_before_the_next_request() {
     let mut cmd = trellis(&f);
     cmd.env_remove(key_env);
     let mut rpc = Rpc::start(cmd);
+    rpc.choose("provider:stub#m");
     rpc.send(
         serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
                            "model": "provider:stub#m"}),
@@ -719,6 +740,15 @@ impl Rpc {
         stdin.flush().unwrap();
     }
 
+    /// Chooses `spec` as this session's model, as a client must before its
+    /// first `prompt` (#564), and waits for it to be taken. A prompt that
+    /// names its own `model` still runs on that one.
+    fn choose(&mut self, spec: &str) {
+        self.send(serde_json::json!({"id": "choose", "type": "set_model", "model": spec}));
+        let r = self.next(|v| v["type"] == "response" && v["id"] == "choose");
+        assert_eq!(r["success"], true, "{r}");
+    }
+
     /// The next record matching `pred`, keeping every record read.
     fn next(&mut self, pred: impl Fn(&Value) -> bool) -> Value {
         loop {
@@ -789,6 +819,7 @@ fn rpc_steer_reaches_the_next_model_request_and_cannot_converge_the_run() {
     let mut cmd = trellis(&f);
     cmd.env_remove(key_env);
     let mut rpc = Rpc::start(cmd);
+    rpc.choose("provider:stub#m");
     rpc.send(
         serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
                                 "model": "provider:stub#m"}),
@@ -869,6 +900,7 @@ fn rpc_steer_follow_ups_start_as_new_prompts_after_run_end_in_order() {
     )
     .unwrap();
     let mut rpc = Rpc::start(trellis(&f));
+    rpc.choose(&f.spec);
     rpc.send(
         serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
                                 "model": f.spec}),
@@ -925,6 +957,7 @@ fn rpc_a_prompt_right_after_run_end_is_accepted_and_runs() {
     let mut cmd = trellis(&f);
     cmd.env("TRELLIS_TEST_RPC_CLEANUP_DELAY_MS", "1500");
     let mut rpc = Rpc::start(cmd);
+    rpc.choose(&f.spec);
     rpc.send(
         serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
                                 "model": f.spec}),
@@ -1117,6 +1150,7 @@ fn rpc_get_codebase_returns_the_graph_codebase_lines_prints() {
     )
     .unwrap();
     let mut rpc = Rpc::start(trellis(&f));
+    rpc.choose(&f.spec);
     rpc.send(serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": f.spec}));
     let q = rpc.next(|v| v["type"] == "approval_request");
     rpc.send(serde_json::json!({"id": "g2", "type": "get_codebase", "limit": 40}));
@@ -1294,6 +1328,7 @@ fn rpc_get_radius_returns_reach_and_doubt_as_separate_counts() {
     )
     .unwrap();
     let mut rpc = Rpc::start(trellis(&f));
+    rpc.choose(&f.spec);
     rpc.send(serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": f.spec}));
     let q = rpc.next(|v| v["type"] == "approval_request");
     rpc.send(serde_json::json!({"id": "r2", "type": "get_radius", "symbol": "a.f"}));
@@ -1471,6 +1506,7 @@ fn rpc_get_queue_lists_what_queue_list_prints() {
     )
     .unwrap();
     let mut rpc = Rpc::start(trellis(&f));
+    rpc.choose(&f.spec);
     rpc.send(serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": f.spec}));
     let q = rpc.next(|v| v["type"] == "approval_request");
     rpc.send(serde_json::json!({"id": "q2", "type": "get_queue"}));
@@ -1598,6 +1634,7 @@ fn answered_three_ways(f: &Fixture, cmd: &Value) -> Value {
     )
     .unwrap();
     let mut rpc = Rpc::start(trellis(f));
+    rpc.choose(&f.spec);
     rpc.send(serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": f.spec}));
     let q = rpc.next(|v| v["type"] == "approval_request");
     rpc.send(with_id("b"));
@@ -2100,6 +2137,7 @@ fn rpc_get_session_stats_counts_each_model_s_tokens_from_the_trails_apart() {
         "no run yet: {before}"
     );
 
+    rpc.choose("provider:stub#m");
     // Two runs of the stub's model with a scripted run between them: the
     // stub's figures are summed across its runs, and the script, which
     // reports neither figure, is its own model with both unknown.
@@ -2215,6 +2253,7 @@ fn rpc_get_last_assistant_text_is_the_last_done_summary_as_data() {
         "no run yet"
     );
 
+    rpc.choose(&first);
     rpc.send(
         serde_json::json!({"id": "p1", "type": "prompt", "task": "change f",
                                 "model": first}),
@@ -2358,6 +2397,7 @@ fn rpc_stream_carries_every_field_the_desktop_reads() {
     let mut cmd = trellis(&f);
     cmd.env_remove(key_env);
     let mut rpc = Rpc::start(cmd);
+    rpc.choose("provider:stub#m");
     rpc.send(
         serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
                            "model": "provider:stub#m"}),
@@ -2472,6 +2512,7 @@ fn rpc_turn_carries_queue_wait_from_the_reply_header() {
     let mut cmd = trellis(&f);
     cmd.env_remove(key_env);
     let mut rpc = Rpc::start(cmd);
+    rpc.choose("provider:stub#m");
     rpc.send(
         serde_json::json!({"id": "p", "type": "prompt", "task": "read a.py",
                            "model": "provider:stub#m"}),
@@ -2550,6 +2591,7 @@ fn rpc_every_turn_through_the_governance_audit_keeps_the_contract() {
     let mut cmd = trellis(&f);
     cmd.env_remove(key_env);
     let mut rpc = Rpc::start(cmd);
+    rpc.choose("provider:stub#m");
     rpc.send(
         serde_json::json!({"id": "p", "type": "prompt", "task": "check f",
                            "model": "provider:stub#m"}),
@@ -2830,6 +2872,7 @@ fn rpc_classify_is_refused_while_a_run_is_in_flight() {
     )
     .unwrap();
     let mut rpc = Rpc::start(trellis(&f));
+    rpc.choose(&f.spec);
     rpc.send(serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": f.spec}));
     rpc.next(|v| v["type"] == "approval_request");
     rpc.send(serde_json::json!({"id": "c", "type": "classify", "text": "hello"}));
@@ -3182,6 +3225,7 @@ fn rpc_get_state_tier_is_null_before_any_run_and_then_the_run_s_own() {
     );
     assert_eq!(before["tier"], Value::Null, "{before}");
 
+    rpc.choose(&f.spec);
     rpc.send(
         serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
                                 "model": f.spec}),
@@ -3207,6 +3251,7 @@ fn rpc_get_state_tier_after_a_hosted_run_is_tier_1_from_the_protocol() {
     let mut cmd = trellis(&f);
     cmd.env_remove(key_env);
     let mut rpc = Rpc::start(cmd);
+    rpc.choose("provider:stub#m");
     rpc.send(
         serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
                                 "model": "provider:stub#m"}),
@@ -3292,6 +3337,7 @@ fn rpc_get_state_tier_after_a_colibri_refusal_is_the_refusal_the_run_decided() {
     let mut cmd = trellis(&f);
     cmd.env_remove(key_env);
     let mut rpc = Rpc::start(cmd);
+    rpc.choose("provider:coli#glm-5.2");
     rpc.send(
         serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
                                 "model": "provider:coli#glm-5.2"}),
@@ -3306,4 +3352,274 @@ fn rpc_get_state_tier_after_a_colibri_refusal_is_the_refusal_the_run_decided() {
     );
     rpc.finish();
     assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+// ---- #564: a session's model is chosen before its first prompt ----
+
+/// What a `prompt` sent before the session has a model is answered with.
+const CHOOSE_FIRST: &str = "choose a model first";
+
+#[test]
+fn rpc_model_select_prompt_before_a_model_is_chosen_is_refused() {
+    // The risk (#564, the owner's condition on ADR 0048 section 3's
+    // amendment): the desktop starts with the user's environment, keys
+    // included, so a prompt that ran before the user said which model to
+    // use would send work, and maybe a key, wherever the repository's
+    // config points. Neither a configured spec nor a prompt's own `model`
+    // is a choice; only `set_model` is.
+    let f = fixture("rpc-model-gate");
+    std::fs::create_dir_all(f.root.join(".trellis")).unwrap();
+    std::fs::write(
+        f.root.join(".trellis/config.toml"),
+        format!("[model]\nspec = {}\n", toml_string(&f.spec)),
+    )
+    .unwrap();
+    git(&f.root, &["add", "-A"]);
+    git(&f.root, &["commit", "-qm", "configure the script"]);
+    let mut rpc = Rpc::start(trellis(&f));
+    for (id, cmd) in [
+        (
+            "p1",
+            serde_json::json!({"id": "p1", "type": "prompt", "task": "change f"}),
+        ),
+        (
+            "p2",
+            serde_json::json!({"id": "p2", "type": "prompt", "task": "change f",
+                               "model": f.spec}),
+        ),
+    ] {
+        rpc.send(cmd);
+        let r = rpc.next(|v| v["type"] == "response" && v["id"] == id);
+        assert_eq!(r["success"], false, "{r}");
+        assert!(
+            r["error"].as_str().unwrap().starts_with(CHOOSE_FIRST),
+            "{r}"
+        );
+    }
+    // Confirming the configured spec is a choice, and the prompt runs.
+    rpc.send(serde_json::json!({"id": "c", "type": "set_model", "configured": true}));
+    let c = rpc.next(|v| v["type"] == "response" && v["id"] == "c");
+    assert_eq!(c["success"], true, "{c}");
+    assert_eq!(c["data"]["model"], serde_json::json!(f.spec), "{c}");
+    assert_eq!(c["data"]["configured"], true, "{c}");
+    rpc.send(serde_json::json!({"id": "p3", "type": "prompt", "task": "change f"}));
+    let p3 = rpc.next(|v| v["type"] == "response" && v["id"] == "p3");
+    assert_eq!(p3["success"], true, "{p3}");
+    let end = rpc.next(|v| v["type"] == "run_end" && v["id"] == "p3");
+    assert_eq!(end["outcome"], "not_converged", "{end}");
+    let records = rpc.finish();
+    let starts: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["type"] == "run_start")
+        .collect();
+    assert_eq!(
+        starts.len(),
+        1,
+        "only the prompt after the choice ran: {records:?}"
+    );
+}
+
+#[test]
+fn rpc_model_select_set_model_with_an_invalid_spec_is_refused() {
+    // The risk: a spec `--model` would refuse taken as the session's
+    // choice, which opens prompt input on a model no run can start; or a
+    // refused one saved to the user's config regardless.
+    let f = fixture("rpc-model-invalid");
+    let mut rpc = Rpc::start(trellis(&f));
+    let missing = scratch("rpc-model-invalid-gone").join("no-such-script.json");
+    for (id, cmd) in [
+        (
+            "a",
+            serde_json::json!({"id": "a", "type": "set_model", "model": "nonsense"}),
+        ),
+        (
+            "b",
+            serde_json::json!({"id": "b", "type": "set_model",
+                               "model": format!("scripted:{}", missing.display()),
+                               "save": true}),
+        ),
+        (
+            "c",
+            serde_json::json!({"id": "c", "type": "set_model", "model": 7}),
+        ),
+        (
+            "d",
+            serde_json::json!({"id": "d", "type": "set_model", "model": f.spec,
+                                  "save": "yes"}),
+        ),
+        (
+            "e",
+            serde_json::json!({"id": "e", "type": "set_model", "model": f.spec,
+                                  "configured": true}),
+        ),
+        // Nothing is configured, so there is nothing to confirm.
+        (
+            "f",
+            serde_json::json!({"id": "f", "type": "set_model", "configured": true}),
+        ),
+    ] {
+        rpc.send(cmd);
+        let r = rpc.next(|v| v["type"] == "response" && v["id"] == id);
+        assert_eq!(r["success"], false, "{id}: {r}");
+    }
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                                "model": f.spec}),
+    );
+    let p = rpc.next(|v| v["type"] == "response" && v["id"] == "p");
+    assert!(
+        p["error"].as_str().unwrap().starts_with(CHOOSE_FIRST),
+        "a refused set_model is no choice: {p}"
+    );
+    rpc.finish();
+    assert!(
+        !f.user.join("config.toml").exists(),
+        "a refused spec was not saved"
+    );
+}
+
+/// `s` as a TOML basic string, quoted and escaped.
+fn toml_string(s: &str) -> String {
+    serde_json::to_string(s).unwrap()
+}
+
+#[test]
+fn rpc_model_select_set_model_save_writes_the_user_config_not_the_repository_s() {
+    // The risk (ADR 0024 §3, ADR 0050 §2): where a model is, is the user's
+    // decision, so a model the desktop saves lands in the user's own file,
+    // as first_run writes it, and `.trellis/config.toml` is untouched.
+    let f = fixture("rpc-model-save");
+    std::fs::create_dir_all(f.root.join(".trellis")).unwrap();
+    let repo_text = "[checks]\ntests = [\"pytest\"]\n";
+    std::fs::write(f.root.join(".trellis/config.toml"), repo_text).unwrap();
+    git(&f.root, &["add", "-A"]);
+    git(&f.root, &["commit", "-qm", "repository config"]);
+    // A user file with a comment that must survive the write.
+    std::fs::write(
+        f.user.join("config.toml"),
+        "# mine\n[model]\nthinking = \"low\"\n",
+    )
+    .unwrap();
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.send(
+        serde_json::json!({"id": "s", "type": "set_model", "model": f.spec,
+                                "save": true}),
+    );
+    let s = rpc.next(|v| v["type"] == "response" && v["id"] == "s");
+    assert_eq!(s["success"], true, "{s}");
+    assert_eq!(
+        s["data"]["saved_to"],
+        serde_json::json!(f.user.join("config.toml").display().to_string()),
+        "{s}"
+    );
+    rpc.send(serde_json::json!({"id": "g", "type": "get_available_models"}));
+    let g = rpc.next(|v| v["type"] == "response" && v["id"] == "g");
+    rpc.finish();
+    assert_eq!(
+        g["data"]["configured"]["user"],
+        serde_json::json!(f.spec),
+        "the user's file names it: {g}"
+    );
+    let written = std::fs::read_to_string(f.user.join("config.toml")).unwrap();
+    assert!(written.starts_with("# mine\n"), "{written}");
+    assert!(
+        written.contains(&format!("spec = {}", toml_string(&f.spec))),
+        "{written}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.root.join(".trellis/config.toml")).unwrap(),
+        repo_text,
+        "the repository's file is as it was"
+    );
+    let status = trellis_vcs::command()
+        .args(["status", "--porcelain"])
+        .current_dir(&f.root)
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&status.stdout), "", "worktree");
+}
+
+#[test]
+fn rpc_model_select_list_models_names_every_default_runtime_it_probed() {
+    // The risk: the desktop's model pane lists what some other probe found,
+    // or says nothing of where it looked, so a user whose runtime is on
+    // another port cannot tell why it is missing. The addresses are
+    // first_run's; what answers on them depends on this machine, so only
+    // where it looked is asserted, and that no key value is in the answer.
+    let f = fixture("rpc-model-list");
+    let canary = format!("canary-list-models-{}", std::process::id());
+    std::fs::write(
+        f.user.join("config.toml"),
+        format!(
+            "[model]\nspec = {}\n\n[[providers]]\nname = \"mine\"\nprotocol = \"openai\"\n\
+             base_url = \"https://mine.invalid/v1\"\nkey_env = \"TRELLIS_TEST_LIST_KEY\"\n",
+            toml_string(&f.spec)
+        ),
+    )
+    .unwrap();
+    let mut cmd = trellis(&f);
+    cmd.env("TRELLIS_TEST_LIST_KEY", &canary);
+    let mut rpc = Rpc::start(cmd);
+    rpc.send(serde_json::json!({"id": "l", "type": "list_models"}));
+    let l = rpc.next(|v| v["type"] == "response" && v["id"] == "l");
+    rpc.finish();
+    assert_eq!(l["success"], true, "{l}");
+    assert_eq!(l["data"]["configured"], serde_json::json!(f.spec), "{l}");
+    let addresses: Vec<&str> = l["data"]["probed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["address"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        addresses,
+        [
+            "http://127.0.0.1:11434/api/tags",
+            "http://127.0.0.1:8080/v1/models",
+            "http://127.0.0.1:8000/v1/models",
+        ]
+    );
+    assert_eq!(
+        l["data"]["providers"],
+        serde_json::json!([{"name": "mine", "key_variable": "TRELLIS_TEST_LIST_KEY"}]),
+        "{l}"
+    );
+    assert!(!l.to_string().contains(&canary), "a key value: {l}");
+}
+
+#[test]
+fn rpc_model_select_replies_carry_every_field_the_contract_lists() {
+    // The risk (ADR 0048 §6): the desktop's model pane reads `list_models`
+    // and `set_model` by these names; a rename here would leave the pane
+    // empty and prompt input shut, with nothing failing on this side.
+    let c = contract();
+    let responses = &c["rpc"]["responses"];
+    let f = fixture("rpc-model-contract");
+    std::fs::write(
+        f.user.join("config.toml"),
+        "[[providers]]\nname = \"mine\"\nprotocol = \"openai\"\n\
+         base_url = \"https://mine.invalid/v1\"\n",
+    )
+    .unwrap();
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.send(serde_json::json!({"id": "l", "type": "list_models"}));
+    let l = rpc.next(|v| v["type"] == "response" && v["id"] == "l");
+    rpc.send(serde_json::json!({"id": "s", "type": "set_model", "model": f.spec}));
+    let s = rpc.next(|v| v["type"] == "response" && v["id"] == "s");
+    rpc.finish();
+    let mut gaps: Vec<String> = names(&responses["list_models"]["always"])
+        .into_iter()
+        .filter(|p| !carries(&l["data"], p))
+        .map(|p| format!("list_models.{p}"))
+        .collect();
+    gaps.extend(missing(
+        &s["data"],
+        &responses["set_model"]["always"],
+        "set_model",
+    ));
+    assert!(
+        gaps.is_empty(),
+        "the replies lack what tests/client_contract.json lists: {gaps:?}\n{l}\n{s}"
+    );
+    assert_eq!(s["data"]["saved_to"], Value::Null, "no save asked: {s}");
 }

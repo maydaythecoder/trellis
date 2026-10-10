@@ -13,6 +13,11 @@
 // "approve", from the composer's control, so a user can ask to approve
 // each listed call without editing the repository's config.
 //
+// Prompt input (the textarea, Send, the control and the starters) stays
+// disabled until the view's `model` says the child's session has a model
+// (#564): the page is served with them `disabled`, and only that key opens
+// them. The core refuses a `prompt` before then whatever the page sends.
+//
 // The starters are the prompt templates the child's `get_commands` listed,
 // and the undelivered list is what an `abort` answer handed back. Both are
 // repository or user text, so they reach the DOM through textContent only
@@ -31,6 +36,9 @@ function str(v) {
 // Whether a run is in flight, as the last view that carried it said. No
 // view yet is no run: the core refuses a prompt during one regardless.
 let running = false;
+// Whether the child's session has a model, as the last view that carried
+// `model` said. None yet is none: prompt input stays shut (#564).
+let modelChosen = false;
 let nextId = 0;
 
 function lineId(kind) {
@@ -72,16 +80,25 @@ async function send(tauri, p, line) {
   }
 }
 
-// What the composer looks like for whether a run is in flight: the label
-// says what Send will do, Stop shows only during a run, and the starters
-// and the control, which only a new prompt reads, are disabled while one
-// runs, as colibri's settings are during a generation.
+// What the composer looks like for whether a run is in flight and whether a
+// model is chosen: the label says what Send will do, Stop shows only during
+// a run, and the starters and the control, which only a new prompt reads,
+// are disabled while one runs, as colibri's settings are during a
+// generation. With no model chosen, the textarea and Send are disabled too.
 function drawRunning(doc) {
   const p = parts(doc);
-  p.label.textContent = running ? "Steer the run in flight" : "Task";
+  p.label.textContent = !modelChosen
+    ? "Task (choose a model first)"
+    : running
+      ? "Steer the run in flight"
+      : "Task";
   p.stop.hidden = !running;
-  p.control.disabled = running;
-  for (const b of p.startersList.querySelectorAll("button")) b.disabled = running;
+  p.text.disabled = !modelChosen;
+  p.send.disabled = !modelChosen;
+  p.control.disabled = running || !modelChosen;
+  for (const b of p.startersList.querySelectorAll("button")) {
+    b.disabled = running || !modelChosen;
+  }
 }
 
 function drawUndelivered(doc, list) {
@@ -109,7 +126,7 @@ function drawStarters(doc, list, tauri) {
     const description = str(t.description);
     if (description !== null) b.title = description;
     b.setAttribute("aria-label", `Start with the ${name} template`);
-    b.disabled = running;
+    b.disabled = running || !modelChosen;
     b.addEventListener("click", () => {
       send(tauri, p, { id: lineId("starter"), type: "prompt", prompt: name, control: control(p) });
     });
@@ -124,8 +141,11 @@ function drawStarters(doc, list, tauri) {
 // render.js's.
 export function drawComposer(doc, view, tauri) {
   if (view === null || typeof view !== "object") return;
-  if ("running" in view) {
-    running = view.running === true;
+  if ("running" in view || "model" in view) {
+    if ("running" in view) running = view.running === true;
+    if ("model" in view) {
+      modelChosen = view.model !== null && typeof view.model === "object";
+    }
     drawRunning(doc);
   }
   if ("undelivered" in view) drawUndelivered(doc, view.undelivered);
@@ -154,6 +174,10 @@ export async function wireComposer(doc, tauri) {
   });
   p.form.addEventListener("submit", async (e) => {
     e.preventDefault();
+    if (!modelChosen) {
+      p.note.textContent = "Choose a model first, in the Model pane above.";
+      return;
+    }
     const text = p.text.value;
     if (text.trim() === "") {
       p.note.textContent = running ? "Type the text to steer the run with." : "Type a task first.";

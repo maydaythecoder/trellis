@@ -18,6 +18,12 @@
   the approval dialog and the "trellis messages" pane, trellis's stderr
   shown as text and never read as data, are dialogs.js's (#302).
 
+  The model pane (#564), open at launch above every section, asks which
+  model this window's prompts run on; model.js draws it from the child's
+  list_models answer, with the configured spec preselected. Until the child
+  has taken a set_model, the composer's textarea, Send and control are
+  disabled, as served here, and the core refuses a prompt.
+
   The composer (#301) sits below every section, so a task can be sent from
   whichever one is shown. composer.js sends a prompt while no run is in
   flight and a steer while one is, by the view's own record; Stop shows only
@@ -47,6 +53,29 @@
         <p id="alert-text"></p>
         <button type="button" id="alert-dismiss">Dismiss</button>
       </div>
+
+      <details id="model-pane" class="model-pane" open>
+        <summary id="model-summary">Model: none chosen yet</summary>
+        <form id="model" class="model-form" aria-labelledby="model-summary">
+          <p id="model-current"></p>
+          <ul id="model-options" class="rows model-options"></ul>
+          <label for="model-typed">Model spec</label>
+          <input id="model-typed" name="spec" type="text" spellcheck="false" autocomplete="off">
+          <div class="composer-row">
+            <input id="model-save" name="save" type="checkbox">
+            <label for="model-save">Save to my user config (never the repository's)</label>
+          </div>
+          <div class="composer-row">
+            <button type="submit" id="model-use">Use this model</button>
+            <button type="button" id="model-refresh">Look again</button>
+          </div>
+          <p id="model-note" class="muted" role="status"></p>
+          <h3 id="model-probed-title">Where trellis looked</h3>
+          <ul id="model-probed" class="rows" aria-labelledby="model-probed-title"></ul>
+          <h3 id="model-providers-title">Your providers</h3>
+          <ul id="model-providers" class="rows" aria-labelledby="model-providers-title"></ul>
+        </form>
+      </details>
 
       <section id="overview" aria-labelledby="overview-title">
         <h2 id="overview-title">Overview</h2>
@@ -136,14 +165,14 @@
 
       <form id="composer" class="composer" aria-label="Composer">
         <label for="composer-text" id="composer-label">Task</label>
-        <textarea id="composer-text" name="task" rows="3"></textarea>
+        <textarea id="composer-text" name="task" rows="3" disabled></textarea>
         <div class="composer-row">
           <label for="composer-control">Approvals</label>
-          <select id="composer-control" name="control">
+          <select id="composer-control" name="control" disabled>
             <option value="approve" selected>approve: ask before each listed call</option>
             <option value="auto">auto: run without asking</option>
           </select>
-          <button type="submit" id="composer-send">Send</button>
+          <button type="submit" id="composer-send" disabled>Send</button>
           <button type="button" id="composer-stop" hidden>Stop</button>
         </div>
         <p id="composer-note" class="muted" role="status"></p>

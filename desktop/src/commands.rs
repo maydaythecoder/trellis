@@ -25,6 +25,11 @@
 //! to preselect it (section 5, amended). The page may not send a line with
 //! that id, so nothing it asks for can be taken as the child's report.
 //!
+//! No `prompt` is forwarded until the child has answered a `set_model` with
+//! success (#564, ADR 0048 section 5 as amended): the view records that
+//! answer as its `model`, and the page keeps prompt input disabled on the
+//! same key.
+//!
 //! Nothing restarts a child that exited, whether on `quit`, a crash or a
 //! broken pipe: the page is told, and `rpc_send` refuses until
 //! `open_repository` starts another. The page cannot send `quit`; only the
@@ -46,14 +51,16 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 pub const LINE_CAP: usize = 65_536;
 
 /// The `type`s `rpc_send` forwards: `rpc.rs`'s `COMMANDS` as #296 lists
-/// them, without `quit`, which only the core sends.
-pub const FORWARDED: [&str; 11] = [
+/// them, and `list_models` (#564), without `quit`, which only the core
+/// sends.
+pub const FORWARDED: [&str; 12] = [
     "prompt",
     "abort",
     "get_state",
     "get_messages",
     "set_model",
     "get_available_models",
+    "list_models",
     "approve",
     "steer",
     "follow_up",
@@ -328,6 +335,7 @@ impl Core {
                 ));
             };
             check_run_state(line, s.view.running())?;
+            check_model_chosen(line, &s.view)?;
             check_approve(line, &s.view)?;
             let w = child.writer();
             // Set before the line is written, so the reply, which a reader
@@ -478,6 +486,22 @@ fn check_run_state(line: &Value, running: bool) -> Result<(), String> {
     }
 }
 
+/// The model gate (#564, ADR 0048 section 5 as amended): a `prompt` only
+/// once this child has answered a `set_model` with success, so no prompt
+/// runs before the user has said which model it runs on. `rpc.rs` refuses
+/// the same line itself; the page keeps prompt input disabled on the same
+/// view, and this holds the gate when the page is wrong.
+fn check_model_chosen(line: &Value, view: &DesktopState) -> Result<(), String> {
+    if line.get("type").and_then(Value::as_str) == Some("prompt") && !view.model_chosen() {
+        return Err(
+            "rpc_send: choose a model first: trellis rpc has not taken a set_model from this \
+             window, so no prompt is sent; pick one in the Model pane"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 /// The approval rule (#302): an `approve` answers a question only when the
 /// view holds that question open, asked by the child and not yet answered,
 /// so a page bug cannot answer a question that was never asked. `rpc.rs`
@@ -527,6 +551,13 @@ fn check_model(line: &Value, configured: Option<&Configured>) -> Result<(), Stri
         // default: rpc reads only a string, and this names nothing.
         (Some("prompt"), None | Some(Value::Null)) => return Ok(()),
         (Some("prompt" | "set_model"), Some(Value::String(m))) => m,
+        // Confirming the configured spec names no model (#564): rpc pins
+        // whatever the configuration says, and counts it as the
+        // configuration's choice, not the user's, so no key goes anywhere a
+        // run with no `model` would not send it.
+        (Some("set_model"), None) if line.get("configured") == Some(&Value::Bool(true)) => {
+            return Ok(());
+        }
         (Some("prompt"), Some(_)) => {
             return Err(
                 "rpc_send: the model rule: a prompt's model is a spec string, or null for the \
@@ -1130,6 +1161,20 @@ mod tests {
         );
     }
 
+    /// The line that tells the view the child took a `set_model`, as
+    /// `run_started` stands in for a run: the child itself was sent none.
+    fn model_set(core: &Core) {
+        core.stdout_line(
+            generation(core),
+            &line(
+                json!({"type": "response", "command": "set_model", "id": "m",
+                          "success": true,
+                          "data": {"model": "scripted:x", "configured": false,
+                                   "saved_to": null}}),
+            ),
+        );
+    }
+
     #[test]
     fn rpc_send_refuses_a_prompt_while_a_run_is_in_flight() {
         // The risk (#301): a page that missed run_start sends a second
@@ -1153,8 +1198,10 @@ mod tests {
         );
         assert_eq!(core.send(&json!({"id": "ab", "type": "abort"})), Ok(()));
         rec.wait_for("rpc-frame", |f| f["id"] == "ab");
-        // Once the run has ended, the refusal is gone.
+        // Once the run has ended, the refusal is gone. A model is set first:
+        // the model gate (#564) is its own rule, and holds here regardless.
         run_ended(&core);
+        model_set(&core);
         assert_eq!(
             core.send(&json!({"id": "p3", "type": "prompt", "task": "t", "model": null})),
             Ok(())
@@ -1190,6 +1237,67 @@ mod tests {
         for d in &dirs {
             let _ = std::fs::remove_dir_all(d);
         }
+    }
+
+    #[test]
+    fn model_gate_rpc_send_refuses_a_prompt_until_the_child_took_a_set_model() {
+        // The risk (#564): a page that drew the composer open, or never
+        // drew it shut, sends a prompt before the user chose a model, and
+        // the core forwards it on the page's word rather than its own
+        // record of the child's answer.
+        let (core, rec, dirs) = with_child("model-gate");
+        let prompt = json!({"id": "p", "type": "prompt", "task": "t"});
+        let err = core.send(&prompt).unwrap_err();
+        assert!(err.contains("choose a model first"), "{err}");
+        // Asking what there is, and choosing, are forwarded meanwhile.
+        assert_eq!(
+            core.send(&json!({"id": "l", "type": "list_models"})),
+            Ok(())
+        );
+        assert_eq!(
+            core.send(&json!({"id": "c", "type": "set_model", "configured": true})),
+            Ok(()),
+            "confirming the configured spec names no model, so the model rule passes it"
+        );
+        let refused = rec.wait_for("rpc-frame", |f| f["id"] == "c");
+        assert_eq!(
+            refused["success"], false,
+            "nothing is configured: {refused}"
+        );
+        assert!(
+            core.send(&prompt)
+                .unwrap_err()
+                .contains("choose a model first"),
+            "a refused set_model is no choice"
+        );
+        // The child's yes opens it, and its exit shuts it again.
+        model_set(&core);
+        assert_eq!(core.send(&prompt), Ok(()));
+        rec.wait_for("rpc-frame", |f| f["id"] == "p");
+        finish(&core).unwrap();
+        let err = core.send(&prompt).unwrap_err();
+        assert!(no_child(&err), "{err}");
+        assert!(!core.lock().view.model_chosen(), "the next child has none");
+        for d in &dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn model_gate_confirming_the_configured_spec_passes_the_model_rule_and_naming_one_does_not() {
+        // The risk (ADR 0048 section 4): `configured: true` used to smuggle
+        // a hosted spec past the guard beside it, or refused outright, so
+        // the configured spec could not be chosen from the desktop.
+        let (core, _rec) = idle_core();
+        let confirm = json!({"id": "c", "type": "set_model", "configured": true});
+        assert!(forwarded(&core, &confirm), "before the models answer too");
+        let (core, _rec) = answered(json!(REPO_SPEC), Value::Null);
+        assert!(forwarded(&core, &confirm));
+        let both = json!({"id": "c", "type": "set_model", "configured": true,
+                          "model": REPO_SPEC});
+        assert!(!forwarded(&core, &both), "a named spec is still judged");
+        let not_true = json!({"id": "c", "type": "set_model", "configured": "yes"});
+        assert!(!forwarded(&core, &not_true));
     }
 
     #[test]
@@ -1436,6 +1544,8 @@ mod tests {
                 "budget",
                 "checks",
                 "edits",
+                "model",
+                "models",
                 "outcome",
                 "radius",
                 "running",
