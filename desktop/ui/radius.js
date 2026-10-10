@@ -16,8 +16,10 @@
 // index.html loads this as a module of its own.
 
 let asked = 0;
-// The id of the question asked last: only its answer is shown, so a slow
-// answer to an earlier question cannot replace a newer one.
+// The id of the question asked last, kept after its answer comes: rpc
+// answers each get_radius on its own thread, so an earlier question's
+// answer can arrive after it, and only the last one's is shown. `null`
+// until one is asked, when nothing is shown.
 let waiting = null;
 
 function el(doc, tag, text) {
@@ -79,8 +81,7 @@ function counted(doc, list, rest, further, withExplain) {
 export function drawRadius(doc, payload) {
   const pane = doc.getElementById("rd-result");
   if (payload === null || typeof payload !== "object") return;
-  if (waiting !== null && payload.id !== waiting) return;
-  waiting = null;
+  if (payload.id !== waiting) return;
   if (typeof payload.error === "string") {
     status(doc, payload.error);
     pane.replaceChildren();
@@ -109,8 +110,8 @@ export function drawRadius(doc, payload) {
     doc,
     "p",
     "The two blocks count different things and must not be divided. Reach is a floor, not a " +
-      "boundary: roughly three call edges in ten are statically invisible in Python, and any " +
-      "unbound site above may also reach this symbol.",
+      "boundary: roughly three call edges in ten are statically invisible in Python (Constraint 1), " +
+      "and any unbound site above may also reach this symbol.",
   );
   note.className = "muted";
   pane.replaceChildren(reach, doubt, note);
@@ -130,7 +131,8 @@ async function ask(doc, tauri) {
   try {
     await tauri.core.invoke("rpc_send", { line: { id, type: "get_radius", symbol } });
   } catch (err) {
-    if (waiting === id) waiting = null;
+    // Still the last question: an earlier one answered now is not shown
+    // in place of this refusal.
     status(doc, `Open a repository to see a radius. ${err}`);
   }
 }

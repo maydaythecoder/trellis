@@ -11,7 +11,7 @@
 //! event. `ui/radius.js` only draws it.
 //!
 //! The rule is checked here too, not only in trellis: an answer carrying a
-//! key shaped like a ratio (`ratio`, `percent`, `fraction`, `total`) is
+//! key with a ratio word in it (`ratio`, `percent`, `fraction`, `total`) is
 //! treated as bad data and not shown, because a later trellis that added
 //! one would put the 3.7% line back on screen. A figure the answer left out
 //! is `null`, never 0. The symbol, file paths, reasons and trellis's own
@@ -27,8 +27,12 @@ pub const REASONS_SHOWN: usize = 3;
 pub const FILES_SHOWN: usize = 5;
 
 /// The words no key of a radius may contain (CLAUDE.md rule 3; the same
-/// list DESK-14's test holds trellis to).
+/// list DESK-14's test holds trellis to), each as a word of the key.
 const RATIO_WORDS: [&str; 4] = ["ratio", "percent", "fraction", "total"];
+
+/// What may follow a ratio word in one word of a key: its plural, and
+/// `percentage`.
+const RATIO_ENDINGS: [&str; 4] = ["", "s", "age", "ages"];
 
 /// Call sites that reach the symbol.
 #[derive(Debug, Clone, PartialEq)]
@@ -78,12 +82,41 @@ pub struct Radius {
     pub doubt: Doubt,
 }
 
+/// Whether one of `k`'s words is a ratio word. Words are split at every
+/// character that is not a letter or digit and where lower case turns to
+/// upper (`resolvedRatio`), so `duration_ms`, `iteration`, `declaration`
+/// and `subtotal`, which only hold the letters, are not refused as if they
+/// carried a ratio.
+fn names_a_ratio(k: &str) -> bool {
+    let mut words: Vec<String> = Vec::new();
+    let mut word = String::new();
+    let mut lower_before = false;
+    for c in k.chars() {
+        if !c.is_alphanumeric() {
+            words.push(std::mem::take(&mut word));
+            lower_before = false;
+            continue;
+        }
+        if c.is_uppercase() && lower_before {
+            words.push(std::mem::take(&mut word));
+        }
+        lower_before = c.is_lowercase() || c.is_ascii_digit();
+        word.extend(c.to_lowercase());
+    }
+    words.push(word);
+    words.iter().any(|w| {
+        RATIO_WORDS.iter().any(|r| {
+            w.strip_prefix(r)
+                .is_some_and(|rest| RATIO_ENDINGS.contains(&rest))
+        })
+    })
+}
+
 /// The first key in `v`, at any depth, that contains a ratio word.
 fn ratio_key(v: &Value) -> Option<String> {
     match v {
         Value::Object(o) => o.iter().find_map(|(k, x)| {
-            let lower = k.to_lowercase();
-            if RATIO_WORDS.iter().any(|w| lower.contains(w)) {
+            if names_a_ratio(k) {
                 Some(k.clone())
             } else {
                 ratio_key(x)
@@ -411,6 +444,70 @@ mod tests {
         }
         // A plain answer is not refused.
         assert!(read(&answer(2, 2)).is_ok());
+    }
+
+    #[test]
+    fn ratio_words_match_whole_words_only() {
+        // The risk (#308 review): a key matched on a substring, so a later
+        // trellis that adds `duration_ms` (it holds "ratio") has every
+        // radius refused as bad data; or a ratio spelt in camel case or
+        // inflected slipping past a whole-word match.
+        for fine in [
+            "duration_ms",
+            "iteration",
+            "declaration",
+            "subtotal",
+            "call_sites",
+            "touched_files",
+        ] {
+            assert!(!names_a_ratio(fine), "{fine} refused");
+            let mut a = answer(1, 1);
+            a["reach"][fine] = json!(1);
+            assert!(read(&a).is_ok(), "{fine}: an answer refused");
+        }
+        for bad in [
+            "ratio",
+            "resolved_ratio",
+            "Percent",
+            "resolved_percentage",
+            "fraction_resolved",
+            "total_sites",
+            "call_sites_total",
+            "resolvedRatio",
+            "doubtFraction",
+            "totals",
+            "resolved-percent",
+        ] {
+            assert!(names_a_ratio(bad), "{bad} passed");
+        }
+        // The note under the blocks cites where the figure comes from, as
+        // the CLI's radius text does (index_cmd.rs, "Constraint 1").
+        let js = ui_file("radius.js");
+        assert!(
+            js.contains("statically invisible in Python (Constraint 1)"),
+            "radius.js gives the three-in-ten figure without its source"
+        );
+    }
+
+    #[test]
+    fn radius_script_draws_only_the_last_question_s_answer() {
+        // The risk (#308 review): rpc answers each get_radius on its own
+        // thread, so an older question's answer can come after the newer
+        // one's. radius.js forgot the id it waited on once an answer came,
+        // and the late older answer then replaced the newer one under the
+        // newer symbol. No JavaScript runs under cargo test, so this holds
+        // the text; a node smoke script with a fake DOM ran the module
+        // (see the commit).
+        let js = ui_file("radius.js");
+        assert!(
+            js.contains("if (payload.id !== waiting) return;"),
+            "radius.js does not compare every answer with the last id asked"
+        );
+        let reset = js
+            .lines()
+            .filter(|l| l.contains("waiting = null") && !l.trim_start().starts_with("let "))
+            .count();
+        assert_eq!(reset, 0, "radius.js forgets the last id asked");
     }
 
     #[test]
