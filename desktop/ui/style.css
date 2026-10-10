@@ -435,3 +435,24 @@ code {
   font: inherit;
   cursor: pointer;
 }
+
+/* The status bar (#306): five short facts on one wrapping line. */
+.status-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  margin: 0 0 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--pane-bg);
+  font-size: 12px;
+}
+
+.status-bar dt {
+  color: var(--muted);
+}
+
+.status-bar dd {
+  margin: 0 8px 0 0;
+}

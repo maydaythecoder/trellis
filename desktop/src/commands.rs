@@ -1581,6 +1581,7 @@ mod tests {
                 "actions",
                 "alert",
                 "approvals",
+                "available",
                 "budget",
                 "checks",
                 "edits",
