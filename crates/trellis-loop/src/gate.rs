@@ -347,7 +347,7 @@ impl ToolGate for ApprovalGate {
                     // the path rules, an existing file, and git's ignore
                     // rules (one `git check-ignore`, only when the others
                     // pass, as in `write_file`).
-                    let refused = crate::orchestrator::write_refusal(&self.root, path).is_some()
+                    let refused = crate::path_rules::write_refusal(&self.root, path).is_some()
                         || self.root.join(path).exists()
                         || crate::orchestrator::ignored_refusal(&self.root, path)
                             .await
@@ -573,7 +573,7 @@ pub struct EditPreview {
 pub fn preview_edit(root: &Path, path: &str, old: &str, new: &str) -> Option<EditPreview> {
     // The orchestrator's predicate: `/x` on Windows is not `is_absolute()`,
     // and a preview must not read outside the repository either.
-    if crate::orchestrator::write_refusal(root, path).is_some() {
+    if crate::path_rules::write_refusal(root, path).is_some() {
         return None;
     }
     let src = std::fs::read_to_string(root.join(path))

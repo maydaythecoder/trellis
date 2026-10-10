@@ -1368,7 +1368,7 @@ fn one_path_rule_read_refusal_and_the_search_filter_agree_on_every_entry() {
             trellis_core::paths::resolve_repo_input(root, &root.join(rel)),
             Ok(Some(_))
         );
-        let refused = crate::orchestrator::read_refusal(root, rel);
+        let refused = crate::path_rules::read_refusal(root, rel);
         assert_eq!(refused.is_none(), shown, "{rel}: {refused:?}");
     }
 }

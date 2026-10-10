@@ -394,7 +394,7 @@ fn package_code(packages: Option<&Path>, root: &Path, items: &[TrustItem]) -> Op
 ///
 /// Two tests, and a file failing either is refused. The first is on the
 /// files the item hashed, by the path as written
-/// ([`crate::orchestrator::names_trellis_dir`]). The second has its own
+/// ([`crate::path_rules::names_trellis_dir`]). The second has its own
 /// resolver (review round 12), because what gets hashed is narrower than
 /// what a command can name: [`repo_file`] drops a path with `..` and an
 /// absolute one that is not lexically under `root`, so
@@ -433,7 +433,7 @@ fn outside_code(root: &Path, items: &[TrustItem]) -> Option<String> {
     };
     for item in items {
         for (path, _) in &item.files {
-            if !crate::orchestrator::names_trellis_dir(path) {
+            if !crate::path_rules::names_trellis_dir(path) {
                 note(format!("{} names `{}`", plain(&item.label), plain(path)));
             }
         }
