@@ -1755,6 +1755,14 @@ mod tests {
         assert!(b["unresolved"].as_u64().unwrap() >= 1, "{b}");
         let a = modules.iter().find(|m| m["module"] == "app.a").unwrap();
         assert_eq!(a["edges_in"], 1, "{a}");
+        // A `limit` reaches trellis, and a region past it says it is the
+        // modules listed, not the package's size (#307 review).
+        rec.take();
+        core.send(&json!({"id": "desktop-codebase", "type": "get_codebase", "limit": 1}))
+            .unwrap();
+        let v = rec.wait_for("codebase", |_| true);
+        assert_eq!(v["modules_not_drawn"], 1, "{v}");
+        assert_eq!(v["overview"]["regions"][0]["count"]["text"], "1 listed");
         finish(&core).unwrap();
 
         // A directory with no .git entry: trellis refuses, and the view
