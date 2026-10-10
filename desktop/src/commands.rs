@@ -314,7 +314,8 @@ impl Core {
     }
 
     /// `rpc_send`: checks the line, then the model it names against the
-    /// child's answer, then forwards it to the child.
+    /// child's answer, then that the child is there and the line fits
+    /// whether a run is in flight, then forwards it to the child.
     pub fn send(&self, line: &Value) -> Result<(), String> {
         check_line(line)?;
         let writer = {
@@ -326,6 +327,7 @@ impl Core {
                     s.why_none
                 ));
             };
+            check_run_state(line, s.view.running())?;
             let w = child.writer();
             // Set before the line is written, so the reply, which a reader
             // thread may feed as soon as it is written, finds it set.
@@ -440,7 +442,39 @@ fn check_line(line: &Value) -> Result<(), String> {
             "rpc_send: the id {MODELS_ID:?} is the desktop's own; use another"
         ));
     }
+    // `rpc.rs` takes `auto` or `approve` and refuses any other string, but
+    // reads a value that is not a string as no `control`, so the run would
+    // take the repository's mode while the page showed another. Absent is
+    // the repository's mode, said by leaving the field out.
+    if o.get("type").and_then(Value::as_str) == Some("prompt")
+        && let Some(c) = o.get("control")
+        && !matches!(c.as_str(), Some("auto" | "approve"))
+    {
+        return Err(format!(
+            "rpc_send: a prompt's control is \"auto\" or \"approve\", or left out for the \
+             repository's mode; got {c}"
+        ));
+    }
     Ok(())
+}
+
+/// The composer's rule (#301), from the view's own record of whether a run
+/// is in flight (`run_start` to `run_end`, or the child's exit): a `prompt`
+/// only while none is, and a `steer` or `abort` only while one is. `rpc.rs`
+/// refuses the same lines itself; the page draws the composer from the same
+/// view, and this holds the rule when the page is wrong.
+fn check_run_state(line: &Value, running: bool) -> Result<(), String> {
+    match (line.get("type").and_then(Value::as_str), running) {
+        (Some("prompt"), true) => Err(
+            "rpc_send: a run is in flight, so a prompt is refused until it ends; steer the run, \
+             or Stop it"
+                .into(),
+        ),
+        (Some(ty @ ("steer" | "abort")), false) => Err(format!(
+            "rpc_send: no run is in flight, so there is nothing to {ty}; send a prompt to start one"
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// The core's question to a new child, its first line.
@@ -1049,6 +1083,133 @@ mod tests {
         }
     }
 
+    /// A core with a running child on a scratch directory, and the line
+    /// that tells its view a run started, so the run-state rule can be
+    /// reached without running one: the child itself never started it.
+    fn with_child(name: &str) -> (Core, Arc<Recorder>, [PathBuf; 2]) {
+        let repo = scratch(&format!("{name}-repo"));
+        let config = scratch(&format!("{name}-config"));
+        let (core, rec) = core_with(&config);
+        core.start(&repo).unwrap();
+        (core, rec, [repo, config])
+    }
+
+    fn run_started(core: &Core) {
+        core.stdout_line(
+            generation(core),
+            &line(json!({"type": "run_start", "id": "p"})),
+        );
+    }
+
+    fn run_ended(core: &Core) {
+        core.stdout_line(
+            generation(core),
+            &line(json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p"})),
+        );
+    }
+
+    #[test]
+    fn rpc_send_refuses_a_prompt_while_a_run_is_in_flight() {
+        // The risk (#301): a page that missed run_start sends a second
+        // prompt into a run in flight, and the core forwards it on the
+        // page's word rather than its own record.
+        let (core, rec, dirs) = with_child("prompt-inflight");
+        let prompt = json!({"id": "p2", "type": "prompt", "task": "again"});
+        run_started(&core);
+        let err = core.send(&prompt).unwrap_err();
+        assert!(err.contains("a run is in flight"), "{err}");
+        assert!(err.contains("prompt is refused"), "{err}");
+        // The prompt's starter form is the same line.
+        let err = core
+            .send(&json!({"id": "s", "type": "prompt", "prompt": "fix"}))
+            .unwrap_err();
+        assert!(err.contains("a run is in flight"), "{err}");
+        // Steering and Stop are what a run in flight takes.
+        assert_eq!(
+            core.send(&json!({"id": "st", "type": "steer", "message": "m"})),
+            Ok(())
+        );
+        assert_eq!(core.send(&json!({"id": "ab", "type": "abort"})), Ok(()));
+        rec.wait_for("rpc-frame", |f| f["id"] == "ab");
+        // Once the run has ended, the refusal is gone.
+        run_ended(&core);
+        assert_eq!(
+            core.send(&json!({"id": "p3", "type": "prompt", "task": "t", "model": null})),
+            Ok(())
+        );
+        rec.wait_for("rpc-frame", |f| f["id"] == "p3");
+        finish(&core).unwrap();
+        for d in &dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn rpc_send_refuses_steer_and_abort_with_no_run_in_flight() {
+        // The risk (#301): Stop or a steer sent while nothing runs, which
+        // the page shows only during a run; or the child exits mid-run and
+        // the core still takes a steer for a run nobody is finishing.
+        let (core, _rec, dirs) = with_child("steer-idle");
+        for (ty, l) in [
+            ("steer", json!({"id": "s", "type": "steer", "message": "m"})),
+            ("abort", json!({"id": "a", "type": "abort"})),
+        ] {
+            let err = core.send(&l).unwrap_err();
+            assert!(err.contains("no run is in flight"), "{l}: {err}");
+            assert!(err.contains(&format!("nothing to {ty}")), "{l}: {err}");
+        }
+        run_started(&core);
+        run_ended(&core);
+        let err = core.send(&json!({"id": "a", "type": "abort"})).unwrap_err();
+        assert!(err.contains("no run is in flight"), "after run_end: {err}");
+        // Another type is not held to the run state.
+        assert_eq!(core.send(&json!({"id": "g", "type": "get_state"})), Ok(()));
+        finish(&core).unwrap();
+        for d in &dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn rpc_send_refuses_a_prompt_control_other_than_auto_or_approve() {
+        // The risk (#301, ADR 0052 plan): a control rpc reads as absent (a
+        // boolean, a number, `null`) runs in the repository's mode while
+        // the composer showed the other, so a user who asked to approve
+        // each edit is not asked.
+        let (core, _rec) = idle_core();
+        for bad in [
+            json!("manual"),
+            json!("Approve"),
+            json!(" auto"),
+            json!(""),
+            json!(true),
+            json!(null),
+            json!(1),
+            json!(["approve"]),
+        ] {
+            let l = json!({"id": "p", "type": "prompt", "task": "t", "control": bad});
+            let err = core.send(&l).unwrap_err();
+            assert!(err.contains("control"), "{l}: {err}");
+            assert!(err.contains(r#""auto" or "approve""#), "{l}: {err}");
+        }
+        for ok in ["auto", "approve"] {
+            let l = json!({"id": "p", "type": "prompt", "task": "t", "control": ok});
+            assert!(no_child(&core.send(&l).unwrap_err()), "{l}");
+        }
+        // Left out, it is the repository's mode; on another type it is not
+        // read.
+        assert!(no_child(
+            &core
+                .send(&json!({"id": "p", "type": "prompt", "task": "t"}))
+                .unwrap_err()
+        ));
+        assert!(no_child(
+            &core
+                .send(&json!({"id": "g", "type": "get_state", "control": 7}))
+                .unwrap_err()
+        ));
+    }
+
     #[test]
     fn open_repository_refuses_a_directory_that_is_not_a_repository() {
         // The risk: trellis started on a folder that is not a repository,
@@ -1208,8 +1369,10 @@ mod tests {
                 "outcome",
                 "radius",
                 "running",
+                "starters",
                 "tier",
-                "transcript"
+                "transcript",
+                "undelivered"
             ]
         );
         assert!(

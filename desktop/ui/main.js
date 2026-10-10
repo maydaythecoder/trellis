@@ -1,9 +1,9 @@
 // The TRELLIS desktop page's entry module (ADR 0048 section 5).
 //
 // It switches the rail's sections and hands what the desktop's Rust core
-// emits to render.js and overview.js, and computes nothing: the run panes
-// the core's reducer sends as `view` events, which child started or why
-// none did, and the overview object trellis printed.
+// emits to render.js, overview.js and composer.js, and computes nothing: the
+// run panes the core's reducer sends as `view` events, which child started
+// or why none did, and the overview object trellis printed.
 // There is no bundler, so it reaches Tauri through the global
 // window.__TAURI__ rather than an import of @tauri-apps/api.
 //
@@ -13,6 +13,7 @@
 
 import { drawView } from "./render.js";
 import { drawOverview } from "./overview.js";
+import { drawComposer, wireComposer } from "./composer.js";
 
 function show(id, text) {
   document.getElementById(id).textContent = text;
@@ -86,8 +87,10 @@ async function main() {
 
   // Every listener is registered, and awaited, before anything is asked
   // for, so no answer arrives before something listens for it.
+  await wireComposer(document, tauri);
   await tauri.event.listen("view", (event) => {
     drawView(document, event.payload);
+    drawComposer(document, event.payload, tauri);
     // A run's end is a new newest trail, so the last run pane is stale. A
     // get_state reply resends the same outcome, which changes nothing.
     const o = event.payload && event.payload.outcome;
