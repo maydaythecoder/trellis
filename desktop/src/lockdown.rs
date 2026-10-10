@@ -399,6 +399,71 @@ mod tests {
     }
 
     #[test]
+    fn page_has_one_alert_region() {
+        // The risk (#302): two alert regions, so a screen reader announces a
+        // failure twice or in the wrong place; or a banner dialogs.js does
+        // not draw, so a failure is never said; or the approval dialog,
+        // trellis messages pane or their buttons missing from the page.
+        let page = page();
+        let alerts: Vec<usize> = (0..page.len())
+            .filter(|&i| page[i].attr("role") == Some("alert"))
+            .collect();
+        assert_eq!(alerts.len(), 1, "one role=\"alert\"");
+        assert_eq!(page[alerts[0]].attr("id"), Some("alert"));
+        assert!(
+            within(&page, index_of(&page, "alert-text"), alerts[0]),
+            "the alert text is in the banner"
+        );
+        let dialog = index_of(&page, "approval");
+        assert_eq!(page[dialog].tag, "dialog");
+        for (id, text) in [
+            ("approval-approve", "Approve"),
+            ("approval-reject", "Reject"),
+        ] {
+            let b = index_of(&page, id);
+            assert!(within(&page, b, dialog), "#{id} is outside the dialog");
+            assert_eq!(page[b].tag, "button");
+            assert_eq!(page[b].text.trim(), text);
+        }
+        for id in ["approval-question", "approval-detail"] {
+            assert!(within(&page, index_of(&page, id), dialog), "#{id}");
+        }
+        let messages = index_of(&page, "messages");
+        assert_eq!(page[messages].tag, "details");
+        let summary = page
+            .iter()
+            .enumerate()
+            .find(|(i, e)| e.tag == "summary" && within(&page, *i, messages))
+            .map(|(_, e)| e.text.trim().to_string());
+        assert_eq!(summary.as_deref(), Some("trellis messages"));
+        let js = ui_file("dialogs.js");
+        for want in [
+            "\"alert\"",
+            "\"alert-text\"",
+            "\"approval\"",
+            "\"messages-log\"",
+            "showModal()",
+            "returnValue === \"approve\"",
+            "\"unhandledrejection\"",
+        ] {
+            assert!(js.contains(want), "dialogs.js has no {want}");
+        }
+        for bad in [
+            "innerHTML",
+            "outerHTML",
+            "insertAdjacentHTML",
+            "document.write",
+        ] {
+            assert!(!js.contains(bad), "dialogs.js uses {bad}");
+        }
+        assert!(
+            ui_file("main.js")
+                .contains(r#"import { drawDialogs, wireDialogs } from "./dialogs.js";"#),
+            "main.js does not load dialogs.js"
+        );
+    }
+
+    #[test]
     fn page_run_section_holds_the_panes_render_draws() {
         // The risk: render.js drawing into an id the page does not have, so
         // a pane trellis reported is silently never shown; or DESK-10's
@@ -676,7 +741,13 @@ mod tests {
             assert!(!e.attrs.contains_key("style"), "<{} style=...>", e.tag);
             assert_ne!(e.tag, "style", "a <style> element");
         }
-        for name in ["main.js", "render.js", "overview.js", "composer.js"] {
+        for name in [
+            "main.js",
+            "render.js",
+            "overview.js",
+            "composer.js",
+            "dialogs.js",
+        ] {
             let js = ui_file(name);
             for bad in [".style", "cssText", "\"style\"", "'style'"] {
                 assert!(!js.contains(bad), "{name} writes a style: {bad}");
