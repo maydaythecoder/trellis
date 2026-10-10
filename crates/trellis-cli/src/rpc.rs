@@ -776,6 +776,10 @@ impl Server {
                 }
             },
         };
+        if let Err(e) = repository_root(&self.root, "get_codebase") {
+            self.respond(id, "get_codebase", Err(e));
+            return;
+        }
         let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
         self.waiters.push(std::thread::spawn(move || {
             let data = crate::doctor_cmd::codebase_json(&root, limit);
@@ -799,6 +803,10 @@ impl Server {
             );
             return;
         };
+        if let Err(e) = repository_root(&self.root, "get_radius") {
+            self.respond(id, "get_radius", Err(e));
+            return;
+        }
         let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
         let symbol = symbol.to_string();
         self.waiters.push(std::thread::spawn(move || {
@@ -1696,6 +1704,27 @@ fn respond_on(sink: &Sink, id: Option<&str>, command: &str, result: Result<Value
     frame(sink, &v);
 }
 
+/// `Ok` when `root` is a repository, by the test every other root check
+/// in trellis makes: a `.git` entry, a directory or the file a worktree or
+/// submodule has. Otherwise the refusal `command` answers with.
+///
+/// `get_codebase` and `get_radius` index whatever is under the root, and
+/// `rpc` started outside a repository falls back to the working directory:
+/// from a home folder that walk read every file under it before anyone
+/// could tell no repository had been found (ADR 0048 §10, amended for
+/// #557). Checked before the walk's thread is started, so nothing under the
+/// root is read.
+fn repository_root(root: &Path, command: &str) -> Result<(), String> {
+    if root.join(".git").exists() {
+        return Ok(());
+    }
+    Err(format!(
+        "{command} refused: {} has no .git entry, and {command} reads only a repository \
+         (ADR 0048 section 10), so nothing was indexed; open trellis on a repository's root",
+        root.display()
+    ))
+}
+
 /// `get_state`'s view of how the last run ended.
 fn summary(r: &Result<RunExit>, id: Option<&str>) -> Value {
     let mut v = output::run_end(r, None, id);
@@ -2293,6 +2322,53 @@ mod tests {
             session_stats(d.path(), &ids),
             json!({"models": [], "runs_not_counted": 2})
         );
+    }
+
+    #[test]
+    fn rpc_contract_refusal_starts_no_indexing_thread() {
+        // The risk: a root with no `.git` (the `current_dir()` fallback
+        // from a home folder) refused only after `read_sources` had walked
+        // it. The refusal is answered before any thread is started, so
+        // nothing under the root is read.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("loose.py"), "def f():\n    return 1\n").unwrap();
+        let out: Arc<Mutex<Vec<u8>>> = Arc::default();
+        let mut s = Server {
+            root: d.path().to_path_buf(),
+            sink: out.clone(),
+            mode: Mode::Quiet,
+            model: None,
+            running: None,
+            classifying: None,
+            last: Arc::default(),
+            ran: Arc::default(),
+            done: output::DoneSlot::default(),
+            tier: output::TierSlot::default(),
+            approvals: Arc::default(),
+            next_approval: Arc::default(),
+            input_closed: Arc::default(),
+            waiters: Vec::new(),
+        };
+        for cmd in [
+            json!({"id": "g", "type": "get_codebase"}),
+            json!({"id": "r", "type": "get_radius", "symbol": "f"}),
+        ] {
+            s.handle(&cmd);
+            assert!(s.waiters.is_empty(), "{cmd} started a thread");
+        }
+        let text = String::from_utf8(out.lock().unwrap().clone()).unwrap();
+        let answers: Vec<Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(answers.len(), 2, "{text}");
+        for a in &answers {
+            assert_eq!(a["success"], false, "{a}");
+            assert!(
+                a["error"].as_str().is_some_and(|e| e.contains("no .git")),
+                "{a}"
+            );
+        }
     }
 
     #[test]

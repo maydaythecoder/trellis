@@ -89,6 +89,10 @@ pub(crate) fn graph_json(g: &trellis_index::ModuleGraph, limit: usize) -> serde_
                 .collect();
             serde_json::json!({
                 "module": n.module,
+                // Repository-relative and `/`-separated, so a client opens
+                // the file without guessing it from the dotted name, which
+                // a package's `__init__.py` does not spell (#559).
+                "path": n.path,
                 "defines": n.defines,
                 "calls": calls,
                 "calls_not_drawn": n.calls.len().saturating_sub(MAX_EDGES_DRAWN),
