@@ -1146,7 +1146,9 @@ mod tests {
         assert_eq!(v.len(), 1, "{v:?}");
         let mut keys: Vec<&String> = v[0].as_object().unwrap().keys().collect();
         keys.sort();
-        assert_eq!(keys, ["actions", "budget", "transcript"]);
+        // The graph is laid out from the actions, so it changes with them
+        // (#303).
+        assert_eq!(keys, ["actions", "budget", "graph", "transcript"]);
 
         core.stdout_line(g, "plain text");
         let v = views(&rec);
@@ -1205,6 +1207,7 @@ mod tests {
                 "budget",
                 "checks",
                 "edits",
+                "graph",
                 "outcome",
                 "radius",
                 "running",
