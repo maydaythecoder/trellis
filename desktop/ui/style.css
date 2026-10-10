@@ -220,3 +220,79 @@ code {
 .failed {
   color: var(--failed);
 }
+
+/* The composer (#301), below every section. The textarea takes the
+   width it is given, never a fixed one. */
+.composer {
+  margin-top: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--pane-bg);
+  overflow-wrap: anywhere;
+}
+
+.composer label {
+  color: var(--muted);
+}
+
+.composer textarea {
+  display: block;
+  width: 100%;
+  margin: 4px 0 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  resize: vertical;
+}
+
+.composer-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.composer select,
+.composer button {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+
+.composer button {
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.composer button:disabled,
+.composer select:disabled,
+.composer textarea:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.composer select:focus-visible,
+.composer textarea:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.composer-list {
+  margin-top: 8px;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}

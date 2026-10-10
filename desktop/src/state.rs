@@ -37,9 +37,13 @@ pub enum Pane {
     Outcome,
     /// The adapter tier the last `get_state` reply reported.
     Tier,
+    /// The prompt templates the child's `get_commands` listed (#301).
+    Starters,
+    /// What the last `abort` answer said was sent and never delivered.
+    Undelivered,
 }
 
-const PANES: [Pane; 10] = [
+const PANES: [Pane; 12] = [
     Pane::Transcript,
     Pane::Actions,
     Pane::Edits,
@@ -50,13 +54,17 @@ const PANES: [Pane; 10] = [
     Pane::Running,
     Pane::Outcome,
     Pane::Tier,
+    Pane::Starters,
+    Pane::Undelivered,
 ];
 
 /// The panes a run starts afresh: everything but the transcript, which,
-/// as the TUI's, carries on across runs within its cap, and the tier, which
+/// as the TUI's, carries on across runs within its cap; the tier, which
 /// only a `get_state` reply sets: the view shows the tier trellis last
-/// reported, and a run's own start reports none.
-const RUN_PANES: [Pane; 8] = [
+/// reported, and a run's own start reports none; and the starters, which
+/// are the repository's templates, not the run's. The undelivered list is
+/// the last stopped run's, so a new run drops it.
+const RUN_PANES: [Pane; 9] = [
     Pane::Actions,
     Pane::Edits,
     Pane::Checks,
@@ -65,6 +73,7 @@ const RUN_PANES: [Pane; 8] = [
     Pane::Approvals,
     Pane::Running,
     Pane::Outcome,
+    Pane::Undelivered,
 ];
 
 impl Pane {
@@ -80,6 +89,8 @@ impl Pane {
             Pane::Running => "running",
             Pane::Outcome => "outcome",
             Pane::Tier => "tier",
+            Pane::Starters => "starters",
+            Pane::Undelivered => "undelivered",
         }
     }
 
@@ -185,6 +196,66 @@ impl Budget {
     }
 }
 
+/// A prompt template `get_commands` listed, offered as a starter: sending
+/// it is a `prompt` whose `prompt` is `name` (#301). Both are repository
+/// text, shown as text.
+#[derive(Debug, Clone, PartialEq)]
+struct Starter {
+    name: String,
+    description: Option<String>,
+}
+
+impl Starter {
+    /// `get_commands`'s `prompts`, or `None` when the answer does not carry
+    /// them as a list. An entry with no string `name` cannot be sent, so it
+    /// is not offered.
+    fn list_from(data: Option<&Value>) -> Option<Vec<Self>> {
+        let prompts = data?.get("prompts")?.as_array()?;
+        Some(
+            prompts
+                .iter()
+                .filter_map(|p| {
+                    Some(Self {
+                        name: p.get("name")?.as_str()?.to_string(),
+                        description: p
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    })
+                })
+                .collect(),
+        )
+    }
+}
+
+/// One line an `abort` answer handed back as sent and never delivered: a
+/// `steer` or a `follow_up`, with the text the user typed, kept so it is not
+/// lost with the run (`rpc.rs`'s `Unsent`).
+#[derive(Debug, Clone, PartialEq)]
+struct Undelivered {
+    kind: String,
+    message: String,
+}
+
+impl Undelivered {
+    /// `abort`'s `undelivered`, in the order trellis gave it, or `None`
+    /// when the answer carries no such list. An entry without a string
+    /// `type` and `message` holds no text to give back, so it is skipped.
+    fn list_from(data: Option<&Value>) -> Option<Vec<Self>> {
+        let list = data?.get("undelivered")?.as_array()?;
+        Some(
+            list.iter()
+                .filter_map(|u| {
+                    Some(Self {
+                        kind: u.get("type")?.as_str()?.to_string(),
+                        message: u.get("message")?.as_str()?.to_string(),
+                    })
+                })
+                .collect(),
+        )
+    }
+}
+
 /// The id of the `get_available_models` the core writes first to every
 /// child it starts (#305); only the answer to it is recorded.
 pub const MODELS_ID: &str = "desktop-models";
@@ -241,6 +312,11 @@ pub struct DesktopState {
     /// a malformed one, and from each child's start. No pane shows it: it
     /// is what `rpc_send`'s model guard reads.
     configured: Option<Configured>,
+    /// The prompt templates the last `get_commands` answer listed; `None`
+    /// until one has come, or after a refused one.
+    starters: Option<Vec<Starter>>,
+    /// What the last `abort` answer said was never delivered.
+    undelivered: Vec<Undelivered>,
 }
 
 impl DesktopState {
@@ -291,6 +367,28 @@ impl DesktopState {
                         None
                     };
                 }
+                // The composer's two answers (#301): the starters a
+                // `get_commands` lists, and the text an `abort` hands back.
+                // A refused `get_commands` leaves no starters to offer; its
+                // reason reaches the transcript below.
+                let mut c = Changed::default();
+                match (r.command.as_deref(), r.success) {
+                    (Some("get_commands"), Some(true)) => {
+                        self.starters = Starter::list_from(r.data.as_ref());
+                        c = c.with(Pane::Starters);
+                    }
+                    (Some("get_commands"), _) => {
+                        self.starters = None;
+                        c = c.with(Pane::Starters);
+                    }
+                    (Some("abort"), Some(true)) => {
+                        if let Some(u) = Undelivered::list_from(r.data.as_ref()) {
+                            self.undelivered = u;
+                            c = c.with(Pane::Undelivered);
+                        }
+                    }
+                    _ => {}
+                }
                 // A refused command is said in the transcript; a successful
                 // answer changes no run pane but the tier a `get_state`
                 // reports.
@@ -301,16 +399,16 @@ impl DesktopState {
                         .and_then(|d| d.get("tier"))
                         .and_then(Value::as_str)
                         .map(str::to_string);
-                    Changed::of(&[Pane::Tier])
+                    c.with(Pane::Tier)
                 } else if r.success == Some(false) {
                     let command = r.command.as_deref().unwrap_or("command");
                     self.push_line(match r.error {
                         Some(e) => format!("· {command} refused: {e}"),
                         None => format!("· {command} refused"),
                     });
-                    Changed::of(&[Pane::Transcript])
+                    c.with(Pane::Transcript)
                 } else {
-                    Changed::default()
+                    c
                 }
             }
             Frame::ApprovalRequest(a) => {
@@ -433,6 +531,20 @@ impl DesktopState {
             ),
             Pane::Running => json!(self.running),
             Pane::Tier => json!(self.tier),
+            Pane::Starters => match &self.starters {
+                Some(list) => Value::Array(
+                    list.iter()
+                        .map(|t| json!({"name": t.name, "description": t.description}))
+                        .collect(),
+                ),
+                None => Value::Null,
+            },
+            Pane::Undelivered => Value::Array(
+                self.undelivered
+                    .iter()
+                    .map(|u| json!({"type": u.kind, "message": u.message}))
+                    .collect(),
+            ),
             Pane::Outcome => match &self.outcome {
                 Some(e) => json!({
                     "outcome": e.outcome,
@@ -528,6 +640,7 @@ impl DesktopState {
         self.budget = Budget::default();
         self.approvals.clear();
         self.outcome = None;
+        self.undelivered.clear();
     }
 
     fn push_line(&mut self, line: String) {
@@ -1082,6 +1195,123 @@ mod tests {
         .to_string();
         assert!(!feed(&mut s, &refused).has(Pane::Tier));
         assert_eq!(all(&s)["tier"], "scripted");
+    }
+
+    fn response(command: &str, success: bool, data: Value) -> String {
+        let mut r = json!({"type": "response", "command": command, "success": success,
+                           "id": "desktop-x"});
+        if success {
+            r["data"] = data;
+        } else {
+            r["error"] = data;
+        }
+        r.to_string()
+    }
+
+    #[test]
+    fn abort_response_lists_the_undelivered_steers() {
+        // The risk (#301): text the user typed into a run they then
+        // stopped is lost with the run, because the page drew Stop's answer
+        // nowhere; or one run's leftovers are shown under the next.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p"));
+        let c = feed(
+            &mut s,
+            &response(
+                "abort",
+                true,
+                json!({"undelivered": [
+                    {"id": "u1", "type": "follow_up", "message": "first"},
+                    {"id": "s1", "type": "steer", "message": "<b>second</b>"},
+                    {"id": null, "type": "steer"},
+                    {"type": "steer", "message": 3}
+                ]}),
+            ),
+        );
+        assert!(c.has(Pane::Undelivered), "{c:?}");
+        assert_eq!(
+            all(&s)["undelivered"],
+            json!([
+                {"type": "follow_up", "message": "first"},
+                {"type": "steer", "message": "<b>second</b>"}
+            ]),
+            "in trellis's order, text as text, and nothing it did not send"
+        );
+        // The run ends after its abort answer is written; the list stays.
+        feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "interrupted", "exit": 130, "id": "p"})
+                .to_string(),
+        );
+        assert_eq!(all(&s)["undelivered"].as_array().unwrap().len(), 2);
+        // A refused abort, or an answer with no list, keeps it as it was.
+        assert!(
+            !feed(
+                &mut s,
+                &response("abort", false, json!("no run in progress"))
+            )
+            .has(Pane::Undelivered)
+        );
+        assert!(!feed(&mut s, &response("abort", true, json!({}))).has(Pane::Undelivered));
+        assert_eq!(all(&s)["undelivered"].as_array().unwrap().len(), 2);
+        // The next run starts with none.
+        let c = feed(&mut s, &run_start("p2"));
+        assert!(c.has(Pane::Undelivered));
+        assert_eq!(all(&s)["undelivered"], json!([]));
+    }
+
+    #[test]
+    fn get_commands_response_fills_the_starters() {
+        // The risk (#301): a starter sends a template name trellis never
+        // listed, or a repository's template text is drawn as markup; or a
+        // refused get_commands leaves the last repository's starters up.
+        let mut s = DesktopState::default();
+        assert_eq!(all(&s)["starters"], Value::Null, "none before an answer");
+        let c = feed(
+            &mut s,
+            &response(
+                "get_commands",
+                true,
+                json!({"commands": [{"name": "prompt", "description": "run a task"}],
+                       "prompts": [
+                           {"name": "fix", "description": "Fix <i>it</i>",
+                            "argument_hint": "<file>"},
+                           {"name": "review", "description": null},
+                           {"description": "no name"},
+                           {"name": 7}
+                       ],
+                       "skills": [{"name": "s", "description": "d"}]}),
+            ),
+        );
+        assert!(c.has(Pane::Starters), "{c:?}");
+        assert_eq!(
+            all(&s)["starters"],
+            json!([
+                {"name": "fix", "description": "Fix <i>it</i>"},
+                {"name": "review", "description": null}
+            ]),
+            "the prompt templates only, by name, description as text"
+        );
+        // A run does not touch them: they are the repository's.
+        feed(&mut s, &run_start("p"));
+        assert_eq!(all(&s)["starters"].as_array().unwrap().len(), 2);
+        // An answer with no prompts list offers none; a refused one too.
+        feed(
+            &mut s,
+            &response("get_commands", true, json!({"commands": []})),
+        );
+        assert_eq!(all(&s)["starters"], Value::Null);
+        feed(
+            &mut s,
+            &response("get_commands", true, json!({"prompts": []})),
+        );
+        assert_eq!(all(&s)["starters"], json!([]));
+        let c = feed(
+            &mut s,
+            &response("get_commands", false, json!("manifest unreadable")),
+        );
+        assert!(c.has(Pane::Starters) && c.has(Pane::Transcript), "{c:?}");
+        assert_eq!(all(&s)["starters"], Value::Null);
     }
 
     #[test]
