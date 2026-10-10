@@ -80,14 +80,16 @@ function drawSave(p) {
   if (p.save.disabled) p.save.checked = false;
 }
 
-// One radio and its label: the choice's label, and its spec as code.
-function option(doc, p, c, checked) {
+// One radio and its label: the choice's label, and its spec as code. Its
+// value is the choice's, which names the spec; its id is its place in this
+// drawing, since a spec is a runtime's text and only labels the radio.
+function option(doc, p, c, k, checked) {
   const li = el(doc, "li");
   const input = doc.createElement("input");
   input.type = "radio";
   input.name = "model-choice";
   input.value = c.value;
-  input.id = `model-choice-${c.value}`;
+  input.id = `model-choice-${k}`;
   input.checked = checked;
   input.addEventListener("change", () => drawSave(p));
   const label = el(doc, "label", c.label);
@@ -97,7 +99,9 @@ function option(doc, p, c, checked) {
   return li;
 }
 
-// The choices, keeping the user's selection when it is still offered.
+// The choices, keeping the user's selection when it is still offered: by
+// value, which names the spec, so a list that comes back reordered keeps
+// the same spec selected.
 function drawChoices(doc) {
   const p = parts(doc);
   const before = p.options.querySelector('input[name="model-choice"]:checked');
@@ -106,7 +110,7 @@ function drawChoices(doc) {
   offered = new Map(choices.map((c) => [c.value, c]));
   const kept = keep !== null && offered.has(keep);
   p.options.replaceChildren(
-    ...choices.map((c) => option(doc, p, c, kept ? c.value === keep : c.preselect)),
+    ...choices.map((c, k) => option(doc, p, c, k, kept ? c.value === keep : c.preselect)),
   );
   drawSave(p);
 }

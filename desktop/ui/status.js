@@ -12,8 +12,9 @@
 //   status `rpc-exited` carried, or not started for the reason `no-child`
 //   gave.
 //
-// Runtime reachability is not shown: rpc has no probe command (`trellis
-// doctor` is the CLI's), and the page never talks to a runtime. Every value
+// Runtime reachability is not shown here: rpc's `list_models` probes the
+// default local runtimes, and the model pane (model.js) lists what each
+// address answered; the page itself never talks to a runtime. Every value
 // is trellis-supplied text, written through textContent only (ADR 0007,
 // S10).
 

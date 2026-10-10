@@ -651,9 +651,10 @@ impl DesktopState {
                 }
                 // The core's own models question: its answer is recorded,
                 // and anything but a well-formed success records nothing.
-                // It changes no pane; a refusal still reaches the
-                // transcript below. It is a snapshot from the child's start:
-                // a config edited later takes effect on the next child.
+                // It changes the picker's `available` pane (#306), and a
+                // refusal still reaches the transcript below. It is a
+                // snapshot from the child's start: a config edited later
+                // takes effect on the next child.
                 let mut c = Changed::default();
                 if r.command.as_deref() == Some("get_available_models")
                     && r.id.as_deref() == Some(MODELS_ID)
