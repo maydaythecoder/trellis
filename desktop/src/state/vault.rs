@@ -94,6 +94,11 @@ pub struct Vault {
     /// taken. `None` takes any answer: nothing was asked with an id.
     asked_search: Option<String>,
     asked_graph: Option<String>,
+    /// Set by a search answer when a graph was asked before it: that
+    /// question named a note from the last search's hits, so its answer,
+    /// however late, is not shown beside the new ones. The next
+    /// `vault_graph` asked clears it.
+    graph_superseded: bool,
 }
 
 fn text(o: &Map<String, Value>, k: &str, what: &str) -> Result<String, String> {
@@ -253,7 +258,10 @@ impl Vault {
         let id = id.map(str::to_string);
         match command {
             SEARCH => self.asked_search = id,
-            GRAPH => self.asked_graph = id,
+            GRAPH => {
+                self.asked_graph = id;
+                self.graph_superseded = false;
+            }
             _ => {}
         }
     }
@@ -274,6 +282,12 @@ impl Vault {
         if asked.is_some() && r.id != *asked {
             return false;
         }
+        if command == GRAPH && self.graph_superseded {
+            return false;
+        }
+        // A search answer, taken or refused, starts the view over, so a
+        // graph asked before it is no longer the one the view waits on.
+        let superseded = command == SEARCH && self.asked_graph.is_some();
         let read = match (r.success, &r.data) {
             (Some(true), Some(data)) => {
                 let bad = |why: String| {
@@ -303,6 +317,7 @@ impl Vault {
                     reduced,
                     asked_search: self.asked_search.take(),
                     asked_graph: self.asked_graph.take(),
+                    graph_superseded: superseded,
                     ..Self::default()
                 };
             }
@@ -318,6 +333,7 @@ impl Vault {
                     error: Some(why),
                     asked_search: self.asked_search.take(),
                     asked_graph: self.asked_graph.take(),
+                    graph_superseded: superseded || self.graph_superseded,
                     ..Self::default()
                 };
             }
@@ -633,5 +649,46 @@ mod tests {
         assert!(!v.answer(&response(SEARCH, "s1", hits((true, true), json!([])))));
         // Another command's answer is not the vault's.
         assert!(!v.answer(&response("get_codebase", "s2", json!({}))));
+    }
+
+    #[test]
+    fn a_graph_asked_before_a_search_is_not_shown_after_it() {
+        // The risk (#309 review): a note's relations, asked for from the
+        // last search's hits, answered after a new search, so the view
+        // shows a note that is not among the hits it sits beside. A search
+        // answer starts the view over, so the graph question asked before
+        // it is no longer the one the view waits on.
+        let mut v = Vault::default();
+        v.asked(SEARCH, Some("s1"));
+        assert!(v.answer(&response(SEARCH, "s1", hits((true, true), json!([])))));
+        v.asked(GRAPH, Some("g1"));
+        v.asked(SEARCH, Some("s2"));
+        let new_hits = hits(
+            (true, true),
+            json!([{"path": "new.md", "title": "N", "score": 1}]),
+        );
+        assert!(v.answer(&response(SEARCH, "s2", new_hits)));
+        assert!(
+            !v.answer(&response(GRAPH, "g1", a_graph())),
+            "the earlier graph answer was taken after the new search"
+        );
+        let j = view_of(&v);
+        assert_eq!(j["graph"], Value::Null, "{j}");
+        assert_eq!(j["hits"][0]["path"], "new.md");
+        // A graph asked from the new hits is still taken.
+        v.asked(GRAPH, Some("g2"));
+        assert!(v.answer(&response(GRAPH, "g2", a_graph())));
+        assert_eq!(view_of(&v)["graph"]["note"]["path"], "child.md");
+        // A refused search starts over too (`refused` answers id "x").
+        v.asked(GRAPH, Some("g3"));
+        v.asked(SEARCH, Some("x"));
+        assert!(v.answer(&refused(SEARCH, "no vault")));
+        assert!(!v.answer(&response(GRAPH, "g3", a_graph())));
+        assert_eq!(view_of(&v)["graph"], Value::Null);
+        // With no question recorded (the core records every one it
+        // forwards), any answer is still taken, as before.
+        let mut v = Vault::default();
+        assert!(v.answer(&response(SEARCH, "s", hits((true, true), json!([])))));
+        assert!(v.answer(&response(GRAPH, "g", a_graph())));
     }
 }
