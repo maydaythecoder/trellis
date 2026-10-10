@@ -499,10 +499,6 @@ fn read_bounded(p: &Path) -> std::io::Result<Option<Vec<u8>>> {
     Ok(Some(raw))
 }
 
-/// The name `trellis-cli` imports. Kept so this rename leaves that crate
-/// untouched; it goes when `vault_cmd.rs` names `DatesState` itself.
-pub type State = DatesState;
-
 /// `dates.json` as found on disk.
 #[derive(Debug)]
 pub enum DatesState {
