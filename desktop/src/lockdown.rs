@@ -825,6 +825,40 @@ mod tests {
     }
 
     #[test]
+    fn board_reads_pr_ci_once_at_a_time_and_only_the_newest() {
+        // The risk (#311 review): each board click ran `trellis overview`
+        // and two `gh` calls with no guard, so clicks stacked them, and a
+        // slow answer for the last repository, read after another was
+        // opened, was drawn over the new one's. No JavaScript runs under
+        // cargo test, so this holds the text; a node smoke script with a
+        // fake DOM ran queue.js (see the commit).
+        let js = code_of("queue.js");
+        let ask = js
+            .split("async function askPrCi(doc, tauri)")
+            .nth(1)
+            .and_then(|r| r.split("\n}").next())
+            .expect("queue.js has askPrCi");
+        for want in [
+            "if (prciInFlight) return;",
+            "prciInFlight = true;",
+            "prciReads += 1;",
+            "const mine = prciReads;",
+            "if (mine !== prciReads) return;",
+            "prciInFlight = false;",
+        ] {
+            assert!(ask.contains(want), "askPrCi lacks {want}");
+        }
+        let started = js
+            .split(r#"listen("child-started""#)
+            .nth(1)
+            .and_then(|r| r.split("});").next())
+            .expect("queue.js listens for child-started");
+        for want in ["prciReads += 1;", "prciInFlight = false;"] {
+            assert!(started.contains(want), "child-started lacks {want}");
+        }
+    }
+
+    #[test]
     fn board_shows_pr_ci_or_its_reason() {
         // The risk (#311 as amended 2026-10-07): the board drops the PR
         // and CI state `gh` reported, or, with `gh` missing or logged out,
