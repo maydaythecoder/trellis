@@ -2,24 +2,104 @@
 <!--
   The TRELLIS desktop page (ADR 0048 section 5).
 
-  Static: Tauri serves this file and main.js from desktop/ui/ with no Node,
-  npm or bundler. It carries no inline script, no style attribute and no
-  inline event handler, so the CSP the shell sets never needs
-  'unsafe-inline'. Every string it shows is written by main.js through
-  textContent, never parsed as HTML (ADR 0007, S10).
+  Static: Tauri serves this file, style.css and the ES modules from
+  desktop/ui/ with no Node, npm or bundler. It carries no inline script, no
+  style attribute and no inline event handler, so the CSP the shell sets
+  never needs 'unsafe-inline'. Every string it shows is written by
+  render.js and main.js through textContent or createElement, never parsed
+  as HTML (ADR 0007, S10).
+
+  The rail's buttons each name, with aria-controls, the one section they
+  show; the others carry the hidden attribute. The overview section is the
+  landing section, and drawing it is #562's.
 -->
 <html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>trellis</title>
+    <link rel="stylesheet" href="style.css">
     <script type="module" src="main.js"></script>
   </head>
   <body>
+    <nav class="rail" aria-label="Views">
+      <button type="button" aria-controls="overview" aria-current="page">Overview</button>
+      <button type="button" aria-controls="run">Run</button>
+      <button type="button" aria-controls="trails">Trails</button>
+      <button type="button" aria-controls="codebase">Codebase</button>
+      <button type="button" aria-controls="board">Board</button>
+      <button type="button" aria-controls="vault">Vault</button>
+    </nav>
     <main>
-      <p id="status"></p>
-      <pre id="view"></pre>
-      <pre id="overview"></pre>
+      <p id="status" class="status"></p>
+
+      <section id="overview" aria-labelledby="overview-title">
+        <h2 id="overview-title">Overview</h2>
+        <p class="unbuilt">Not built yet</p>
+      </section>
+
+      <section id="run" aria-labelledby="run-title" hidden>
+        <h2 id="run-title">Run</h2>
+        <div class="run-grid">
+          <div class="pane pane-log" role="region" aria-labelledby="log-title">
+            <h3 id="log-title">Actions log</h3>
+            <div id="pane-transcript" class="log" role="log" aria-labelledby="log-title" tabindex="0"></div>
+          </div>
+          <div class="pane" role="region" aria-labelledby="tier-title">
+            <h3 id="tier-title">Tier</h3>
+            <p id="pane-tier"></p>
+          </div>
+          <div class="pane" role="region" aria-labelledby="budget-title">
+            <h3 id="budget-title">Budget</h3>
+            <p id="pane-budget"></p>
+          </div>
+          <div class="pane" role="region" aria-labelledby="radius-title">
+            <h3 id="radius-title">Radius</h3>
+            <div id="pane-radius"></div>
+          </div>
+          <div class="pane" role="region" aria-labelledby="checks-title">
+            <h3 id="checks-title">Checks</h3>
+            <ul id="pane-checks" class="rows"></ul>
+          </div>
+          <div class="pane" role="region" aria-labelledby="actions-title">
+            <h3 id="actions-title">Turns</h3>
+            <ol id="pane-actions" class="rows"></ol>
+          </div>
+          <div class="pane" role="region" aria-labelledby="edits-title">
+            <h3 id="edits-title">Edits</h3>
+            <ul id="pane-edits" class="rows"></ul>
+          </div>
+          <div class="pane" role="region" aria-labelledby="outcome-title">
+            <h3 id="outcome-title">Last run</h3>
+            <p id="pane-running"></p>
+            <div id="pane-outcome"></div>
+          </div>
+          <div class="pane pane-graph" role="region" aria-labelledby="graph-title">
+            <h3 id="graph-title">Graph</h3>
+            <div id="graph"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="trails" aria-labelledby="trails-title" hidden>
+        <h2 id="trails-title">Trails</h2>
+        <p class="unbuilt">Not built yet</p>
+      </section>
+
+      <section id="codebase" aria-labelledby="codebase-title" hidden>
+        <h2 id="codebase-title">Codebase</h2>
+        <p class="unbuilt">Not built yet</p>
+      </section>
+
+      <section id="board" aria-labelledby="board-title" hidden>
+        <h2 id="board-title">Board</h2>
+        <p class="unbuilt">Not built yet</p>
+      </section>
+
+      <section id="vault" aria-labelledby="vault-title" hidden>
+        <h2 id="vault-title">Vault</h2>
+        <p class="unbuilt">Not built yet</p>
+      </section>
     </main>
   </body>
 </html>
