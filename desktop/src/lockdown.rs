@@ -469,6 +469,59 @@ mod tests {
     }
 
     #[test]
+    fn approval_dialog_forgets_a_replaced_child_s_questions() {
+        // The risk (#302 review): rpc numbers approvals per process from
+        // `approval-1`, so a page that remembers which ids it answered
+        // across children filters out the next child's `approval-1`: no
+        // dialog opens and that run waits for ever. No JavaScript runs
+        // under cargo test, so this holds dialogs.js to forgetting, on
+        // `child-started`, what it answered and showed, and to marking the
+        // dialogs still to close as withdrawn rather than dropping them: a
+        // close already queued for the old child's dialog must not be read
+        // as the answer to the new child's question. A node smoke script
+        // with a fake DOM ran the module itself (see the commit).
+        let js = code_of("dialogs.js");
+        let started = js
+            .split(r#"listen("child-started""#)
+            .nth(1)
+            .and_then(|r| r.split("});").next())
+            .expect("dialogs.js listens for child-started");
+        assert!(
+            started.contains("forgetChild(doc)"),
+            "child-started does not forget the last child: {started}"
+        );
+        let forget = js
+            .split("function forgetChild(doc)")
+            .nth(1)
+            .and_then(|r| r.split("\n}").next())
+            .expect("dialogs.js has forgetChild");
+        for want in ["answered.clear()", "withdraw("] {
+            assert!(forget.contains(want), "forgetChild lacks {want}");
+        }
+        let withdraw = js
+            .split("function withdraw(dialog)")
+            .nth(1)
+            .and_then(|r| r.split("\n}").next())
+            .expect("dialogs.js has withdraw");
+        for want in [
+            "for (const e of opened) e.withdrawn = true",
+            "shown = null",
+            "dialog.close()",
+        ] {
+            assert!(withdraw.contains(want), "withdraw lacks {want}");
+        }
+        // A close is an answer only for an entry not withdrawn.
+        assert!(
+            js.contains("if (entry === undefined || entry.withdrawn) return;"),
+            "a withdrawn dialog's close is taken as an answer"
+        );
+        assert!(
+            ui_file("main.js").contains("await wireDialogs(document, window, tauri);"),
+            "main.js asks for something before dialogs.js listens"
+        );
+    }
+
+    #[test]
     fn page_run_section_holds_the_panes_render_draws() {
         // The risk: render.js drawing into an id the page does not have, so
         // a pane trellis reported is silently never shown; or DESK-10's
@@ -1404,6 +1457,93 @@ mod tests {
                 assert!(n <= 0, "<{}> tabindex={n}", e.tag);
             }
         }
+    }
+
+    /// `style.css` with its comments removed, as `(selector, declarations)`
+    /// for each innermost rule, in order; an `@media` block's own rules
+    /// are listed, not the block.
+    fn css_rules() -> Vec<(String, String)> {
+        let css = ui_file("style.css");
+        let mut text = String::new();
+        let mut rest = css.as_str();
+        while let Some(i) = rest.find("/*") {
+            text.push_str(&rest[..i]);
+            let end = rest[i..].find("*/").expect("an unclosed CSS comment");
+            rest = &rest[i + end + 2..];
+        }
+        text.push_str(rest);
+        let mut open: Vec<String> = Vec::new();
+        let mut segment = String::new();
+        let mut rules = Vec::new();
+        for c in text.chars() {
+            match c {
+                '{' => {
+                    open.push(segment.trim().to_string());
+                    segment.clear();
+                }
+                '}' => {
+                    let selector = open.pop().expect("an unbalanced }");
+                    if !segment.trim().is_empty() {
+                        rules.push((selector, segment.trim().to_string()));
+                    }
+                    segment.clear();
+                }
+                _ => segment.push(c),
+            }
+        }
+        assert!(open.is_empty(), "an unclosed CSS block");
+        rules
+    }
+
+    #[test]
+    fn page_hidden_attribute_hides_whatever_class_sets_display() {
+        // The risk (#302 review): the page shows and hides by the `hidden`
+        // attribute, never a style (main.js, dialogs.js, composer.js), but
+        // the browser's `[hidden] { display: none }` is a user-agent rule
+        // that any author rule setting `display` beats: `.alert { display:
+        // flex }` drew the empty red banner and its Dismiss button on every
+        // load. One author rule, `!important`, keeps `hidden` hidden for
+        // every class, and no other rule may set `display` as important.
+        let rules = css_rules();
+        assert!(
+            rules.iter().any(|(_, d)| d.contains("display")),
+            "style.css was read: no display rule at all"
+        );
+        let hidden: Vec<&(String, String)> = rules
+            .iter()
+            .filter(|(s, _)| s.split(',').any(|s| s.trim() == "[hidden]"))
+            .collect();
+        assert_eq!(hidden.len(), 1, "one [hidden] rule: {hidden:?}");
+        let decls: String = hidden[0].1.split_whitespace().collect();
+        assert!(
+            decls.contains("display:none!important"),
+            "[hidden] {{ {} }} does not beat a class's display",
+            hidden[0].1
+        );
+        for (s, d) in &rules {
+            if s.split(',').any(|s| s.trim() == "[hidden]") {
+                continue;
+            }
+            let d: String = d.split_whitespace().collect();
+            assert!(
+                !d.contains("!important"),
+                "{s} {{ {d} }} is important, and could beat [hidden]"
+            );
+        }
+        // The banner the review found is one such element: hidden as served,
+        // with a class whose rule sets display.
+        let page = page();
+        let alert = &page[index_of(&page, "alert")];
+        assert!(
+            alert.attrs.contains_key("hidden"),
+            "the banner is hidden as served"
+        );
+        assert!(
+            rules
+                .iter()
+                .any(|(s, d)| s.trim() == ".alert" && d.contains("display")),
+            "the case this holds is gone: .alert sets no display"
+        );
     }
 
     /// The window's minimum width, from tauri.conf.json.
