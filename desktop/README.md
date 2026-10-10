@@ -2,8 +2,9 @@
 
 The TRELLIS desktop: one Tauri 2 window over one `trellis rpc` child per
 repository (ADR 0048). It is a client of trellis, not a second way to run
-it: every write goes through `prompt`, and so through trellis's snapshot,
-trust gate, checks, rollback and trail, and the page shows what trellis
+it: every write to the repository goes through `prompt`, and so through
+trellis's snapshot, trust gate, checks, rollback and trail; `set_model`'s
+save writes only your own user config file. The page shows what trellis
 reports and computes no verdict. The rules for working on it are in
 [`CLAUDE.md`](CLAUDE.md) beside this file.
 
@@ -64,9 +65,12 @@ to your own config file, never the repository's.
   `tauri.conf.json`; it is built and installed with cargo, and updated the
   same way.
 - **No key field.** No key reaches the page. A hosted model gets its key
-  from trellis's environment, by the variable your own config names, and the
-  desktop sends a hosted spec only when it is the one your own config wrote
-  (ADR 0024 §3, ADR 0048 §4). The page has no endpoint field either.
+  from trellis's environment: an `openai-chat:` or `anthropic:` spec from
+  its protocol's own variable (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`), and a
+  `provider:` spec from the `key_env` its `[[providers]]` entry names, or its
+  protocol's own variable when the entry names none. The desktop sends a
+  hosted spec only when it is the one your own config wrote (ADR 0024 §3,
+  ADR 0048 §4). The page has no endpoint field either.
 - **No runtime sidecar.** It starts no model runtime and the page talks to
   none; it lists the runtimes `trellis` finds on their default ports, and you
   start them yourself.
@@ -82,10 +86,10 @@ to your own config file, never the repository's.
   receives, and the loop emits one INFO `turn` event per completed turn
   (`crates/trellis-loop/src/agent.rs`). That event carries the step's output
   tokens and the model call's wall time, never a count while the reply
-  arrives. Nothing streams replies today; if COL-13 (#280) streams loopback
-  colibri replies, it emits each delta at DEBUG for this reason, since at
-  INFO one reply would put one line per token on every `--json` and rpc
-  reader.
+  arrives. Nothing streams replies today. COL-13 (#280), which would stream
+  loopback colibri replies, is not built; if it is, it would emit each delta
+  at DEBUG for this reason, since at INFO one reply would put one line per
+  token on every `--json` and rpc reader.
 - **No time to first token** (colibri's COL-UI-43, its `TTFT` badge), for
   the same reason: the one `turn` event per completed turn carries the
   step's output tokens and the model call's wall time, never when a first
