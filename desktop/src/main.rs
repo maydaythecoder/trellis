@@ -6,8 +6,10 @@
 //! Once the page has loaded, the core (`commands.rs`) opens the startup
 //! repository: it starts the child (`child.rs`, the one file that spawns)
 //! and turns what the child prints into events, the run panes among them
-//! (`frames.rs`, `state.rs`). The page has four commands: `rpc_send`,
-//! `get_trails`, `open_repository` and `get_overview`.
+//! (`frames.rs`, `state.rs`) and the action graph's layout with them
+//! (`graph.rs`, the `view` event's `graph` key). The page has four
+//! commands: `rpc_send`, `get_trails`, `open_repository` and
+//! `get_overview`.
 //!
 //! With no `--root`, the repository is the current directory or the nearest
 //! parent holding a `.git` entry, as trellis itself finds one. Outside any
@@ -23,6 +25,7 @@
 mod child;
 mod commands;
 mod frames;
+mod graph;
 mod lockdown;
 mod state;
 

@@ -7,7 +7,10 @@
   style attribute and no inline event handler, so the CSP the shell sets
   never needs 'unsafe-inline'. Every string it shows is written by
   render.js, overview.js and main.js through textContent or createElement,
-  never parsed as HTML (ADR 0007, S10).
+  never parsed as HTML (ADR 0007, S10). The run section's action graph is
+  SVG that graph.js builds with createElementNS from the layout the core
+  computes (#303); render.js imports it, and the page loads it as a module
+  of its own, which the browser evaluates once either way.
 
   The rail's buttons each name, with aria-controls, the one section they
   show; the others carry the hidden attribute. The overview section is the
@@ -21,6 +24,7 @@
     <title>trellis</title>
     <link rel="stylesheet" href="style.css">
     <script type="module" src="main.js"></script>
+    <script type="module" src="graph.js"></script>
   </head>
   <body>
     <nav class="rail" aria-label="Views">

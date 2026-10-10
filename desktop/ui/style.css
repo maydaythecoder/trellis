@@ -18,6 +18,7 @@
   --accent: #2f5d50;
   --passed: #1f6b3a;
   --failed: #a3261b;
+  --wrote: #8a5a00;
   --focus: #2f5d50;
   color-scheme: light dark;
 }
@@ -33,6 +34,7 @@
     --accent: #8cc4b2;
     --passed: #7fcf98;
     --failed: #f08a7e;
+    --wrote: #e0b45c;
     --focus: #8cc4b2;
   }
 }
@@ -219,4 +221,65 @@ code {
 
 .failed {
   color: var(--failed);
+}
+
+/* The action graph (#303): SVG graph.js builds from the core's layout. It
+   scales to its pane through the viewBox, and nothing in it moves, so no
+   rule here declares a transition or an animation (graph_styles_have_no_motion). */
+.graph-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  font: 12px ui-monospace, monospace;
+}
+
+.graph-edge {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1;
+}
+
+.graph-edge-idle {
+  stroke: var(--border);
+}
+
+.graph-node {
+  stroke-width: 1.5;
+}
+
+.graph-fill {
+  fill: var(--accent);
+  stroke: var(--accent);
+}
+
+/* The one node colour that carries a fact rather than a status: this tool
+   changed the tree. */
+.graph-wrote {
+  fill: var(--wrote);
+  stroke: var(--wrote);
+}
+
+.graph-ring {
+  fill: var(--pane-bg);
+  stroke: var(--muted);
+}
+
+.graph-focus {
+  fill: var(--fg);
+}
+
+.graph-name,
+.graph-target,
+.graph-focus-label {
+  fill: var(--fg);
+}
+
+.graph-idle,
+.graph-counts,
+.graph-caption {
+  fill: var(--muted);
+}
+
+.graph-target {
+  font-size: 11px;
 }

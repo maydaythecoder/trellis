@@ -12,10 +12,13 @@
 //! the last turn's prompt in bytes (no per-turn prompt token count reaches
 //! the stream) and its reply in output tokens, with the TUI's rate and queue
 //! wait (#312); and a figure trellis did not report is `null` in the view,
-//! never 0. Every string in the view is trellis- or model-supplied
-//! text, which the page writes through `textContent` only (ADR 0007, S10).
+//! never 0. The action graph is laid out from the actions (`graph.rs`), so
+//! the two never disagree. Every string in the view is trellis- or
+//! model-supplied text, which the page writes through `textContent` only
+//! (ADR 0007, S10).
 
 use crate::frames::{ApprovalRequest, Frame, RunEnd, Turn};
+use crate::graph;
 use serde_json::{Map, Value, json};
 use std::collections::VecDeque;
 
@@ -37,9 +40,11 @@ pub enum Pane {
     Outcome,
     /// The adapter tier the last `get_state` reply reported.
     Tier,
+    /// The action graph's layout (`graph.rs`), drawn from the actions.
+    Graph,
 }
 
-const PANES: [Pane; 10] = [
+const PANES: [Pane; 11] = [
     Pane::Transcript,
     Pane::Actions,
     Pane::Edits,
@@ -50,13 +55,14 @@ const PANES: [Pane; 10] = [
     Pane::Running,
     Pane::Outcome,
     Pane::Tier,
+    Pane::Graph,
 ];
 
 /// The panes a run starts afresh: everything but the transcript, which,
 /// as the TUI's, carries on across runs within its cap, and the tier, which
 /// only a `get_state` reply sets: the view shows the tier trellis last
 /// reported, and a run's own start reports none.
-const RUN_PANES: [Pane; 8] = [
+const RUN_PANES: [Pane; 9] = [
     Pane::Actions,
     Pane::Edits,
     Pane::Checks,
@@ -65,6 +71,7 @@ const RUN_PANES: [Pane; 8] = [
     Pane::Approvals,
     Pane::Running,
     Pane::Outcome,
+    Pane::Graph,
 ];
 
 impl Pane {
@@ -80,6 +87,7 @@ impl Pane {
             Pane::Running => "running",
             Pane::Outcome => "outcome",
             Pane::Tier => "tier",
+            Pane::Graph => "graph",
         }
     }
 
@@ -433,6 +441,14 @@ impl DesktopState {
             ),
             Pane::Running => json!(self.running),
             Pane::Tier => json!(self.tier),
+            // Laid out from the actions each time it is sent, so it cannot
+            // fall out of step with the actions pane beside it.
+            Pane::Graph => graph::layout(self.actions.iter().map(|a| graph::Called {
+                tool: &a.tool,
+                target: &a.target,
+                wrote: a.wrote,
+            }))
+            .to_json(),
             Pane::Outcome => match &self.outcome {
                 Some(e) => json!({
                     "outcome": e.outcome,
@@ -449,7 +465,7 @@ impl DesktopState {
 
     /// A turn, as `tui_bridge.rs` maps it.
     fn turn(&mut self, t: Turn) -> Changed {
-        let mut c = Changed::of(&[Pane::Transcript, Pane::Actions, Pane::Budget]);
+        let mut c = Changed::of(&[Pane::Transcript, Pane::Actions, Pane::Budget, Pane::Graph]);
         // The verdict as the loop renders it; only these two mean a check
         // ran (DESK-07's contract). "None", or any other string, is no
         // check.
