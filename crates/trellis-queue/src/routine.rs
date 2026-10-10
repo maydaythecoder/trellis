@@ -263,7 +263,7 @@ pub struct RoutineState {
     #[serde(default)]
     pub last_task: Option<String>,
     /// HEAD when a scheduled fire of a gated routine last enqueued a task.
-    /// Untrusted when read back: see [`object_id`].
+    /// Untrusted when read back: see [`is_object_id`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_head: Option<String>,
 }
@@ -277,7 +277,7 @@ pub trait Repo {
     fn head(&self) -> Option<String>;
     /// The paths changed between commit `since` and commit `head`, or `None`
     /// when git cannot compare them (history rewritten, an object gone).
-    /// Called only with two [`object_id`]s.
+    /// Called only with two [`is_object_id`]s.
     fn changed(&self, since: &str, head: &str) -> Option<Vec<String>>;
 }
 
@@ -370,7 +370,7 @@ fn open_task(q: &Queue, name: &str) -> Result<Option<String>, QueueError> {
 
 #[cfg(test)]
 thread_local! {
-    /// Whole-queue scans made for `seen` and `active`, for the test that holds
+    /// Whole-queue scans made for `seen` and `open_task`, for the test that holds
     /// a tick to one.
     static SCANS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
@@ -380,7 +380,7 @@ struct Seen {
     /// Every task it already created for a scheduled instant, in any
     /// state, by that instant.
     by_at: std::collections::BTreeMap<i64, String>,
-    /// The task [`active`] would name: its first claimed one, else its
+    /// The task [`open_task`] would name: its first claimed one, else its
     /// first pending one. Kept current as the tick fires.
     open: Option<String>,
 }
@@ -469,7 +469,7 @@ fn fire(
     new.routine_at = scheduled.is_some().then_some(at);
     let id = q.add_task(new, actor)?;
     // A pending task of this routine now: the open one for the next fire,
-    // unless a claimed one already was (`active` prefers it).
+    // unless a claimed one already was (`open_task` prefers it).
     if let Some(s) = scheduled.as_mut()
         && s.open.is_none()
     {
@@ -966,7 +966,7 @@ mod tests {
 
     #[test]
     fn a_fire_coalesces_into_the_first_claimed_task_else_the_first_pending_one() {
-        // The task `active` would name, so a scheduled fire and a manual one
+        // The task `open_task` would name, so a scheduled fire and a manual one
         // note the same task.
         for claimed in [true, false] {
             let (_d, q) = queue();
