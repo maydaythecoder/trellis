@@ -437,6 +437,7 @@ mod run_tests {
     //! the user's.
 
     use crate::config;
+    use crate::testutil::sh;
     use crate::{RunControl, RunSeeding, cmd_run};
     use std::path::{Path, PathBuf};
     use std::time::Duration;
@@ -447,16 +448,6 @@ mod run_tests {
     /// is `testutil`'s, emptied once per process there (#199).
     fn store() -> TrustStore {
         crate::testutil::trust_store()
-    }
-
-    /// A shell argv for `script`, as TOML, with literal strings so a Windows
-    /// path's backslashes are not escapes.
-    fn sh(script: &str) -> String {
-        if cfg!(windows) {
-            format!("['cmd', '/C', '{script}']")
-        } else {
-            format!("['sh', '-c', '{script}']")
-        }
     }
 
     fn fixture(name: &str, config: &str, script: &str) -> (PathBuf, String) {
