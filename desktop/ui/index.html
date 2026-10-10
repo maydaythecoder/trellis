@@ -13,6 +13,12 @@
   show; the others carry the hidden attribute. The overview section is the
   landing section: its four panes (recent repositories, last run, codebase,
   board) are drawn by overview.js from trellis's overview object (#562).
+
+  The composer (#301) sits below every section, so a task can be sent from
+  whichever one is shown. composer.js sends a prompt while no run is in
+  flight and a steer while one is, by the view's own record; Stop shows only
+  during a run. The core refuses what does not fit that record, whatever
+  the page sends.
 -->
 <html lang="en">
   <head>
@@ -119,6 +125,29 @@
         <h2 id="vault-title">Vault</h2>
         <p class="unbuilt">Not built yet</p>
       </section>
+
+      <form id="composer" class="composer" aria-label="Composer">
+        <label for="composer-text" id="composer-label">Task</label>
+        <textarea id="composer-text" name="task" rows="3"></textarea>
+        <div class="composer-row">
+          <label for="composer-control">Approvals</label>
+          <select id="composer-control" name="control">
+            <option value="approve" selected>approve: ask before each listed call</option>
+            <option value="auto">auto: run without asking</option>
+          </select>
+          <button type="submit" id="composer-send">Send</button>
+          <button type="button" id="composer-stop" hidden>Stop</button>
+        </div>
+        <p id="composer-note" class="muted" role="status"></p>
+        <div id="composer-undelivered" class="composer-list" hidden>
+          <h3 id="composer-undelivered-title">Sent and not delivered</h3>
+          <ul id="composer-undelivered-list" class="rows" aria-labelledby="composer-undelivered-title"></ul>
+        </div>
+        <div id="composer-starters" class="composer-list" hidden>
+          <h3 id="composer-starters-title">Starters</h3>
+          <ul id="composer-starters-list" class="chips" aria-labelledby="composer-starters-title"></ul>
+        </div>
+      </form>
     </main>
   </body>
 </html>
