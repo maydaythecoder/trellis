@@ -522,6 +522,37 @@ mod tests {
     }
 
     #[test]
+    fn page_reload_asks_for_the_starters_too() {
+        // The risk (#301 review): a page that loads after its child started
+        // (a reload) sees no child-started, and main.js's fallback asked for
+        // the state, the overview and the models but not `get_commands`, so
+        // the composer offered no starters until another repository was
+        // opened. No JavaScript runs under cargo test, so this holds the
+        // text; a node smoke script with a fake DOM loaded main.js (see the
+        // commit).
+        let main = code_of("main.js");
+        let fallback = main
+            .split("if (await askState(tauri)) {")
+            .nth(1)
+            .and_then(|r| r.split('}').next())
+            .expect("main.js has the reload fallback");
+        assert!(
+            fallback.contains("askStarters(document, tauri);"),
+            "{fallback}"
+        );
+        assert!(
+            main.contains(
+                r#"import { askStarters, drawComposer, wireComposer } from "./composer.js";"#
+            ),
+            "main.js does not take askStarters from composer.js"
+        );
+        assert!(
+            code_of("composer.js").contains("export function askStarters(doc, tauri)"),
+            "composer.js does not export askStarters"
+        );
+    }
+
+    #[test]
     fn page_run_section_holds_the_panes_render_draws() {
         // The risk: render.js drawing into an id the page does not have, so
         // a pane trellis reported is silently never shown; or DESK-10's

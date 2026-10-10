@@ -153,9 +153,10 @@ export function drawComposer(doc, view, tauri) {
 }
 
 // Asks the child for its commands, whose prompt templates become the
-// starters.
-function askStarters(tauri, p) {
-  send(tauri, p, { id: "desktop-commands", type: "get_commands" });
+// starters: on each child-started, and from main.js when the page loaded
+// after its child started and so saw none.
+export function askStarters(doc, tauri) {
+  send(tauri, parts(doc), { id: "desktop-commands", type: "get_commands" });
 }
 
 // Wires the form once, and listens for `child-started`: each new child is
@@ -165,7 +166,7 @@ function askStarters(tauri, p) {
 // input method is composing, Enter is its, not the form's.
 export async function wireComposer(doc, tauri) {
   const p = parts(doc);
-  await tauri.event.listen("child-started", () => askStarters(tauri, p));
+  await tauri.event.listen("child-started", () => askStarters(doc, tauri));
   p.text.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();

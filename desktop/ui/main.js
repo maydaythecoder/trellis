@@ -14,7 +14,7 @@
 
 import { drawView } from "./render.js";
 import { drawOverview } from "./overview.js";
-import { drawComposer, wireComposer } from "./composer.js";
+import { askStarters, drawComposer, wireComposer } from "./composer.js";
 import { drawDialogs, wireDialogs } from "./dialogs.js";
 import { askModels, drawModelPane, wireModelPane } from "./model.js";
 import { drawSettings, wireRepositorySwitch } from "./settings.js";
@@ -153,12 +153,15 @@ async function main() {
   // A page loaded after its child started (a reload) sees no
   // child-started, so it reads the overview itself; before then the core
   // has no root yet, and the overview it read would say none is open.
-  // The model list is asked for too: the core's view keeps the model the
-  // child took, which the get_state resend draws, but not one asked for
-  // before this page loaded.
+  // The model list and the starters are asked for too: the core's view
+  // keeps the model the child took and the starters a get_commands answer
+  // listed, which the get_state resend draws, but a child that started
+  // before this page listened was never asked for either, and its
+  // child-started, which asks, came before anything heard it.
   if (await askState(tauri)) {
     readOverview(tauri);
     askModels(document, tauri);
+    askStarters(document, tauri);
   }
 }
 
