@@ -485,6 +485,7 @@ mod tests {
             "pane-tier",
             "pane-running",
             "pane-outcome",
+            "pane-session-tokens",
         ] {
             assert!(ids.contains(&want), "render.js draws no {want}");
         }
@@ -848,6 +849,51 @@ mod tests {
             .map(|r| r.split('"').next().unwrap_or(""))
             .collect();
         assert_eq!(invokes, ["rpc_send"], "model.js calls only rpc_send");
+    }
+
+    #[test]
+    fn session_tokens_pane_is_drawn_as_text_from_trellis_s_answer() {
+        // The risk (#313): the pane titled for the session's tokens sits
+        // outside the run section, writes a null figure as 0, joins the two
+        // figures, or is never refreshed, so it shows a stale count; or the
+        // page asks for it outside rpc_send.
+        let page = page();
+        let pane = index_of(&page, "pane-session-tokens");
+        let region = page[pane].parent.expect("a pane in a region");
+        assert_eq!(page[region].attr("role"), Some("region"));
+        let title = index_of(
+            &page,
+            page[region]
+                .attr("aria-labelledby")
+                .expect("a labelled pane"),
+        );
+        assert_eq!(page[title].text.trim(), "Session tokens");
+        let render = ui_file("render.js");
+        for want in [
+            "` · prompt ${tokens(m.prompt_tokens)}`",
+            "` · completion ${tokens(m.completion_tokens)}`",
+            r#"isCount(v) ? String(v) : "unknown""#,
+            "el(doc, \"code\", model)",
+        ] {
+            assert!(render.contains(want), "render.js lacks {want}");
+        }
+        let main = ui_file("main.js");
+        for want in [
+            r#"type: "get_session_stats""#,
+            r#"listen("rpc-frame""#,
+            r#"f.type === "run_end") askSessionTokens(tauri)"#,
+        ] {
+            assert!(main.contains(want), "main.js lacks {want}");
+        }
+        let started = main
+            .split(r#"listen("child-started""#)
+            .nth(1)
+            .and_then(|r| r.split("});").next())
+            .expect("main.js listens for child-started");
+        assert!(
+            started.contains("askSessionTokens(tauri)"),
+            "main.js does not ask on child-started"
+        );
     }
 
     #[test]
