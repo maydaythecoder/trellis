@@ -1,23 +1,39 @@
-// The TRELLIS desktop page's one module (ADR 0048 section 5).
+// The TRELLIS desktop page's entry module (ADR 0048 section 5).
 //
-// It renders what the desktop's Rust core emits and computes nothing: the
-// run panes the core's reducer sends as `view` events, which child started
-// or why none did, and, outside a repository, the overview. There is no
-// bundler, so it reaches Tauri through the global window.__TAURI__ rather
-// than an import of @tauri-apps/api. The panes' own layout is #300's.
+// It switches the rail's sections and hands what the desktop's Rust core
+// emits to render.js, and computes nothing: the run panes the core's
+// reducer sends as `view` events, which child started or why none did.
+// There is no bundler, so it reaches Tauri through the global
+// window.__TAURI__ rather than an import of @tauri-apps/api.
 //
 // Every value is trellis- or model-supplied text, so it reaches the DOM only
 // through textContent (ADR 0007, S10): text that carries markup is shown as
 // characters, never parsed.
 
-const panes = {};
+import { drawView } from "./render.js";
 
 function show(id, text) {
   document.getElementById(id).textContent = text;
 }
 
 function json(value) {
-  return JSON.stringify(value, null, 2);
+  return JSON.stringify(value);
+}
+
+// The rail: each button names its section with aria-controls, and showing
+// one hides the rest through the hidden attribute, never a style.
+function wireRail() {
+  const buttons = [...document.querySelectorAll("nav.rail button[aria-controls]")];
+  const select = (chosen) => {
+    for (const b of buttons) {
+      const section = document.getElementById(b.getAttribute("aria-controls"));
+      const on = b === chosen;
+      if (section) section.hidden = !on;
+      if (on) b.setAttribute("aria-current", "page");
+      else b.removeAttribute("aria-current");
+    }
+  };
+  for (const b of buttons) b.addEventListener("click", () => select(b));
 }
 
 // Asks the child for its state. The core answers a forwarded get_state by
@@ -35,13 +51,13 @@ async function askState(tauri) {
 }
 
 async function main() {
+  wireRail();
   const tauri = window.__TAURI__;
 
   // Every listener is registered, and awaited, before anything is asked
   // for, so no answer arrives before something listens for it.
   await tauri.event.listen("view", (event) => {
-    Object.assign(panes, event.payload);
-    show("view", json(panes));
+    drawView(document, event.payload);
   });
   await tauri.event.listen("child-started", (event) => {
     const c = event.payload;
@@ -54,11 +70,10 @@ async function main() {
   await tauri.event.listen("rpc-exited", (event) => {
     show("status", `trellis rpc exited: ${json(event.payload)}`);
   });
-  await tauri.event.listen("overview", (event) => {
-    show("overview", json(event.payload));
-  });
+  // The overview's own drawing is #562's; until then only a failure to
+  // read it is said, in the status line.
   await tauri.event.listen("overview-error", (event) => {
-    show("overview", `The overview could not be read: ${event.payload}`);
+    show("status", `The overview could not be read: ${event.payload}`);
   });
 
   await askState(tauri);
