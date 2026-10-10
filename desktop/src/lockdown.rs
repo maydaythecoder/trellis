@@ -213,8 +213,8 @@ mod tests {
     const SECTIONS: [&str; 6] = ["overview", "run", "trails", "codebase", "board", "vault"];
 
     /// The sections that are built, and so do not read "Not built yet":
-    /// run (#300), overview (#562) and codebase (#307).
-    const BUILT: [&str; 3] = ["run", "overview", "codebase"];
+    /// run (#300), overview (#562), codebase (#307) and trails (#304).
+    const BUILT: [&str; 4] = ["run", "overview", "codebase", "trails"];
 
     #[test]
     fn csp_has_no_unsafe_source_and_no_network_origin() {
@@ -517,6 +517,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn trails_section_holds_what_trails_js_draws() {
+        // The risk (#304): trails.js drawing into an id the page lacks, so
+        // the list or a record never shows; a filter with no label; or the
+        // section still saying it is not built.
+        let page = page();
+        let section = index_of(&page, "trails");
+        let js = ui_file("trails.js");
+        for id in ["tr-status", "tr-filter", "tr-list", "tr-detail"] {
+            assert!(js.contains(&format!("\"{id}\"")), "trails.js draws no {id}");
+            assert!(
+                within(&page, index_of(&page, id), section),
+                "#{id} is outside #trails"
+            );
+        }
+        assert!(
+            page.iter()
+                .any(|e| e.tag == "label" && e.attr("for") == Some("tr-filter")),
+            "the filter has no label"
+        );
+        assert!(!page[section].text.contains("Not built yet"));
+    }
+
     /// `overview.js` with its `//` comments removed, so a field named only
     /// in a comment does not count as read. It has no string or regex that
     /// holds `//`, which this would cut short.
@@ -759,6 +782,7 @@ mod tests {
             "graph.js",
             "codebase.js",
             "radius.js",
+            "trails.js",
         ] {
             let js = ui_file(name);
             for bad in [".style", "cssText", "\"style\"", "'style'"] {
