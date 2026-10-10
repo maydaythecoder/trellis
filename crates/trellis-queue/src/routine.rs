@@ -197,25 +197,7 @@ pub fn load_all(root: &Path) -> Result<BTreeMap<String, Routine>, QueueError> {
 }
 
 pub fn load_dir(dir: &Path) -> Result<BTreeMap<String, Routine>, QueueError> {
-    let mut set = BTreeMap::new();
-    let rd = match std::fs::read_dir(dir) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(set),
-        Err(e) => return Err(crate::files::io(dir)(e)),
-    };
-    for e in rd.filter_map(Result::ok) {
-        let path = e.path();
-        let Some(name) = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .and_then(|n| n.strip_suffix(".toml"))
-        else {
-            continue;
-        };
-        let text = std::fs::read_to_string(&path).map_err(crate::files::io(&path))?;
-        set.insert(name.to_string(), parse(name, &text)?);
-    }
-    Ok(set)
+    crate::files::load_toml_dir(dir, parse)
 }
 
 impl Routine {
@@ -303,7 +285,7 @@ pub trait Repo {
 /// `last_head` comes from a file in the git directory that anything with
 /// write access can plant, and `tree_diff` passes it to git with no
 /// `--end-of-options`, so `--output=<path>` must never get that far.
-fn object_id(s: &str) -> bool {
+fn is_object_id(s: &str) -> bool {
     matches!(s.len(), 40 | 64) && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
@@ -314,8 +296,8 @@ const TRAIL: &str = ".trellis/runs/";
 /// Why a scheduled fire of a gated routine is quiet, for the log, or `None`
 /// when it should go ahead: a commit outside the trail since `last_head`,
 /// no usable `last_head`, or anything git could not answer.
-fn quiet(repo: &dyn Repo, last_head: Option<&str>, head: Option<&str>) -> Option<String> {
-    let since = last_head.filter(|h| object_id(h))?;
+fn quiet_reason(repo: &dyn Repo, last_head: Option<&str>, head: Option<&str>) -> Option<String> {
+    let since = last_head.filter(|h| is_object_id(h))?;
     let head = head?;
     if since == head {
         return Some(format!("no commit since {since} (HEAD {head})"));
@@ -371,7 +353,7 @@ pub struct Tick {
 }
 
 /// A task this routine created that is still pending or claimed.
-fn active(q: &Queue, name: &str) -> Result<Option<String>, QueueError> {
+fn open_task(q: &Queue, name: &str) -> Result<Option<String>, QueueError> {
     #[cfg(test)]
     SCANS.with(|c| c.set(c.get() + 1));
     for s in [State::Claimed, State::Pending] {
@@ -458,7 +440,7 @@ fn fire(
     let open = match (&scheduled, r.concurrency) {
         (_, Concurrency::Always) => None,
         (Some(s), _) => s.open.clone(),
-        (None, _) => active(q, &r.name)?,
+        (None, _) => open_task(q, &r.name)?,
     };
     if let Some(open) = open {
         if r.concurrency == Concurrency::Coalesce {
@@ -574,7 +556,7 @@ pub fn evaluate(q: &Queue, r: &Routine, now: i64, repo: &dyn Repo) -> Result<Tic
     // Read once per tick: every instant of a catch-up compares against the
     // same HEAD. One that is not an object id is as good as unreadable.
     let head = match r.activity_gate {
-        Some(ActivityGate::Commits) => repo.head().filter(|h| object_id(h)),
+        Some(ActivityGate::Commits) => repo.head().filter(|h| is_object_id(h)),
         None => None,
     };
     for at in due {
@@ -586,7 +568,7 @@ pub fn evaluate(q: &Queue, r: &Routine, now: i64, repo: &dyn Repo) -> Result<Tic
         let made = already.by_at.contains_key(&at);
         if r.activity_gate.is_some()
             && !made
-            && let Some(why) = quiet(repo, st.last_head.as_deref(), head.as_deref())
+            && let Some(why) = quiet_reason(repo, st.last_head.as_deref(), head.as_deref())
         {
             q.log(
                 Event::new(
@@ -1046,7 +1028,7 @@ mod tests {
         }
         fn changed(&self, since: &str, head: &str) -> Option<Vec<String>> {
             assert!(
-                object_id(since) && object_id(head),
+                is_object_id(since) && is_object_id(head),
                 "the repository was asked about `{since}`..`{head}`"
             );
             self.asked.set(self.asked.get() + 1);
@@ -1252,7 +1234,7 @@ mod tests {
             assert_eq!(last_head(&q).as_deref(), Some(A), "{b}");
         }
         // A 64-character (SHA-256) id is an object id.
-        assert!(object_id(&"c".repeat(64)) && object_id(A));
+        assert!(is_object_id(&"c".repeat(64)) && is_object_id(A));
     }
 
     #[test]
