@@ -171,8 +171,9 @@ function outcome(doc, pane, o) {
   pane.replaceChildren(dl);
 }
 
-// view key -> [element id, drawing function]. `approvals` is DESK-09b's
-// dialog and is not drawn here.
+// view key -> [element id, drawing function]. `approvals`, `alert` and
+// `stderr` are dialogs.js's, and `running`, `starters` and `undelivered`
+// also composer.js's.
 const PANES = {
   transcript: ["pane-transcript", transcript],
   actions: ["pane-actions", actions],

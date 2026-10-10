@@ -328,6 +328,7 @@ impl Core {
                 ));
             };
             check_run_state(line, s.view.running())?;
+            check_approve(line, &s.view)?;
             let w = child.writer();
             // Set before the line is written, so the reply, which a reader
             // thread may feed as soon as it is written, finds it set.
@@ -474,6 +475,27 @@ fn check_run_state(line: &Value, running: bool) -> Result<(), String> {
             "rpc_send: no run is in flight, so there is nothing to {ty}; send a prompt to start one"
         )),
         _ => Ok(()),
+    }
+}
+
+/// The approval rule (#302): an `approve` answers a question only when the
+/// view holds that question open, asked by the child and not yet answered,
+/// so a page bug cannot answer a question that was never asked. `rpc.rs`
+/// refuses an unknown id too; this keeps the answer from leaving the core.
+fn check_approve(line: &Value, view: &DesktopState) -> Result<(), String> {
+    if line.get("type").and_then(Value::as_str) != Some("approve") {
+        return Ok(());
+    }
+    match line.get("id").and_then(Value::as_str) {
+        Some(id) if view.approval_open(id) => Ok(()),
+        Some(id) => Err(format!(
+            "rpc_send: no open approval question has the id {id:?}, so no answer is sent"
+        )),
+        None => Err(
+            "rpc_send: an approve names the question it answers by its string id; this one \
+             has none"
+                .into(),
+        ),
     }
 }
 
@@ -1211,6 +1233,49 @@ mod tests {
     }
 
     #[test]
+    fn rpc_send_refuses_an_approve_for_no_open_question() {
+        // The risk (#302): a page bug answers a question trellis never
+        // asked, or one already answered, or one its run took away with it;
+        // a `yes` must leave the core only for a question open in the view.
+        let (core, rec, dirs) = with_child("approve-open");
+        let ask = |id: &str| {
+            line(
+                json!({"type": "approval_request", "id": id, "request_id": "p",
+                        "question": "edit a.py (+1 -1)", "detail": "d"}),
+            )
+        };
+        let approve = |id: Value| json!({"id": id, "type": "approve", "yes": true});
+        let refused = |l: &Value| {
+            let err = core.send(l).unwrap_err();
+            assert!(err.contains("approv"), "{l}: {err}");
+            err
+        };
+        // Nothing asked: no answer leaves.
+        assert!(refused(&approve(json!("approval-1"))).contains("no open approval question"));
+        refused(&json!({"type": "approve", "yes": true}));
+        refused(&approve(json!(1)));
+        // Asked: the answer is forwarded, and a second answer to it is not.
+        run_started(&core);
+        core.stdout_line(generation(&core), &ask("approval-1"));
+        assert_eq!(core.send(&approve(json!("approval-1"))), Ok(()));
+        let answer = rec.wait_for("rpc-frame", |f| f["command"] == "approve");
+        assert_eq!(
+            answer["success"], false,
+            "the child asked nothing: {answer}"
+        );
+        refused(&approve(json!("approval-1")));
+        refused(&approve(json!("approval-2")));
+        // A question the run took with it when it ended is not open either.
+        core.stdout_line(generation(&core), &ask("approval-3"));
+        run_ended(&core);
+        refused(&approve(json!("approval-3")));
+        finish(&core).unwrap();
+        for d in &dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
     fn open_repository_refuses_a_directory_that_is_not_a_repository() {
         // The risk: trellis started on a folder that is not a repository,
         // where a run would have nothing to roll back to.
@@ -1309,21 +1374,25 @@ mod tests {
         keys.sort();
         assert_eq!(keys, ["actions", "budget", "transcript"]);
 
+        // Text on stdout also raises the alert (#302).
         core.stdout_line(g, "plain text");
         let v = views(&rec);
         assert_eq!(v.len(), 1, "{v:?}");
-        assert_eq!(v[0].as_object().unwrap().len(), 1, "{v:?}");
+        let mut keys: Vec<&String> = v[0].as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(keys, ["alert", "transcript"], "{v:?}");
         assert_eq!(
             v[0]["transcript"].as_array().unwrap().last().unwrap(),
             "plain text"
         );
 
+        // stderr has its own pane, apart from the transcript (#302).
         core.stderr_line(g, "trellis: a human line".into());
         let v = views(&rec);
         assert_eq!(v.len(), 1, "{v:?}");
         assert_eq!(v[0].as_object().unwrap().len(), 1, "{v:?}");
         assert_eq!(
-            v[0]["transcript"].as_array().unwrap().last().unwrap(),
+            v[0]["stderr"].as_array().unwrap().last().unwrap(),
             "trellis: a human line"
         );
 
@@ -1362,6 +1431,7 @@ mod tests {
             keys,
             [
                 "actions",
+                "alert",
                 "approvals",
                 "budget",
                 "checks",
@@ -1370,13 +1440,14 @@ mod tests {
                 "radius",
                 "running",
                 "starters",
+                "stderr",
                 "tier",
                 "transcript",
                 "undelivered"
             ]
         );
         assert!(
-            full["transcript"]
+            full["stderr"]
                 .as_array()
                 .unwrap()
                 .iter()

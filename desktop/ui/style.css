@@ -296,3 +296,94 @@ code {
   padding: 0;
   list-style: none;
 }
+
+/* The alert banner (#302): one line per failure, until dismissed or a run
+   starts afresh. */
+.alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--failed);
+  border-radius: 6px;
+  background: var(--pane-bg);
+  color: var(--failed);
+  overflow-wrap: anywhere;
+}
+
+.alert p {
+  flex: 1 1 0;
+}
+
+.alert span {
+  display: block;
+}
+
+.alert button,
+.approval button {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+/* trellis's stderr, collapsed until opened. */
+.messages {
+  margin-top: 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--pane-bg);
+}
+
+.messages summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.messages .log {
+  margin-top: 6px;
+}
+
+/* The approval question: a native modal dialog. */
+.approval {
+  width: 90%;
+  max-width: 640px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--pane-bg);
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+.approval::backdrop {
+  background: rgb(0 0 0 / 40%);
+}
+
+.approval-detail {
+  max-height: 320px;
+  overflow: auto;
+  margin: 8px 0 12px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  font: 12px/1.4 ui-monospace, monospace;
+  white-space: pre-wrap;
+}
+
+.approval-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+#approval-approve {
+  color: var(--accent);
+  font-weight: 600;
+}
