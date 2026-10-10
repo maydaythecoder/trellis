@@ -15,6 +15,8 @@
 // Each function takes the document it draws into, so the module has no
 // global state and can be driven by a test document.
 
+import { drawGraph } from "./graph.js";
+
 function el(doc, tag, text) {
   const e = doc.createElement(tag);
   if (text !== undefined) e.textContent = text;
@@ -229,6 +231,8 @@ const PANES = {
   running: ["pane-running", running],
   outcome: ["pane-outcome", outcome],
   session_tokens: ["pane-session-tokens", sessionTokens],
+  // The action graph's layout, computed by the core (`graph.rs`).
+  graph: ["graph", drawGraph],
 };
 
 // Draws every pane the event carries; a key this page does not know is
