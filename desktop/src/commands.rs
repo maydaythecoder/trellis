@@ -15,6 +15,16 @@
 //! - `overview`: with no root, the overview, once at startup
 //!   (`overview-error` says why when it could not be read).
 //!
+//! The first line the core writes to every child is
+//! `{"id":"desktop-models","type":"get_available_models"}`. Its answer's
+//! `configured` specs are recorded in the view state and read by
+//! `rpc_send`'s model rule (ADR 0048 section 4, #305), which names no model
+//! until that answer has come. The answer still reaches the page as an
+//! `rpc-frame`, as every stdout object does: it is the child's own report,
+//! it holds no key, and the model picker needs the user's configured spec
+//! to preselect it (section 5, amended). The page may not send a line with
+//! that id, so nothing it asks for can be taken as the child's report.
+//!
 //! Nothing restarts a child that exited, whether on `quit`, a crash or a
 //! broken pipe: the page is told, and `rpc_send` refuses until
 //! `open_repository` starts another. The page cannot send `quit`; only the
@@ -25,7 +35,7 @@
 
 use crate::child::{Child, Lines, Output, Trellis};
 use crate::frames::{self, Frame};
-use crate::state::{Changed, DesktopState};
+use crate::state::{Changed, Configured, DesktopState, MODELS_ID};
 use serde_json::{Value, json};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -147,11 +157,21 @@ impl Core {
                 return Err(why);
             }
         };
+        // The first line this child reads, written before the child is
+        // stored, so no page line can come ahead of it: until it is
+        // answered `rpc_send` names no model (#305, ADR 0048 section 4).
+        // A child that cannot read it is left to the reader, which sees its
+        // stdout end; the guard stays shut meanwhile.
+        if let Err(e) = child.send(&models_question()) {
+            eprintln!("trellis-desktop: cannot ask trellis rpc for its models: {e}");
+        }
         let generation = {
             let mut s = self.lock();
             s.generation += 1;
             s.root = Some(root.to_path_buf());
             s.child = Some((s.generation, child));
+            // This child's answer, not the last one's, opens the guard.
+            s.view.forget_models();
             let c = s.view.clear();
             self.sink.emit("view", s.view.view(c));
             s.generation
@@ -293,11 +313,13 @@ impl Core {
         status
     }
 
-    /// `rpc_send`: checks the line, then forwards it to the child.
+    /// `rpc_send`: checks the line, then the model it names against the
+    /// child's answer, then forwards it to the child.
     pub fn send(&self, line: &Value) -> Result<(), String> {
         check_line(line)?;
         let writer = {
             let mut s = self.lock();
+            check_model(line, s.view.configured())?;
             let Some((_, child)) = s.child.as_ref() else {
                 return Err(format!(
                     "rpc_send: no trellis rpc child is running: {}",
@@ -387,15 +409,16 @@ pub fn startup_root(explicit: Option<PathBuf>, cwd: &Path) -> Result<PathBuf, St
         })
 }
 
-/// What `rpc_send` checks before it looks for a child, each refusal naming
-/// its rule: a JSON object, a `type` it forwards, the size cap, and the
-/// model rule.
+/// What `rpc_send` checks before it reads the session, each refusal naming
+/// its rule: a JSON object, a `type` it forwards, the size cap, and an id
+/// that is not the core's own. The model rule, which needs the child's
+/// answer, is [`check_model`].
 fn check_line(line: &Value) -> Result<(), String> {
     let Some(o) = line.as_object() else {
         return Err("rpc_send: the line is not a JSON object".into());
     };
-    let ty = match o.get("type").and_then(Value::as_str) {
-        Some(t) if FORWARDED.contains(&t) => t,
+    match o.get("type").and_then(Value::as_str) {
+        Some(t) if FORWARDED.contains(&t) => {}
         Some(t) => {
             return Err(format!(
                 "rpc_send: type {t:?} is not one rpc_send forwards ({})",
@@ -403,23 +426,86 @@ fn check_line(line: &Value) -> Result<(), String> {
             ));
         }
         None => return Err("rpc_send: the line has no string type".into()),
-    };
+    }
     let len = serde_json::to_string(line).map_or(usize::MAX, |s| s.len());
     if len > LINE_CAP {
         return Err(format!(
             "rpc_send: the line is {len} bytes, over the {LINE_CAP}-byte cap"
         ));
     }
-    // rpc.rs counts a model the client names as the user's choice, which
-    // skips the hosted endpoint check (ADR 0024 §3), so none is named until
-    // DESK-12's guard: whatever the spec.
-    if ty == "set_model" || (ty == "prompt" && o.contains_key("model")) {
+    // The core's own question: an answer to a page line carrying this id
+    // would be read as the child's report of the configured specs.
+    if o.get("id").and_then(Value::as_str) == Some(MODELS_ID) {
+        return Err(format!(
+            "rpc_send: the id {MODELS_ID:?} is the desktop's own; use another"
+        ));
+    }
+    Ok(())
+}
+
+/// The core's question to a new child, its first line.
+fn models_question() -> Value {
+    json!({"id": MODELS_ID, "type": "get_available_models"})
+}
+
+/// The schemes `trellis-model`'s `spec.rs` parses as a hosted endpoint that
+/// `hosted::resolve_with` gives the protocol's default key once the user
+/// chose it. `openai:` is a runtime alias and gets no key.
+const HOSTED_SCHEMES: [&str; 2] = ["openai-chat", "anthropic"];
+
+/// The model rule (ADR 0048 section 4, ADR 0024 §3). `rpc.rs` counts a
+/// model the client names, a prompt's `model` or `set_model`, as the user's
+/// choice, and `resolve_with` then sends a hosted endpoint the user's key.
+/// So a hosted spec is forwarded only when it is byte-equal to
+/// `configured.user`, the spec in the user's own config. Byte-equal and not
+/// parsed: `resolve_with` compares parsed specs, so a reformatted copy of
+/// the repository's spec (a trailing slash, an upper-case scheme) would
+/// pass any looser check. A `provider:` spec passes, because `resolve_with`
+/// holds a repository-defined provider to the same check whoever named it;
+/// runtime and `scripted:` specs get no key. Until the child has answered
+/// `desktop-models`, no model is named at all.
+fn check_model(line: &Value, configured: Option<&Configured>) -> Result<(), String> {
+    let ty = line.get("type").and_then(Value::as_str);
+    let spec = match (ty, line.get("model")) {
+        // A prompt without a model, or with `null`, runs the repository
+        // default: rpc reads only a string, and this names nothing.
+        (Some("prompt"), None | Some(Value::Null)) => return Ok(()),
+        (Some("prompt" | "set_model"), Some(Value::String(m))) => m,
+        (Some("prompt"), Some(_)) => {
+            return Err(
+                "rpc_send: the model rule: a prompt's model is a spec string, or null for the \
+                 repository default"
+                    .into(),
+            );
+        }
+        (Some("set_model"), _) => {
+            return Err("rpc_send: the model rule: set_model needs a model spec string".into());
+        }
+        _ => return Ok(()),
+    };
+    let Some(configured) = configured else {
         return Err(
-            "rpc_send: the model rule: the desktop sends no set_model and no prompt carrying \
-             model until its model guard (DESK-12) lands, since rpc counts a model the client \
-             names as the user's choice (ADR 0024 §3)"
+            "rpc_send: the model rule: trellis rpc has not yet answered the desktop's \
+             get_available_models, so the user's own configured spec is not known and no \
+             set_model or prompt model is sent (ADR 0048 section 4); try again in a moment, \
+             or pick \"repository default\""
                 .into(),
         );
+    };
+    // The text before the first `:`, or all of it with none. Trimmed for
+    // this test only, which can only widen what counts as hosted; the
+    // comparison below is on the bytes as given.
+    let scheme = spec.split(':').next().unwrap_or_default().trim();
+    let hosted = HOSTED_SCHEMES
+        .iter()
+        .any(|h| scheme.eq_ignore_ascii_case(h));
+    if hosted && configured.user.as_deref() != Some(spec.as_str()) {
+        return Err(format!(
+            "rpc_send: the model rule: {spec:?} is a hosted spec that is not the one in your own \
+             trellis config, and trellis would send it your key as your choice (ADR 0024 §3). \
+             Pick \"repository default\" to run the repository's model, or add the spec to your \
+             own config ([model] spec in your user config.toml) to choose it yourself"
+        ));
     }
     Ok(())
 }
@@ -624,36 +710,297 @@ mod tests {
         let _ = std::fs::remove_dir_all(&config);
     }
 
-    #[test]
-    fn rpc_send_refuses_set_model_and_a_prompt_model() {
-        // The risk (ADR 0024 §3): rpc counts a model the client names as
-        // the user's choice, so a spec the repository chose, forwarded,
-        // would carry the user's key to the repository's endpoint.
+    /// The child's answer to the core's models question, as `rpc.rs`
+    /// writes it, with `configured` as given.
+    fn models_answer(configured: Value) -> String {
+        line(
+            json!({"type": "response", "command": "get_available_models",
+                    "id": MODELS_ID, "success": true,
+                    "data": {"catalog": [], "configured": configured}}),
+        )
+    }
+
+    /// The two lines that name a model, for `spec`.
+    fn naming(spec: Value) -> [Value; 2] {
+        [
+            json!({"id": "m", "type": "set_model", "model": spec}),
+            json!({"id": "p", "type": "prompt", "task": "t", "model": spec}),
+        ]
+    }
+
+    /// Whether the model rule let `l` through: the idle core then refuses
+    /// it for having no child, the next rule.
+    fn forwarded(core: &Core, l: &Value) -> bool {
+        match core.send(l) {
+            Err(e) if no_child(&e) => true,
+            Err(e) => {
+                assert!(e.contains("the model rule"), "{l}: {e}");
+                false
+            }
+            Ok(()) => panic!("an idle core has no child to write to: {l}"),
+        }
+    }
+
+    const REPO_SPEC: &str = "anthropic:https://example.invalid#m";
+    const USER_SPEC: &str = "openai-chat:https://user.example.invalid/v1#gpt";
+
+    /// An idle core whose child reported `repository` and `user`.
+    fn answered(repository: Value, user: Value) -> (Core, Arc<Recorder>) {
         let (core, rec) = idle_core();
-        for spec in [
-            "anthropic:https://example.invalid#m",
-            "provider:anthropic/claude",
-            "llamacpp:",
-            "scripted:x",
-        ] {
-            for l in [
-                json!({"id": "m", "type": "set_model", "model": spec}),
-                json!({"id": "p", "type": "prompt", "task": "t", "model": spec}),
+        let g = generation(&core);
+        core.stdout_line(
+            g,
+            &models_answer(json!({"repository": repository, "user": user, "session": null})),
+        );
+        (core, rec)
+    }
+
+    #[test]
+    fn startup_asks_a_new_child_for_its_models_first() {
+        // The risk (#305): the guard opens on a guess, or on another
+        // child's answer, because the core never asked this child which
+        // spec is the user's, or asked after a page line.
+        let repo = scratch("models-repo");
+        std::fs::create_dir_all(repo.join(".trellis")).unwrap();
+        std::fs::write(
+            repo.join(".trellis").join("config.toml"),
+            format!("[model]\nspec = \"{REPO_SPEC}\"\n"),
+        )
+        .unwrap();
+        // A user config of the test's own; `scratch` dirs stay apart from
+        // the developer's.
+        let config = scratch("models-config");
+        std::fs::write(
+            config.join("config.toml"),
+            format!("[model]\nspec = \"{USER_SPEC}\"\n"),
+        )
+        .unwrap();
+        let (core, rec) = core_with(&config);
+        core.start(&repo).unwrap();
+        // A page line sent at once still comes after the core's question.
+        core.send(&json!({"id": "desktop-1", "type": "get_state"}))
+            .unwrap();
+        rec.wait_for("rpc-frame", |f| f["id"] == "desktop-1");
+        let responses: Vec<Value> = rec
+            .named("rpc-frame")
+            .into_iter()
+            .filter(|f| f["type"] == "response")
+            .collect();
+        assert_eq!(responses[0]["id"], MODELS_ID, "{responses:?}");
+        assert_eq!(responses[0]["command"], "get_available_models");
+        assert_eq!(responses[1]["id"], "desktop-1", "{responses:?}");
+        assert_eq!(
+            core.lock().view.configured(),
+            Some(&Configured {
+                repository: Some(REPO_SPEC.into()),
+                user: Some(USER_SPEC.into()),
+                session: None,
+            }),
+            "the answer's configured specs are recorded"
+        );
+        assert_eq!(
+            models_question().to_string(),
+            r#"{"id":"desktop-models","type":"get_available_models"}"#
+        );
+
+        // With the answer in, the user's own spec reaches trellis, and
+        // the repository's does not leave the core.
+        core.send(&json!({"id": "s", "type": "set_model", "model": USER_SPEC}))
+            .unwrap();
+        let set = rec.wait_for("rpc-frame", |f| f["id"] == "s");
+        assert_eq!(set["success"], true, "{set}");
+        let err = core
+            .send(&json!({"id": "r", "type": "set_model", "model": REPO_SPEC}))
+            .unwrap_err();
+        assert!(err.contains("the model rule"), "{err}");
+
+        // A restarted child starts unanswered, and asks again.
+        finish(&core).unwrap();
+        assert_eq!(core.lock().view.configured(), None, "reset on exit");
+        rec.take();
+        core.start(&repo).unwrap();
+        rec.wait_for("rpc-frame", |f| f["id"] == MODELS_ID);
+        finish(&core).unwrap();
+        let _ = std::fs::remove_dir_all(&repo);
+        let _ = std::fs::remove_dir_all(&config);
+    }
+
+    #[test]
+    fn model_guard_refuses_until_the_models_answer_arrives() {
+        // The risk: a model named before the child said which spec is the
+        // user's is judged against nothing, and a hosted spec passes.
+        let (core, rec) = idle_core();
+        let g = generation(&core);
+        let waiting = |core: &Core| {
+            for spec in [
+                USER_SPEC,
+                "provider:p#m",
+                "llamacpp:http://127.0.0.1:8080",
+                "scripted:x",
             ] {
+                for l in naming(json!(spec)) {
+                    let err = core.send(&l).unwrap_err();
+                    assert!(err.contains("has not yet answered"), "{l}: {err}");
+                    assert!(err.contains("repository default"), "{l}: {err}");
+                }
+            }
+        };
+        waiting(&core);
+        // No model, or a null one, is the repository default: it names
+        // nothing, so it meets only the child rule.
+        for l in [
+            json!({"id": "p", "type": "prompt", "task": "t"}),
+            json!({"id": "p", "type": "prompt", "task": "t", "model": null}),
+        ] {
+            assert!(forwarded(&core, &l), "{l}");
+        }
+        // Answers that are not the core's, or not well formed, open nothing.
+        let ok = json!({"repository": null, "user": USER_SPEC, "session": null});
+        for bad in [
+            line(
+                json!({"type": "response", "command": "get_available_models", "id": "page",
+                        "success": true, "data": {"configured": ok}}),
+            ),
+            line(
+                json!({"type": "response", "command": "get_available_models", "id": MODELS_ID,
+                        "success": false, "error": "no"}),
+            ),
+            line(
+                json!({"type": "response", "command": "get_available_models", "id": MODELS_ID,
+                        "success": true, "data": {"catalog": []}}),
+            ),
+            models_answer(json!({"repository": null, "user": 7, "session": null})),
+            models_answer(json!({"repository": null, "user": [USER_SPEC], "session": null})),
+            models_answer(json!([USER_SPEC])),
+        ] {
+            core.stdout_line(g, &bad);
+            waiting(&core);
+        }
+        // The answer opens the guard; a malformed one after it shuts it.
+        core.stdout_line(g, &models_answer(ok.clone()));
+        assert!(forwarded(&core, &naming(json!(USER_SPEC))[0]));
+        core.stdout_line(g, &models_answer(json!({"user": {"spec": USER_SPEC}})));
+        waiting(&core);
+        // The child's exit shuts it: the next child has not answered.
+        core.stdout_line(g, &models_answer(ok));
+        assert!(forwarded(&core, &naming(json!(USER_SPEC))[1]));
+        core.exited(g, Err(io::Error::other("gone")));
+        waiting(&core);
+        // The page may not ask under the core's id.
+        let err = core
+            .send(&json!({"id": MODELS_ID, "type": "get_available_models"}))
+            .unwrap_err();
+        assert!(err.contains("is the desktop's own"), "{err}");
+        assert!(
+            rec.take().iter().all(|(e, _)| e != "child-started"),
+            "no child was started"
+        );
+    }
+
+    #[test]
+    fn model_guard_forwards_a_hosted_spec_only_when_it_is_the_users_own() {
+        // The risk (ADR 0024 §3): rpc counts a model the client names as
+        // the user's choice and sends that endpoint the user's key, so a
+        // hosted spec the user did not write themselves must not leave.
+        let (core, _rec) = answered(Value::Null, json!(USER_SPEC));
+        for l in naming(json!(USER_SPEC)) {
+            assert!(forwarded(&core, &l), "the user's own spec: {l}");
+        }
+        for spec in [
+            "openai-chat:https://user.example.invalid/v1/#gpt",
+            "OPENAI-CHAT:https://user.example.invalid/v1#gpt",
+            "Openai-Chat:https://other.invalid/v1#gpt",
+            // Byte-equal: no trimming.
+            " openai-chat:https://user.example.invalid/v1#gpt",
+            "openai-chat:https://user.example.invalid/v1#gpt ",
+            "openai-chat:https://user.example.invalid/v1#gpt\n",
+            "anthropic:https://user.example.invalid#gpt",
+            "aNtHrOpIc:x",
+            "anthropic:",
+            "anthropic",
+        ] {
+            for l in naming(json!(spec)) {
                 let err = core.send(&l).unwrap_err();
                 assert!(err.contains("the model rule"), "{l}: {err}");
-                assert!(!no_child(&err), "{l}: refused for the model, not the child");
+                assert!(err.contains("Pick \"repository default\""), "{l}: {err}");
+                assert!(err.contains("your own config"), "{l}: {err}");
             }
         }
-        let err = core
-            .send(&json!({"id": "p", "type": "prompt", "task": "t"}))
-            .unwrap_err();
-        assert!(
-            no_child(&err),
-            "a prompt without model meets only the child rule: {err}"
+        // With no user spec, no hosted spec is ever forwarded.
+        for user in [Value::Null, json!("")] {
+            let (core, _rec) = answered(json!(USER_SPEC), user.clone());
+            for spec in [USER_SPEC, REPO_SPEC, ""] {
+                for l in naming(json!(spec)) {
+                    let hosted = !spec.is_empty();
+                    assert_eq!(forwarded(&core, &l), !hosted, "user {user}: {l}");
+                }
+            }
+        }
+        // A model that is not a string is not a spec to judge.
+        for l in [
+            json!({"id": "m", "type": "set_model"}),
+            json!({"id": "m", "type": "set_model", "model": null}),
+            json!({"id": "p", "type": "prompt", "task": "t", "model": 1}),
+            json!({"id": "p", "type": "prompt", "task": "t", "model": {"spec": USER_SPEC}}),
+        ] {
+            assert!(!forwarded(&core, &l), "{l}");
+        }
+    }
+
+    #[test]
+    fn model_guard_never_forwards_the_repository_spec_as_the_users_choice() {
+        // The risk (#305): the page sends the repository's spec back
+        // through set_model, rpc counts it as the user's, and the
+        // repository's endpoint gets the user's key. A reformatted copy
+        // parses to the same spec, so it must not pass either.
+        let user = "anthropic:https://user.invalid#u";
+        let (core, _rec) = answered(json!(REPO_SPEC), json!(user));
+        for spec in [
+            REPO_SPEC,
+            "ANTHROPIC:https://example.invalid/#m",
+            "anthropic:https://example.invalid/#m",
+            "Anthropic:https://example.invalid#m",
+        ] {
+            for l in naming(json!(spec)) {
+                assert!(!forwarded(&core, &l), "{l}");
+            }
+        }
+        assert!(forwarded(&core, &naming(json!(user))[0]));
+        // The session's spec is not the user's either.
+        let (core, _rec) = idle_core();
+        core.stdout_line(
+            generation(&core),
+            &models_answer(json!({"repository": null, "user": null, "session": REPO_SPEC})),
         );
-        assert!(rec.take().is_empty(), "no child was started");
-        assert!(core.lock().child.is_none());
+        for l in naming(json!(REPO_SPEC)) {
+            assert!(!forwarded(&core, &l), "{l}");
+        }
+    }
+
+    #[test]
+    fn model_guard_forwards_provider_runtime_and_scripted_specs() {
+        // The risk: the guard refuses specs that get no key, or whose key
+        // `resolve_with` already holds to the user's own provider, so a
+        // user cannot pick a local runtime from the desktop.
+        let (core, _rec) = answered(json!(REPO_SPEC), Value::Null);
+        for spec in [
+            "provider:groq#llama",
+            "PROVIDER:groq#llama",
+            "llamacpp:http://127.0.0.1:8080",
+            "vllm:http://127.0.0.1:8000#qwen",
+            "sglang:http://127.0.0.1:30000",
+            // A runtime alias, not the hosted `openai-chat`.
+            "openai:http://127.0.0.1:8000",
+            "scripted:/tmp/script.json",
+            // No scheme, or none trellis knows: no key; rpc refuses it.
+            "no-colon",
+            "",
+            "openai-chatty:https://x.invalid#m",
+        ] {
+            for l in naming(json!(spec)) {
+                assert!(forwarded(&core, &l), "{l}");
+            }
+        }
     }
 
     #[test]
