@@ -453,3 +453,76 @@ h5 {
   font-size: 12px;
   color: var(--muted);
 }
+
+/* The trails view (#304): a list of past runs and one run's record, its
+   factual and judgment parts apart. */
+.tr-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(0, 2fr);
+  gap: 12px;
+  margin-top: 8px;
+}
+
+#tr-filter {
+  display: block;
+  width: 100%;
+  margin: 4px 0 8px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+
+.tr-list {
+  max-height: 520px;
+  overflow-y: auto;
+  padding-left: 0;
+  list-style: none;
+}
+
+.tr-list button {
+  display: block;
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tr-list button[aria-current="true"] {
+  border-color: var(--border);
+  background: var(--bg);
+}
+
+.tr-list li.empty {
+  margin-left: 0;
+}
+
+/* A past run's record: recorded text is drawn as it was written, in its
+   own face, so it never reads as the desktop's own words. */
+.untrusted {
+  font-family: ui-monospace, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+article.past-run section + section {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.judgment h4 {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.alert {
+  color: var(--failed);
+}
