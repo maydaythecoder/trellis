@@ -15,6 +15,10 @@ A Rust agent harness for Python repositories. It builds a call graph of your fir
 
 Read `00` and `01` before writing any code. Each version doc assumes the previous one shipped.
 
+## For engineers joining
+
+Start with `MISSION.md`, then `ARCHITECTURE.md` and `GLOSSARY.md`; `adr/README.md` indexes the decisions; `../CONTRIBUTING.md` covers setup, branches and review.
+
 ## The two constraints
 
 These are why the design looks the way it does. If you find yourself designing around either, stop.
