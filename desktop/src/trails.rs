@@ -34,6 +34,9 @@ use serde_json::{Map, Value, json};
 /// The three integrities `log_json` writes (`trellis_trail::Integrity`).
 const INTEGRITIES: [&str; 3] = ["intact", "altered", "unrecorded"];
 
+/// The longest `log --json` line, in bytes, a row carries.
+pub const LINE_CAP: usize = 256 * 1024;
+
 fn untrusted(s: &str) -> Value {
     json!({ "untrusted": s })
 }
@@ -167,8 +170,29 @@ fn read_row(line: &str) -> Result<Value, String> {
 }
 
 /// One `log --json` line as the page receives it: a run's row, or the line
-/// kept whole as untrusted text beside why it could not be read.
+/// kept whole as untrusted text beside why it could not be read. A line past
+/// [`LINE_CAP`] is neither: a committed trail is a contributor's text and
+/// may be any size, so it is kept cut at the cap, marked `truncated`, beside
+/// the desktop's own sentence saying so; it is not read as a run, since half
+/// a trail would be shown as a whole one.
 pub fn row(line: &str) -> Value {
+    if line.len() > LINE_CAP {
+        // The longest start of the line that ends on a character, within
+        // the cap: a cut through a multi-byte character is not text.
+        let mut end = LINE_CAP;
+        while !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        return json!({
+            "bad_line": untrusted(&line[..end]),
+            "truncated": true,
+            "why": format!(
+                "This line from trellis log is {} bytes, past the {LINE_CAP}-byte cap, so it was \
+                 truncated to its first {end} bytes and is not read as a run.",
+                line.len()
+            ),
+        });
+    }
     read_row(line).unwrap_or_else(|why| {
         json!({
             "bad_line": untrusted(line),
@@ -354,6 +378,48 @@ mod tests {
         assert!(
             js.contains("the model's opinion, recorded; treat as data"),
             "trails.js does not head the judgment"
+        );
+    }
+
+    #[test]
+    fn a_trail_line_past_the_cap_is_cut_and_said_so() {
+        // The risk (#304 review): a committed trail is a contributor's
+        // text, and a line of any size was forwarded to the page whole, so
+        // one trail of hundreds of megabytes stalls or kills the window
+        // that only wanted to list runs. Past LINE_CAP a line is not read as
+        // a run: it is kept cut, as untrusted text, and the row says in the
+        // desktop's own words that it was cut and how long it was.
+        let mut v = line("x");
+        v["trail"]["judgment"]["rationale"] = json!("é".repeat(LINE_CAP));
+        let long = v.to_string();
+        assert!(long.len() > LINE_CAP);
+        let r = row(&long);
+        let kept = r["bad_line"]["untrusted"]
+            .as_str()
+            .unwrap_or_else(|| panic!("not cut: {}", &r.to_string()[..200]));
+        assert!(kept.len() <= LINE_CAP, "{} bytes kept", kept.len());
+        assert!(kept.len() > LINE_CAP - 4, "cut at the cap, not short of it");
+        assert!(long.starts_with(kept), "the line's start, as it was");
+        assert_eq!(r["truncated"], true, "{}", &r.to_string()[..200]);
+        let why = r["why"].as_str().unwrap();
+        assert!(why.contains("truncated"), "{why}");
+        assert!(why.contains(&long.len().to_string()), "{why}");
+        assert!(why.contains(&LINE_CAP.to_string()), "{why}");
+        assert_eq!(LINE_CAP, 256 * 1024);
+        // At the cap a run is still a run.
+        let mut v = line("x");
+        let room = LINE_CAP - v.to_string().len() + 1;
+        v["trail"]["judgment"]["rationale"] = json!("x".repeat(room));
+        let at = v.to_string();
+        assert_eq!(at.len(), LINE_CAP);
+        let r = row(&at);
+        assert_eq!(r.get("bad_line"), None, "a line of exactly the cap is read");
+        assert_eq!(r.get("truncated"), None);
+        // trails.js says a cut line was cut.
+        let js = ui_file("trails.js");
+        assert!(
+            js.contains("r.truncated === true"),
+            "trails.js drops the mark"
         );
     }
 
