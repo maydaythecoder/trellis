@@ -1438,6 +1438,9 @@ pub fn slugify(task: &str) -> String {
 /// Control characters shown as escapes. Task text is typed by a person, but
 /// it reaches a terminal, and an escape sequence in it could repaint the
 /// line that says how a run ended.
+///
+/// Same output as `trellis_core::text::escape_controls`; kept as a copy
+/// because this crate does not depend on trellis-core.
 pub fn plain(s: &str) -> String {
     s.chars()
         .map(|c| {
