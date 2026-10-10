@@ -1,5 +1,5 @@
 {
-  "about": "The rpc and log --json fields a client may rely on (ADR 0048 section 6, ADR 0025 sections 4 and 5), held by tests in tests/modes.rs. An event's fields are under its \"fields\" object, beside \"message\": those always present, those present only in the case a list is named for (a turn that called the model, a blast_radius turn, a prompt-sending driver, a response header the endpoint sent), and, under \"absent_when\", when a listed field is still left off. A figure trellis did not measure is absent, never 0. A response's data, per command, is under \"responses\": the fields always in it, and those present only for one value of another. A response's id is the id its command was sent with, and a run's run_start and run_end carry the id of the prompt that started it. Fields not listed here are unversioned.",
+  "about": "The rpc and log --json fields a client may rely on (ADR 0048 section 6, ADR 0025 sections 4 and 5), held by tests in tests/modes.rs. An event's fields are under its \"fields\" object, beside \"message\": those always present, those present only in the case a list is named for (a turn that called the model, a blast_radius turn, a prompt-sending driver, a response header the endpoint sent), and, under \"absent_when\", when a listed field is still left off. A figure trellis did not measure is absent, never 0. A response's data, per command, is under \"responses\": the fields always in it, and those present only for one value of another; get_codebase's and get_queue's are dotted paths, with [] meaning each element of an array (#559). A response's id is the id its command was sent with, and a run's run_start and run_end carry the id of the prompt that started it. Fields not listed here are unversioned.",
   "rpc": {
     "events": {
       "turn": {
@@ -56,13 +56,70 @@
       },
       "list_paths": {
         "always": ["paths"]
+      },
+      "get_codebase": {
+        "always": [
+          "modules_indexed",
+          "bound_call_sites",
+          "ambiguous",
+          "unresolved",
+          "modules",
+          "modules_not_drawn",
+          "modules[].module",
+          "modules[].path",
+          "modules[].defines",
+          "modules[].calls",
+          "modules[].calls[].module",
+          "modules[].calls[].call_sites",
+          "modules[].calls_not_drawn",
+          "modules[].ambiguous",
+          "modules[].unresolved"
+        ],
+        "path": "the module's file, relative to the root and /-separated",
+        "refused_when": "the root has no .git entry (a directory, or the file a worktree or submodule has): success is false, the error names the command, the root and the rule, and nothing under the root is read"
+      },
+      "get_queue": {
+        "always": ["tasks", "tasks[].id", "tasks[].state"],
+        "readable_only": [
+          "tasks[].status",
+          "tasks[].priority",
+          "tasks[].task",
+          "tasks[].labels",
+          "tasks[].assignee",
+          "tasks[].waiting",
+          "tasks[].blockers",
+          "tasks[].parent"
+        ],
+        "unreadable_only": ["tasks[].error"],
+        "null_when": {
+          "tasks[].assignee": "the task names no agent profile",
+          "tasks[].waiting": "the task is not pending, or nothing holds it back",
+          "tasks[].parent": "the task has no parent"
+        },
+        "empty_when": {
+          "tasks[].labels": "the task has no label",
+          "tasks[].blockers": "the task waits on no other task"
+        }
       }
     },
     "commands": {
       "get_state": {
         "data": {
-          "always": ["tier", "classifying"],
+          "always": [
+            "running",
+            "classifying",
+            "run_request_id",
+            "model",
+            "root",
+            "last_run",
+            "pending_approvals",
+            "tier"
+          ],
+          "last_run": "the last run's run_end framing fields, without type",
           "null_when": {
+            "run_request_id": "no run is in flight, or the one in flight was started by a command sent with no id",
+            "model": "neither set_model nor the configuration's [model] spec names one",
+            "last_run": "no run of this rpc process has ended",
             "tier": "no run of this rpc process has decided its tier yet, or the last run stopped before deciding one; never guessed from the spec"
           },
           "tier_label": {
