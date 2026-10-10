@@ -1316,7 +1316,23 @@ mod tests {
         assert!(err.contains("no run is in flight"), "after run_end: {err}");
         // Another type is not held to the run state.
         assert_eq!(core.send(&json!({"id": "g", "type": "get_state"})), Ok(()));
+        // The child exits mid-run: the view no longer counts a run in
+        // flight, and a steer is refused, not written to a pipe nobody
+        // reads for a run nobody is finishing.
+        run_started(&core);
+        assert!(core.lock().view.running());
         finish(&core).unwrap();
+        assert!(
+            !core.lock().view.running(),
+            "a run counted for a gone child"
+        );
+        for l in [
+            json!({"id": "s", "type": "steer", "message": "m"}),
+            json!({"id": "a", "type": "abort"}),
+        ] {
+            let err = core.send(&l).unwrap_err();
+            assert!(no_child(&err), "{l}: {err}");
+        }
         for d in &dirs {
             let _ = std::fs::remove_dir_all(d);
         }
