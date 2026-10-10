@@ -23,6 +23,10 @@ use std::collections::VecDeque;
 /// for as long as it lasts, and an uncapped log grows with it.
 pub const TRANSCRIPT_CAP: usize = 2000;
 
+/// The trellis messages pane keeps this many stderr lines (#302): the cap
+/// ADR 0052's amendment to ADR 0048 section 2 puts on showing stderr.
+pub const STDERR_CAP: usize = 500;
+
 /// One pane of the view, named as the view's key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pane {
@@ -41,9 +45,13 @@ pub enum Pane {
     Starters,
     /// What the last `abort` answer said was sent and never delivered.
     Undelivered,
+    /// What last failed, as one line of text (#302).
+    Alert,
+    /// trellis's stderr, its human text, kept apart from the transcript.
+    Stderr,
 }
 
-const PANES: [Pane; 12] = [
+const PANES: [Pane; 14] = [
     Pane::Transcript,
     Pane::Actions,
     Pane::Edits,
@@ -56,6 +64,8 @@ const PANES: [Pane; 12] = [
     Pane::Tier,
     Pane::Starters,
     Pane::Undelivered,
+    Pane::Alert,
+    Pane::Stderr,
 ];
 
 /// The panes a run starts afresh: everything but the transcript, which,
@@ -63,8 +73,10 @@ const PANES: [Pane; 12] = [
 /// only a `get_state` reply sets: the view shows the tier trellis last
 /// reported, and a run's own start reports none; and the starters, which
 /// are the repository's templates, not the run's. The undelivered list is
-/// the last stopped run's, so a new run drops it.
-const RUN_PANES: [Pane; 9] = [
+/// the last stopped run's, so a new run drops it, and so is the alert: what
+/// failed before this run started is not this run's failure. The stderr
+/// pane, as the transcript, carries on.
+const RUN_PANES: [Pane; 10] = [
     Pane::Actions,
     Pane::Edits,
     Pane::Checks,
@@ -74,6 +86,7 @@ const RUN_PANES: [Pane; 9] = [
     Pane::Running,
     Pane::Outcome,
     Pane::Undelivered,
+    Pane::Alert,
 ];
 
 impl Pane {
@@ -91,6 +104,8 @@ impl Pane {
             Pane::Tier => "tier",
             Pane::Starters => "starters",
             Pane::Undelivered => "undelivered",
+            Pane::Alert => "alert",
+            Pane::Stderr => "stderr",
         }
     }
 
@@ -317,6 +332,13 @@ pub struct DesktopState {
     starters: Option<Vec<Starter>>,
     /// What the last `abort` answer said was never delivered.
     undelivered: Vec<Undelivered>,
+    /// The last failure, as text: a refused command, a run that ended in
+    /// error, or a stdout line that is not a JSON object. `None` until one,
+    /// and from each run's start.
+    alert: Option<String>,
+    /// trellis's stderr lines, shown as human text and never read as data
+    /// (ADR 0048 section 2, amended by ADR 0052), capped at [`STDERR_CAP`].
+    stderr: VecDeque<String>,
 }
 
 impl DesktopState {
@@ -349,8 +371,13 @@ impl DesktopState {
                 self.running = false;
                 // Nobody is left to answer a question the run asked.
                 self.approvals.clear();
+                let mut c = Changed::of(&[Pane::Running, Pane::Approvals, Pane::Outcome]);
+                if let Some(error) = &e.error {
+                    self.alert = Some(format!("The run ended in error: {error}"));
+                    c = c.with(Pane::Alert);
+                }
                 self.outcome = Some(e);
-                Changed::of(&[Pane::Running, Pane::Approvals, Pane::Outcome])
+                c
             }
             Frame::Response(r) => {
                 // The core's own models question: its answer is recorded,
@@ -387,6 +414,17 @@ impl DesktopState {
                             c = c.with(Pane::Undelivered);
                         }
                     }
+                    // An `approve` is sent with the question's own id, and
+                    // either answer means trellis holds it open no more: an
+                    // answer taken, or a question it no longer has (#302).
+                    (Some("approve"), Some(_)) => {
+                        let before = self.approvals.len();
+                        self.approvals
+                            .retain(|a| Some(a.id.as_str()) != r.id.as_deref());
+                        if self.approvals.len() != before {
+                            c = c.with(Pane::Approvals);
+                        }
+                    }
                     _ => {}
                 }
                 // A refused command is said in the transcript; a successful
@@ -402,11 +440,13 @@ impl DesktopState {
                     c.with(Pane::Tier)
                 } else if r.success == Some(false) {
                     let command = r.command.as_deref().unwrap_or("command");
-                    self.push_line(match r.error {
-                        Some(e) => format!("· {command} refused: {e}"),
-                        None => format!("· {command} refused"),
-                    });
-                    c.with(Pane::Transcript)
+                    let said = match r.error {
+                        Some(e) => format!("{command} refused: {e}"),
+                        None => format!("{command} refused"),
+                    };
+                    self.push_line(format!("· {said}"));
+                    self.alert = Some(said);
+                    c.with(Pane::Transcript).with(Pane::Alert)
                 } else {
                     c
                 }
@@ -419,11 +459,24 @@ impl DesktopState {
                 Changed::of(&[Pane::Approvals])
             }
             Frame::Ignored => Changed::default(),
-            // Both are text, and the transcript is the capped pane that
-            // shows text as it came.
-            Frame::Unparsed(line) | Frame::Human(line) => {
+            // Text on stdout, which carries only JSON objects: shown as it
+            // came in the transcript, and said in the alert, since a reader
+            // that cannot parse the stream may be missing a frame.
+            Frame::Unparsed(line) => {
+                self.alert = Some(format!(
+                    "trellis rpc printed a line that is not a JSON object: {line}"
+                ));
                 self.push_line(line);
-                Changed::of(&[Pane::Transcript])
+                Changed::of(&[Pane::Transcript, Pane::Alert])
+            }
+            // trellis's human text: its own capped pane, apart from the
+            // run's transcript, and never read for anything (#302).
+            Frame::Human(line) => {
+                self.stderr.push_back(line);
+                while self.stderr.len() > STDERR_CAP {
+                    self.stderr.pop_front();
+                }
+                Changed::of(&[Pane::Stderr])
             }
         }
     }
@@ -441,6 +494,12 @@ impl DesktopState {
     /// child's exit.
     pub fn running(&self) -> bool {
         self.running
+    }
+
+    /// Whether `id` is an approval question the child asked and nobody has
+    /// answered yet: the only kind `rpc_send` lets an `approve` answer.
+    pub fn approval_open(&self, id: &str) -> bool {
+        self.approvals.iter().any(|a| a.id == id)
     }
 
     /// The configured specs the current child reported, `None` until it
@@ -545,6 +604,8 @@ impl DesktopState {
                     .map(|u| json!({"type": u.kind, "message": u.message}))
                     .collect(),
             ),
+            Pane::Alert => json!(self.alert),
+            Pane::Stderr => json!(self.stderr),
             Pane::Outcome => match &self.outcome {
                 Some(e) => json!({
                     "outcome": e.outcome,
@@ -641,6 +702,7 @@ impl DesktopState {
         self.approvals.clear();
         self.outcome = None;
         self.undelivered.clear();
+        self.alert = None;
     }
 
     fn push_line(&mut self, line: String) {
@@ -1315,6 +1377,113 @@ mod tests {
     }
 
     #[test]
+    fn failed_responses_and_unparsed_lines_set_the_alert() {
+        // The risk (#302): a refused command, a run that ended in error, or
+        // a stdout line nothing could parse goes by with no sign on the
+        // page, so the user waits on something that already failed.
+        let mut s = DesktopState::default();
+        assert_eq!(all(&s)["alert"], Value::Null, "nothing failed yet");
+        let c = feed(
+            &mut s,
+            &response("set_model", false, json!("<b>bad</b> spec")),
+        );
+        assert!(c.has(Pane::Alert), "{c:?}");
+        assert_eq!(all(&s)["alert"], "set_model refused: <b>bad</b> spec");
+        // A success says nothing, and leaves the last failure up.
+        assert!(
+            !feed(&mut s, &response("get_state", true, json!({"tier": null}))).has(Pane::Alert)
+        );
+        assert_eq!(all(&s)["alert"], "set_model refused: <b>bad</b> spec");
+
+        // A run's start is a fresh attempt: its failures are its own.
+        let c = feed(&mut s, &run_start("p"));
+        assert!(c.has(Pane::Alert));
+        assert_eq!(all(&s)["alert"], Value::Null);
+        let c = feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "error", "exit": 1,
+                    "error": "a clean git worktree is required", "id": "p"})
+            .to_string(),
+        );
+        assert!(c.has(Pane::Alert), "{c:?}");
+        assert_eq!(
+            all(&s)["alert"],
+            "The run ended in error: a clean git worktree is required"
+        );
+        // A run that ended without an error raises none.
+        feed(&mut s, &run_start("p2"));
+        let c = feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p2"}).to_string(),
+        );
+        assert!(!c.has(Pane::Alert));
+        assert_eq!(all(&s)["alert"], Value::Null);
+
+        let c = feed(&mut s, "<script>not json</script>");
+        assert!(c.has(Pane::Alert) && c.has(Pane::Transcript), "{c:?}");
+        assert_eq!(
+            all(&s)["alert"],
+            "trellis rpc printed a line that is not a JSON object: <script>not json</script>"
+        );
+        // A frame of a type the desktop does not read is not a failure.
+        feed(&mut s, &run_start("p3"));
+        assert!(feed(&mut s, r#"{"type":"something_new"}"#).is_empty());
+        assert_eq!(all(&s)["alert"], Value::Null);
+    }
+
+    #[test]
+    fn stderr_lines_are_kept_apart_and_capped() {
+        // The risk (#302, ADR 0048 section 2): trellis's human text mixed
+        // into the run's transcript, where it reads as the run's own
+        // output, or kept without bound.
+        let mut s = DesktopState::default();
+        let c = s.update(Frame::Human("warning: <i>human</i>".into()));
+        assert_eq!(c, Changed::of(&[Pane::Stderr]));
+        let v = all(&s);
+        assert_eq!(v["stderr"], json!(["warning: <i>human</i>"]));
+        assert_eq!(v["transcript"], json!([]), "not in the transcript");
+        assert_eq!(v["alert"], Value::Null, "human text is not a failure");
+        for i in 0..STDERR_CAP + 5 {
+            s.update(Frame::Human(format!("line {i}")));
+        }
+        let lines = all(&s)["stderr"].as_array().unwrap().clone();
+        assert_eq!(lines.len(), STDERR_CAP);
+        assert_eq!(STDERR_CAP, 500);
+        assert_eq!(lines[0], "line 5", "the oldest go first");
+        // A run's start leaves it: it is the process's text, not the run's.
+        feed(&mut s, &run_start("p"));
+        assert_eq!(all(&s)["stderr"].as_array().unwrap().len(), STDERR_CAP);
+    }
+
+    #[test]
+    fn approve_answer_closes_its_question() {
+        // The risk (#302): the dialog shows a question trellis has already
+        // had its answer to, so the user is asked twice.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p"));
+        for id in ["approval-1", "approval-2"] {
+            feed(
+                &mut s,
+                &json!({"type": "approval_request", "id": id, "question": "q", "detail": "d"})
+                    .to_string(),
+            );
+        }
+        assert!(s.approval_open("approval-1") && s.approval_open("approval-2"));
+        let answer = json!({"type": "response", "command": "approve", "success": true,
+                            "id": "approval-1", "data": {"approved": false}})
+        .to_string();
+        assert!(feed(&mut s, &answer).has(Pane::Approvals));
+        assert!(!s.approval_open("approval-1"));
+        assert_eq!(all(&s)["approvals"].as_array().unwrap().len(), 1);
+        // Refused (trellis no longer has it): closed too.
+        let gone = json!({"type": "response", "command": "approve", "success": false,
+                          "id": "approval-2", "error": "no open approval request"})
+        .to_string();
+        assert!(feed(&mut s, &gone).has(Pane::Approvals));
+        assert_eq!(all(&s)["approvals"], json!([]));
+    }
+
+    #[test]
     fn unknown_and_unparsed_lines_change_nothing_but_the_transcript() {
         // The risk: an unknown frame type, a non-object line or a field of
         // the wrong type panics the core or reaches a pane as data.
@@ -1330,10 +1499,12 @@ mod tests {
         ] {
             assert!(feed(&mut s, line).is_empty(), "{line}");
         }
+        // A line that is not an object is text, and a failure (#302).
+        let text = Changed::of(&[Pane::Transcript, Pane::Alert]);
         let c = feed(&mut s, "<b>not json</b>\r\n");
-        assert_eq!(c, Changed::of(&[Pane::Transcript]));
+        assert_eq!(c, text);
         assert_eq!(all(&s)["transcript"], json!(["<b>not json</b>"]));
-        assert_eq!(feed(&mut s, "[1,2]"), Changed::of(&[Pane::Transcript]));
+        assert_eq!(feed(&mut s, "[1,2]"), text);
     }
 
     #[test]

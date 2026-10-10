@@ -14,6 +14,10 @@
   landing section: its four panes (recent repositories, last run, codebase,
   board) are drawn by overview.js from trellis's overview object (#562).
 
+  One role="alert" banner, above every section, says what last failed;
+  the approval dialog and the "trellis messages" pane, trellis's stderr
+  shown as text and never read as data, are dialogs.js's (#302).
+
   The composer (#301) sits below every section, so a task can be sent from
   whichever one is shown. composer.js sends a prompt while no run is in
   flight and a steer while one is, by the view's own record; Stop shows only
@@ -39,6 +43,10 @@
     </nav>
     <main>
       <p id="status" class="status"></p>
+      <div id="alert" class="alert" role="alert" hidden>
+        <p id="alert-text"></p>
+        <button type="button" id="alert-dismiss">Dismiss</button>
+      </div>
 
       <section id="overview" aria-labelledby="overview-title">
         <h2 id="overview-title">Overview</h2>
@@ -148,6 +156,24 @@
           <ul id="composer-starters-list" class="chips" aria-labelledby="composer-starters-title"></ul>
         </div>
       </form>
+
+      <details id="messages" class="messages">
+        <summary>trellis messages</summary>
+        <p class="muted">What trellis wrote to stderr, as text: it is shown, never read as data.</p>
+        <div id="messages-log" class="log" tabindex="0" aria-label="trellis messages"></div>
+      </details>
+
+      <dialog id="approval" class="approval" aria-labelledby="approval-title">
+        <form method="dialog">
+          <h2 id="approval-title">Approve this call?</h2>
+          <p id="approval-question"></p>
+          <pre id="approval-detail" class="approval-detail"></pre>
+          <div class="approval-row">
+            <button type="submit" id="approval-reject" value="reject">Reject</button>
+            <button type="submit" id="approval-approve" value="approve">Approve</button>
+          </div>
+        </form>
+      </dialog>
     </main>
   </body>
 </html>
