@@ -412,7 +412,8 @@ code {
   margin-top: 12px;
 }
 
-.rd-form {
+.rd-form,
+.vt-form {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -420,7 +421,8 @@ code {
   margin-bottom: 8px;
 }
 
-.rd-form input {
+.rd-form input,
+.vt-form input {
   flex: 1 1 auto;
   min-width: 0;
   padding: 4px 6px;
@@ -525,4 +527,44 @@ article.past-run section + section {
 
 .alert {
   color: var(--failed);
+}
+
+/* The vault notes view (#309): search hits beside one note's relations. */
+.vt-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.vt-hits button {
+  display: block;
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.vt-hits button[aria-current="true"] {
+  border-color: var(--border);
+  background: var(--bg);
+}
+
+.vt-hits ul {
+  padding-left: 0;
+  list-style: none;
+}
+
+.vt-note section + section {
+  margin-top: 8px;
+}
+
+.vt-note code,
+.vt-hits code {
+  overflow-wrap: anywhere;
 }

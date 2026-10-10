@@ -213,8 +213,9 @@ mod tests {
     const SECTIONS: [&str; 6] = ["overview", "run", "trails", "codebase", "board", "vault"];
 
     /// The sections that are built, and so do not read "Not built yet":
-    /// run (#300), overview (#562), codebase (#307) and trails (#304).
-    const BUILT: [&str; 4] = ["run", "overview", "codebase", "trails"];
+    /// run (#300), overview (#562), codebase (#307), trails (#304) and
+    /// vault (#309).
+    const BUILT: [&str; 5] = ["run", "overview", "codebase", "trails", "vault"];
 
     #[test]
     fn csp_has_no_unsafe_source_and_no_network_origin() {
@@ -540,6 +541,69 @@ mod tests {
         assert!(!page[section].text.contains("Not built yet"));
     }
 
+    #[test]
+    fn vault_section_holds_what_vault_js_draws() {
+        // The risk (#309): vault.js drawing into an id the page lacks, so
+        // a search trellis answered is never shown; a search box with no
+        // label; or the section still saying it is not built.
+        let page = page();
+        let section = index_of(&page, "vault");
+        let js = ui_file("vault.js");
+        for id in ["vt-status", "vt-form", "vt-query", "vt-hits", "vt-note"] {
+            assert!(js.contains(&format!("\"{id}\"")), "vault.js draws no {id}");
+            assert!(
+                within(&page, index_of(&page, id), section),
+                "#{id} is outside #vault"
+            );
+        }
+        assert!(
+            page.iter()
+                .any(|e| e.tag == "label" && e.attr("for") == Some("vt-query")),
+            "the search box has no label"
+        );
+        assert!(!page[section].text.contains("Not built yet"));
+        let html = ui_file("index.html");
+        assert!(
+            html.contains(r#"<script type="module" src="vault.js"></script>"#),
+            "index.html does not load vault.js as a module"
+        );
+    }
+
+    #[test]
+    fn vault_js_writes_text_links_nothing_and_sends_only_vault_reads() {
+        // The risk (#309, ADR 0017, S10): a note's title, path or issue
+        // parsed as markup or drawn as a link a reader might follow; or a
+        // control that writes the vault, which stays a `trellis vault`
+        // command the person runs (#70). Read with its `//` comments
+        // removed, which name what it does not do; it has no string that
+        // holds `//`.
+        let js: String = ui_file("vault.js")
+            .lines()
+            .map(|l| l.split_once("//").map_or(l, |(code, _)| code))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for bad in [
+            "innerHTML",
+            "outerHTML",
+            "insertAdjacentHTML",
+            "createElement(\"a\")",
+            "href",
+            "get_trails",
+            "open_repository",
+            "\"prompt\"",
+        ] {
+            assert!(!js.contains(bad), "vault.js uses {bad}");
+        }
+        assert!(js.contains("textContent"), "vault.js writes no text");
+        // Every type it sends is one of the two reads.
+        let sent: Vec<&str> = js
+            .split("type: \"")
+            .skip(1)
+            .map(|rest| &rest[..rest.find('"').unwrap()])
+            .collect();
+        assert_eq!(sent, ["vault_graph", "vault_search"], "{sent:?}");
+    }
+
     /// `overview.js` with its `//` comments removed, so a field named only
     /// in a comment does not count as read. It has no string or regex that
     /// holds `//`, which this would cut short.
@@ -783,6 +847,7 @@ mod tests {
             "codebase.js",
             "radius.js",
             "trails.js",
+            "vault.js",
         ] {
             let js = ui_file(name);
             for bad in [".style", "cssText", "\"style\"", "'style'"] {

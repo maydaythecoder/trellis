@@ -10,7 +10,9 @@
 //! (`graph.rs`, the `view` event's `graph` key). A `get_codebase` answer
 //! becomes the codebase view's layout (`codebase.rs`, the `codebase`
 //! event), and a `get_radius` answer its reach and doubt (`radius.rs`, the
-//! `radius` event). The page has four commands: `rpc_send`, `get_trails`
+//! `radius` event). `vault_search` and `vault_graph` answers become the
+//! vault notes view (`state/vault.rs`, the `view` event's `vault` key). The
+//! page has four commands: `rpc_send`, `get_trails`
 //! (the trails view's rows, `trails.rs`), `open_repository` and
 //! `get_overview`.
 //!
