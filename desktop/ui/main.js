@@ -83,6 +83,16 @@ async function readOverview(tauri) {
 // the overview.
 let lastOutcome = null;
 
+// Asks the child for the session's prompt and completion tokens per model
+// (#313). The answer comes back as the view's `session_tokens`, which the
+// core keeps from trellis's own answer: the page adds up no turn itself.
+// A refusal (no child yet) is the status line's to say, not this pane's.
+function askSessionTokens(tauri) {
+  tauri.core
+    .invoke("rpc_send", { line: { id: "desktop-session-stats", type: "get_session_stats" } })
+    .catch((err) => show("status", String(err)));
+}
+
 async function main() {
   wireRail();
   const tauri = window.__TAURI__;
@@ -110,6 +120,14 @@ async function main() {
     show("status", `${c.version ?? "trellis (version unknown)"} rpc on ${c.root}`);
     askState(tauri);
     readOverview(tauri);
+    askSessionTokens(tauri);
+  });
+  // Each run_end frame is a run the session's totals now count. Only its
+  // type is read: the frame is the child's, and the figures come from
+  // trellis's own answer.
+  await tauri.event.listen("rpc-frame", (event) => {
+    const f = event.payload;
+    if (f !== null && typeof f === "object" && f.type === "run_end") askSessionTokens(tauri);
   });
   await tauri.event.listen("no-child", (event) => {
     show("status", String(event.payload));

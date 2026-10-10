@@ -143,6 +143,50 @@ export function budgetLine(b) {
   return parts.join(" · ");
 }
 
+// A figure of `get_session_stats`, or `unknown` for one a run of that
+// model did not report: null is never drawn as 0 (#313).
+function tokens(v) {
+  return isCount(v) ? String(v) : "unknown";
+}
+
+// The session's prompt and completion tokens per model, as trellis's
+// `get_session_stats` answered them (#313, PI-10): one row per model, the
+// model name and two figures, never added together. The rows cover the
+// runs since this repository was opened (one `trellis rpc` per repository),
+// and a run's start leaves them as they are. The model name is trail text
+// (ADR 0007), drawn as text.
+function sessionTokens(doc, pane, t) {
+  if (t === null || typeof t !== "object") {
+    fill(doc, pane, [], "Not asked yet: no trellis rpc has answered get_session_stats.");
+    return;
+  }
+  if (str(t.error) !== null) {
+    fill(doc, pane, [], `get_session_stats refused: ${t.error}`);
+    return;
+  }
+  const rows = (Array.isArray(t.models) ? t.models : []).flatMap((m) => {
+    const model = str(m && m.model);
+    if (model === null) return [];
+    const li = el(doc, "li");
+    li.append(
+      el(doc, "code", model),
+      el(doc, "span", ` · prompt ${tokens(m.prompt_tokens)}`),
+      el(doc, "span", ` · completion ${tokens(m.completion_tokens)}`),
+    );
+    return [li];
+  });
+  if (isCount(t.runs_not_counted) && t.runs_not_counted > 0) {
+    const li = el(
+      doc,
+      "li",
+      `${t.runs_not_counted} run(s) not counted: their trail did not read back.`,
+    );
+    li.className = "muted";
+    rows.push(li);
+  }
+  fill(doc, pane, rows, "No run of this trellis rpc has ended yet.");
+}
+
 // The tier `get_state` last reported, as trellis labels it; a status bar
 // writes `tier ` before the label (client_contract.json). Null means no run
 // of this rpc process has decided one, and it is never guessed.
@@ -184,6 +228,7 @@ const PANES = {
   tier: ["pane-tier", tier],
   running: ["pane-running", running],
   outcome: ["pane-outcome", outcome],
+  session_tokens: ["pane-session-tokens", sessionTokens],
 };
 
 // Draws every pane the event carries; a key this page does not know is

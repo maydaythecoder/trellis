@@ -54,9 +54,12 @@ pub enum Pane {
     Model,
     /// What the child's last `list_models` answer offered to choose from.
     Models,
+    /// The prompt and completion tokens of this child's runs, per model,
+    /// as its last `get_session_stats` answer gave them (#313).
+    SessionTokens,
 }
 
-const PANES: [Pane; 16] = [
+const PANES: [Pane; 17] = [
     Pane::Transcript,
     Pane::Actions,
     Pane::Edits,
@@ -73,6 +76,7 @@ const PANES: [Pane; 16] = [
     Pane::Stderr,
     Pane::Model,
     Pane::Models,
+    Pane::SessionTokens,
 ];
 
 /// The panes a run starts afresh: everything but the transcript, which,
@@ -115,18 +119,20 @@ impl Pane {
             Pane::Stderr => "stderr",
             Pane::Model => "model",
             Pane::Models => "models",
+            Pane::SessionTokens => "session_tokens",
         }
     }
 
-    fn bit(self) -> u16 {
-        1 << (self as u16)
+    /// One bit per pane; `u32`, since seventeen panes are past a `u16`.
+    fn bit(self) -> u32 {
+        1 << (self as u32)
     }
 }
 
 /// Which panes an update changed: what the core sends the page as one
 /// `view` event, so a frame that changes nothing sends nothing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Changed(u16);
+pub struct Changed(u32);
 
 impl Changed {
     fn with(self, p: Pane) -> Self {
@@ -414,6 +420,50 @@ impl ModelList {
     }
 }
 
+/// One model's row of a `get_session_stats` answer: its prompt and
+/// completion tokens over this child's runs, two figures never summed, each
+/// `None` when a run of that model did not report it (#313, PI-10). The
+/// model name is trail text (ADR 0007), shown as text.
+#[derive(Debug, Clone, PartialEq)]
+struct ModelTokens {
+    model: String,
+    prompt: Option<u64>,
+    completion: Option<u64>,
+}
+
+/// The child's last `get_session_stats` answer.
+#[derive(Debug, Clone, PartialEq)]
+struct SessionTokens {
+    models: Vec<ModelTokens>,
+    /// Runs whose trail did not read back, so the rows are not taken for
+    /// the whole session; `None` when the answer did not say.
+    runs_not_counted: Option<u64>,
+}
+
+impl SessionTokens {
+    /// The answer's `data`, or `None` when it carries no `models` list. A
+    /// row with no string `model` cannot be named, so it is not drawn; a
+    /// figure that is not a count is unknown, as a null one is, and never 0.
+    fn from_data(data: Option<&Value>) -> Option<Self> {
+        let d = data?;
+        Some(Self {
+            models: d
+                .get("models")?
+                .as_array()?
+                .iter()
+                .filter_map(|m| {
+                    Some(ModelTokens {
+                        model: m.get("model")?.as_str()?.to_string(),
+                        prompt: m.get("prompt_tokens").and_then(Value::as_u64),
+                        completion: m.get("completion_tokens").and_then(Value::as_u64),
+                    })
+                })
+                .collect(),
+            runs_not_counted: d.get("runs_not_counted").and_then(Value::as_u64),
+        })
+    }
+}
+
 /// The desktop's run panes.
 #[derive(Debug, Default)]
 pub struct DesktopState {
@@ -453,6 +503,11 @@ pub struct DesktopState {
     /// The last `list_models` answer: what it offered, or why it was
     /// refused. `None` until one has come.
     models: Option<Result<ModelList, String>>,
+    /// The last `get_session_stats` answer, or why it gave no rows. Only
+    /// that answer changes it: the desktop adds up no turn itself, so
+    /// trellis keeps one source for the totals (#313). `None` until one,
+    /// and once the child has exited.
+    session_tokens: Option<Result<SessionTokens, String>>,
 }
 
 impl DesktopState {
@@ -545,6 +600,20 @@ impl DesktopState {
                         self.models = Some(Err(why));
                         c = c.with(Pane::Models);
                     }
+                    (Some("get_session_stats"), Some(true)) => {
+                        self.session_tokens =
+                            Some(SessionTokens::from_data(r.data.as_ref()).ok_or_else(|| {
+                                "trellis answered get_session_stats in a shape this desktop \
+                                 does not read"
+                                    .to_string()
+                            }));
+                        c = c.with(Pane::SessionTokens);
+                    }
+                    (Some("get_session_stats"), _) => {
+                        let why = r.error.clone().unwrap_or_else(|| "no reason given".into());
+                        self.session_tokens = Some(Err(why));
+                        c = c.with(Pane::SessionTokens);
+                    }
                     (Some("abort"), Some(true)) => {
                         if let Some(u) = Undelivered::list_from(r.data.as_ref()) {
                             self.undelivered = u;
@@ -627,7 +696,16 @@ impl DesktopState {
         // The model was that child's session's; the next child has none.
         self.model = None;
         self.models = None;
-        Changed::of(&[Pane::Running, Pane::Approvals, Pane::Model, Pane::Models])
+        // So were the runs the totals counted (#313): a new child's start
+        // empty.
+        self.session_tokens = None;
+        Changed::of(&[
+            Pane::Running,
+            Pane::Approvals,
+            Pane::Model,
+            Pane::Models,
+            Pane::SessionTokens,
+        ])
     }
 
     /// Whether a run is in flight, from `run_start` to `run_end` or the
@@ -763,6 +841,19 @@ impl DesktopState {
                 Some(m) => json!({"spec": m.spec, "configured": m.configured,
                                   "saved_to": m.saved_to}),
                 None => Value::Null,
+            },
+            Pane::SessionTokens => match &self.session_tokens {
+                None => Value::Null,
+                Some(Err(e)) => json!({"models": [], "runs_not_counted": null, "error": e}),
+                Some(Ok(t)) => json!({
+                    "models": t.models.iter().map(|m| json!({
+                        "model": m.model,
+                        "prompt_tokens": m.prompt,
+                        "completion_tokens": m.completion,
+                    })).collect::<Vec<_>>(),
+                    "runs_not_counted": t.runs_not_counted,
+                    "error": null,
+                }),
             },
             Pane::Models => match &self.models {
                 None => Value::Null,
@@ -1721,6 +1812,189 @@ mod tests {
         // A refused list says why, in place of the list.
         feed(&mut s, &response("list_models", false, json!("bad config")));
         assert_eq!(all(&s)["models"], json!({"error": "bad config"}));
+    }
+
+    /// A `get_session_stats` answer as `rpc.rs` writes it, in the shape
+    /// `rpc_get_session_stats_counts_each_model_s_tokens_from_the_trails_apart`
+    /// asserts.
+    fn session_stats(models: Value) -> String {
+        response(
+            "get_session_stats",
+            true,
+            json!({"models": models, "runs_not_counted": 0}),
+        )
+    }
+
+    #[test]
+    fn session_tokens_one_row_per_model_with_two_figures() {
+        // The risk (#313): two models' figures merged into one row, a
+        // model's prompt and completion joined into one figure, or a row
+        // the answer did not send.
+        let mut s = DesktopState::default();
+        assert_eq!(all(&s)["session_tokens"], Value::Null, "none asked yet");
+        let c = feed(
+            &mut s,
+            &session_stats(json!([
+                {"model": "vllm:http://127.0.0.1:8000#qwen", "prompt_tokens": 2750,
+                 "completion_tokens": 77},
+                {"model": "<b>scripted</b>", "prompt_tokens": 10, "completion_tokens": 2},
+                {"prompt_tokens": 1, "completion_tokens": 1},
+            ])),
+        );
+        assert_eq!(c, Changed::of(&[Pane::SessionTokens]));
+        assert_eq!(
+            all(&s)["session_tokens"],
+            json!({"models": [
+                       {"model": "vllm:http://127.0.0.1:8000#qwen", "prompt_tokens": 2750,
+                        "completion_tokens": 77},
+                       {"model": "<b>scripted</b>", "prompt_tokens": 10,
+                        "completion_tokens": 2}],
+                   "runs_not_counted": 0, "error": null}),
+            "one row per named model, two figures each, the name as text"
+        );
+    }
+
+    #[test]
+    fn session_tokens_unknown_is_null_never_zero() {
+        // The risk (#313): colibri counts a missing usage figure as 0, which
+        // here would read as an exact total trellis did not record.
+        let mut s = DesktopState::default();
+        feed(
+            &mut s,
+            &session_stats(json!([
+                {"model": "scripted:x", "prompt_tokens": null, "completion_tokens": null},
+                {"model": "m", "prompt_tokens": "12", "completion_tokens": -3},
+                {"model": "n"},
+            ])),
+        );
+        let rows = all(&s)["session_tokens"]["models"].clone();
+        for r in rows.as_array().unwrap() {
+            assert_eq!(r["prompt_tokens"], Value::Null, "{rows}");
+            assert_eq!(r["completion_tokens"], Value::Null, "{rows}");
+        }
+        assert_eq!(rows.as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn session_tokens_have_no_sum() {
+        // The risk (#313, PI-10): the desktop adds prompt and completion, or
+        // the models, into a figure no trail records.
+        let mut s = DesktopState::default();
+        feed(
+            &mut s,
+            &session_stats(json!([
+                {"model": "a", "prompt_tokens": 5, "completion_tokens": 6},
+                {"model": "b", "prompt_tokens": 7, "completion_tokens": 8},
+            ])),
+        );
+        let v = s.view(Changed::of(&[Pane::SessionTokens]));
+        let mut ks = Vec::new();
+        keys(&v, &mut ks);
+        let bad: Vec<&String> = ks
+            .iter()
+            .filter(|k| {
+                let k = k.to_lowercase();
+                k.contains("total") || k.contains("sum")
+            })
+            .collect();
+        assert!(bad.is_empty(), "the view sums: {bad:?} in {v}");
+        let numbers: Vec<u64> = v["session_tokens"]["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|m| [&m["prompt_tokens"], &m["completion_tokens"]])
+            .filter_map(Value::as_u64)
+            .collect();
+        assert_eq!(numbers, [5, 6, 7, 8], "only the figures sent");
+    }
+
+    #[test]
+    fn session_tokens_change_only_on_a_get_session_stats_answer() {
+        // The risk (#313): a run's start clears the session's totals, or
+        // turns and run ends are added into them, so the desktop holds a
+        // count of its own beside trellis's.
+        let mut s = DesktopState::default();
+        feed(
+            &mut s,
+            &session_stats(json!([{"model": "m", "prompt_tokens": 100,
+                                    "completion_tokens": 3}])),
+        );
+        let before = all(&s)["session_tokens"].clone();
+        for line in [
+            run_start("p"),
+            turn(
+                json!({"turn": 1, "call": "read_file a.py", "verdict": "None",
+                        "check_kind": "", "observation": "", "prompt_bytes": 900,
+                        "completion_tokens": 40, "model_ms": 1000}),
+            ),
+            json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p"}).to_string(),
+            response("get_state", true, json!({"tier": null})),
+        ] {
+            assert!(!feed(&mut s, &line).has(Pane::SessionTokens), "{line}");
+        }
+        assert_eq!(all(&s)["session_tokens"], before);
+        feed(
+            &mut s,
+            &session_stats(json!([{"model": "m", "prompt_tokens": 200,
+                                    "completion_tokens": 6}])),
+        );
+        assert_eq!(all(&s)["session_tokens"]["models"][0]["prompt_tokens"], 200);
+    }
+
+    #[test]
+    fn session_tokens_drop_when_the_child_exits() {
+        // The risk (#313): a child that exited leaves its totals up, and
+        // the next child's runs read as continuing them.
+        let mut s = DesktopState::default();
+        feed(
+            &mut s,
+            &session_stats(json!([{"model": "m", "prompt_tokens": 1,
+                                    "completion_tokens": 1}])),
+        );
+        let c = s.child_exited();
+        assert!(c.has(Pane::SessionTokens), "{c:?}");
+        assert_eq!(all(&s)["session_tokens"], Value::Null, "no rows");
+        // A new child's view starts with none too.
+        feed(
+            &mut s,
+            &session_stats(json!([{"model": "m", "prompt_tokens": 1,
+                                    "completion_tokens": 1}])),
+        );
+        s.clear();
+        assert_eq!(all(&s)["session_tokens"], Value::Null);
+    }
+
+    #[test]
+    fn session_tokens_refused_answer_shows_the_error_text() {
+        // The risk (#313): a refused get_session_stats leaves the last rows
+        // up as if current, or shows no reason.
+        let mut s = DesktopState::default();
+        feed(
+            &mut s,
+            &session_stats(json!([{"model": "m", "prompt_tokens": 1,
+                                    "completion_tokens": 1}])),
+        );
+        let c = feed(
+            &mut s,
+            &response("get_session_stats", false, json!("<i>trail</i> unreadable")),
+        );
+        assert!(c.has(Pane::SessionTokens) && c.has(Pane::Alert), "{c:?}");
+        assert_eq!(
+            all(&s)["session_tokens"],
+            json!({"models": [], "runs_not_counted": null,
+                   "error": "<i>trail</i> unreadable"})
+        );
+        // An answer this desktop cannot read says so, with no rows.
+        feed(
+            &mut s,
+            &response("get_session_stats", true, json!({"x": 1})),
+        );
+        let v = all(&s)["session_tokens"].clone();
+        assert_eq!(v["models"], json!([]), "{v}");
+        assert!(
+            v["error"].as_str().unwrap().contains("does not read"),
+            "{v}"
+        );
     }
 
     #[test]

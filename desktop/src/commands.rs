@@ -51,9 +51,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 pub const LINE_CAP: usize = 65_536;
 
 /// The `type`s `rpc_send` forwards: `rpc.rs`'s `COMMANDS` as #296 lists
-/// them, and `list_models` (#564), without `quit`, which only the core
-/// sends.
-pub const FORWARDED: [&str; 12] = [
+/// them, `list_models` (#564) and the read-only `get_session_stats` (#313),
+/// without `quit`, which only the core sends.
+pub const FORWARDED: [&str; 13] = [
     "prompt",
     "abort",
     "get_state",
@@ -66,6 +66,7 @@ pub const FORWARDED: [&str; 12] = [
     "follow_up",
     "compact",
     "get_commands",
+    "get_session_stats",
 ];
 
 /// The most trails `get_trails` asks for.
@@ -734,6 +735,45 @@ mod tests {
             );
         }
         assert!(rec.take().is_empty(), "a refusal emits nothing");
+    }
+
+    #[test]
+    fn rpc_send_forwards_get_session_stats() {
+        // The risk (#313): the session-tokens pane asks trellis for the
+        // totals and rpc_send refuses the line, so the pane says nothing; or
+        // the core answers it itself from turns it added up. The child
+        // answers, so the figures are trellis's.
+        let (core, rec, dirs) = with_child("session-stats");
+        assert_eq!(
+            core.send(&json!({"id": "desktop-stats", "type": "get_session_stats"})),
+            Ok(())
+        );
+        let answer = rec.wait_for("rpc-frame", |f| f["id"] == "desktop-stats");
+        assert_eq!(answer["command"], "get_session_stats", "{answer}");
+        assert_eq!(answer["success"], true, "{answer}");
+        assert_eq!(
+            answer["data"],
+            json!({"models": [], "runs_not_counted": 0}),
+            "no run yet: {answer}"
+        );
+        // The child's start sent every pane, this one null; the answer's
+        // view is the first to carry rows.
+        let v = rec.wait_for("view", |v| {
+            v.get("session_tokens").is_some_and(|t| !t.is_null())
+        });
+        assert_eq!(
+            v["session_tokens"],
+            json!({"models": [], "runs_not_counted": 0, "error": null})
+        );
+        // Still nothing rpc does not list.
+        let err = core
+            .send(&json!({"id": "x", "type": "get_session_totals"}))
+            .unwrap_err();
+        assert!(err.contains("is not one rpc_send forwards"), "{err}");
+        finish(&core).unwrap();
+        for d in &dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 
     #[test]
@@ -1549,6 +1589,7 @@ mod tests {
                 "outcome",
                 "radius",
                 "running",
+                "session_tokens",
                 "starters",
                 "stderr",
                 "tier",
