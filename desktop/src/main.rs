@@ -9,7 +9,8 @@
 //! (`frames.rs`, `state.rs`) and the action graph's layout with them
 //! (`graph.rs`, the `view` event's `graph` key). A `get_codebase` answer
 //! becomes the codebase view's layout (`codebase.rs`, the `codebase`
-//! event). The page has four commands: `rpc_send`, `get_trails`,
+//! event), and a `get_radius` answer its reach and doubt (`radius.rs`, the
+//! `radius` event). The page has four commands: `rpc_send`, `get_trails`,
 //! `open_repository` and `get_overview`.
 //!
 //! With no `--root`, the repository is the current directory or the nearest
@@ -29,6 +30,7 @@ mod commands;
 mod frames;
 mod graph;
 mod lockdown;
+mod radius;
 mod state;
 
 use commands::Core;

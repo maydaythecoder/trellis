@@ -405,3 +405,51 @@ code {
   color: var(--fg);
   font: inherit;
 }
+
+/* The symbol radius pane (#308): reach and doubt as two blocks, side by
+   side where the window allows, never one figure. */
+.rd-pane {
+  margin-top: 12px;
+}
+
+.rd-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.rd-form input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 12px ui-monospace, monospace;
+}
+
+.rd-result {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.rd-result > p {
+  grid-column: 1 / -1;
+}
+
+.rd-block {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+h5 {
+  margin: 8px 0 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
