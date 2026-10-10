@@ -21,6 +21,13 @@
 
 const SVG = "http://www.w3.org/2000/svg";
 const REQUEST_ID = "desktop-codebase";
+// The modules asked for. With no `limit` rpc lists 40 (ADR 0025 section 5),
+// and past that whole packages went undrawn. rpc takes any count, so the
+// bound is the core's layout: at this many modules in one package no two of
+// its circles touch (codebase_script_asks_for_more_modules_than_rpc_s_default
+// in desktop/src/codebase.rs). Past it, the status line says how many were
+// left out and each region says its count is of the modules listed.
+const MODULES_ASKED = 1000;
 // The search lists at most this many modules, and says how many more.
 const RESULTS_MAX = 20;
 // One + or - zooms by this factor; the view is never wider than the whole
@@ -408,6 +415,21 @@ function select(doc, ctx, i, k) {
   drawDetails(doc, ctx);
 }
 
+// Drops the graph, its open package, selection and search results, and
+// says `said` in their place: nothing is drawn that is not this answer's.
+function clear(doc, ctx, said) {
+  ctx.data = null;
+  ctx.pkg = null;
+  ctx.selected = null;
+  status(doc, said);
+  doc.getElementById("cb-graph").replaceChildren();
+  ctx.svg = null;
+  ctx.view = null;
+  drawCrumbs(doc, ctx);
+  drawDetails(doc, ctx);
+  drawResults(doc, ctx);
+}
+
 // Draws one `codebase` event: the layout, or why there is none.
 export function drawCodebase(doc, ctx, payload) {
   ctx.pending = false;
@@ -416,16 +438,7 @@ export function drawCodebase(doc, ctx, payload) {
     return;
   }
   if (typeof payload.error === "string") {
-    ctx.data = null;
-    ctx.pkg = null;
-    ctx.selected = null;
-    status(doc, payload.error);
-    doc.getElementById("cb-graph").replaceChildren();
-    ctx.svg = null;
-    ctx.view = null;
-    drawCrumbs(doc, ctx);
-    drawDetails(doc, ctx);
-    drawResults(doc, ctx);
+    clear(doc, ctx, payload.error);
     return;
   }
   // A new answer: the open package is kept if it is still there, and the
@@ -527,7 +540,9 @@ async function ask(doc, tauri, ctx) {
   ctx.stale = false;
   status(doc, "Reading the module graph: trellis indexes the repository for it.");
   try {
-    await tauri.core.invoke("rpc_send", { line: { id: REQUEST_ID, type: "get_codebase" } });
+    await tauri.core.invoke("rpc_send", {
+      line: { id: REQUEST_ID, type: "get_codebase", limit: MODULES_ASKED },
+    });
   } catch (err) {
     ctx.pending = false;
     ctx.stale = true;
@@ -561,9 +576,11 @@ export async function wireCodebase(doc, tauri) {
 
   await tauri.event.listen("codebase", (event) => drawCodebase(doc, ctx, event.payload));
   await tauri.event.listen("child-started", () => {
-    // A question the last child had not answered never will be.
+    // A question the last child had not answered never will be, and the
+    // graph drawn is the last repository's: it goes before this one's comes.
     ctx.pending = false;
     ctx.stale = true;
+    clear(doc, ctx, "Another repository is open: its graph is read when this view is shown.");
     if (shown(doc)) ask(doc, tauri, ctx);
   });
   await tauri.event.listen("no-child", () => {

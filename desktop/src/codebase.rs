@@ -142,7 +142,8 @@ pub struct Region {
     pub x: f64,
     pub y: f64,
     pub r: f64,
-    /// How many of the answer's modules are in it.
+    /// How many of the answer's modules are in it: the package's size only
+    /// when the answer left none out, which `count` says.
     pub modules: usize,
     pub name: Text,
     pub count: Text,
@@ -245,7 +246,9 @@ pub fn layout(data: &Value) -> Codebase {
             .count() as u64
     };
 
-    let regions = place_regions(&grouped);
+    // Only an answer that says it left no module out gives a package's
+    // size; otherwise a region counts the modules listed.
+    let regions = place_regions(&grouped, modules_not_drawn == Some(0));
     let overview_height = {
         let cols = columns(grouped.len());
         let rows = grouped.len().div_ceil(cols).max(1);
@@ -291,7 +294,7 @@ fn columns(n: usize) -> usize {
     ((n as f64).sqrt().ceil() as usize).max(1)
 }
 
-fn place_regions(grouped: &[(&str, Vec<&Module>)]) -> Vec<Region> {
+fn place_regions(grouped: &[(&str, Vec<&Module>)], exact: bool) -> Vec<Region> {
     let cols = columns(grouped.len());
     let cell_w = (OVERVIEW_W - 2.0 * PAD) / cols as f64;
     // A circle no wider than its cell, and a name cut to the cell.
@@ -321,7 +324,13 @@ fn place_regions(grouped: &[(&str, Vec<&Module>)]) -> Vec<Region> {
                     anchor: "middle",
                 },
                 count: Text {
-                    text: plural(ms.len(), "module", "modules"),
+                    // Past rpc's `limit` a package may hold modules the
+                    // answer did not list, so the count says what it is.
+                    text: if exact {
+                        plural(ms.len(), "module", "modules")
+                    } else {
+                        format!("{} listed", ms.len())
+                    },
                     x,
                     y: round(y + COUNT_DY),
                     anchor: "middle",
@@ -734,6 +743,109 @@ mod tests {
         assert!(c.edges_in_complete);
         let c = layout(&answer(vec![module("p.q", &[], 0, 0)], 4));
         assert!(!c.edges_in_complete, "four modules past the limit");
+    }
+
+    #[test]
+    fn region_counts_say_listed_once_modules_are_left_out() {
+        // The risk (#307 review): rpc lists only the first `limit` modules,
+        // so a region's count is how many of its modules were listed, not
+        // how many it has; drawn as "N modules" it states a package's size
+        // the answer never gave, and a package with none listed is not
+        // drawn at all. Only an answer that left none out gives exact
+        // counts.
+        let three = || {
+            vec![
+                module("app.a", &[], 0, 0),
+                module("app.b", &[], 0, 0),
+                module("lib.c", &[], 0, 0),
+            ]
+        };
+        let counts = |data: &Value| -> Vec<String> {
+            layout(data)
+                .regions
+                .iter()
+                .map(|r| r.count.text.clone())
+                .collect()
+        };
+        assert_eq!(counts(&answer(three(), 0)), ["2 modules", "1 module"]);
+        assert_eq!(counts(&answer(three(), 5)), ["2 listed", "1 listed"]);
+        // An answer that does not say what it left out is not one that
+        // left nothing out.
+        let mut silent = answer(three(), 0);
+        silent.as_object_mut().unwrap().remove("modules_not_drawn");
+        assert_eq!(counts(&silent), ["2 listed", "1 listed"]);
+        // The region still counts the modules it holds, as a number.
+        let c = layout(&answer(three(), 5));
+        assert_eq!(c.regions[0].modules, 2);
+        assert_eq!(c.to_json()["modules_not_drawn"], 5);
+    }
+
+    #[test]
+    fn codebase_script_asks_for_more_modules_than_rpc_s_default() {
+        // The risk (#307 review): a `get_codebase` with no `limit` gets
+        // rpc's default of 40 (ADR 0025 section 5), so any repository past
+        // 40 modules is drawn with whole packages missing.
+        let js = ui_file("codebase.js");
+        assert!(
+            js.contains(r#"{ id: REQUEST_ID, type: "get_codebase", limit: MODULES_ASKED }"#),
+            "codebase.js asks with no limit"
+        );
+        let asked: u64 = js
+            .split("const MODULES_ASKED = ")
+            .nth(1)
+            .and_then(|r| r.split(';').next())
+            .and_then(|n| n.trim().parse().ok())
+            .expect("codebase.js names MODULES_ASKED as a number");
+        assert!(asked > 40, "{asked} is not past rpc's default");
+        // rpc.rs takes any count, so the bound is this layout's: that many
+        // modules in one package still draw with no two circles touching.
+        let mods: Vec<Value> = (0..asked)
+            .map(|i| module(&format!("one.m{i}"), &[], 0, 0))
+            .collect();
+        let c = layout(&answer(mods, 0));
+        let ms = &c.packages[0].modules;
+        assert_eq!(ms.len() as u64, asked);
+        let mut closest = f64::INFINITY;
+        for (i, a) in ms.iter().enumerate() {
+            for b in &ms[i + 1..] {
+                closest = closest.min((a.x - b.x).hypot(a.y - b.y));
+            }
+        }
+        assert!(
+            closest >= 2.0 * MODULE_R,
+            "{asked} modules in one package: two circles {closest} apart"
+        );
+    }
+
+    #[test]
+    fn codebase_script_clears_the_last_repository_s_graph_on_a_new_child() {
+        // The risk (#307 review): after another repository is opened, the
+        // last one's packages stay drawn, selectable and searchable until
+        // the new answer comes, read as the new repository's. No
+        // JavaScript runs under cargo test, so this holds codebase.js's
+        // `child-started` listener to dropping the graph; a node smoke
+        // script with a fake DOM ran it (see the commit).
+        let js = ui_file("codebase.js");
+        let started = js
+            .split(r#"listen("child-started""#)
+            .nth(1)
+            .and_then(|r| r.split("});").next())
+            .expect("codebase.js listens for child-started");
+        assert!(started.contains("clear(doc, ctx"), "{started}");
+        let clear = js
+            .split("function clear(doc, ctx, said)")
+            .nth(1)
+            .and_then(|r| r.split("\n}").next())
+            .expect("codebase.js has clear");
+        for want in [
+            "ctx.data = null",
+            "ctx.pkg = null",
+            "ctx.selected = null",
+            r#"getElementById("cb-graph").replaceChildren()"#,
+            "drawResults(doc, ctx)",
+        ] {
+            assert!(clear.contains(want), "clear lacks {want}");
+        }
     }
 
     fn ui_file(name: &str) -> String {
