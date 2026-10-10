@@ -20,7 +20,7 @@
 //! one that looks for the repository by absolute path, reads the home
 //! directory or opens a socket; the ADR lists what it does not do.
 
-use crate::orchestrator::{names_git_dir, real_rel, unsafe_repo_path};
+use crate::path_rules::{names_git_dir, real_rel, unsafe_repo_path};
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::{Path, PathBuf};
