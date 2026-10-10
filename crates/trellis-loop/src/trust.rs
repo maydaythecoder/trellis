@@ -148,18 +148,7 @@ fn repo_file(root: &Path, arg: &str, cache: &HashCache) -> Option<(String, Strin
 /// holds a control character hashes differently than before; a refused
 /// fingerprint is never trusted or compared, so no trust decision moves.
 fn plain(s: &str) -> String {
-    if !s.chars().any(char::is_control) {
-        return s.to_string();
-    }
-    s.chars()
-        .map(|c| {
-            if c.is_control() {
-                c.escape_debug().to_string()
-            } else {
-                c.to_string()
-            }
-        })
-        .collect()
+    trellis_core::text::escape_controls(s)
 }
 
 fn rel(root: &Path, full: &Path) -> String {
