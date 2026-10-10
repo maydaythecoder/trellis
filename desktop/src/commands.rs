@@ -20,6 +20,10 @@
 //! - `radius`: a `get_radius` answer as reach and doubt (`radius.rs`), or
 //!   `{"error"}`, with the answer's `id` (#308).
 //!
+//! `vault_search` and `vault_graph` answers become the `view` event's
+//! `vault` key (`state/vault.rs`, #309), typed by the reducer as the run
+//! panes are.
+//!
 //! The first line the core writes to every child is
 //! `{"id":"desktop-models","type":"get_available_models"}`. Its answer's
 //! `configured` specs are recorded in the view state and read by
@@ -56,8 +60,10 @@ pub const LINE_CAP: usize = 65_536;
 /// The `type`s `rpc_send` forwards: `rpc.rs`'s `COMMANDS` as #296 lists
 /// them, without `quit`, which only the core sends, and with each read-only
 /// command a desktop view reads through (ADR 0048 section 10) as that view
-/// is built: `get_codebase` (#307), `get_radius` (#308).
-pub const FORWARDED: [&str; 13] = [
+/// is built: `get_codebase` (#307), `get_radius` (#308), `vault_search` and
+/// `vault_graph` (#309). No vault write is among them: rpc has none, and
+/// every vault write stays a `trellis vault` command the person runs (#70).
+pub const FORWARDED: [&str; 15] = [
     "prompt",
     "abort",
     "get_state",
@@ -71,6 +77,8 @@ pub const FORWARDED: [&str; 13] = [
     "get_commands",
     "get_codebase",
     "get_radius",
+    "vault_search",
+    "vault_graph",
 ];
 
 /// The most trails `get_trails` asks for.
@@ -351,8 +359,13 @@ impl Core {
             let w = child.writer();
             // Set before the line is written, so the reply, which a reader
             // thread may feed as soon as it is written, finds it set.
-            if line.get("type").and_then(Value::as_str) == Some("get_state") {
-                s.resend = true;
+            match line.get("type").and_then(Value::as_str) {
+                Some("get_state") => s.resend = true,
+                Some(t @ ("vault_search" | "vault_graph")) => {
+                    s.view
+                        .vault_asked(t, line.get("id").and_then(Value::as_str));
+                }
+                _ => {}
             }
             w
         };
@@ -1237,7 +1250,8 @@ mod tests {
                 "radius",
                 "running",
                 "tier",
-                "transcript"
+                "transcript",
+                "vault"
             ]
         );
         assert!(
@@ -1417,6 +1431,176 @@ mod tests {
         for d in [&repo, &config] {
             let _ = std::fs::remove_dir_all(d);
         }
+    }
+
+    /// A repository whose `.trellis/config.toml` names a vault of three
+    /// notes, as trellis's own rpc vault tests build one: a root, a child
+    /// that links to an orphan twice, and an orphan under a missing parent.
+    fn vault_repo(name: &str) -> PathBuf {
+        let repo = scratch(name);
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let notes = repo.join("notes");
+        std::fs::create_dir_all(&notes).unwrap();
+        for (file, body) in [
+            (
+                "root.md",
+                "---\ntitle: \"Root\"\nparent: null\n---\nOverview.\n",
+            ),
+            (
+                "child.md",
+                "---\ntitle: \"Child\"\nparent: \"[[root]]\"\n---\nThe retry policy doubles. \
+                 See [[orphan]], and [[orphan]] again.\n",
+            ),
+            (
+                "orphan.md",
+                "---\ntitle: \"Orphan\"\nparent: \"[[gone]]\"\n---\nA lost retry note. Back to \
+                 [[child]].\n",
+            ),
+            (
+                "manifest.json",
+                "[\"child.md\",\"orphan.md\",\"root.md\"]\n",
+            ),
+        ] {
+            std::fs::write(notes.join(file), body).unwrap();
+        }
+        std::fs::create_dir_all(repo.join(".trellis")).unwrap();
+        std::fs::write(
+            repo.join(".trellis/config.toml"),
+            "[context]\nvault = \"notes\"\n",
+        )
+        .unwrap();
+        repo
+    }
+
+    /// Every file under `dir` with its bytes, so a test can show a read
+    /// changed nothing.
+    fn snapshot(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut out = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else {
+                    out.push((p.clone(), std::fs::read(&p).unwrap()));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn rpc_send_forwards_vault_reads() {
+        // The risk (#309): the vault view asks for a search or a note the
+        // core refuses to forward, or the answer reaches the page as a raw
+        // frame the page must type itself (ADR 0048 section 5); or a read
+        // that changes a note.
+        let repo = vault_repo("vault-repo");
+        let before = snapshot(&repo.join("notes"));
+        let config = scratch("vault-config");
+        let (core, rec) = core_with(&config);
+        core.start(&repo).unwrap();
+        rec.wait_for("child-started", |_| true);
+        let vault_view = |rec: &Recorder, ok: &dyn Fn(&Value) -> bool| {
+            rec.wait_for("view", |v| v.get("vault").is_some_and(ok))["vault"].clone()
+        };
+
+        let ask = json!({"id": "desktop-vault-search-1", "type": "vault_search", "query": "retry"});
+        assert_eq!(core.send(&ask), Ok(()));
+        let v = vault_view(&rec, &|v| v["hits"].is_array());
+        assert_eq!(v["error"], Value::Null, "{v}");
+        let hits = v["hits"].as_array().unwrap();
+        assert_eq!(hits.len(), 2, "{v}");
+        for h in hits {
+            let score = h["score"].as_str().unwrap_or_else(|| panic!("{h}"));
+            let (_, decimals) = score.split_once('.').unwrap();
+            assert_eq!(decimals.len(), 4, "four decimals: {score}");
+        }
+        assert!(hits.iter().any(|h| h["path"] == "child.md"), "{v}");
+
+        let ask = json!({"id": "desktop-vault-graph-1", "type": "vault_graph", "note": "child.md"});
+        assert_eq!(core.send(&ask), Ok(()));
+        let v = vault_view(&rec, &|v| v["graph"].is_object());
+        let g = &v["graph"];
+        assert_eq!(
+            g["note"],
+            json!({"path": "child.md", "title": "Child"}),
+            "{g}"
+        );
+        assert_eq!(g["depth"], "1", "{g}");
+        assert_eq!(g["lineage"], json!(["root.md", "child.md"]), "{g}");
+        assert_eq!(g["refs_out"][0]["weight"], 2, "{g}");
+        assert_eq!(g["refs_in"][0]["path"], "orphan.md", "{g}");
+        assert!(v["hits"].is_array(), "the hits stay beside the note: {v}");
+
+        let ask = json!({"id": "desktop-vault-graph-2", "type": "vault_graph", "note": "orphan"});
+        core.send(&ask).unwrap();
+        let v = vault_view(&rec, &|v| v["graph"]["note"]["path"] == "orphan.md");
+        assert_eq!(
+            v["graph"]["depth"],
+            "none (under a missing parent, or on a cycle)"
+        );
+        assert_eq!(v["graph"]["unresolved_parent"], "[[gone]] does not resolve");
+        finish(&core).unwrap();
+        assert_eq!(
+            snapshot(&repo.join("notes")),
+            before,
+            "a read changed the vault"
+        );
+
+        // No vault configured: trellis's own reason, as text.
+        let bare = scratch("vault-bare");
+        std::fs::create_dir_all(bare.join(".git")).unwrap();
+        rec.take();
+        core.start(&bare).unwrap();
+        rec.wait_for("child-started", |_| true);
+        core.send(&json!({"id": "desktop-vault-search-2", "type": "vault_search", "query": "x"}))
+            .unwrap();
+        let v = vault_view(&rec, &|v| v["error"].is_string());
+        let err = v["error"].as_str().unwrap();
+        assert!(err.contains("no vault"), "{err}");
+        assert_eq!(v["hits"], Value::Null, "{v}");
+        finish(&core).unwrap();
+        for d in [&repo, &bare, &config] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn rpc_send_forwards_no_vault_write() {
+        // The risk (#70, ADR 0049): the page writes a note through the
+        // desktop. Every vault write is a `trellis vault` command the
+        // person runs, rpc has none, and rpc_send forwards none; nor a
+        // type rpc does not list that a later trellis might give a write
+        // meaning.
+        let (core, rec) = idle_core();
+        for ty in [
+            "vault_write",
+            "vault_link",
+            "vault_new",
+            "vault_reparent",
+            "vault_retitle",
+            "vault_rm",
+            "vault_check",
+            "vault_init",
+            "vault_dates",
+            "VAULT_SEARCH",
+        ] {
+            let err = core
+                .send(&json!({"id": "x", "type": ty, "note": "a", "to": "b"}))
+                .unwrap_err();
+            assert!(err.contains(&format!("{ty:?}")), "{ty}: {err}");
+            assert!(err.contains("is not one rpc_send forwards"), "{ty}: {err}");
+        }
+        for ty in FORWARDED {
+            assert!(
+                !ty.starts_with("vault_") || ["vault_search", "vault_graph"].contains(&ty),
+                "rpc_send forwards a vault type that is not a read: {ty}"
+            );
+        }
+        assert!(rec.take().is_empty(), "a refusal emits nothing");
     }
 
     #[test]

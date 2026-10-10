@@ -16,6 +16,12 @@
 //! the two never disagree. Every string in the view is trellis- or
 //! model-supplied text, which the page writes through `textContent` only
 //! (ADR 0007, S10).
+//!
+//! It also keeps the vault notes view (`state/vault.rs`, #309), typed from
+//! `vault_search` and `vault_graph` answers: a view of its own, which a
+//! run's start leaves alone and a new child clears.
+
+mod vault;
 
 use crate::frames::{ApprovalRequest, Frame, RunEnd, Turn};
 use crate::graph;
@@ -42,9 +48,11 @@ pub enum Pane {
     Tier,
     /// The action graph's layout (`graph.rs`), drawn from the actions.
     Graph,
+    /// The vault notes view (`state/vault.rs`).
+    Vault,
 }
 
-const PANES: [Pane; 11] = [
+const PANES: [Pane; 12] = [
     Pane::Transcript,
     Pane::Actions,
     Pane::Edits,
@@ -56,6 +64,7 @@ const PANES: [Pane; 11] = [
     Pane::Outcome,
     Pane::Tier,
     Pane::Graph,
+    Pane::Vault,
 ];
 
 /// The panes a run starts afresh: everything but the transcript, which,
@@ -88,6 +97,7 @@ impl Pane {
             Pane::Outcome => "outcome",
             Pane::Tier => "tier",
             Pane::Graph => "graph",
+            Pane::Vault => "vault",
         }
     }
 
@@ -104,6 +114,10 @@ pub struct Changed(u16);
 impl Changed {
     fn with(self, p: Pane) -> Self {
         Self(self.0 | p.bit())
+    }
+
+    fn and(self, other: Self) -> Self {
+        Self(self.0 | other.0)
     }
 
     fn of(panes: &[Pane]) -> Self {
@@ -249,6 +263,8 @@ pub struct DesktopState {
     /// a malformed one, and from each child's start. No pane shows it: it
     /// is what `rpc_send`'s model guard reads.
     configured: Option<Configured>,
+    /// The vault notes view: not a run pane, so a run's start keeps it.
+    vault: vault::Vault,
 }
 
 impl DesktopState {
@@ -285,6 +301,13 @@ impl DesktopState {
                 Changed::of(&[Pane::Running, Pane::Approvals, Pane::Outcome])
             }
             Frame::Response(r) => {
+                // A vault read's answer is the vault view's, whatever else
+                // the branches below make of it.
+                let vault = if self.vault.answer(&r) {
+                    Changed::of(&[Pane::Vault])
+                } else {
+                    Changed::default()
+                };
                 // The core's own models question: its answer is recorded,
                 // and anything but a well-formed success records nothing.
                 // It changes no pane; a refusal still reaches the
@@ -302,7 +325,7 @@ impl DesktopState {
                 // A refused command is said in the transcript; a successful
                 // answer changes no run pane but the tier a `get_state`
                 // reports.
-                if r.success == Some(true) && r.command.as_deref() == Some("get_state") {
+                let c = if r.success == Some(true) && r.command.as_deref() == Some("get_state") {
                     self.tier = r
                         .data
                         .as_ref()
@@ -319,7 +342,8 @@ impl DesktopState {
                     Changed::of(&[Pane::Transcript])
                 } else {
                     Changed::default()
-                }
+                };
+                c.and(vault)
             }
             Frame::ApprovalRequest(a) => {
                 if self.approvals.iter().any(|o| o.id == a.id) {
@@ -363,6 +387,13 @@ impl DesktopState {
     /// answer, so the guard is shut until it gives its own.
     pub fn forget_models(&mut self) {
         self.configured = None;
+    }
+
+    /// The page sent a `vault_search` or `vault_graph` with `id`: the
+    /// vault view takes only that question's answer from now on, so an
+    /// earlier question answered late cannot replace it.
+    pub fn vault_asked(&mut self, command: &str, id: Option<&str>) {
+        self.vault.asked(command, id);
     }
 
     /// Clears the whole view, transcript included: colibri's New chat and
@@ -449,6 +480,7 @@ impl DesktopState {
                 wrote: a.wrote,
             }))
             .to_json(),
+            Pane::Vault => self.vault.to_json(),
             Pane::Outcome => match &self.outcome {
                 Some(e) => json!({
                     "outcome": e.outcome,

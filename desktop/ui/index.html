@@ -15,7 +15,9 @@
   get_codebase answer (#307), and its symbol radius pane by radius.js from
   a get_radius answer the core types into reach and doubt (#308). The
   trails section is drawn by trails.js from get_trails's rows, in which
-  every trail string is marked untrusted (#304).
+  every trail string is marked untrusted (#304). The vault section is drawn
+  by vault.js from the view's vault key, which the core types from
+  vault_search and vault_graph answers; it only reads (#309).
 
   The rail's buttons each name, with aria-controls, the one section they
   show; the others carry the hidden attribute. The overview section is the
@@ -33,6 +35,7 @@
     <script type="module" src="codebase.js"></script>
     <script type="module" src="radius.js"></script>
     <script type="module" src="trails.js"></script>
+    <script type="module" src="vault.js"></script>
   </head>
   <body>
     <nav class="rail" aria-label="Views">
@@ -170,7 +173,22 @@
 
       <section id="vault" aria-labelledby="vault-title" hidden>
         <h2 id="vault-title">Vault</h2>
-        <p class="unbuilt">Not built yet</p>
+        <p id="vt-status" class="muted" role="status">Read-only: a note is changed with trellis vault or an editor, never from here.</p>
+        <div class="vt-grid">
+          <div class="pane" role="region" aria-labelledby="vt-search-title">
+            <h3 id="vt-search-title">Search</h3>
+            <form id="vt-form" class="vt-form">
+              <label for="vt-query">Search notes</label>
+              <input id="vt-query" type="search" autocomplete="off" spellcheck="false">
+              <button type="submit">Search</button>
+            </form>
+            <div id="vt-hits" class="vt-hits"></div>
+          </div>
+          <div class="pane" role="region" aria-labelledby="vt-note-title">
+            <h3 id="vt-note-title">Note</h3>
+            <div id="vt-note" class="vt-note"></div>
+          </div>
+        </div>
       </section>
     </main>
   </body>
