@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::plain;
+
 /// The manifest's file name, in `<user config dir>/packages/`.
 pub(crate) const MANIFEST: &str = "packages.toml";
 
@@ -835,10 +837,6 @@ impl Drop for Staging {
             tracing::warn!(path = %self.path.display(), error = %e, "staging directory left behind");
         }
     }
-}
-
-fn plain(s: &str) -> String {
-    crate::plain(s)
 }
 
 #[cfg(test)]

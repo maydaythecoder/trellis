@@ -70,18 +70,7 @@ pub(crate) fn cmd_log(root: &Path, limit: usize, actions: bool) -> Result<()> {
 /// that contains one is worth seeing, and silently dropping it would print a
 /// name that does not match the file.
 pub(crate) fn plain(s: &str) -> String {
-    if !s.chars().any(char::is_control) {
-        return s.to_string();
-    }
-    s.chars()
-        .map(|c| {
-            if c.is_control() {
-                c.escape_debug().to_string()
-            } else {
-                c.to_string()
-            }
-        })
-        .collect()
+    trellis_core::text::escape_controls(s)
 }
 
 /// The action log for one run: what it did, in order, and what came back.
