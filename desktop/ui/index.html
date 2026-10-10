@@ -17,7 +17,10 @@
   trails section is drawn by trails.js from get_trails's rows, in which
   every trail string is marked untrusted (#304). The vault section is drawn
   by vault.js from the view's vault key, which the core types from
-  vault_search and vault_graph answers; it only reads (#309).
+  vault_search and vault_graph answers; it only reads (#309). The board
+  section is drawn by queue.js from the view's queue key, eight counts the
+  core computes from a get_queue answer, with PR and CI state from the
+  overview's board (#311); it only reads.
 
   The rail's buttons each name, with aria-controls, the one section they
   show; the others carry the hidden attribute. The overview section is the
@@ -36,6 +39,7 @@
     <script type="module" src="radius.js"></script>
     <script type="module" src="trails.js"></script>
     <script type="module" src="vault.js"></script>
+    <script type="module" src="queue.js"></script>
   </head>
   <body>
     <nav class="rail" aria-label="Views">
@@ -168,7 +172,24 @@
 
       <section id="board" aria-labelledby="board-title" hidden>
         <h2 id="board-title">Board</h2>
-        <p class="unbuilt">Not built yet</p>
+        <div class="qb-bar">
+          <p id="qb-status" class="muted" role="status">Open the board to read the queue.</p>
+          <button type="button" id="qb-refresh">Refresh</button>
+        </div>
+        <div class="pane" role="region" aria-labelledby="qb-counts-title">
+          <h3 id="qb-counts-title">Tasks by status</h3>
+          <ul id="qb-counts" class="qb-counts"></ul>
+        </div>
+        <div class="qb-grid">
+          <div class="pane" role="region" aria-labelledby="qb-tasks-title">
+            <h3 id="qb-tasks-title">Queue</h3>
+            <ul id="qb-tasks" class="rows"></ul>
+          </div>
+          <div class="pane" role="region" aria-labelledby="qb-prci-title">
+            <h3 id="qb-prci-title">Pull requests and CI</h3>
+            <div id="qb-prci"></div>
+          </div>
+        </div>
       </section>
 
       <section id="vault" aria-labelledby="vault-title" hidden>

@@ -18,13 +18,15 @@
 //! (ADR 0007, S10).
 //!
 //! It also keeps the vault notes view (`state/vault.rs`, #309), typed from
-//! `vault_search` and `vault_graph` answers: a view of its own, which a
-//! run's start leaves alone and a new child clears.
+//! `vault_search` and `vault_graph` answers, and the board's queue view
+//! (`queue.rs`, #311), typed from `get_queue` answers: views of their own,
+//! which a run's start leaves alone and a new child clears.
 
 mod vault;
 
 use crate::frames::{ApprovalRequest, Frame, RunEnd, Turn};
 use crate::graph;
+use crate::queue;
 use serde_json::{Map, Value, json};
 use std::collections::VecDeque;
 
@@ -50,9 +52,11 @@ pub enum Pane {
     Graph,
     /// The vault notes view (`state/vault.rs`).
     Vault,
+    /// The board's queue view (`queue.rs`).
+    Queue,
 }
 
-const PANES: [Pane; 12] = [
+const PANES: [Pane; 13] = [
     Pane::Transcript,
     Pane::Actions,
     Pane::Edits,
@@ -65,6 +69,7 @@ const PANES: [Pane; 12] = [
     Pane::Tier,
     Pane::Graph,
     Pane::Vault,
+    Pane::Queue,
 ];
 
 /// The panes a run starts afresh: everything but the transcript, which,
@@ -98,6 +103,7 @@ impl Pane {
             Pane::Tier => "tier",
             Pane::Graph => "graph",
             Pane::Vault => "vault",
+            Pane::Queue => "queue",
         }
     }
 
@@ -265,6 +271,8 @@ pub struct DesktopState {
     configured: Option<Configured>,
     /// The vault notes view: not a run pane, so a run's start keeps it.
     vault: vault::Vault,
+    /// The board's queue view, kept across runs as the vault view is.
+    queue: queue::Queue,
 }
 
 impl DesktopState {
@@ -301,13 +309,15 @@ impl DesktopState {
                 Changed::of(&[Pane::Running, Pane::Approvals, Pane::Outcome])
             }
             Frame::Response(r) => {
-                // A vault read's answer is the vault view's, whatever else
-                // the branches below make of it.
-                let vault = if self.vault.answer(&r) {
-                    Changed::of(&[Pane::Vault])
-                } else {
-                    Changed::default()
-                };
+                // A vault read's or get_queue's answer is its view's,
+                // whatever else the branches below make of it.
+                let mut views = Changed::default();
+                if self.vault.answer(&r) {
+                    views = views.with(Pane::Vault);
+                }
+                if self.queue.answer(&r) {
+                    views = views.with(Pane::Queue);
+                }
                 // The core's own models question: its answer is recorded,
                 // and anything but a well-formed success records nothing.
                 // It changes no pane; a refusal still reaches the
@@ -343,7 +353,7 @@ impl DesktopState {
                 } else {
                     Changed::default()
                 };
-                c.and(vault)
+                c.and(views)
             }
             Frame::ApprovalRequest(a) => {
                 if self.approvals.iter().any(|o| o.id == a.id) {
@@ -394,6 +404,12 @@ impl DesktopState {
     /// earlier question answered late cannot replace it.
     pub fn vault_asked(&mut self, command: &str, id: Option<&str>) {
         self.vault.asked(command, id);
+    }
+
+    /// The page sent a `get_queue` with `id`: the queue view takes only
+    /// that answer from now on.
+    pub fn queue_asked(&mut self, id: Option<&str>) {
+        self.queue.asked(id);
     }
 
     /// Clears the whole view, transcript included: colibri's New chat and
@@ -481,6 +497,7 @@ impl DesktopState {
             }))
             .to_json(),
             Pane::Vault => self.vault.to_json(),
+            Pane::Queue => self.queue.to_json(),
             Pane::Outcome => match &self.outcome {
                 Some(e) => json!({
                     "outcome": e.outcome,

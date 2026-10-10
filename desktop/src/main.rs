@@ -11,8 +11,9 @@
 //! becomes the codebase view's layout (`codebase.rs`, the `codebase`
 //! event), and a `get_radius` answer its reach and doubt (`radius.rs`, the
 //! `radius` event). `vault_search` and `vault_graph` answers become the
-//! vault notes view (`state/vault.rs`, the `view` event's `vault` key). The
-//! page has four commands: `rpc_send`, `get_trails`
+//! vault notes view (`state/vault.rs`, the `view` event's `vault` key), and
+//! `get_queue` answers the board's queue view (`queue.rs`, its `queue`
+//! key). The page has four commands: `rpc_send`, `get_trails`
 //! (the trails view's rows, `trails.rs`), `open_repository` and
 //! `get_overview`.
 //!
@@ -33,6 +34,7 @@ mod commands;
 mod frames;
 mod graph;
 mod lockdown;
+mod queue;
 mod radius;
 mod state;
 mod trails;

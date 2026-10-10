@@ -568,3 +568,49 @@ article.past-run section + section {
 .vt-hits code {
   overflow-wrap: anywhere;
 }
+
+/* The board (#311): eight queue counts, the tasks, and PR and CI state. */
+.qb-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0;
+}
+
+.qb-bar button {
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.qb-counts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 8px;
+  padding-left: 0;
+  list-style: none;
+}
+
+.qb-cell {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.qb-count {
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.qb-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(220px, 2fr);
+  gap: 12px;
+  margin-top: 12px;
+}
