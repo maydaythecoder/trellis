@@ -1,0 +1,185 @@
+// The board (#311): the repository's queue, read-only, from the `view`
+// event's `queue` key, which the desktop core types from trellis's
+// `get_queue` answer (`desktop/src/queue.rs`), and PR and CI state from the
+// overview's `board.pr_ci` (#558), the user's own `gh` read-only.
+//
+// The core counts the tasks: eight cells, one per queue status, in the order
+// `counts` gives them, and no sum of any (an unreadable task is in none).
+// This module computes no figure; it writes each count as the view gives it.
+// Below the cells, each task with its text, priority, labels, waiting reason
+// and chain (#559). PR and CI state is drawn by overview.js's drawPrCi, so
+// the board and the overview never draw it differently.
+//
+// Task text, labels, waiting reasons, errors and everything `gh` reports are
+// written by others (ADR 0007, S10): they reach the DOM only through
+// textContent. Nothing here writes the queue: its writes are `trellis queue`
+// and `trellis work` (ADR 0020 section 5), which rpc does not have.
+//
+// index.html loads this as a module of its own.
+
+import { drawPrCi } from "./overview.js";
+
+let asked = 0;
+
+function el(doc, tag, text) {
+  const e = doc.createElement(tag);
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function muted(doc, tag, text) {
+  const e = el(doc, tag, text);
+  e.className = "muted";
+  return e;
+}
+
+function str(v) {
+  return typeof v === "string" ? v : null;
+}
+
+function isCount(v) {
+  return typeof v === "number" && Number.isFinite(v);
+}
+
+function texts(v) {
+  return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+}
+
+function status(doc, text) {
+  doc.getElementById("qb-status").textContent = text;
+}
+
+// The eight cells, in the order the view lists them.
+function drawCounts(doc, counts) {
+  const pane = doc.getElementById("qb-counts");
+  if (!Array.isArray(counts)) {
+    pane.replaceChildren(muted(doc, "li", "No counts are shown."));
+    return;
+  }
+  pane.replaceChildren(
+    ...counts.map((c) => {
+      const li = el(doc, "li");
+      li.className = "qb-cell";
+      const n = el(doc, "span", isCount(c && c.count) ? String(c.count) : "not reported");
+      n.className = "qb-count";
+      li.append(n, el(doc, "span", str(c && c.status) ?? "status not reported"));
+      return li;
+    }),
+  );
+}
+
+function task(doc, t) {
+  const li = el(doc, "li");
+  const id = str(t && t.id) ?? "?";
+  const state = str(t && t.state) ?? "?";
+  if (str(t && t.error) !== null) {
+    li.append(el(doc, "code", id), " ", el(doc, "span", state), " ");
+    const e = el(doc, "span", `unreadable: ${t.error}`);
+    e.className = "failed";
+    li.append(e);
+    return li;
+  }
+  li.append(
+    el(doc, "code", id),
+    " ",
+    el(doc, "span", str(t.status) ?? "status not reported"),
+    " ",
+    muted(doc, "span", str(t.priority) ?? "priority not reported"),
+    " ",
+    el(doc, "span", str(t.task) ?? "task not reported"),
+  );
+  const meta = [];
+  const labels = texts(t.labels);
+  if (labels.length > 0) meta.push(`labels: ${labels.join(", ")}`);
+  if (str(t.assignee) !== null) meta.push(`assignee: ${t.assignee}`);
+  if (str(t.parent) !== null) meta.push(`part of ${t.parent}`);
+  const blockers = texts(t.blockers);
+  if (blockers.length > 0) meta.push(`after ${blockers.join(", ")}`);
+  if (str(t.waiting) !== null) meta.push(`waiting: ${t.waiting}`);
+  if (meta.length > 0) li.append(muted(doc, "div", meta.join(" · ")));
+  return li;
+}
+
+function drawTasks(doc, tasks) {
+  const pane = doc.getElementById("qb-tasks");
+  if (!Array.isArray(tasks)) {
+    pane.replaceChildren();
+    return;
+  }
+  const items = tasks.map((t) => task(doc, t));
+  if (items.length === 0) {
+    const li = el(doc, "li", "No tasks queued.");
+    li.className = "empty";
+    items.push(li);
+  }
+  pane.replaceChildren(...items);
+}
+
+export function drawQueue(doc, q) {
+  if (q === null || typeof q !== "object") return;
+  if (str(q.error) !== null) status(doc, q.error);
+  else if (Array.isArray(q.tasks)) {
+    const n = q.tasks.length;
+    status(doc, `${n} task${n === 1 ? "" : "s"} in the queue, read-only: trellis queue and trellis work change it.`);
+  }
+  drawCounts(doc, q.counts);
+  drawTasks(doc, q.tasks);
+}
+
+async function askQueue(doc, tauri) {
+  asked += 1;
+  try {
+    await tauri.core.invoke("rpc_send", { line: { id: `desktop-queue-${asked}`, type: "get_queue" } });
+  } catch (err) {
+    status(doc, `Open a repository to see its queue. ${err}`);
+  }
+}
+
+// PR and CI state comes with the overview, which runs `gh` with a bounded
+// wait, so it is read when the board opens and on Refresh only.
+async function askPrCi(doc, tauri) {
+  const pane = doc.getElementById("qb-prci");
+  pane.replaceChildren(muted(doc, "p", "Reading pull requests and CI from gh."));
+  try {
+    const o = await tauri.core.invoke("get_overview");
+    const b = o && typeof o === "object" && o.board && typeof o.board === "object" ? o.board : null;
+    if (b === null) pane.replaceChildren(muted(doc, "p", "PR and CI state unavailable: no repository is open."));
+    else pane.replaceChildren(...drawPrCi(doc, b.pr_ci));
+  } catch (err) {
+    pane.replaceChildren(muted(doc, "p", `PR and CI state unavailable: ${err}`));
+  }
+}
+
+export async function wireQueue(doc, tauri) {
+  const shown = () => !doc.getElementById("board").hidden;
+  const refresh = () => {
+    askQueue(doc, tauri);
+    askPrCi(doc, tauri);
+  };
+  doc.getElementById("qb-refresh").addEventListener("click", refresh);
+  drawCounts(doc, null);
+  await tauri.event.listen("view", (event) => {
+    const p = event.payload;
+    if (p !== null && typeof p === "object" && "queue" in p) drawQueue(doc, p.queue);
+  });
+  // A run may have claimed, finished or failed a task.
+  await tauri.event.listen("rpc-frame", (event) => {
+    const f = event.payload;
+    if (f !== null && typeof f === "object" && f.type === "run_end") askQueue(doc, tauri);
+  });
+  // Another repository is another queue.
+  await tauri.event.listen("child-started", () => {
+    if (shown()) refresh();
+  });
+  const button = doc.querySelector('nav.rail button[aria-controls="board"]');
+  if (button) button.addEventListener("click", refresh);
+}
+
+function start() {
+  wireQueue(document, window.__TAURI__).catch((err) => console.error("trellis desktop board:", err));
+}
+
+if (typeof window !== "undefined" && window.__TAURI__) {
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
+  else start();
+}
