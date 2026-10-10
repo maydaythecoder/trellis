@@ -676,7 +676,7 @@ mod tests {
             assert!(!e.attrs.contains_key("style"), "<{} style=...>", e.tag);
             assert_ne!(e.tag, "style", "a <style> element");
         }
-        for name in ["main.js", "render.js", "overview.js"] {
+        for name in ["main.js", "render.js", "overview.js", "graph.js"] {
             let js = ui_file(name);
             for bad in [".style", "cssText", "\"style\"", "'style'"] {
                 assert!(!js.contains(bad), "{name} writes a style: {bad}");
