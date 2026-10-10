@@ -38,15 +38,19 @@ let viewAlert = null;
 
 // The question the dialog shows, by id, and the ids already answered from
 // this page: a view sent before trellis's reply still lists them, and a
-// question is never put to the user twice.
+// question is never put to the user twice. Both are one child's: rpc
+// numbers approvals per process from `approval-1`, so on `child-started`
+// they are forgotten, or the next child's `approval-1` would be taken for
+// one already answered and its run would wait for ever.
 let shown = null;
 const answered = new Set();
 // A dialog's `close` event comes after `close()` returns, as a task of its
-// own, so each one is matched to the question it was opened for: one id per
-// `showModal()`, in order. A question the page closed itself, because it
-// went away (its run ended), is in `withdrawn`: that close is no answer.
+// own, so each one is matched to the question it was opened for: one entry
+// per `showModal()`, in order, each shifted off by its own close. A
+// question the page closed itself, because it went away (its run ended, or
+// its child was replaced), is marked `withdrawn`: that close is no answer.
+// The mark is on the entry, not the id, since a new child reuses the ids.
 const opened = [];
-const withdrawn = new Set();
 
 function drawBanner(doc) {
   const banner = doc.getElementById("alert");
@@ -70,6 +74,23 @@ function drawStderr(doc, lines) {
   log.scrollTop = log.scrollHeight;
 }
 
+// Closes the dialog on the question it shows, as no answer: every dialog
+// still to send its close is marked withdrawn.
+function withdraw(dialog) {
+  for (const e of opened) e.withdrawn = true;
+  shown = null;
+  if (dialog.open) dialog.close();
+}
+
+// A new child: the questions the last one asked are nobody's now, and the
+// ids it used will be used again. A close already queued for its dialog
+// stays matched to its own entry, which is withdrawn, so it is never read as
+// the answer to the new child's question of the same id.
+function forgetChild(doc) {
+  answered.clear();
+  withdraw(doc.getElementById("approval"));
+}
+
 function drawApprovals(doc, list) {
   const dialog = doc.getElementById("approval");
   const open = (Array.isArray(list) ? list : []).filter(
@@ -77,9 +98,7 @@ function drawApprovals(doc, list) {
   );
   if (shown !== null && !open.some((a) => a.id === shown)) {
     // Its run ended or it was answered elsewhere: nobody waits on it now.
-    withdrawn.add(shown);
-    shown = null;
-    if (dialog.open) dialog.close();
+    withdraw(dialog);
   }
   if (shown !== null || open.length === 0) return;
   const q = open[0];
@@ -88,7 +107,7 @@ function drawApprovals(doc, list) {
     str(q.question) ?? "trellis did not say what it asks";
   doc.getElementById("approval-detail").textContent = str(q.detail) ?? "";
   dialog.returnValue = "";
-  opened.push(q.id);
+  opened.push({ id: q.id, withdrawn: false });
   dialog.showModal();
   // Reject has the focus, so a stray Enter is a no.
   doc.getElementById("approval-reject").focus();
@@ -107,12 +126,14 @@ export function drawDialogs(doc, view) {
 }
 
 // Wires the dialog, the banner's Dismiss and the page's own error events,
-// once, before anything is asked for.
-export function wireDialogs(doc, win, tauri) {
+// once, and listens for `child-started`. Resolves once the listener is
+// registered, so the caller can ask for nothing before it is.
+export async function wireDialogs(doc, win, tauri) {
   const dialog = doc.getElementById("approval");
   dialog.addEventListener("close", () => {
-    const id = opened.shift();
-    if (id === undefined || withdrawn.delete(id)) return;
+    const entry = opened.shift();
+    if (entry === undefined || entry.withdrawn) return;
+    const id = entry.id;
     if (shown === id) shown = null;
     answered.add(id);
     // Only the Approve button sets this value; Escape, Reject and a close
@@ -138,4 +159,5 @@ export function wireDialogs(doc, win, tauri) {
   win.addEventListener("error", (e) => keep(String(e.message || e.error || "an uncaught error")));
   win.addEventListener("unhandledrejection", (e) => keep(`unhandled rejection: ${String(e.reason)}`));
   drawStderr(doc, []);
+  await tauri.event.listen("child-started", () => forgetChild(doc));
 }

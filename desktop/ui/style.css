@@ -23,6 +23,14 @@
   color-scheme: light dark;
 }
 
+/* The page shows and hides by the hidden attribute, never a style. The
+   browser's own [hidden] rule loses to any author rule that sets display
+   (.alert's flex drew the empty banner), so this one is important, and no
+   other rule here is: page_hidden_attribute_hides_whatever_class_sets_display. */
+[hidden] {
+  display: none !important;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #161715;

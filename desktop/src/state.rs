@@ -2276,9 +2276,10 @@ mod tests {
     }
 
     #[test]
-    fn unknown_and_unparsed_lines_change_nothing_but_the_transcript() {
+    fn unknown_lines_change_nothing_and_unparsed_lines_reach_transcript_and_alert() {
         // The risk: an unknown frame type, a non-object line or a field of
-        // the wrong type panics the core or reaches a pane as data.
+        // the wrong type panics the core or reaches a pane as data; or a
+        // line that is not an object goes by unsaid (#302).
         let mut s = DesktopState::default();
         for line in [
             r#"{"type":"something_new","x":1}"#,

@@ -102,7 +102,7 @@ async function main() {
 
   // Every listener is registered, and awaited, before anything is asked
   // for, so no answer arrives before something listens for it.
-  wireDialogs(document, window, tauri);
+  await wireDialogs(document, window, tauri);
   await wireComposer(document, tauri);
   await wireModelPane(document, tauri);
   await wireStatus(document, tauri);
