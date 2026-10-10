@@ -57,6 +57,32 @@
       "list_paths": {
         "always": ["paths"]
       },
+      "list_models": {
+        "always": [
+          "configured",
+          "local",
+          "probed",
+          "probed[].runtime",
+          "probed[].address",
+          "probed[].error",
+          "providers",
+          "providers[].name",
+          "providers[].key_variable"
+        ],
+        "null_when": {
+          "configured": "neither the repository's config nor the user's sets [model] spec",
+          "probed[].error": "the runtime answered; local then holds the specs it listed that first_run would offer",
+          "providers[].key_variable": "the provider's protocol is not one trellis knows"
+        },
+        "about": "local holds vllm:http://<address>#<model> specs, each one first_run would offer; probed names every address tried, in first_run's order (Ollama, llama.cpp, vLLM on their default ports); providers are the user config's [[providers]], by name and the variable a key would be read from, never its value (#564)"
+      },
+      "set_model": {
+        "always": ["model", "configured", "saved_to"],
+        "null_when": {
+          "saved_to": "save was not asked for, or the model is the configured one confirmed"
+        },
+        "about": "{model, save?} names this session's model, and with save true writes it to the user's config file, never .trellis/config.toml; {configured: true} confirms the configured spec. Until one has succeeded, prompt is refused with an error that starts \"choose a model first\" (#564)"
+      },
       "get_codebase": {
         "always": [
           "modules_indexed",

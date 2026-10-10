@@ -747,12 +747,107 @@ mod tests {
             "overview.js",
             "composer.js",
             "dialogs.js",
+            "model.js",
         ] {
             let js = ui_file(name);
             for bad in [".style", "cssText", "\"style\"", "'style'"] {
                 assert!(!js.contains(bad), "{name} writes a style: {bad}");
             }
         }
+    }
+
+    #[test]
+    fn model_gate_composer_and_send_are_disabled_in_the_page_as_served() {
+        // The risk (#564): prompt input usable for the moment between the
+        // page loading and the first view, or for good when the view never
+        // comes (no child, a child that exited), so a task can be typed and
+        // sent before any model is chosen. Served disabled, only
+        // composer.js opens it, and only on the view's `model`.
+        let page = page();
+        let composer = index_of(&page, "composer");
+        for id in ["composer-text", "composer-send", "composer-control"] {
+            let i = index_of(&page, id);
+            assert!(within(&page, i, composer), "#{id} is outside the composer");
+            assert!(
+                page[i].attrs.contains_key("disabled"),
+                "#{id} is not disabled as served"
+            );
+        }
+        // The model pane is open at launch, above every section, and holds
+        // what model.js draws into.
+        let pane = index_of(&page, "model-pane");
+        assert_eq!(page[pane].tag, "details");
+        assert!(page[pane].attrs.contains_key("open"), "closed at launch");
+        let first_section = (0..page.len())
+            .find(|&i| page[i].tag == "section")
+            .expect("a section");
+        assert!(pane < first_section, "the model pane is below a section");
+        let js = ui_file("model.js");
+        for id in [
+            "model-pane",
+            "model-summary",
+            "model",
+            "model-current",
+            "model-options",
+            "model-typed",
+            "model-save",
+            "model-refresh",
+            "model-probed",
+            "model-providers",
+            "model-note",
+        ] {
+            assert!(
+                within(&page, index_of(&page, id), pane) || id == "model-pane",
+                "#{id} is outside the model pane"
+            );
+            assert!(js.contains(&format!("\"{id}\"")), "model.js draws no {id}");
+        }
+        // The gate is the view's `model`, in composer.js, and nothing else
+        // there sets the four controls' disabled state.
+        let composer_js = ui_file("composer.js");
+        for want in [
+            "p.text.disabled = !modelChosen",
+            "p.send.disabled = !modelChosen",
+            "\"model\" in view",
+        ] {
+            assert!(composer_js.contains(want), "composer.js lacks {want}");
+        }
+        assert!(
+            ui_file("main.js").contains(
+                r#"import { askModels, drawModelPane, wireModelPane } from "./model.js";"#
+            ),
+            "main.js does not load model.js"
+        );
+    }
+
+    #[test]
+    fn model_gate_model_js_parses_no_html() {
+        // The risk: a spec, an address, a runtime's error or a provider
+        // name, all trellis- or configuration-supplied, written as markup,
+        // so text someone else wrote runs or reshapes the page (ADR 0007,
+        // S10); or the pane sending a model by any path but the core's
+        // `rpc_send`, where the model guard sits.
+        let js = ui_file("model.js");
+        for bad in [
+            "innerHTML",
+            "outerHTML",
+            "insertAdjacentHTML",
+            "document.write",
+            "eval(",
+            "Function(",
+            "DOMParser",
+            "createContextualFragment",
+            "fetch(",
+        ] {
+            assert!(!js.contains(bad), "model.js uses {bad}");
+        }
+        assert!(js.contains("textContent"), "model.js writes no text");
+        let invokes: Vec<&str> = js
+            .split("invoke(\"")
+            .skip(1)
+            .map(|r| r.split('"').next().unwrap_or(""))
+            .collect();
+        assert_eq!(invokes, ["rpc_send"], "model.js calls only rpc_send");
     }
 
     #[test]

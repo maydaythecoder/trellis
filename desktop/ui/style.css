@@ -387,3 +387,51 @@ code {
   color: var(--accent);
   font-weight: 600;
 }
+
+/* The model pane (#564), open at launch above every section until a model
+   is chosen. */
+.model-pane {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--pane-bg);
+  overflow-wrap: anywhere;
+}
+
+.model-pane summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.model-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.model-options {
+  padding-left: 0;
+  list-style: none;
+}
+
+.model-form input[type="text"] {
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 12px ui-monospace, monospace;
+}
+
+.model-form button {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
