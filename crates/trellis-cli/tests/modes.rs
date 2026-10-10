@@ -1374,6 +1374,10 @@ fn printed_queue(stdout: &str) -> Vec<Value> {
                 .map(|l| l.split(',').map(Value::from).collect())
                 .unwrap_or_else(|| Value::Array(Vec::new()));
             t["assignee"] = tag("agent ").map_or(Value::Null, Value::from);
+            t["parent"] = tag("parent ").map_or(Value::Null, Value::from);
+            t["blockers"] = tag("blocked by ")
+                .map(|l| l.split(',').map(Value::from).collect())
+                .unwrap_or_else(|| Value::Array(Vec::new()));
             continue;
         }
         let mut head = line.split_whitespace();
