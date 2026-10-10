@@ -1458,6 +1458,33 @@ mod tests {
     }
 
     #[test]
+    fn page_picker_keys_local_choices_by_spec() {
+        // The risk (#306 review): local choices keyed by their place in the
+        // list, and the selection kept across redraws by that key, so after
+        // "Look again" lists the runtimes in another order the radio kept
+        // selected names another spec, which Use this model then sends. No
+        // JavaScript runs under cargo test, so this holds the text; a node
+        // smoke script with a fake DOM ran the pane (see the commit).
+        let local = settings_choice("`local:${spec}`");
+        assert!(local.contains("preselect: false,"), "{local}");
+        let settings = code_of("settings.js");
+        assert!(
+            !settings.contains("local-${i}"),
+            "a local choice is keyed by its place in the list"
+        );
+        assert!(
+            settings.contains("seen.has(spec)"),
+            "a spec listed twice is offered twice under one key"
+        );
+        // A radio's id is its place in this drawing, never the spec, which
+        // is a runtime's text and may hold what an id may not.
+        assert!(
+            code_of("model.js").contains("input.id = `model-choice-${k}`;"),
+            "model.js builds an id from the choice"
+        );
+    }
+
+    #[test]
     fn page_controls_have_accessible_names() {
         // The risk: a control a screen reader announces only as "button"
         // or "edit text", so nobody using one can tell what it does.

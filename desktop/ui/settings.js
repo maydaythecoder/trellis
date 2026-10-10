@@ -66,6 +66,10 @@ export const REPOSITORY_DEFAULT = "repository default";
 // user's configured spec. With none, the configured spec, which is what
 // "repository default" pins (#564's "the configured spec preselected");
 // with neither, the typed spec. Exactly one choice is preselected.
+//
+// Each choice's `value` names what it sends, never its place in the list:
+// "Look again" may list the local runtimes in another order, and model.js
+// keeps the selection by value across redraws.
 export function modelChoices(available, models) {
   const configured = available && typeof available === "object" ? available.configured : null;
   const user = configured && typeof configured === "object" ? str(configured.user) : null;
@@ -91,17 +95,21 @@ export function modelChoices(available, models) {
     });
   }
   const local = listed && Array.isArray(listed.local) ? listed.local : [];
-  local.forEach((spec, i) => {
-    if (str(spec) === null || spec === user) return;
+  const seen = new Set();
+  for (const spec of local) {
+    // Keyed by the spec, so a choice kept across a redraw is the same
+    // spec; one listed twice is one choice.
+    if (str(spec) === null || spec === user || seen.has(spec)) continue;
+    seen.add(spec);
     choices.push({
-      value: `local-${i}`,
+      value: `local:${spec}`,
       label: "running on this machine:",
       spec,
       preselect: false,
       saves: true,
       line: (save) => withSave({ id: lineId(), type: "set_model", model: spec }, save),
     });
-  });
+  }
   choices.push({
     value: "typed",
     label: "a spec I type below",
