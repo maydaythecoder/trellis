@@ -212,6 +212,11 @@ mod tests {
     /// 2026-10-07; overview is the landing section).
     const SECTIONS: [&str; 6] = ["overview", "run", "trails", "codebase", "board", "vault"];
 
+    /// The sections that are built, and so do not read "Not built yet":
+    /// run (#300), overview (#562), codebase (#307), trails (#304), vault
+    /// (#309) and board (#311).
+    const BUILT: [&str; 6] = ["run", "overview", "codebase", "trails", "vault", "board"];
+
     #[test]
     fn csp_has_no_unsafe_source_and_no_network_origin() {
         // The risk: a CSP edit that lets inline or eval'd script run, or
@@ -340,8 +345,8 @@ mod tests {
         // The risk: a rail button that shows nothing, or a section no
         // button reaches; a later view shown before it is built, or a run
         // section that says it is not built. Six sections (#300 as amended
-        // 2026-10-07), overview first and the one shown at load; run and
-        // overview (#562) are built.
+        // 2026-10-07), overview first and the one shown at load; the ones
+        // in BUILT are built.
         let page = page();
         let navs: Vec<usize> = (0..page.len()).filter(|&i| page[i].tag == "nav").collect();
         assert_eq!(navs.len(), 1, "one nav");
@@ -372,7 +377,7 @@ mod tests {
             );
             assert_eq!(
                 s.text.contains("Not built yet"),
-                !["run", "overview"].contains(&id),
+                !BUILT.contains(&id),
                 "#{id} and \"Not built yet\""
             );
         }
@@ -504,6 +509,305 @@ mod tests {
                 .enumerate()
                 .any(|(i, e)| e.parent == Some(graph) && i != graph),
             "#graph has children"
+        );
+    }
+
+    #[test]
+    fn codebase_section_holds_what_codebase_js_draws() {
+        // The risk (#307): codebase.js drawing into an id the page lacks,
+        // so the graph or the details never show; a search box with no
+        // label; or the codebase section still saying it is not built.
+        let page = page();
+        let section = index_of(&page, "codebase");
+        let js = ui_file("codebase.js");
+        for id in [
+            "cb-status",
+            "cb-crumbs",
+            "cb-back",
+            "cb-graph",
+            "cb-details",
+            "cb-search",
+            "cb-results",
+        ] {
+            assert!(
+                js.contains(&format!("\"{id}\"")),
+                "codebase.js draws no {id}"
+            );
+            assert!(
+                within(&page, index_of(&page, id), section),
+                "#{id} is outside #codebase"
+            );
+        }
+        let label = page
+            .iter()
+            .find(|e| e.tag == "label" && e.attr("for") == Some("cb-search"))
+            .expect("the search box has a label");
+        assert!(!label.text.trim().is_empty(), "an empty label");
+        assert_eq!(
+            page[index_of(&page, "cb-back")].tag,
+            "button",
+            "Back is a button"
+        );
+        let graph = index_of(&page, "cb-graph");
+        assert_eq!(
+            page[graph].attr("tabindex"),
+            Some("0"),
+            "the graph takes keys"
+        );
+        assert!(!page[section].text.contains("Not built yet"));
+    }
+
+    #[test]
+    fn radius_pane_holds_what_radius_js_draws() {
+        // The risk (#308): radius.js drawing into an id the page lacks, so
+        // a radius trellis answered is never shown; a symbol field with no
+        // label; or the pane outside the section the rail shows it in.
+        let page = page();
+        let section = index_of(&page, "codebase");
+        let js = ui_file("radius.js");
+        for id in ["rd-form", "rd-symbol", "rd-status", "rd-result"] {
+            assert!(js.contains(&format!("\"{id}\"")), "radius.js draws no {id}");
+            assert!(
+                within(&page, index_of(&page, id), section),
+                "#{id} is outside #codebase"
+            );
+        }
+        assert!(
+            page.iter()
+                .any(|e| e.tag == "label" && e.attr("for") == Some("rd-symbol")),
+            "the symbol field has no label"
+        );
+        let html = ui_file("index.html");
+        assert!(
+            html.contains(r#"<script type="module" src="radius.js"></script>"#),
+            "index.html does not load radius.js as a module"
+        );
+    }
+
+    #[test]
+    fn trails_section_holds_what_trails_js_draws() {
+        // The risk (#304): trails.js drawing into an id the page lacks, so
+        // the list or a record never shows; a filter with no label; or the
+        // section still saying it is not built.
+        let page = page();
+        let section = index_of(&page, "trails");
+        let js = ui_file("trails.js");
+        for id in ["tr-status", "tr-filter", "tr-list", "tr-detail"] {
+            assert!(js.contains(&format!("\"{id}\"")), "trails.js draws no {id}");
+            assert!(
+                within(&page, index_of(&page, id), section),
+                "#{id} is outside #trails"
+            );
+        }
+        assert!(
+            page.iter()
+                .any(|e| e.tag == "label" && e.attr("for") == Some("tr-filter")),
+            "the filter has no label"
+        );
+        assert!(!page[section].text.contains("Not built yet"));
+    }
+
+    #[test]
+    fn vault_section_holds_what_vault_js_draws() {
+        // The risk (#309): vault.js drawing into an id the page lacks, so
+        // a search trellis answered is never shown; a search box with no
+        // label; or the section still saying it is not built.
+        let page = page();
+        let section = index_of(&page, "vault");
+        let js = ui_file("vault.js");
+        for id in ["vt-status", "vt-form", "vt-query", "vt-hits", "vt-note"] {
+            assert!(js.contains(&format!("\"{id}\"")), "vault.js draws no {id}");
+            assert!(
+                within(&page, index_of(&page, id), section),
+                "#{id} is outside #vault"
+            );
+        }
+        assert!(
+            page.iter()
+                .any(|e| e.tag == "label" && e.attr("for") == Some("vt-query")),
+            "the search box has no label"
+        );
+        assert!(!page[section].text.contains("Not built yet"));
+        let html = ui_file("index.html");
+        assert!(
+            html.contains(r#"<script type="module" src="vault.js"></script>"#),
+            "index.html does not load vault.js as a module"
+        );
+    }
+
+    #[test]
+    fn vault_js_writes_text_links_nothing_and_sends_only_vault_reads() {
+        // The risk (#309, ADR 0017, S10): a note's title, path or issue
+        // parsed as markup or drawn as a link a reader might follow; or a
+        // control that writes the vault, which stays a `trellis vault`
+        // command the person runs (#70). Read with its `//` comments
+        // removed, which name what it does not do; it has no string that
+        // holds `//`.
+        let js: String = ui_file("vault.js")
+            .lines()
+            .map(|l| l.split_once("//").map_or(l, |(code, _)| code))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for bad in [
+            "innerHTML",
+            "outerHTML",
+            "insertAdjacentHTML",
+            "createElement(\"a\")",
+            "href",
+            "get_trails",
+            "open_repository",
+            "\"prompt\"",
+        ] {
+            assert!(!js.contains(bad), "vault.js uses {bad}");
+        }
+        assert!(js.contains("textContent"), "vault.js writes no text");
+        // Every type it sends is one of the two reads.
+        let sent: Vec<&str> = js
+            .split("type: \"")
+            .skip(1)
+            .map(|rest| &rest[..rest.find('"').unwrap()])
+            .collect();
+        assert_eq!(sent, ["vault_graph", "vault_search"], "{sent:?}");
+    }
+
+    /// `name` under ui/ with its `//` comments removed, so a word named
+    /// only in a comment does not count. Each file read this way has no
+    /// string that holds `//`.
+    fn code_of(name: &str) -> String {
+        ui_file(name)
+            .lines()
+            .map(|l| l.split_once("//").map_or(l, |(code, _)| code))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn board_section_holds_what_queue_js_draws() {
+        // The risk (#311): queue.js drawing into an id the page lacks, so
+        // the counts or the tasks trellis answered are never shown; a
+        // Refresh with no name; or the section still saying it is not
+        // built.
+        let page = page();
+        let section = index_of(&page, "board");
+        let js = code_of("queue.js");
+        for id in [
+            "qb-status",
+            "qb-refresh",
+            "qb-counts",
+            "qb-tasks",
+            "qb-prci",
+        ] {
+            assert!(js.contains(&format!("\"{id}\"")), "queue.js draws no {id}");
+            assert!(
+                within(&page, index_of(&page, id), section),
+                "#{id} is outside #board"
+            );
+        }
+        assert!(!page[section].text.contains("Not built yet"));
+        let html = ui_file("index.html");
+        assert!(
+            html.contains(r#"<script type="module" src="queue.js"></script>"#),
+            "index.html does not load queue.js as a module"
+        );
+    }
+
+    #[test]
+    fn queue_js_draws_the_view_and_asks_only_for_reads() {
+        // The risk (#311): the board counting tasks itself, so it can
+        // disagree with the core's eight cells or add a sum; a task's text
+        // parsed as markup; or a control that writes the queue, whose
+        // writes are `trellis queue` and `trellis work` (ADR 0020 section
+        // 5). No JavaScript runs under cargo test, so this holds the file
+        // to what it reads and sends.
+        let js = code_of("queue.js");
+        for bad in [
+            "innerHTML",
+            "outerHTML",
+            "insertAdjacentHTML",
+            "createElement(\"a\")",
+            "href",
+            "\"prompt\"",
+            // Arithmetic on the counts: a sum, or a count derived from the
+            // tasks rather than taken from the view.
+            "reduce(",
+            "c.count +",
+            "+ c.count",
+            "+= c",
+            ".length +",
+            "filter((t) => t.status",
+        ] {
+            assert!(!js.contains(bad), "queue.js uses {bad}");
+        }
+        assert!(js.contains("textContent"), "queue.js writes no text");
+        // What each task shows: the ticket's four, and the chain (#559).
+        for field in [
+            "t.task",
+            "t.priority",
+            "t.labels",
+            "t.waiting",
+            "t.blockers",
+            "t.parent",
+            "t.error",
+            "c.count",
+            "c.status",
+        ] {
+            assert!(js.contains(field), "queue.js does not draw {field}");
+        }
+        let sent: Vec<&str> = js
+            .split("type: \"")
+            .skip(1)
+            .map(|rest| &rest[..rest.find('"').unwrap()])
+            .collect();
+        assert_eq!(sent, ["get_queue"], "{sent:?}");
+        let invoked: Vec<&str> = js
+            .split("invoke(\"")
+            .skip(1)
+            .map(|rest| &rest[..rest.find('"').unwrap()])
+            .collect();
+        assert_eq!(invoked, ["rpc_send", "get_overview"], "{invoked:?}");
+        // When it asks: on opening, on Refresh, and after each run_end.
+        assert!(js.contains(r#"aria-controls="board""#), "{js}");
+        assert!(js.contains(r#"getElementById("qb-refresh").addEventListener("click""#));
+        assert!(js.contains(r#"f.type === "run_end") askQueue"#));
+    }
+
+    #[test]
+    fn board_shows_pr_ci_or_its_reason() {
+        // The risk (#311 as amended 2026-10-07): the board drops the PR
+        // and CI state `gh` reported, or, with `gh` missing or logged out,
+        // says nothing; or it draws them differently from the overview.
+        // Both draw through overview.js's drawPrCi, which
+        // eagle_eye_board_draws_pr_ci_entries_and_the_unavailable_reason
+        // holds to every field and the reason.
+        let js = code_of("queue.js");
+        assert!(
+            js.contains(r#"import { drawPrCi } from "./overview.js";"#),
+            "queue.js does not draw PR and CI with overview.js's drawPrCi"
+        );
+        assert!(
+            js.contains("drawPrCi(doc, b.pr_ci)"),
+            "not from board.pr_ci"
+        );
+        assert!(
+            js.contains("PR and CI state unavailable: ${err}"),
+            "an overview that cannot be read is said"
+        );
+        let ov = overview_code();
+        let f = &ov[ov
+            .find("export function drawPrCi")
+            .expect("drawPrCi is exported")..];
+        let f = &f[..f.find("\n}").unwrap()];
+        for want in [
+            "pr.available === true",
+            "PR and CI state unavailable: ${str(pr.reason)",
+            "list(pr.pull_requests)",
+            "list(pr.runs)",
+        ] {
+            assert!(f.contains(want), "drawPrCi lacks {want}");
+        }
+        assert!(
+            ov.contains("out.push(...drawPrCi(doc, b.pr_ci))"),
+            "the overview's board pane draws through drawPrCi too"
         );
     }
 
@@ -751,6 +1055,12 @@ mod tests {
             "model.js",
             "settings.js",
             "status.js",
+            "graph.js",
+            "codebase.js",
+            "radius.js",
+            "trails.js",
+            "vault.js",
+            "queue.js",
         ] {
             let js = ui_file(name);
             for bad in [".style", "cssText", "\"style\"", "'style'"] {

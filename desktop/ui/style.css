@@ -18,6 +18,7 @@
   --accent: #2f5d50;
   --passed: #1f6b3a;
   --failed: #a3261b;
+  --wrote: #8a5a00;
   --focus: #2f5d50;
   color-scheme: light dark;
 }
@@ -33,6 +34,7 @@
     --accent: #8cc4b2;
     --passed: #7fcf98;
     --failed: #f08a7e;
+    --wrote: #e0b45c;
     --focus: #8cc4b2;
   }
 }
@@ -455,4 +457,396 @@ code {
 
 .status-bar dd {
   margin: 0 8px 0 0;
+}
+
+/* The action graph (#303): SVG graph.js builds from the core's layout. It
+   scales to its pane through the viewBox, and nothing in it moves, so no
+   rule here declares a transition or an animation (graph_styles_have_no_motion). */
+.graph-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  font: 12px ui-monospace, monospace;
+}
+
+.graph-edge {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1;
+}
+
+.graph-edge-idle {
+  stroke: var(--border);
+}
+
+.graph-node {
+  stroke-width: 1.5;
+}
+
+.graph-fill {
+  fill: var(--accent);
+  stroke: var(--accent);
+}
+
+/* The one node colour that carries a fact rather than a status: this tool
+   changed the tree. */
+.graph-wrote {
+  fill: var(--wrote);
+  stroke: var(--wrote);
+}
+
+.graph-ring {
+  fill: var(--pane-bg);
+  stroke: var(--muted);
+}
+
+.graph-focus {
+  fill: var(--fg);
+}
+
+.graph-name,
+.graph-target,
+.graph-focus-label {
+  fill: var(--fg);
+}
+
+.graph-idle,
+.graph-counts,
+.graph-caption {
+  fill: var(--muted);
+}
+
+.graph-target {
+  font-size: 11px;
+}
+
+/* The codebase view (#307): SVG codebase.js builds from the core's layout.
+   Entering a package, panning and zooming change the viewBox at once;
+   nothing here declares a transition or an animation. */
+.cb-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0;
+}
+
+.cb-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cb-crumbs li + li::before {
+  content: "/";
+  margin-right: 6px;
+  color: var(--muted);
+}
+
+.cb-bar button,
+.cb-crumbs button,
+#cb-results button {
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.cb-bar button:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.cb-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(220px, 1fr);
+  gap: 12px;
+}
+
+#cb-graph {
+  touch-action: none;
+}
+
+#cb-graph:focus-visible,
+.cb-svg [tabindex]:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.cb-svg {
+  display: block;
+  width: 100%;
+  height: 480px;
+  font: 12px ui-monospace, monospace;
+  cursor: grab;
+}
+
+.cb-edge {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.cb-region circle {
+  fill: var(--rail-bg);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.cb-region {
+  cursor: pointer;
+}
+
+.cb-name {
+  fill: var(--fg);
+}
+
+.cb-count,
+.cb-label {
+  fill: var(--muted);
+}
+
+.cb-module {
+  fill: var(--accent);
+  cursor: pointer;
+}
+
+.cb-selected {
+  fill: var(--wrote);
+  stroke: var(--fg);
+  stroke-width: 2;
+}
+
+#cb-details {
+  margin-bottom: 12px;
+}
+
+#cb-details p + dl,
+#cb-details dl + p {
+  margin-top: 6px;
+}
+
+#cb-search {
+  display: block;
+  width: 100%;
+  margin: 4px 0 6px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+
+/* The symbol radius pane (#308): reach and doubt as two blocks, side by
+   side where the window allows, never one figure. */
+.rd-pane {
+  margin-top: 12px;
+}
+
+.rd-form,
+.vt-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.rd-form input,
+.vt-form input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 12px ui-monospace, monospace;
+}
+
+.rd-result {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.rd-result > p {
+  grid-column: 1 / -1;
+}
+
+.rd-block {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+h5 {
+  margin: 8px 0 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* The trails view (#304): a list of past runs and one run's record, its
+   factual and judgment parts apart. */
+.tr-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(0, 2fr);
+  gap: 12px;
+  margin-top: 8px;
+}
+
+#tr-filter {
+  display: block;
+  width: 100%;
+  margin: 4px 0 8px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+
+.tr-list {
+  max-height: 520px;
+  overflow-y: auto;
+  padding-left: 0;
+  list-style: none;
+}
+
+.tr-list button {
+  display: block;
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tr-list button[aria-current="true"] {
+  border-color: var(--border);
+  background: var(--bg);
+}
+
+.tr-list li.empty {
+  margin-left: 0;
+}
+
+/* A past run's record: recorded text is drawn as it was written, in its
+   own face, so it never reads as the desktop's own words. */
+.untrusted {
+  font-family: ui-monospace, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+article.past-run section + section {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.judgment h4 {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.alert {
+  color: var(--failed);
+}
+
+/* The vault notes view (#309): search hits beside one note's relations. */
+.vt-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.vt-hits button {
+  display: block;
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.vt-hits button[aria-current="true"] {
+  border-color: var(--border);
+  background: var(--bg);
+}
+
+.vt-hits ul {
+  padding-left: 0;
+  list-style: none;
+}
+
+.vt-note section + section {
+  margin-top: 8px;
+}
+
+.vt-note code,
+.vt-hits code {
+  overflow-wrap: anywhere;
+}
+
+/* The board (#311): eight queue counts, the tasks, and PR and CI state. */
+.qb-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0;
+}
+
+.qb-bar button {
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.qb-counts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 8px;
+  padding-left: 0;
+  list-style: none;
+}
+
+.qb-cell {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.qb-count {
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.qb-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(220px, 2fr);
+  gap: 12px;
+  margin-top: 12px;
 }

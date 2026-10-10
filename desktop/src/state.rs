@@ -12,10 +12,21 @@
 //! the last turn's prompt in bytes (no per-turn prompt token count reaches
 //! the stream) and its reply in output tokens, with the TUI's rate and queue
 //! wait (#312); and a figure trellis did not report is `null` in the view,
-//! never 0. Every string in the view is trellis- or model-supplied
-//! text, which the page writes through `textContent` only (ADR 0007, S10).
+//! never 0. The action graph is laid out from the actions (`graph.rs`), so
+//! the two never disagree. Every string in the view is trellis- or
+//! model-supplied text, which the page writes through `textContent` only
+//! (ADR 0007, S10).
+//!
+//! It also keeps the vault notes view (`state/vault.rs`, #309), typed from
+//! `vault_search` and `vault_graph` answers, and the board's queue view
+//! (`queue.rs`, #311), typed from `get_queue` answers: views of their own,
+//! which a run's start leaves alone and a new child clears.
+
+mod vault;
 
 use crate::frames::{ApprovalRequest, Frame, RunEnd, Turn};
+use crate::graph;
+use crate::queue;
 use serde_json::{Map, Value, json};
 use std::collections::VecDeque;
 
@@ -61,9 +72,15 @@ pub enum Pane {
     /// to the core's own [`MODELS_ID`] question: what the picker offers
     /// (#306), from the same answer the model guard reads.
     Available,
+    /// The action graph's layout (`graph.rs`), drawn from the actions.
+    Graph,
+    /// The vault notes view (`state/vault.rs`).
+    Vault,
+    /// The board's queue view (`queue.rs`).
+    Queue,
 }
 
-const PANES: [Pane; 18] = [
+const PANES: [Pane; 21] = [
     Pane::Transcript,
     Pane::Actions,
     Pane::Edits,
@@ -82,6 +99,9 @@ const PANES: [Pane; 18] = [
     Pane::Models,
     Pane::SessionTokens,
     Pane::Available,
+    Pane::Graph,
+    Pane::Vault,
+    Pane::Queue,
 ];
 
 /// The panes a run starts afresh: everything but the transcript, which,
@@ -92,7 +112,7 @@ const PANES: [Pane; 18] = [
 /// the last stopped run's, so a new run drops it, and so is the alert: what
 /// failed before this run started is not this run's failure. The stderr
 /// pane, as the transcript, carries on.
-const RUN_PANES: [Pane; 10] = [
+const RUN_PANES: [Pane; 11] = [
     Pane::Actions,
     Pane::Edits,
     Pane::Checks,
@@ -103,6 +123,7 @@ const RUN_PANES: [Pane; 10] = [
     Pane::Outcome,
     Pane::Undelivered,
     Pane::Alert,
+    Pane::Graph,
 ];
 
 impl Pane {
@@ -126,6 +147,9 @@ impl Pane {
             Pane::Models => "models",
             Pane::SessionTokens => "session_tokens",
             Pane::Available => "available",
+            Pane::Graph => "graph",
+            Pane::Vault => "vault",
+            Pane::Queue => "queue",
         }
     }
 
@@ -143,6 +167,10 @@ pub struct Changed(u32);
 impl Changed {
     fn with(self, p: Pane) -> Self {
         Self(self.0 | p.bit())
+    }
+
+    fn and(self, other: Self) -> Self {
+        Self(self.0 | other.0)
     }
 
     fn of(panes: &[Pane]) -> Self {
@@ -552,6 +580,10 @@ pub struct DesktopState {
     /// trellis keeps one source for the totals (#313). `None` until one,
     /// and once the child has exited.
     session_tokens: Option<Result<SessionTokens, String>>,
+    /// The vault notes view: not a run pane, so a run's start keeps it.
+    vault: vault::Vault,
+    /// The board's queue view, kept across runs as the vault view is.
+    queue: queue::Queue,
 }
 
 impl DesktopState {
@@ -593,6 +625,15 @@ impl DesktopState {
                 c
             }
             Frame::Response(r) => {
+                // A vault read's or get_queue's answer is its view's,
+                // whatever else the branches below make of it.
+                let mut views = Changed::default();
+                if self.vault.answer(&r) {
+                    views = views.with(Pane::Vault);
+                }
+                if self.queue.answer(&r) {
+                    views = views.with(Pane::Queue);
+                }
                 // The core's own models question: its answer is recorded,
                 // and anything but a well-formed success records nothing.
                 // It changes no pane; a refusal still reaches the
@@ -685,7 +726,7 @@ impl DesktopState {
                 // A refused command is said in the transcript; a successful
                 // answer changes no run pane but the tier a `get_state`
                 // reports.
-                if r.success == Some(true) && r.command.as_deref() == Some("get_state") {
+                let c = if r.success == Some(true) && r.command.as_deref() == Some("get_state") {
                     self.tier = r
                         .data
                         .as_ref()
@@ -704,7 +745,8 @@ impl DesktopState {
                     c.with(Pane::Transcript).with(Pane::Alert)
                 } else {
                     c
-                }
+                };
+                c.and(views)
             }
             Frame::ApprovalRequest(a) => {
                 if self.approvals.iter().any(|o| o.id == a.id) {
@@ -791,6 +833,19 @@ impl DesktopState {
         self.catalog.clear();
         self.model = None;
         self.models = None;
+    }
+
+    /// The page sent a `vault_search` or `vault_graph` with `id`: the
+    /// vault view takes only that question's answer from now on, so an
+    /// earlier question answered late cannot replace it.
+    pub fn vault_asked(&mut self, command: &str, id: Option<&str>) {
+        self.vault.asked(command, id);
+    }
+
+    /// The page sent a `get_queue` with `id`: the queue view takes only
+    /// that answer from now on.
+    pub fn queue_asked(&mut self, id: Option<&str>) {
+        self.queue.asked(id);
     }
 
     /// Clears the whole view, transcript included: colibri's New chat and
@@ -934,6 +989,16 @@ impl DesktopState {
                     })).collect::<Vec<_>>(),
                 }),
             },
+            // Laid out from the actions each time it is sent, so it cannot
+            // fall out of step with the actions pane beside it.
+            Pane::Graph => graph::layout(self.actions.iter().map(|a| graph::Called {
+                tool: &a.tool,
+                target: &a.target,
+                wrote: a.wrote,
+            }))
+            .to_json(),
+            Pane::Vault => self.vault.to_json(),
+            Pane::Queue => self.queue.to_json(),
             Pane::Outcome => match &self.outcome {
                 Some(e) => json!({
                     "outcome": e.outcome,
@@ -975,7 +1040,7 @@ impl DesktopState {
 
     /// A turn, as `tui_bridge.rs` maps it.
     fn turn(&mut self, t: Turn) -> Changed {
-        let mut c = Changed::of(&[Pane::Transcript, Pane::Actions, Pane::Budget]);
+        let mut c = Changed::of(&[Pane::Transcript, Pane::Actions, Pane::Budget, Pane::Graph]);
         // The verdict as the loop renders it; only these two mean a check
         // ran (DESK-07's contract). "None", or any other string, is no
         // check.
