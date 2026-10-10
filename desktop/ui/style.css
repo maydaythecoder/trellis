@@ -283,3 +283,125 @@ code {
 .graph-target {
   font-size: 11px;
 }
+
+/* The codebase view (#307): SVG codebase.js builds from the core's layout.
+   Entering a package, panning and zooming change the viewBox at once;
+   nothing here declares a transition or an animation. */
+.cb-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0;
+}
+
+.cb-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cb-crumbs li + li::before {
+  content: "/";
+  margin-right: 6px;
+  color: var(--muted);
+}
+
+.cb-bar button,
+.cb-crumbs button,
+#cb-results button {
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.cb-bar button:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.cb-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(220px, 1fr);
+  gap: 12px;
+}
+
+#cb-graph {
+  touch-action: none;
+}
+
+#cb-graph:focus-visible,
+.cb-svg [tabindex]:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.cb-svg {
+  display: block;
+  width: 100%;
+  height: 480px;
+  font: 12px ui-monospace, monospace;
+  cursor: grab;
+}
+
+.cb-edge {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.cb-region circle {
+  fill: var(--rail-bg);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.cb-region {
+  cursor: pointer;
+}
+
+.cb-name {
+  fill: var(--fg);
+}
+
+.cb-count,
+.cb-label {
+  fill: var(--muted);
+}
+
+.cb-module {
+  fill: var(--accent);
+  cursor: pointer;
+}
+
+.cb-selected {
+  fill: var(--wrote);
+  stroke: var(--fg);
+  stroke-width: 2;
+}
+
+#cb-details {
+  margin-bottom: 12px;
+}
+
+#cb-details p + dl,
+#cb-details dl + p {
+  margin-top: 6px;
+}
+
+#cb-search {
+  display: block;
+  width: 100%;
+  margin: 4px 0 6px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
