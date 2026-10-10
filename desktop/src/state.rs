@@ -320,6 +320,21 @@ impl Undelivered {
     }
 }
 
+/// The read-only requests a view of its own sends and answers in place: its
+/// refusal is that view's to say (the `codebase` and `radius` events, the
+/// vault, queue, models and session tokens panes), not a line in the run's
+/// transcript or the page's one alert. `get_trails` and `get_overview` are
+/// the page's own commands, not rpc lines, so their answers never come here.
+const VIEW_READS: [&str; 7] = [
+    "get_codebase",
+    "get_radius",
+    "vault_search",
+    "vault_graph",
+    "get_queue",
+    "list_models",
+    "get_session_stats",
+];
+
 /// The id of the `get_available_models` the core writes first to every
 /// child it starts (#305); only the answer to it is recorded.
 pub const MODELS_ID: &str = "desktop-models";
@@ -723,9 +738,13 @@ impl DesktopState {
                     }
                     _ => {}
                 }
-                // A refused command is said in the transcript; a successful
-                // answer changes no run pane but the tier a `get_state`
-                // reports.
+                // A refused command is said in the transcript, unless a view
+                // asked and shows the reason itself; a successful answer
+                // changes no run pane but the tier a `get_state` reports.
+                let view_read = r
+                    .command
+                    .as_deref()
+                    .is_some_and(|c| VIEW_READS.contains(&c));
                 let c = if r.success == Some(true) && r.command.as_deref() == Some("get_state") {
                     self.tier = r
                         .data
@@ -734,7 +753,7 @@ impl DesktopState {
                         .and_then(Value::as_str)
                         .map(str::to_string);
                     c.with(Pane::Tier)
-                } else if r.success == Some(false) {
+                } else if r.success == Some(false) && !view_read {
                     let command = r.command.as_deref().unwrap_or("command");
                     let said = match r.error {
                         Some(e) => format!("{command} refused: {e}"),
@@ -1850,6 +1869,46 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_view_read_stays_in_its_own_view() {
+        // The risk (#307, #308 review): a refused read-only view request
+        // (a radius for an unknown symbol, a codebase of a folder with no
+        // .git, a vault with none configured) said in the run's transcript
+        // as if the run had failed, and raised as the page's one alert,
+        // when the view that asked shows trellis's reason itself.
+        for (command, own) in [
+            ("get_codebase", None),
+            ("get_radius", None),
+            ("vault_search", Some(Pane::Vault)),
+            ("vault_graph", Some(Pane::Vault)),
+            ("get_queue", Some(Pane::Queue)),
+            ("list_models", Some(Pane::Models)),
+            ("get_session_stats", Some(Pane::SessionTokens)),
+        ] {
+            for error in [json!("<b>no</b> such symbol"), Value::Null] {
+                let mut s = DesktopState::default();
+                let mut r = json!({"type": "response", "command": command,
+                                   "success": false, "id": "desktop-x"});
+                if !error.is_null() {
+                    r["error"] = error.clone();
+                }
+                let c = feed(&mut s, &r.to_string());
+                assert!(!c.has(Pane::Transcript), "{command} {error}: {c:?}");
+                assert!(!c.has(Pane::Alert), "{command} {error}: {c:?}");
+                if let Some(p) = own {
+                    assert!(c.has(p), "{command}: its own view is told: {c:?}");
+                }
+                let v = all(&s);
+                assert_eq!(v["transcript"], json!([]), "{command}");
+                assert_eq!(v["alert"], Value::Null, "{command}");
+            }
+        }
+        // A refused command that is not a view's read is still said.
+        let mut s = DesktopState::default();
+        let c = feed(&mut s, &response("set_model", false, json!("bad spec")));
+        assert!(c.has(Pane::Transcript) && c.has(Pane::Alert), "{c:?}");
+    }
+
+    #[test]
     fn stderr_lines_are_kept_apart_and_capped() {
         // The risk (#302, ADR 0048 section 2): trellis's human text mixed
         // into the run's transcript, where it reads as the run's own
@@ -2228,7 +2287,8 @@ mod tests {
             &mut s,
             &response("get_session_stats", false, json!("<i>trail</i> unreadable")),
         );
-        assert!(c.has(Pane::SessionTokens) && c.has(Pane::Alert), "{c:?}");
+        // Its pane says why; the run's alert does not (#308 review).
+        assert!(c.has(Pane::SessionTokens) && !c.has(Pane::Alert), "{c:?}");
         assert_eq!(
             all(&s)["session_tokens"],
             json!({"models": [], "runs_not_counted": null,
