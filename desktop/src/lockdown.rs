@@ -749,6 +749,8 @@ mod tests {
             "composer.js",
             "dialogs.js",
             "model.js",
+            "settings.js",
+            "status.js",
         ] {
             let js = ui_file(name);
             for bad in [".style", "cssText", "\"style\"", "'style'"] {
@@ -893,6 +895,165 @@ mod tests {
         assert!(
             started.contains("askSessionTokens(tauri)"),
             "main.js does not ask on child-started"
+        );
+    }
+
+    /// Whether `field` names a key or an endpoint: what the page may not
+    /// ask the user for, since a key never reaches the page (ADR 0010) and
+    /// an endpoint is the user's config's to name (ADR 0024 §3).
+    fn names_a_key_or_endpoint(field: &str) -> bool {
+        let f = field.to_ascii_lowercase();
+        ["key", "token", "endpoint", "base_url"]
+            .iter()
+            .any(|w| f.contains(w))
+    }
+
+    /// Every `input` and `textarea` in `page` naming a key or an endpoint
+    /// by its `id`, `name`, `aria-label` or the text of a `label` for it.
+    fn key_or_endpoint_fields(page: &[Element]) -> Vec<String> {
+        let label_for = |id: &str| -> Vec<String> {
+            page.iter()
+                .filter(|e| e.tag == "label" && e.attr("for") == Some(id))
+                .map(|e| e.text.clone())
+                .collect()
+        };
+        page.iter()
+            .filter(|e| ["input", "textarea"].contains(&e.tag.as_str()))
+            .filter_map(|e| {
+                let mut said: Vec<String> = ["id", "name", "aria-label"]
+                    .iter()
+                    .filter_map(|a| e.attr(a).map(str::to_string))
+                    .collect();
+                if let Some(id) = e.attr("id") {
+                    said.extend(label_for(id));
+                }
+                said.iter()
+                    .any(|s| names_a_key_or_endpoint(s))
+                    .then(|| format!("<{} {:?}>", e.tag, e.attrs))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn page_has_no_key_or_endpoint_field() {
+        // The risk (#306, ADR 0010, ADR 0024 §3): a field that takes a key
+        // puts the user's key in the page, and one that takes an endpoint
+        // lets the page choose where a key is sent. The model is chosen by
+        // spec, and a hosted spec only as the user's own config wrote it.
+        let page = page();
+        let fields = key_or_endpoint_fields(&page);
+        assert!(fields.is_empty(), "key or endpoint fields: {fields:?}");
+        assert!(
+            page.iter().any(|e| e.tag == "input"),
+            "no input was read: the scan proves nothing"
+        );
+        // The scan refuses each way of naming one.
+        for planted in [
+            r#"<input id="api-key">"#,
+            r#"<input name="token">"#,
+            r#"<textarea aria-label="Endpoint"></textarea>"#,
+            r#"<input id="x"><label for="x">Your base_url</label>"#,
+        ] {
+            let mut elements = Vec::new();
+            let mut rest = planted;
+            while let Some(lt) = rest.find('<') {
+                let gt = tag_end(&rest[lt..]) + lt;
+                let tag = &rest[lt + 1..gt];
+                let after = &rest[gt + 1..];
+                if !tag.starts_with('/') {
+                    let (name, attrs) = parse_tag(tag);
+                    let text = after.split('<').next().unwrap_or("").to_string();
+                    elements.push(Element {
+                        tag: name,
+                        attrs,
+                        parent: None,
+                        text,
+                    });
+                }
+                rest = after;
+            }
+            assert_eq!(
+                key_or_endpoint_fields(&elements).len(),
+                1,
+                "{planted} passed the scan"
+            );
+        }
+    }
+
+    #[test]
+    fn page_picker_status_bar_and_repository_switch_are_drawn() {
+        // The risk (#306): a picker that sends the repository's spec as the
+        // user's, a "repository default" that names a model, a catalogue
+        // shown as runnable models, a status bar that guesses, or a
+        // repository switch that hides the core's refusal.
+        let page = page();
+        let bar = index_of(&page, "status-bar");
+        let status = ui_file("status.js");
+        for id in [
+            "status-trellis",
+            "status-root",
+            "status-model",
+            "status-run",
+            "status-child",
+        ] {
+            assert!(within(&page, index_of(&page, id), bar), "#{id}");
+            assert!(
+                status.contains(&format!("\"{id}\"")),
+                "status.js draws no {id}"
+            );
+        }
+        for want in [
+            r#"listen("child-started""#,
+            r#"listen("rpc-exited""#,
+            r#"listen("no-child""#,
+            "m.source",
+            "view.running === true",
+            "version not reported",
+        ] {
+            assert!(status.contains(want), "status.js lacks {want}");
+        }
+        let settings = ui_file("settings.js");
+        for want in [
+            r#"REPOSITORY_DEFAULT = "repository default""#,
+            r#"type: "set_model", configured: true"#,
+            r#"type: "set_model", model: user"#,
+            r#"invoke("open_repository", { path: p })"#,
+            "note.textContent = String(err)",
+            "e.download_gib",
+            "e.license",
+        ] {
+            assert!(settings.contains(want), "settings.js lacks {want}");
+        }
+        // The repository's spec is never sent as a model: the choices name
+        // only `user`, a listed local spec or the typed one.
+        assert!(
+            !settings.contains("configured.repository"),
+            "settings.js reads the repository's spec as a choice"
+        );
+        let pane = index_of(&page, "model-pane");
+        for id in ["model-catalog", "repo-form", "repo-path", "repo-note"] {
+            assert!(within(&page, index_of(&page, id), pane), "#{id}");
+        }
+        assert!(
+            page[index_of(&page, "model-catalog-title")]
+                .text
+                .contains("weights trellis model pull fetches")
+        );
+        for name in ["settings.js", "status.js"] {
+            let js = ui_file(name);
+            for bad in [
+                "innerHTML",
+                "outerHTML",
+                "insertAdjacentHTML",
+                "document.write",
+                "fetch(",
+            ] {
+                assert!(!js.contains(bad), "{name} uses {bad}");
+            }
+        }
+        assert!(
+            ui_file("model.js").contains(r#"import { modelChoices } from "./settings.js";"#),
+            "the picker's choices are not settings.js's"
         );
     }
 

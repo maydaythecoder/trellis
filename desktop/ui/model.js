@@ -1,26 +1,29 @@
-// The model pane (#564; ADR 0048 section 5 as amended, ADR 0050 section 2).
+// The model pane (#564, #306; ADR 0048 sections 4 and 5 as amended, ADR 0050
+// section 2).
 //
 // The desktop starts trellis with the user's environment unchanged, keys
 // included (ADR 0048 section 3, amended), on the owner's condition that it
 // asks which model to use after launch and keeps prompt input disabled until
-// one is chosen. This pane is where it asks. It lists what the child's
-// `list_models` answered: the configured spec, preselected; the specs the
-// local runtimes on their default ports report, as `first_run` lists them;
-// and a spec the user types. The user's own providers are named with the
-// variable a key would be read from, never a value, since no key reaches
-// trellis-desktop's page.
+// one is chosen. This pane is where it asks, and it is the model picker: the
+// choices are settings.js's `modelChoices`, from the core's own models
+// answer (the view's `available`) and the child's `list_models` answer (the
+// view's `models`), with the configured spec preselected. Where trellis
+// looked for local runtimes, and the user's own providers by the variable a
+// key would be read from (never a value), are listed beside them.
 //
-// Choosing sends `set_model` through the core: `{configured: true}` for the
-// configured spec, which names no model, or `{model, save?}` for any other,
-// which the core's model guard holds to ADR 0048 section 4 (a hosted spec
-// only when it is the user's own). With "save" ticked, trellis writes it to
-// the user's own config, never the repository's. Whether a model has been
-// chosen is the view's `model`, the core's record of the child's answer; the
-// composer reads the same key, and the core refuses a prompt before it.
+// Choosing sends one `set_model` through the core's `rpc_send`, where the
+// model guard (ADR 0048 section 4) refuses a hosted spec that is not the
+// user's own; a refusal is shown as the core wrote it. With "save" ticked,
+// trellis writes the spec to the user's own config, never the
+// repository's. Whether a model has been chosen is the view's `model`, the
+// core's record of the child's answer; the composer reads the same key, and
+// the core refuses a prompt before it.
 //
 // Every spec, address, error and provider name is trellis- or
 // configuration-supplied text, so it reaches the DOM through textContent
 // only (ADR 0007, S10).
+
+import { modelChoices } from "./settings.js";
 
 function el(doc, tag, text) {
   const e = doc.createElement(tag);
@@ -39,7 +42,10 @@ function lineId(kind) {
   return `desktop-model-${kind}-${nextId}`;
 }
 
-// What each radio stands for, by its value, from the last list drawn.
+// The two view keys the choices come from, as last sent.
+let available = null;
+let models = null;
+// The choices drawn, by radio value.
 let offered = new Map();
 // Whether the child's session had a model when the view last said.
 let chosen = false;
@@ -60,44 +66,54 @@ function parts(doc) {
   };
 }
 
-// The selected radio's value, or null with none selected.
+// The selected radio's choice, or null with none selected.
 function selected(p) {
   const r = p.options.querySelector('input[name="model-choice"]:checked');
-  return r ? r.value : null;
+  return r ? offered.get(r.value) ?? null : null;
 }
 
-// Saving applies to a spec the user names; the configured one is already
-// in a config file, and trellis refuses to save it again.
+// Saving applies to a spec the user names that is not already in a config
+// file; trellis refuses to save the configured one again.
 function drawSave(p) {
-  const s = selected(p);
-  p.save.disabled = s === null || s === "configured";
+  const c = selected(p);
+  p.save.disabled = c === null || !c.saves;
   if (p.save.disabled) p.save.checked = false;
 }
 
-// One radio and its label: `text`, and `spec` as code beside it.
-function option(doc, p, value, text, spec, checked) {
+// One radio and its label: the choice's label, and its spec as code.
+function option(doc, p, c, checked) {
   const li = el(doc, "li");
   const input = doc.createElement("input");
   input.type = "radio";
   input.name = "model-choice";
-  input.value = value;
-  input.id = `model-choice-${value}`;
+  input.value = c.value;
+  input.id = `model-choice-${c.value}`;
   input.checked = checked;
   input.addEventListener("change", () => drawSave(p));
-  const label = el(doc, "label", text);
+  const label = el(doc, "label", c.label);
   label.htmlFor = input.id;
   li.append(input, " ", label);
-  if (spec !== null) li.append(" ", el(doc, "code", spec));
+  if (c.spec !== null) li.append(" ", el(doc, "code", c.spec));
   return li;
 }
 
-// The list `list_models` answered, or why it could not be read. The typed
-// spec is offered whatever the list says, so a runtime on another port, or a
-// hosted spec of the user's own, can still be chosen.
-function drawModels(doc, models) {
+// The choices, keeping the user's selection when it is still offered.
+function drawChoices(doc) {
   const p = parts(doc);
-  offered = new Map();
-  const rows = [];
+  const before = p.options.querySelector('input[name="model-choice"]:checked');
+  const keep = before ? before.value : null;
+  const choices = modelChoices(available, models);
+  offered = new Map(choices.map((c) => [c.value, c]));
+  const kept = keep !== null && offered.has(keep);
+  p.options.replaceChildren(
+    ...choices.map((c) => option(doc, p, c, kept ? c.value === keep : c.preselect)),
+  );
+  drawSave(p);
+}
+
+// Where trellis looked, and the user's providers, from `list_models`.
+function drawFound(doc) {
+  const p = parts(doc);
   const probed = [];
   const providers = [];
   if (models === null || typeof models !== "object") {
@@ -106,17 +122,6 @@ function drawModels(doc, models) {
     p.note.textContent = `trellis could not list models: ${models.error}`;
   } else {
     p.note.textContent = "";
-    const configured = str(models.configured);
-    if (configured !== null) {
-      offered.set("configured", { configured });
-      rows.push(option(doc, p, "configured", "The configured spec:", configured, true));
-    }
-    const local = Array.isArray(models.local) ? models.local : [];
-    local.forEach((spec, i) => {
-      if (str(spec) === null) return;
-      offered.set(`local-${i}`, { model: spec });
-      rows.push(option(doc, p, `local-${i}`, "Running on this machine:", spec, false));
-    });
     for (const t of Array.isArray(models.probed) ? models.probed : []) {
       const said = str(t && t.error);
       const li = el(doc, "li");
@@ -145,12 +150,8 @@ function drawModels(doc, models) {
       providers.push(li);
     }
   }
-  offered.set("typed", null);
-  rows.push(option(doc, p, "typed", "A spec I type below", null, rows.length === 0));
-  p.options.replaceChildren(...rows);
   p.probed.replaceChildren(...probed);
   p.providers.replaceChildren(...providers);
-  drawSave(p);
 }
 
 // The session's model as the child last confirmed it. The pane stays open
@@ -167,12 +168,10 @@ function drawModel(doc, model) {
     p.pane.open = true;
     return;
   }
-  const how = model.configured === true ? " (the configured spec)" : "";
   const saved = str(model.saved_to);
   p.summary.textContent = `Model: ${spec}`;
   p.current.textContent =
-    `Prompts in this window run on ${spec}${how}.` +
-    (saved === null ? "" : ` Saved to ${saved}.`);
+    `Prompts in this window run on ${spec}.` + (saved === null ? "" : ` Saved to ${saved}.`);
   if (!was) p.pane.open = false;
 }
 
@@ -180,7 +179,12 @@ function drawModel(doc, model) {
 // another module's.
 export function drawModelPane(doc, view) {
   if (view === null || typeof view !== "object") return;
-  if ("models" in view) drawModels(doc, view.models);
+  if ("available" in view) available = view.available;
+  if ("models" in view) {
+    models = view.models;
+    drawFound(doc);
+  }
+  if ("available" in view || "models" in view) drawChoices(doc);
   if ("model" in view) drawModel(doc, view.model);
 }
 
@@ -200,21 +204,6 @@ export function askModels(doc, tauri) {
   return send(tauri, p, { id: lineId("list"), type: "list_models" });
 }
 
-// The `set_model` line for the selected radio, or a note saying what is
-// missing.
-function choice(p) {
-  const s = selected(p);
-  if (s === null) return { note: "Choose one of the models listed, or type a spec." };
-  if (s === "configured") {
-    return { line: { id: lineId("set"), type: "set_model", configured: true } };
-  }
-  const spec = s === "typed" ? p.typed.value.trim() : str(offered.get(s) && offered.get(s).model);
-  if (spec === null || spec === "") return { note: "Type a model spec first." };
-  const line = { id: lineId("set"), type: "set_model", model: spec };
-  if (p.save.checked) line.save = true;
-  return { line };
-}
-
 // Wires the pane once, and listens for `child-started`: each new child is a
 // session with no model, and a repository whose configured spec may differ.
 export async function wireModelPane(doc, tauri) {
@@ -228,15 +217,21 @@ export async function wireModelPane(doc, tauri) {
   p.refresh.addEventListener("click", () => askModels(doc, tauri));
   p.form.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const c = choice(p);
-    if (c.note !== undefined) {
-      p.note.textContent = c.note;
+    const c = selected(p);
+    if (c === null) {
+      p.note.textContent = "Choose one of the models listed, or type a spec.";
       return;
     }
-    if (await send(tauri, p, c.line)) {
+    const line = c.line(p.save.checked, p.typed.value);
+    if (line === null) {
+      p.note.textContent = "Type a model spec first.";
+      return;
+    }
+    if (await send(tauri, p, line)) {
       p.note.textContent = "Sent; prompt input opens once trellis has taken it.";
     }
   });
-  drawModels(doc, null);
+  drawFound(doc);
+  drawChoices(doc);
   drawModel(doc, null);
 }
