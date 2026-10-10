@@ -13,7 +13,10 @@
 //! - `rpc-exited`: the child's exit status;
 //! - `no-child`: why no child is running, at startup;
 //! - `overview`: with no root, the overview, once at startup
-//!   (`overview-error` says why when it could not be read).
+//!   (`overview-error` says why when it could not be read);
+//! - `codebase`: the codebase view's layout (`codebase.rs`), once per
+//!   `get_codebase` answer, or `{"error"}` with trellis's reason when it
+//!   was refused (#307).
 //!
 //! The first line the core writes to every child is
 //! `{"id":"desktop-models","type":"get_available_models"}`. Its answer's
@@ -34,6 +37,7 @@
 //! over a [`Sink`], so the tests drive it without a window.
 
 use crate::child::{Child, Lines, Output, Trellis};
+use crate::codebase;
 use crate::frames::{self, Frame};
 use crate::state::{Changed, Configured, DesktopState, MODELS_ID};
 use serde_json::{Value, json};
@@ -46,8 +50,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 pub const LINE_CAP: usize = 65_536;
 
 /// The `type`s `rpc_send` forwards: `rpc.rs`'s `COMMANDS` as #296 lists
-/// them, without `quit`, which only the core sends.
-pub const FORWARDED: [&str; 11] = [
+/// them, without `quit`, which only the core sends, and with each read-only
+/// command a desktop view reads through (ADR 0048 section 10) as that view
+/// is built: `get_codebase` (#307).
+pub const FORWARDED: [&str; 12] = [
     "prompt",
     "abort",
     "get_state",
@@ -59,6 +65,7 @@ pub const FORWARDED: [&str; 11] = [
     "follow_up",
     "compact",
     "get_commands",
+    "get_codebase",
 ];
 
 /// The most trails `get_trails` asks for.
@@ -226,7 +233,15 @@ impl Core {
             Ok(v @ Value::Object(_)) => self.sink.emit("rpc-frame", v),
             _ => self.sink.emit("rpc-unparsed", json!(line)),
         }
-        self.feed(&mut s, frames::parse_stdout(line));
+        let frame = frames::parse_stdout(line);
+        // The codebase view is laid out here, not in the page (ADR 0048
+        // section 5), whichever line asked for it.
+        if let Frame::Response(r) = &frame
+            && r.command.as_deref() == Some("get_codebase")
+        {
+            self.sink.emit("codebase", codebase::event(r));
+        }
+        self.feed(&mut s, frame);
     }
 
     /// One stderr line: `rpc-human`, then its `view`.
@@ -1284,6 +1299,68 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&repo);
         let _ = std::fs::remove_dir_all(&config);
+    }
+
+    #[test]
+    fn rpc_send_forwards_get_codebase() {
+        // The risk (#307): the codebase view asks for a graph the core
+        // refuses to forward, or the answer reaches the page as a frame the
+        // page must lay out itself (ADR 0048 section 5); or a folder that
+        // is not a repository is drawn as one with no modules (#559).
+        let repo = scratch("codebase-repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("app")).unwrap();
+        std::fs::write(repo.join("app/a.py"), "def f():\n    return 1\n").unwrap();
+        std::fs::write(
+            repo.join("app/b.py"),
+            "from app.a import f\n\ndef g():\n    return f() + missing()\n",
+        )
+        .unwrap();
+        let config = scratch("codebase-config");
+        let (core, rec) = core_with(&config);
+        core.start(&repo).unwrap();
+        rec.wait_for("child-started", |_| true);
+
+        assert_eq!(
+            core.send(&json!({"id": "desktop-codebase", "type": "get_codebase"})),
+            Ok(())
+        );
+        let v = rec.wait_for("codebase", |_| true);
+        assert_eq!(v.get("error"), None, "{v}");
+        assert_eq!(v["modules_indexed"], 2, "{v}");
+        let regions = v["overview"]["regions"].as_array().unwrap();
+        assert_eq!(regions.len(), 1, "{v}");
+        assert_eq!(regions[0]["package"], "app");
+        assert_eq!(regions[0]["modules"], 2);
+        let modules = v["packages"][0]["modules"].as_array().unwrap();
+        let b = modules.iter().find(|m| m["module"] == "app.b").unwrap();
+        assert_eq!(b["path"], "app/b.py", "the path #559 carries");
+        assert_eq!(b["edges_out"], 1, "{b}");
+        assert!(b["unresolved"].as_u64().unwrap() >= 1, "{b}");
+        let a = modules.iter().find(|m| m["module"] == "app.a").unwrap();
+        assert_eq!(a["edges_in"], 1, "{a}");
+        finish(&core).unwrap();
+
+        // A directory with no .git entry: trellis refuses, and the view
+        // says so rather than drawing nothing.
+        let plain = scratch("codebase-plain");
+        rec.take();
+        core.start(&plain).unwrap();
+        rec.wait_for("child-started", |_| true);
+        core.send(&json!({"id": "desktop-codebase", "type": "get_codebase"}))
+            .unwrap();
+        let v = rec.wait_for("codebase", |_| true);
+        let err = v["error"].as_str().unwrap_or_else(|| panic!("{v}"));
+        assert!(err.contains("no .git entry"), "{err}");
+        assert!(is_empty(&plain), "nothing was written to the directory");
+        finish(&core).unwrap();
+        assert!(
+            !repo.join(".trellis").exists(),
+            "get_codebase wrote under the repository"
+        );
+        for d in [&repo, &plain, &config] {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 
     #[test]
