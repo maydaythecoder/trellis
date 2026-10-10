@@ -124,6 +124,26 @@ pub struct Dispatched {
     pub changed: Vec<String>,
 }
 
+impl Dispatched {
+    /// A call that did not run: no radius, no carry-back, no trust breach.
+    /// `may_have_changed_tree` is the caller's to say, because a gate that
+    /// refused may still have written.
+    fn refused(
+        result: ToolResult,
+        human: Option<HumanDecision>,
+        may_have_changed_tree: bool,
+    ) -> Self {
+        Self {
+            result,
+            radius_sites: Vec::new(),
+            human,
+            may_have_changed_tree,
+            trust_breach: None,
+            changed: Vec::new(),
+        }
+    }
+}
+
 /// The tool's own part in [`Dispatched::may_have_changed_tree`], for a call
 /// that ran. `wrote` is whether `edit` or `write_file` reached the point of
 /// writing bytes, which is not the same as succeeding: a write that failed
@@ -251,14 +271,13 @@ impl Handle {
                 budget_left,
                 reply,
             },
-            || Dispatched {
-                result: ToolResult::Error("orchestrator stopped".into()),
-                radius_sites: Vec::new(),
-                human: None,
-                // A stopped actor owns the only write path and wrote nothing.
-                may_have_changed_tree: false,
-                trust_breach: None,
-                changed: Vec::new(),
+            || {
+                Dispatched::refused(
+                    ToolResult::Error("orchestrator stopped".into()),
+                    None,
+                    // A stopped actor owns the only write path and wrote nothing.
+                    false,
+                )
             },
         )
         .await
@@ -659,17 +678,14 @@ impl Orchestrator {
         let mut human = None;
         let name = tool_name(&call);
         if !self.tools.enabled(name) {
-            return Dispatched {
-                result: ToolResult::Error(format!(
+            return Dispatched::refused(
+                ToolResult::Error(format!(
                     "`{name}` is not a tool in this run; the tools are {}",
                     self.tools.names().join(", ")
                 )),
-                radius_sites: Vec::new(),
                 human,
-                may_have_changed_tree: false,
-                trust_breach: None,
-                changed: Vec::new(),
-            };
+                false,
+            );
         }
         self.wrote = false;
         self.denied = false;
@@ -741,14 +757,11 @@ impl Orchestrator {
                         reason: reason.clone(),
                     });
                 }
-                return Dispatched {
-                    result: ToolResult::Error(reason),
-                    radius_sites: Vec::new(),
+                return Dispatched::refused(
+                    ToolResult::Error(reason),
                     human,
-                    may_have_changed_tree: changed_since(&self.root, before_gates).await,
-                    trust_breach: None,
-                    changed: Vec::new(),
-                };
+                    changed_since(&self.root, before_gates).await,
+                );
             }
         }
         let gates_changed = changed_since(&self.root, before_gates).await;
@@ -845,6 +858,9 @@ impl Orchestrator {
             }
             post_changed = changed_since(&self.root, before_post).await;
         }
+        // A struct literal rather than a constructor, on purpose: a field
+        // added to `Dispatched` then fails to compile here, so someone decides
+        // what a call that ran reports for it.
         Dispatched {
             result,
             radius_sites,
@@ -1638,10 +1654,7 @@ fn excerpt(src: &str) -> String {
         // On a character boundary: a Python file is UTF-8 and slicing by
         // bytes would panic on the identifier of anyone who does not write
         // in ASCII.
-        let cut = (0..=EXCERPT_BYTES)
-            .rev()
-            .find(|i| out.is_char_boundary(*i))
-            .unwrap_or(0);
+        let cut = out.floor_char_boundary(EXCERPT_BYTES);
         out.truncate(cut);
         out.push_str("\n...cut here; the rest of this file is too large to show.");
     }
