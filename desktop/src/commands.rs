@@ -977,6 +977,52 @@ mod tests {
         }
     }
 
+    /// What `start` does to the session for a new child, without a
+    /// process: the next generation, with the guard shut.
+    fn restart(core: &Core) -> u64 {
+        let mut s = core.lock();
+        s.generation += 1;
+        s.view.forget_models();
+        s.generation
+    }
+
+    #[test]
+    fn model_guard_ignores_a_previous_childs_answer_after_a_restart() {
+        // The risk: a late `desktop-models` answer from the child just
+        // replaced opens the guard for the new one, whose user spec it may
+        // not be, before the new child has said anything.
+        let (core, _rec) = answered(Value::Null, json!(USER_SPEC));
+        let old = generation(&core);
+        assert!(
+            forwarded(&core, &naming(json!(USER_SPEC))[0]),
+            "open before"
+        );
+        let new = restart(&core);
+        assert_ne!(old, new);
+        core.stdout_line(
+            old,
+            &models_answer(json!({"repository": null, "user": USER_SPEC, "session": null})),
+        );
+        assert_eq!(core.lock().view.configured(), None);
+        for l in naming(json!(USER_SPEC)) {
+            let err = core.send(&l).unwrap_err();
+            assert!(err.contains("has not yet answered"), "{l}: {err}");
+        }
+
+        // The new child's own answer opens it, by its own user spec.
+        let other = "anthropic:https://new-user.invalid#n";
+        core.stdout_line(
+            new,
+            &models_answer(json!({"repository": null, "user": other, "session": null})),
+        );
+        for l in naming(json!(other)) {
+            assert!(forwarded(&core, &l), "{l}");
+        }
+        for l in naming(json!(USER_SPEC)) {
+            assert!(!forwarded(&core, &l), "the old child's user spec: {l}");
+        }
+    }
+
     #[test]
     fn model_guard_forwards_provider_runtime_and_scripted_specs() {
         // The risk: the guard refuses specs that get no key, or whose key
