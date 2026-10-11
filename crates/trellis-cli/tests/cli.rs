@@ -6167,7 +6167,13 @@ fn rpc_atlas_get_codebase_ref_answers_the_codebase_at_that_commit_and_writes_not
     assert_eq!(porcelain_unlocked(&d), "");
     let before = bytes_under(&d);
     let head = git(&d, &["rev-parse", "HEAD"]).trim().to_string();
+    // trellis answers UTC as `+00:00` whichever spelling this machine's git
+    // uses (some write `Z`), so the expectation is put in that form too.
     let head_date = git(&d, &["log", "-1", "--format=%cI", "HEAD"]);
+    let head_date = match head_date.trim().strip_suffix('Z') {
+        Some(rest) => format!("{rest}+00:00"),
+        None => head_date.trim().to_string(),
+    };
     let records = rpc_records_env(
         &d,
         None,
@@ -6211,7 +6217,7 @@ fn rpc_atlas_get_codebase_ref_answers_the_codebase_at_that_commit_and_writes_not
     let now = &h["data"];
     assert!(now.get("ref").is_none(), "no ref was asked for: {now}");
     assert_eq!(now["commit"], head.as_str(), "{now}");
-    assert_eq!(now["date"], head_date.trim(), "{now}");
+    assert_eq!(now["date"], head_date.as_str(), "{now}");
     assert!(module_in(now, "app.new").is_some(), "{now}");
     assert!(module_in(now, "app.old").is_none(), "{now}");
     let _ = std::fs::remove_dir_all(&d);

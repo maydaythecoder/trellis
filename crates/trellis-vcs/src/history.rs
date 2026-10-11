@@ -97,6 +97,19 @@ pub fn resolve(root: &Path, rev: &str) -> Result<Stamp, HistoryError> {
     Ok(stamp(root, out.trim())?)
 }
 
+/// A strict ISO 8601 date with UTC written as `+00:00`, never `Z`.
+///
+/// Git's `%cI` and `iso-strict` spell a zero offset differently by version:
+/// the Windows runner's git wrote `2025-02-01T00:00:00Z` where Linux git
+/// wrote `+00:00`. Both are valid, but a client comparing or displaying the
+/// dates rpc answers should get one spelling whichever git produced them.
+fn offset_form(date: &str) -> String {
+    match date.strip_suffix('Z') {
+        Some(rest) => format!("{rest}+00:00"),
+        None => date.to_string(),
+    }
+}
+
 /// `commit`'s committer date, from one `log -1` of its full id.
 fn stamp(root: &Path, commit: &str) -> Result<Stamp, VcsError> {
     let args = [
@@ -115,7 +128,7 @@ fn stamp(root: &Path, commit: &str) -> Result<Stamp, VcsError> {
     match (f.next(), f.next().and_then(|t| t.parse().ok()), f.next()) {
         (Some(id), Some(time), Some(date)) => Ok(Stamp {
             commit: id.to_string(),
-            date: date.to_string(),
+            date: offset_form(date),
             time,
         }),
         _ => Err(failed(&args, &format!("unexpected output: {line:?}"))),
@@ -174,7 +187,7 @@ fn parse_log(out: &[u8]) -> Option<Vec<Change>> {
             changes.push(Change {
                 stamp: Stamp {
                     commit: commit.to_string(),
-                    date: date.to_string(),
+                    date: offset_form(date),
                     time: time.parse().ok()?,
                 },
                 subject: subject.to_string(),
@@ -295,7 +308,7 @@ pub fn tags_in_head(root: &Path) -> Result<Vec<Tag>, VcsError> {
                 .to_string(),
             stamp: Stamp {
                 commit: id.to_string(),
-                date: date.to_string(),
+                date: offset_form(date),
                 time,
             },
         });
@@ -771,6 +784,24 @@ mod tests {
             "a name, not an id: {e:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn utc_is_written_as_an_offset_whatever_git_wrote() {
+        // The risk: one repository's dates answered in two spellings because
+        // the machines that ran git differ (Windows runner, CI run 38162600641).
+        assert_eq!(
+            offset_form("2025-02-01T00:00:00Z"),
+            "2025-02-01T00:00:00+00:00"
+        );
+        assert_eq!(
+            offset_form("2025-02-01T00:00:00+00:00"),
+            "2025-02-01T00:00:00+00:00"
+        );
+        assert_eq!(
+            offset_form("2024-06-01T00:00:00+02:00"),
+            "2024-06-01T00:00:00+02:00"
+        );
     }
 
     #[test]
