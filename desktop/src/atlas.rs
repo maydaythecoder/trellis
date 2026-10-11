@@ -22,9 +22,10 @@
 //! (ADR 0048 section 5):
 //!
 //! - **Which snapshots.** From the history answer, up to [`SNAPSHOTS_MAX`]
-//!   tags spread across the tags returned (the newest, the oldest and
-//!   evenly between), or with no tag the commits returned, then HEAD. Each
-//!   is asked by its commit, never by a name the repository chose.
+//!   of the tags dated in the two years before HEAD's date, spread across
+//!   them (the newest, the oldest and evenly between), or with none the
+//!   commits returned, then HEAD. Each is asked by its commit, never by a
+//!   name the repository chose.
 //! - **The layout.** An ordered binary treemap over the real path tree
 //!   ([`layout`]): directories, then module files, each by name; a chain of
 //!   directories holding one directory each is one region; the top-level
@@ -378,6 +379,8 @@ const KINDS: [&str; 3] = ["function", "method", "class"];
 #[derive(Debug, Clone, PartialEq)]
 struct Symbols {
     modules_indexed: Option<u64>,
+    /// How many definitions the answer listed, drawn or not.
+    listed: usize,
     list: Vec<Symbol>,
     /// Definitions the answer listed that are not drawn: a field missing,
     /// a kind not one of [`KINDS`], or a path that is not a repository path.
@@ -419,6 +422,7 @@ fn read_symbols(data: &Value) -> Result<Symbols, String> {
         .collect();
     Ok(Symbols {
         modules_indexed: count(o, "modules_indexed"),
+        listed: list.len(),
         list: symbols,
         skipped,
     })
@@ -584,11 +588,94 @@ impl Slot {
     }
 }
 
+/// How far back from HEAD's date the snapshots' tags are taken: two years
+/// of 365.2425 days, in seconds.
+pub const WINDOW_SECONDS: i64 = 63_113_904;
+
+/// Seconds since 1970-01-01T00:00:00Z for a date as git writes it with
+/// `%cI`: `2026-10-06T17:57:49+02:00`, or with `Z`. `None` for anything
+/// else, a date that does not exist (`02-30`) among it.
+fn epoch_seconds(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    let digits = |from: usize, n: usize| -> Option<i64> {
+        let part = b.get(from..from + n)?;
+        part.iter()
+            .all(u8::is_ascii_digit)
+            .then(|| part.iter().fold(0, |v, d| v * 10 + i64::from(d - b'0')))
+    };
+    let at = |i: usize, c: u8| b.get(i) == Some(&c);
+    if !(at(4, b'-') && at(7, b'-') && at(10, b'T') && at(13, b':') && at(16, b':')) {
+        return None;
+    }
+    let (y, mo, d) = (digits(0, 4)?, digits(5, 2)?, digits(8, 2)?);
+    let (h, mi, sec) = (digits(11, 2)?, digits(14, 2)?, digits(17, 2)?);
+    let offset = match b.get(19..) {
+        Some(b"Z") => 0,
+        Some([sign @ (b'+' | b'-'), _, _, b':', _, _]) => {
+            let o = digits(20, 2)? * 3600 + digits(23, 2)? * 60;
+            if *sign == b'+' { o } else { -o }
+        }
+        _ => return None,
+    };
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let month_days = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    if !(1..=12).contains(&mo) || d < 1 || d > month_days[(mo - 1) as usize] {
+        return None;
+    }
+    if h > 23 || mi > 59 || sec > 60 {
+        return None;
+    }
+    // Days from the civil date (Howard Hinnant's days_from_civil).
+    let y = if mo <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if mo > 2 { mo - 3 } else { mo + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + h * 3600 + mi * 60 + sec - offset)
+}
+
 /// The snapshots to load before HEAD, oldest first: up to
-/// [`SNAPSHOTS_MAX`] of the history's tags spread from the newest to the
-/// oldest, or with no tag its commits; HEAD's own commit is HEAD's.
+/// [`SNAPSHOTS_MAX`] of the history's tags dated in the [`WINDOW_SECONDS`]
+/// before HEAD's date, spread from the newest to the oldest of them, so the
+/// oldest is always taken; with no HEAD date to measure from, spread over
+/// every tag; with no tag to take, the history's commits. HEAD's own commit
+/// is HEAD's.
 fn plan(h: &History) -> Vec<Slot> {
     let head = h.head.as_ref().map(|(c, _)| c.as_str());
+    let head_at = h
+        .head
+        .as_ref()
+        .and_then(|(_, d)| d.as_deref())
+        .and_then(epoch_seconds);
+    // Newest first, as get_history lists them; inside the window when HEAD
+    // has a date, each by its own.
+    let mut tags: Vec<(&Tag, i64)> = h
+        .tags
+        .iter()
+        .filter_map(|t| match head_at {
+            None => Some((t, 0)),
+            Some(at) => {
+                let when = epoch_seconds(t.date.as_deref()?)?;
+                (when <= at && at - when <= WINDOW_SECONDS).then_some((t, when))
+            }
+        })
+        .collect();
+    tags.sort_by(|a, b| b.1.cmp(&a.1));
+    let tags: Vec<&Tag> = tags.into_iter().map(|(t, _)| t).collect();
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     let subject = |commit: &str| {
         h.commits
@@ -597,9 +684,8 @@ fn plan(h: &History) -> Vec<Slot> {
             .and_then(|c| c.subject.clone())
     };
     // Newest first, as get_history lists both.
-    let points: Vec<Slot> = if h.tags.iter().any(|t| Some(t.commit.as_str()) != head) {
-        h.tags
-            .iter()
+    let points: Vec<Slot> = if tags.iter().any(|t| Some(t.commit.as_str()) != head) {
+        tags.iter()
             .filter(|t| Some(t.commit.as_str()) != head && seen.insert(&t.commit))
             .map(|t| Slot {
                 label: t.name.clone(),
@@ -1452,7 +1538,7 @@ impl Atlas {
                     _ => None,
                 })
                 .or_else(|| s.loaded().and_then(|c| c.commit.clone())),
-            "modules_indexed": null, "bound_call_sites": null, "ambiguous": null,
+            "modules_indexed": null, "definitions": null, "bound_call_sites": null, "ambiguous": null,
             "unresolved": null, "modules_not_drawn": null, "module_edges": null,
             "rows": [], "edges": [], "regions": [], "not_placed": [], "rows_skipped": 0,
         });
@@ -1529,6 +1615,8 @@ impl Atlas {
             .map(|(_, r)| &r.path)
             .collect();
         v["modules_indexed"] = json!(c.modules_indexed);
+        // Its modules' defines, summed; `null` when one was not a count.
+        v["definitions"] = json!(c.rows.iter().map(|r| r.defines).sum::<Option<u64>>());
         v["bound_call_sites"] = json!(c.bound_call_sites);
         v["ambiguous"] = json!(c.ambiguous);
         v["unresolved"] = json!(c.unresolved);
@@ -1572,6 +1660,15 @@ impl Atlas {
             "error": null,
             "modules_indexed": s.modules_indexed,
             "skipped": s.skipped,
+            // The definitions the answer listed, and the call sites bound
+            // to them by a Resolved edge: each one's calls_in, summed, so
+            // `null` when one was not read or not a count.
+            "definitions": s.listed,
+            "resolved_call_sites": if s.skipped == 0 {
+                symbols.iter().map(|x| x.calls_in).sum::<Option<u64>>()
+            } else {
+                None
+            },
             "not_placed": self.symbols_not_placed,
             "list": self.placed_symbols.iter().map(|p| {
                 let s = &symbols[p.symbol];
@@ -1742,6 +1839,10 @@ mod tests {
 
     /// A `get_history` answer whose tags are the fixture's six earlier
     /// snapshots, newest first; the first, a commit, is given a tag here.
+    /// HEAD's date is left out, so the plan spreads over every tag and the
+    /// layout tests load all seven commits: the first is a week more than
+    /// two years before HEAD, outside the window a dated HEAD gets
+    /// (`atlas_plan_takes_tags_from_the_two_years_before_head`).
     fn history_data(fx: &Value) -> Value {
         let snaps = fx["snapshots"].as_array().unwrap();
         let head = &snaps[snaps.len() - 1];
@@ -1754,7 +1855,7 @@ mod tests {
             })
             .collect();
         json!({
-            "head": {"commit": head["commit"], "date": head["date"]},
+            "head": {"commit": head["commit"], "date": null},
             "windows_days": [30, 90, 365],
             "churn": [{"path": "src/poetry/factory.py", "d30": 0, "d90": 0, "d365": 3,
                        "commits": 10, "last_commit": head["commit"], "last_date": head["date"]}],
@@ -2180,6 +2281,175 @@ mod tests {
         on_head.tags[0].commit = c(999);
         assert!(plan(&on_head).is_empty());
         assert!(plan(&h(0, 1)).is_empty(), "only HEAD");
+    }
+
+    #[test]
+    fn atlas_plan_takes_tags_from_the_two_years_before_head() {
+        // The risk (the end-to-end run on poetry, 2026-10-11): the scrubber
+        // spanned only the twelve newest tags, eight months of history,
+        // because snapshots were spread over whatever tags came back. Now
+        // get_history is asked for up to 200, and the snapshots are spread
+        // over the tags dated in the two years before HEAD, the oldest of
+        // them always among them.
+        let c = |n: usize| format!("{n:040x}");
+        let tag = |i: usize, name: &str, date: &str| Tag {
+            name: name.to_string(),
+            commit: c(i),
+            date: Some(date.to_string()),
+        };
+        let h = |tags: Vec<Tag>| History {
+            head: Some((c(999), Some("2026-10-06T17:57:49+02:00".into()))),
+            windows_days: vec![30, 90, 365],
+            churn: Vec::new(),
+            commits: Vec::new(),
+            tags,
+        };
+        // Newest first, as get_history lists them: twelve inside the window,
+        // then two older, one just past its edge.
+        let mut tags: Vec<Tag> = (0..12)
+            .map(|i| {
+                tag(
+                    i,
+                    &format!("2.{}", 11 - i),
+                    &format!("2026-{:02}-01T12:00:00+00:00", 10 - (i % 9)),
+                )
+            })
+            .collect();
+        tags[9].date = Some("2025-06-01T12:00:00+00:00".into());
+        tags[10].date = Some("2025-01-05T12:41:13+01:00".into());
+        tags[11].date = Some("2024-10-07T12:00:00+02:00".into());
+        tags.push(tag(12, "1.9", "2024-10-05T12:00:00+02:00"));
+        tags.push(tag(13, "1.0", "2018-01-01T00:00:00Z"));
+        let p = plan(&h(tags.clone()));
+        let labels: Vec<&str> = p.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(labels.len(), SNAPSHOTS_MAX, "{labels:?}");
+        assert_eq!(
+            labels[0], "2.0",
+            "the oldest tag in the window, first: {labels:?}"
+        );
+        assert_eq!(labels[SNAPSHOTS_MAX - 1], "2.11", "the newest: {labels:?}");
+        assert!(
+            !labels.contains(&"1.9") && !labels.contains(&"1.0"),
+            "a tag from before the window: {labels:?}"
+        );
+        // Fewer in the window, fewer snapshots: all of them.
+        let few = vec![
+            tag(0, "b", "2026-01-01T00:00:00Z"),
+            tag(1, "a", "2025-01-01T00:00:00Z"),
+            tag(2, "old", "2020-01-01T00:00:00Z"),
+        ];
+        let labels: Vec<String> = plan(&h(few)).into_iter().map(|s| s.label).collect();
+        assert_eq!(labels, ["a", "b"]);
+        // A tag whose date does not read as one is left out of the window.
+        let odd = vec![
+            tag(0, "x", "yesterday"),
+            tag(1, "y", "2026-02-30T00:00:00Z"),
+        ];
+        assert!(plan(&h(odd)).is_empty());
+        // With no HEAD date to measure from, the tags are spread as before.
+        let mut undated = h(tags);
+        undated.head = Some((c(999), None));
+        let p = plan(&undated);
+        assert_eq!(p.first().map(|s| s.label.as_str()), Some("1.0"));
+    }
+
+    #[test]
+    fn atlas_dates_read_as_git_writes_them() {
+        // The risk: a window measured from a misread date, so a tag in it is
+        // left out or one before it taken in.
+        assert_eq!(epoch_seconds("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(epoch_seconds("1970-01-01T01:00:00+01:00"), Some(0));
+        assert_eq!(
+            epoch_seconds("2026-10-06T17:57:49+02:00"),
+            Some(1_791_302_269)
+        );
+        assert_eq!(
+            epoch_seconds("2000-02-29T12:00:00-05:30"),
+            Some(951_845_400)
+        );
+        for bad in [
+            "",
+            "2026-10-06",
+            "2026-13-01T00:00:00Z",
+            "2026-02-30T00:00:00Z",
+            "2026-10-06T24:00:00Z",
+            "2026-10-06T17:57:49",
+            "2026-10-06 17:57:49+02:00",
+            "+026-10-06T17:57:49+02:00",
+        ] {
+            assert_eq!(epoch_seconds(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn atlas_head_figures_name_definitions_and_resolved_sites_apart_from_the_edges() {
+        // The risk (the end-to-end run on poetry): the HEAD panel showed no
+        // definitions, and gave call sites bound across modules where the
+        // resolved sites belong, so its counts did not describe the
+        // first-party sites. get_symbols gives both: the definitions it
+        // lists, and its calls_in, which sum to the sites bound by a
+        // Resolved edge. A sum that would leave a definition out is null.
+        let fx = fixture();
+        let mut a = loaded(&[]);
+        let sym = |name: &str, calls_in: Value| {
+            json!({"module": "poetry.factory", "path": "src/poetry/factory.py", "name": name,
+                   "kind": "function", "line": 1, "end_line": 2, "calls_in": calls_in,
+                   "calls_in_ambiguous": 0, "calls_out": 0})
+        };
+        a.asked(
+            "get_symbols",
+            &json!({"id": "desktop-atlas-s1", "type": "get_symbols"}),
+        );
+        a.answer(&ok(
+            "get_symbols",
+            "desktop-atlas-s1",
+            json!({"modules_indexed": 451, "symbols": [sym("f", json!(3)), sym("g", json!(4))]}),
+        ));
+        let v = a.to_json();
+        assert_eq!(v["symbols"]["definitions"], 2);
+        assert_eq!(v["symbols"]["resolved_call_sites"], 7);
+        // At every snapshot, its modules' definitions summed from
+        // get_codebase, which at HEAD are the ones get_symbols lists.
+        let defines: u64 = fx["snapshots"][6]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r[1].as_u64().unwrap())
+            .sum();
+        assert_eq!(v["snapshots"][6]["definitions"], defines);
+        // HEAD's own figures stay as trellis sent them, apart.
+        assert_eq!(
+            v["snapshots"][6]["bound_call_sites"],
+            fx["snapshots"][6]["bound_call_sites"]
+        );
+        a.asked(
+            "get_symbols",
+            &json!({"id": "desktop-atlas-s2", "type": "get_symbols"}),
+        );
+        a.answer(&ok(
+            "get_symbols",
+            "desktop-atlas-s2",
+            json!({"symbols": [sym("f", json!(3)), sym("g", Value::Null)]}),
+        ));
+        let v = a.to_json();
+        assert_eq!(v["symbols"]["definitions"], 2);
+        assert_eq!(v["symbols"]["resolved_call_sites"], Value::Null);
+        a.asked(
+            "get_symbols",
+            &json!({"id": "desktop-atlas-s3", "type": "get_symbols"}),
+        );
+        a.answer(&ok(
+            "get_symbols",
+            "desktop-atlas-s3",
+            json!({"symbols": [sym("f", json!(3)), {"name": "broken"}]}),
+        ));
+        let v = a.to_json();
+        assert_eq!(v["symbols"]["definitions"], 2, "every definition listed");
+        assert_eq!(
+            v["symbols"]["resolved_call_sites"],
+            Value::Null,
+            "one unread"
+        );
     }
 
     #[test]
