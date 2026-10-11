@@ -1,5 +1,5 @@
 {
-  "about": "The rpc and log --json fields a client may rely on (ADR 0048 section 6, ADR 0025 sections 4 and 5), held by tests in tests/modes.rs. An event's fields are under its \"fields\" object, beside \"message\": those always present, those present only in the case a list is named for (a turn that called the model, a blast_radius turn, a prompt-sending driver, a response header the endpoint sent), and, under \"absent_when\", when a listed field is still left off. A figure trellis did not measure is absent, never 0. A response's data, per command, is under \"responses\": the fields always in it, and those present only for one value of another; get_codebase's and get_queue's are dotted paths, with [] meaning each element of an array (#559). A response's id is the id its command was sent with, and a run's run_start and run_end carry the id of the prompt that started it. Fields not listed here are unversioned.",
+  "about": "The rpc and log --json fields a client may rely on (ADR 0048 section 6, ADR 0025 sections 4 and 5), held by tests in tests/modes.rs. An event's fields are under its \"fields\" object, beside \"message\": those always present, those present only in the case a list is named for (a turn that called the model, a blast_radius turn, a prompt-sending driver, a response header the endpoint sent), and, under \"absent_when\", when a listed field is still left off. A figure trellis did not measure is absent, never 0. A response's data, per command, is under \"responses\": the fields always in it, and those present only for one value of another; get_codebase's, get_queue's, get_radius's, get_symbols' and get_history's are dotted paths, with [] meaning each element of an array (#559; the Atlas, owner request of 2026-10-11). A response's id is the id its command was sent with, and a run's run_start and run_end carry the id of the prompt that started it. Fields not listed here are unversioned.",
   "rpc": {
     "events": {
       "turn": {
@@ -99,10 +99,100 @@
           "modules[].calls[].call_sites",
           "modules[].calls_not_drawn",
           "modules[].ambiguous",
-          "modules[].unresolved"
+          "modules[].unresolved",
+          "commit",
+          "date"
         ],
+        "ref_only": ["ref"],
+        "head_unreadable_only": ["head_error"],
+        "null_when": {
+          "commit": "no ref was asked for, and the repository has no commit yet or git could not read HEAD; the worktree's graph is answered either way",
+          "date": "as commit"
+        },
+        "head_error": "git's message, trimmed, when no ref was asked for and git failed reading HEAD (a hand-made .git git refuses, say); absent when the repository simply has no commit. commit and date never fail the answer.",
+        "about": "{limit?, edges?, ref?} (the desktop's Atlas, owner request of 2026-10-11). edges \"all\" lists every module edge, so each calls_not_drawn is 0; absent, at most ten per module are listed, as before. ref answers the graph of that commit's tree: ref as asked, commit its full id with any tag peeled, date its committer date in strict ISO 8601 with the commit's own offset. Without ref, commit and date are HEAD's, and the graph is the worktree's, which may have moved past HEAD. A ref that is not a non-empty string, holds a control character, starts with - or names no commit is refused by name.",
         "path": "the module's file, relative to the root and /-separated",
         "refused_when": "the root has no .git entry (a directory, or the file a worktree or submodule has): success is false, the error names the command, the root and the rule, and nothing under the root is read"
+      },
+      "get_radius": {
+        "always": [
+          "symbol",
+          "file",
+          "reach",
+          "reach.resolved",
+          "reach.ambiguous",
+          "reach.symbols_reached",
+          "doubt",
+          "doubt.unbound_in_touched_files",
+          "doubt.touched_files",
+          "doubt.reasons",
+          "doubt.reasons[].reason",
+          "doubt.reasons[].call_sites",
+          "doubt.reasons[].explain",
+          "doubt.files",
+          "doubt.files[].path",
+          "doubt.files[].call_sites",
+          "reached",
+          "reached[].symbol",
+          "reached[].module",
+          "reached[].path",
+          "reached[].kind",
+          "reached[].line",
+          "reached_not_listed",
+          "sites",
+          "sites[].path",
+          "sites[].line",
+          "sites[].certain",
+          "sites_not_listed"
+        ],
+        "kind_values": ["function", "method", "class"],
+        "about": "reach and doubt count different populations and are never divided (ADR 0014). reached (the symbols the radius reached, in the index's order) and sites (the call sites it walked, certain ones first, each kind nearest first) were added for the desktop's Atlas (owner request of 2026-10-11); each holds at most 2000, the rest counted in reached_not_listed and sites_not_listed, while reach keeps the whole counts. line is 1-based. refused_when as get_codebase."
+      },
+      "get_symbols": {
+        "always": [
+          "modules_indexed",
+          "symbols",
+          "symbols[].module",
+          "symbols[].path",
+          "symbols[].name",
+          "symbols[].kind",
+          "symbols[].line",
+          "symbols[].end_line",
+          "symbols[].calls_in",
+          "symbols[].calls_in_ambiguous",
+          "symbols[].calls_out"
+        ],
+        "kind_values": ["function", "method", "class"],
+        "about": "{module?} (the desktop's Atlas, owner request of 2026-10-11): every definition the index holds, or one module's, in the index's order. name is the bare name; line and end_line are 1-based, from the index's byte span. calls_in counts call sites bound to it by a Resolved edge, calls_in_ambiguous call sites whose candidates include it, calls_out call sites in its own body bound by a Resolved edge: three counts, none a part or a share of another. modules_indexed is the whole index's. A module the index holds no file for is refused by name. refused_when as get_codebase."
+      },
+      "get_history": {
+        "always": [
+          "head",
+          "windows_days",
+          "churn",
+          "churn[].path",
+          "churn[].d30",
+          "churn[].d90",
+          "churn[].d365",
+          "churn[].commits",
+          "churn[].last_commit",
+          "churn[].last_date",
+          "commits",
+          "commits[].commit",
+          "commits[].date",
+          "commits[].subject",
+          "commits[].paths",
+          "tags",
+          "tags[].name",
+          "tags[].commit",
+          "tags[].date"
+        ],
+        "head_only": ["head.commit", "head.date"],
+        "null_when": {
+          "head": "the repository has no commit yet; churn, commits and tags are then empty",
+          "churn[].commits": "no tag is listed (tags 0 was asked for, or HEAD's history holds none), so there is nothing to count from"
+        },
+        "about": "{commits?, tags?} (default 20 and 12, each held to 200; the desktop's Atlas, owner request of 2026-10-11), all from git. windows_days is [30, 90, 365]: d30, d90 and d365 count the first-parent commits that changed the path in the run from HEAD back to the first commit dated before the window opens, measured from HEAD's committer date, not the clock. churn[].commits counts those after the oldest tag listed. A path is a row when either range changed it; last_commit and last_date name the newest such commit. commits are the newest on HEAD's first-parent line with the paths each changed against its first parent; tags the newest HEAD can reach, peeled and dated by their commits, newest first. Dates are strict ISO 8601 with the commit's own offset. subject is text a commit's author wrote. refused_when as get_codebase."
       },
       "get_queue": {
         "always": ["tasks", "tasks[].id", "tasks[].state"],

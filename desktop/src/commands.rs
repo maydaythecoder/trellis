@@ -16,13 +16,16 @@
 //!   (`overview-error` says why when it could not be read);
 //! - `codebase`: the codebase view's layout (`codebase.rs`), once per
 //!   `get_codebase` answer, or `{"error"}` with trellis's reason when it
-//!   was refused (#307);
+//!   was refused (#307); not for an answer to the Atlas, which is the
+//!   Atlas's;
 //! - `radius`: a `get_radius` answer as reach and doubt (`radius.rs`), or
 //!   `{"error"}`, with the answer's `id` (#308).
 //!
 //! `vault_search` and `vault_graph` answers become the `view` event's
-//! `vault` key (`state/vault.rs`, #309), and `get_queue` answers its
-//! `queue` key (`queue.rs`, #311), typed by the reducer as the run panes
+//! `vault` key (`state/vault.rs`, #309), `get_queue` answers its `queue`
+//! key (`queue.rs`, #311), and the Atlas's `get_history`, `get_codebase`,
+//! `get_symbols` and `get_radius` answers its `atlas` key (`atlas.rs`, the
+//! owner's request of 2026-10-11), typed by the reducer as the run panes
 //! are.
 //!
 //! The first line the core writes to every child is
@@ -48,6 +51,7 @@
 //! Everything here but the four `#[tauri::command]` functions is plain Rust
 //! over a [`Sink`], so the tests drive it without a window.
 
+use crate::atlas;
 use crate::child::{Child, Lines, Output, Trellis};
 use crate::codebase;
 use crate::frames::{self, Frame};
@@ -68,11 +72,12 @@ pub const LINE_CAP: usize = 65_536;
 /// without `quit`, which only the core sends, and with each read-only
 /// command a desktop view reads through (ADR 0048 section 10) as that view
 /// is built: `get_codebase` (#307), `get_radius` (#308), `vault_search` and
-/// `vault_graph` (#309), `get_queue` (#311). No vault or queue write is
-/// among them: rpc has none, every vault write stays a `trellis vault`
-/// command the person runs (#70), and the queue's writes are `trellis queue`
-/// and `trellis work` (ADR 0020 section 5).
-pub const FORWARDED: [&str; 18] = [
+/// `vault_graph` (#309), `get_queue` (#311), and the Atlas's `get_symbols`
+/// and `get_history` (the owner's request of 2026-10-11). No vault or queue
+/// write is among them: rpc has none, every vault write stays a `trellis
+/// vault` command the person runs (#70), and the queue's writes are
+/// `trellis queue` and `trellis work` (ADR 0020 section 5).
+pub const FORWARDED: [&str; 20] = [
     "prompt",
     "abort",
     "get_state",
@@ -91,7 +96,15 @@ pub const FORWARDED: [&str; 18] = [
     "vault_search",
     "vault_graph",
     "get_queue",
+    "get_symbols",
+    "get_history",
 ];
+
+/// The longest `ref` `rpc_send` forwards, in bytes.
+pub const REF_CAP: usize = 200;
+
+/// The most commits or tags a `get_history` asks for: rpc's own cap.
+pub const HISTORY_MAX: u64 = 200;
 
 /// The most trails `get_trails` asks for.
 pub const TRAILS_MAX: u32 = 200;
@@ -260,10 +273,14 @@ impl Core {
         }
         let frame = frames::parse_stdout(line);
         // The read-only views' answers are typed here, not in the page
-        // (ADR 0048 section 5), whichever line asked for them.
+        // (ADR 0048 section 5), whichever line asked for them; but the
+        // Atlas's snapshots are its own, so one at an old commit is never
+        // drawn as the Codebase view's graph.
         if let Frame::Response(r) = &frame {
             match r.command.as_deref() {
-                Some("get_codebase") => self.sink.emit("codebase", codebase::event(r)),
+                Some("get_codebase") if !atlas::is_atlas_id(r.id.as_deref()) => {
+                    self.sink.emit("codebase", codebase::event(r));
+                }
                 Some("get_radius") => self.sink.emit("radius", radius::event(r)),
                 _ => {}
             }
@@ -382,6 +399,9 @@ impl Core {
                         .vault_asked(t, line.get("id").and_then(Value::as_str));
                 }
                 Some("get_queue") => s.view.queue_asked(line.get("id").and_then(Value::as_str)),
+                Some(t @ ("get_history" | "get_codebase" | "get_symbols" | "get_radius")) => {
+                    s.view.atlas_asked(t, line);
+                }
                 _ => {}
             }
             w
@@ -495,6 +515,7 @@ fn check_line(line: &Value) -> Result<(), String> {
             "rpc_send: the id {MODELS_ID:?} is the desktop's own; use another"
         ));
     }
+    check_arguments(o)?;
     // `rpc.rs` takes `auto` or `approve` and refuses any other string, but
     // reads a value that is not a string as no `control`, so the run would
     // take the repository's mode while the page showed another. Absent is
@@ -507,6 +528,72 @@ fn check_line(line: &Value) -> Result<(), String> {
             "rpc_send: a prompt's control is \"auto\" or \"approve\", or left out for the \
              repository's mode; got {c}"
         ));
+    }
+    Ok(())
+}
+
+/// The read arguments the Atlas sends (the owner's request of 2026-10-11),
+/// each held to what trellis is asked to read before it leaves the core:
+/// `edges` is `"all"`; `ref` is a revision of at most [`REF_CAP`] bytes in
+/// the characters git's revision syntax uses, never one that starts with
+/// `-` and so could be read as an option; `commits` and `tags` are counts
+/// from 1 to [`HISTORY_MAX`]; `module` is a dotted name. A line without
+/// them is as it was.
+fn check_arguments(o: &serde_json::Map<String, Value>) -> Result<(), String> {
+    let ty = o.get("type").and_then(Value::as_str).unwrap_or_default();
+    if ty == "get_codebase" {
+        if let Some(e) = o.get("edges")
+            && e.as_str() != Some("all")
+        {
+            return Err(format!(
+                "rpc_send: get_codebase's edges is \"all\", or left out for the edges it \
+                 draws by default; got {e}"
+            ));
+        }
+        if let Some(r) = o.get("ref") {
+            let ok = r.as_str().is_some_and(|r| {
+                !r.is_empty()
+                    && r.len() <= REF_CAP
+                    && !r.starts_with('-')
+                    && r.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"._/@{}^~+-".contains(&b))
+            });
+            if !ok {
+                return Err(format!(
+                    "rpc_send: get_codebase's ref is a git revision of at most {REF_CAP} bytes in \
+                     A-Z a-z 0-9 . _ / @ {{ }} ^ ~ + -, not starting with -; got {r}"
+                ));
+            }
+        }
+    }
+    if ty == "get_history" {
+        for k in ["commits", "tags"] {
+            if let Some(n) = o.get(k)
+                && !n.as_u64().is_some_and(|n| (1..=HISTORY_MAX).contains(&n))
+            {
+                return Err(format!(
+                    "rpc_send: get_history's {k} is a count from 1 to {HISTORY_MAX}; got {n}"
+                ));
+            }
+        }
+    }
+    if ty == "get_symbols"
+        && let Some(m) = o.get("module")
+    {
+        let dotted = m.as_str().is_some_and(|m| {
+            m.split('.').all(|seg| {
+                seg.chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphabetic() || c == '_')
+                    && seg.chars().all(|c| c.is_alphanumeric() || c == '_')
+            })
+        });
+        if !dotted {
+            return Err(format!(
+                "rpc_send: get_symbols's module is a dotted module name, such as app.core; \
+                 got {m}"
+            ));
+        }
     }
     Ok(())
 }
@@ -1642,6 +1729,7 @@ mod tests {
                 "actions",
                 "alert",
                 "approvals",
+                "atlas",
                 "available",
                 "budget",
                 "checks",
@@ -1843,6 +1931,173 @@ mod tests {
         assert!(
             !repo.join(".trellis").exists(),
             "get_radius wrote under the repository"
+        );
+        for d in [&repo, &config] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn rpc_send_holds_the_atlas_reads_to_what_trellis_is_asked() {
+        // The risk (the owner's request of 2026-10-11): the Atlas sends git
+        // a ref that reads as an option (`--output=...`), a history with no
+        // bound, or an argument rpc would read as something else, from a
+        // page that is wrong. Each is refused here, before a child sees it,
+        // naming what it got wrong.
+        let (core, rec) = idle_core();
+        for (l, rule) in [
+            (json!({"type": "get_codebase", "edges": "some"}), "edges"),
+            (json!({"type": "get_codebase", "edges": true}), "edges"),
+            (json!({"type": "get_codebase", "ref": "-x"}), "ref"),
+            (
+                json!({"type": "get_codebase", "ref": "--output=/tmp/x"}),
+                "ref",
+            ),
+            (json!({"type": "get_codebase", "ref": "v1 v2"}), "ref"),
+            (json!({"type": "get_codebase", "ref": "v1;rm"}), "ref"),
+            (json!({"type": "get_codebase", "ref": "v1\nv2"}), "ref"),
+            (json!({"type": "get_codebase", "ref": ""}), "ref"),
+            (
+                json!({"type": "get_codebase", "ref": "a".repeat(REF_CAP + 1)}),
+                "ref",
+            ),
+            (json!({"type": "get_codebase", "ref": 7}), "ref"),
+            (json!({"type": "get_history", "commits": 0}), "commits"),
+            (
+                json!({"type": "get_history", "commits": HISTORY_MAX + 1}),
+                "commits",
+            ),
+            (json!({"type": "get_history", "tags": "12"}), "tags"),
+            (json!({"type": "get_history", "tags": 1.5}), "tags"),
+            (json!({"type": "get_history", "tags": -1}), "tags"),
+            (json!({"type": "get_symbols", "module": "a..b"}), "module"),
+            (json!({"type": "get_symbols", "module": "1a"}), "module"),
+            (json!({"type": "get_symbols", "module": ""}), "module"),
+            (json!({"type": "get_symbols", "module": "a/b"}), "module"),
+            (json!({"type": "get_symbols", "module": ["a"]}), "module"),
+        ] {
+            let err = core.send(&l).unwrap_err();
+            assert!(
+                err.contains(&format!("{}'s {rule}", l["type"].as_str().unwrap()))
+                    && !no_child(&err),
+                "{l}: {err}"
+            );
+        }
+        // What the Atlas sends passes these rules, and so meets the next.
+        for l in [
+            json!({"type": "get_codebase", "edges": "all", "limit": 100000}),
+            json!({"type": "get_codebase", "ref": "a".repeat(REF_CAP)}),
+            json!({"type": "get_codebase", "ref": "63bba274f8ea6bc9a064f5328fa6c67bce617cc1"}),
+            json!({"type": "get_codebase", "ref": "v2.0.0^{commit}"}),
+            json!({"type": "get_codebase", "ref": "origin/main@{1}~3"}),
+            json!({"type": "get_history"}),
+            json!({"type": "get_history", "commits": 1, "tags": HISTORY_MAX}),
+            json!({"type": "get_symbols"}),
+            json!({"type": "get_symbols", "module": "poetry.puzzle.solver"}),
+            json!({"type": "get_symbols", "module": "_private.mod_2"}),
+        ] {
+            let err = core.send(&l).unwrap_err();
+            assert!(no_child(&err), "{l}: {err}");
+        }
+        assert!(rec.take().is_empty(), "a refusal emits nothing");
+    }
+
+    #[test]
+    fn an_atlas_snapshot_is_never_drawn_as_the_codebase_view_s_graph() {
+        // The risk: the Atlas asks for the graph at an old tag, and the
+        // Codebase view, which draws every `codebase` event, shows that old
+        // graph as the repository's; or the Codebase view's own answer is
+        // taken into the Atlas.
+        let (core, rec) = idle_core();
+        let g = generation(&core);
+        core.lock().view.atlas_asked(
+            "get_codebase",
+            &json!({"id": "desktop-atlas-codebase-1", "type": "get_codebase", "edges": "all"}),
+        );
+        let answer = |id: &str| {
+            line(
+                json!({"type": "response", "command": "get_codebase", "success": true,
+                        "id": id,
+                        "data": {"modules_indexed": 1, "bound_call_sites": 0, "ambiguous": 0,
+                                 "unresolved": 0, "modules_not_drawn": 0,
+                                 "modules": [{"module": "a", "path": "a.py", "defines": 1,
+                                              "calls": [], "calls_not_drawn": 0,
+                                              "ambiguous": 0, "unresolved": 0}]}}),
+            )
+        };
+        core.stdout_line(g, &answer("desktop-atlas-codebase-1"));
+        assert!(
+            rec.named("codebase").is_empty(),
+            "drawn in the Codebase view"
+        );
+        let v = rec.named("view");
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert_eq!(v[0]["atlas"]["snapshots"][0]["state"], "loaded", "{}", v[0]);
+        rec.take();
+        core.stdout_line(g, &answer("desktop-codebase"));
+        assert_eq!(
+            rec.named("codebase").len(),
+            1,
+            "the Codebase view's own answer"
+        );
+        assert!(
+            rec.named("view").iter().all(|v| v.get("atlas").is_none()),
+            "taken into the Atlas"
+        );
+    }
+
+    #[test]
+    fn rpc_send_forwards_the_atlas_reads() {
+        // The risk (the owner's request of 2026-10-11): the Atlas asks for
+        // its history, a snapshot or the symbols and rpc_send refuses the
+        // line, the model gate (which holds prompts) holds a read, or the
+        // answer never reaches the view's `atlas` key. No set_model is sent
+        // here: these are reads.
+        // A git directory `git rev-parse` accepts, written by hand as
+        // queue_repo's is, with no commit yet: the desktop spawns no git.
+        let repo = scratch("atlas-repo");
+        for d in ["objects", "refs"] {
+            std::fs::create_dir_all(repo.join(".git").join(d)).unwrap();
+        }
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(repo.join("a.py"), "def f():\n    return 1\n").unwrap();
+        let config = scratch("atlas-config");
+        let (core, rec) = core_with(&config);
+        core.start(&repo).unwrap();
+        rec.wait_for("child-started", |_| true);
+        for l in [
+            json!({"id": "desktop-atlas-history-1", "type": "get_history", "commits": 20,
+                   "tags": 12}),
+            json!({"id": "desktop-atlas-codebase-1", "type": "get_codebase", "edges": "all",
+                   "limit": 100000}),
+            json!({"id": "desktop-atlas-symbols-1", "type": "get_symbols"}),
+        ] {
+            assert_eq!(core.send(&l), Ok(()), "{l}");
+            let answer = rec.wait_for("rpc-frame", |f| f["id"] == l["id"]);
+            assert_eq!(answer["command"], l["type"], "{answer}");
+        }
+        let v = rec.wait_for("view", |v| {
+            v.get("atlas").is_some_and(|a| {
+                !a["history"].is_null()
+                    && !a["symbols"].is_null()
+                    && a["snapshots"][0]["state"] == "loaded"
+            })
+        });
+        let a = &v["atlas"];
+        let modules = a["layout"]["modules"].as_array().unwrap();
+        assert_eq!(modules.len(), 1, "{a}");
+        assert_eq!(modules[0]["path"], "a.py");
+        // Refusals stay in the Atlas: none reached the transcript.
+        assert!(
+            rec.named("view")
+                .iter()
+                .all(|v| v.get("alert").is_none_or(Value::is_null)),
+            "an Atlas read raised the page's alert"
+        );
+        finish(&core).unwrap();
+        assert!(
+            !repo.join(".trellis").exists(),
+            "an Atlas read wrote under the repository"
         );
         for d in [&repo, &config] {
             let _ = std::fs::remove_dir_all(d);

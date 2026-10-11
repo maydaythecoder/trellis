@@ -78,12 +78,23 @@ const COMMANDS: &[(&str, &str)] = &[
     (
         "get_codebase",
         "the module graph `trellis index --graph` draws, as data, read-only: {limit?} \
-         (default 40)",
+         (default 40), {edges?: \"all\"} for every edge, {ref?} for the graph at a commit",
     ),
     (
         "get_radius",
         "a symbol's blast radius `trellis radius` prints, as data, read-only: {symbol}; \
          reach and doubt as separate counts, never a ratio",
+    ),
+    (
+        "get_symbols",
+        "every definition the index holds, or one module's: {module?}; each with its \
+         lines and its call sites in, ambiguously in and out as separate counts, read-only",
+    ),
+    (
+        "get_history",
+        "HEAD's newest first-parent commits with their paths, the tags in its history and \
+         each path's churn in the 30, 90 and 365 days before HEAD's date, from git, \
+         read-only: {commits?, tags?} (default 20 and 12, at most 200)",
     ),
     (
         "get_queue",
@@ -821,7 +832,9 @@ impl Server {
     ///
     /// Answered from another thread, as `compact` is: indexing a large
     /// repository takes seconds, and on this thread it would hold up the
-    /// `approve` or `abort` a waiting run needs.
+    /// `approve` or `abort` a waiting run needs. `edges` and `ref` (the
+    /// Atlas, owner request of 2026-10-11) are checked here, before that
+    /// thread or any git starts.
     fn get_codebase(&mut self, cmd: &Value, id: Option<&str>) {
         let limit = match cmd.get("limit") {
             None => 40,
@@ -837,14 +850,28 @@ impl Server {
                 }
             },
         };
+        let edges = match crate::atlas::edges(cmd.get("edges")) {
+            Ok(e) => e,
+            Err(e) => {
+                self.respond(id, "get_codebase", Err(e));
+                return;
+            }
+        };
+        let rev = match cmd.get("ref").map(crate::atlas::revision).transpose() {
+            Ok(r) => r,
+            Err(e) => {
+                self.respond(id, "get_codebase", Err(e));
+                return;
+            }
+        };
         if let Err(e) = repository_root(&self.root, "get_codebase") {
             self.respond(id, "get_codebase", Err(e));
             return;
         }
         let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
         self.waiters.push(std::thread::spawn(move || {
-            let data = crate::doctor_cmd::codebase_json(&root, limit);
-            respond_on(&sink, id.as_deref(), "get_codebase", Ok(data));
+            let result = crate::atlas::codebase(&root, limit, edges, rev.as_deref());
+            respond_on(&sink, id.as_deref(), "get_codebase", result);
         }));
     }
 
@@ -871,9 +898,61 @@ impl Server {
         let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
         let symbol = symbol.to_string();
         self.waiters.push(std::thread::spawn(move || {
-            let index = trellis_index::build_from_sources(&trellis_index::read_sources(&root));
-            let result = crate::index_cmd::radius_json(&index, &symbol).map_err(|e| e.to_string());
+            let sources = trellis_index::read_sources(&root);
+            let index = trellis_index::build_from_sources(&sources);
+            let result =
+                crate::index_cmd::radius_json(&index, &sources, &symbol).map_err(|e| e.to_string());
             respond_on(&sink, id.as_deref(), "get_radius", result);
+        }));
+    }
+
+    /// `get_symbols`: every definition the index holds, or one module's,
+    /// with its lines and three call-site counts (the Atlas, owner request
+    /// of 2026-10-11); nothing is written. The index is built as
+    /// `get_codebase` builds it, on its own thread for the same reason, and
+    /// a root with no `.git` is refused first, as there (#559).
+    fn get_symbols(&mut self, cmd: &Value, id: Option<&str>) {
+        let module = match crate::atlas::module_arg(cmd.get("module")) {
+            Ok(m) => m,
+            Err(e) => {
+                self.respond(id, "get_symbols", Err(e));
+                return;
+            }
+        };
+        if let Err(e) = repository_root(&self.root, "get_symbols") {
+            self.respond(id, "get_symbols", Err(e));
+            return;
+        }
+        let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
+        self.waiters.push(std::thread::spawn(move || {
+            let result = crate::atlas::symbols(&root, module.as_deref());
+            respond_on(&sink, id.as_deref(), "get_symbols", result);
+        }));
+    }
+
+    /// `get_history`: HEAD's first-parent commits, the tags in its history
+    /// and each path's churn, from git through `trellis_vcs` (the Atlas,
+    /// owner request of 2026-10-11); nothing is written. Its own thread, as
+    /// `get_codebase`'s, since a long history takes a while to walk; a
+    /// root with no `.git` is refused first, as there (#559).
+    fn get_history(&mut self, cmd: &Value, id: Option<&str>) {
+        let counts = crate::atlas::count_arg(cmd, "commits", 20)
+            .and_then(|c| Ok((c, crate::atlas::count_arg(cmd, "tags", 12)?)));
+        let (commits, tags) = match counts {
+            Ok(n) => n,
+            Err(e) => {
+                self.respond(id, "get_history", Err(e));
+                return;
+            }
+        };
+        if let Err(e) = repository_root(&self.root, "get_history") {
+            self.respond(id, "get_history", Err(e));
+            return;
+        }
+        let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
+        self.waiters.push(std::thread::spawn(move || {
+            let result = crate::atlas::history(&root, commits, tags);
+            respond_on(&sink, id.as_deref(), "get_history", result);
         }));
     }
 
@@ -1252,6 +1331,8 @@ impl Server {
             "compact" => self.compact(id),
             "get_codebase" => self.get_codebase(cmd, id),
             "get_radius" => self.get_radius(cmd, id),
+            "get_symbols" => self.get_symbols(cmd, id),
+            "get_history" => self.get_history(cmd, id),
             "get_queue" => self.get_queue(id),
             "list_paths" => self.list_paths(cmd, id),
             "vault_search" => self.vault_search(cmd, id),
@@ -2645,6 +2726,64 @@ mod tests {
                 "{a}"
             );
         }
+    }
+
+    #[test]
+    fn rpc_atlas_refusals_start_no_thread() {
+        // The risk: the Atlas's reads (owner request of 2026-10-11) walking
+        // a root with no `.git` before refusing it (#559), or starting git
+        // on an argument they then refuse.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("loose.py"), "def f():\n    return 1\n").unwrap();
+        let out: Arc<Mutex<Vec<u8>>> = Arc::default();
+        let mut s = Server {
+            root: d.path().to_path_buf(),
+            sink: out.clone(),
+            mode: Mode::Quiet,
+            model: None,
+            confirmed: None,
+            running: None,
+            classifying: None,
+            last: Arc::default(),
+            ran: Arc::default(),
+            done: output::DoneSlot::default(),
+            tier: output::TierSlot::default(),
+            approvals: Arc::default(),
+            next_approval: Arc::default(),
+            input_closed: Arc::default(),
+            waiters: Vec::new(),
+            sources: ModelSources {
+                runtimes: Vec::new(),
+                user_file: None,
+            },
+        };
+        let cmds = [
+            json!({"id": "s", "type": "get_symbols"}),
+            json!({"id": "m", "type": "get_symbols", "module": ["a"]}),
+            json!({"id": "r", "type": "get_codebase", "ref": "HEAD"}),
+            json!({"id": "o", "type": "get_codebase", "ref": "--output=x"}),
+            json!({"id": "e", "type": "get_codebase", "edges": "most"}),
+            json!({"id": "h", "type": "get_history"}),
+            json!({"id": "c", "type": "get_history", "commits": "all"}),
+        ];
+        for cmd in &cmds {
+            s.dispatch_command(cmd);
+            assert!(s.waiters.is_empty(), "{cmd} started a thread");
+        }
+        let text = String::from_utf8(out.lock().unwrap().clone()).unwrap();
+        let answers: Vec<Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(answers.len(), cmds.len(), "{text}");
+        for a in &answers {
+            assert_eq!(a["success"], false, "{a}");
+            assert!(
+                a["error"].as_str().is_some_and(|e| e.contains(" refused")),
+                "{a}"
+            );
+        }
+        assert!(!d.path().join("x").exists());
     }
 
     #[test]
