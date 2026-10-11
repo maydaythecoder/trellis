@@ -136,6 +136,19 @@ textarea, Send and control `disabled`, and opens them only once the view's
 set; `rpc_send` refuses a `prompt` before then. Choosing the configured
 spec sends `set_model {configured: true}`, which names no model, so section
 4's guard is unchanged; a listed or typed spec is held to it as before.
+*As built 2026-10-11, owner-directed (the owner's request of 2026-10-11:
+"the current view is nice in the trellis atlas, could you add that to the
+current view without removing the other ones"):* the rail switches seven
+sections, in this order: overview, run, trails, codebase, atlas, board and
+vault. The Atlas is the one added, after codebase; every other section and
+what it does are unchanged (`page_rail_buttons_control_sections_that_exist`
+in `src/lockdown.rs`). `ui/atlas.js` draws it on a canvas from the view's
+`atlas` key, which the core (`src/atlas.rs`) computes from `get_history`,
+`get_codebase` (with `edges` and `ref`), `get_symbols` and `get_radius`
+answers, the map's layout included. The page uses no library and loads
+nothing from a network, writes text through `textContent` only, reads its
+colours from `style.css` at draw time, and takes no animated flight under
+`prefers-reduced-motion` (the `atlas_` tests in `src/lockdown.rs`).
 
 ### 6. The client contract
 
@@ -226,6 +239,22 @@ list --state open`, `gh run list -L 10`), each bounded to 10 seconds; when
 it is missing, not logged in, times out or fails, the overview's `pr_ci`
 says so as `{"available": false, "reason"}` (ADR 0050 section 3, as
 built).
+*As built 2026-10-11, owner-directed (the owner's request of 2026-10-11:
+"the current view is nice in the trellis atlas, could you add that to the
+current view without removing the other ones"):* rpc gives the desktop's
+Atlas section what it draws, read-only and each on its own thread, each
+refusing a root with no `.git` entry: `get_codebase` with `edges: "all"`
+for every module edge and `ref` for the graph at a commit (its `ref`,
+`commit` and `date`; HEAD's `commit` and `date` without one), `get_symbols`
+for definitions with their lines and their `calls_in`,
+`calls_in_ambiguous` and `calls_out` counts, `get_radius`'s `reached` and
+`sites` lists beside its unchanged counts, and `get_history` for HEAD's
+first-parent commits, the tags in its history and per-path churn measured
+back from HEAD's committer date (ADR 0025 §5, added 2026-10-11). A
+commit's tree is read through `trellis_vcs` into a temporary directory
+outside the repository and removed; nothing the repository holds is
+written. No `--json` is added to `index`, `radius` or any other command,
+and section 2's spawns are unchanged.
 
 ## Alternatives rejected
 
