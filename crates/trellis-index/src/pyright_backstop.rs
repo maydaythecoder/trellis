@@ -255,7 +255,7 @@ pub fn run(index: &Index, root: &Path, sites: &[CallSiteId], server: &Server) ->
             _ => skipped_certain += 1,
         }
     }
-    let doubt = count(by_file.values().map(Vec::len).sum());
+    let doubt = saturating_u32(by_file.values().map(Vec::len).sum());
     if doubt == 0 {
         return BackstopReport::not_run(
             "no Unresolved or Candidates site to query".into(),
@@ -315,13 +315,13 @@ pub fn run(index: &Index, root: &Path, sites: &[CallSiteId], server: &Server) ->
     let mut stopped: Option<String> = None;
     for (file, file_sites) in &by_file {
         if stopped.is_some() {
-            report.not_queried += count(file_sites.len());
+            report.not_queried += saturating_u32(file_sites.len());
             continue;
         }
         let Some((uri, src, tree)) = files.open(*file) else {
             // A file that cannot be read now cannot be asked about; its
             // sites keep their verdict.
-            report.not_queried += count(file_sites.len());
+            report.not_queried += saturating_u32(file_sites.len());
             continue;
         };
         let opened = lsp.notify(
@@ -330,7 +330,7 @@ pub fn run(index: &Index, root: &Path, sites: &[CallSiteId], server: &Server) ->
         );
         if let Err(e) = opened {
             stopped = Some(e);
-            report.not_queried += count(file_sites.len());
+            report.not_queried += saturating_u32(file_sites.len());
             continue;
         }
         for (i, &site) in file_sites.iter().enumerate() {
@@ -348,7 +348,7 @@ pub fn run(index: &Index, root: &Path, sites: &[CallSiteId], server: &Server) ->
                 Ok(v) => v,
                 Err(e) => {
                     stopped = Some(e);
-                    report.not_queried += count(file_sites.len() - i);
+                    report.not_queried += saturating_u32(file_sites.len() - i);
                     break;
                 }
             };
@@ -359,7 +359,7 @@ pub fn run(index: &Index, root: &Path, sites: &[CallSiteId], server: &Server) ->
                     callee,
                     source: EdgeSource::Pyright,
                 }),
-                Err(Answer::None) => report.no_answer += 1,
+                Err(Answer::NoLocation) => report.no_answer += 1,
                 Err(Answer::Refused(why)) => *report.refused.entry(why).or_default() += 1,
             }
         }
@@ -444,14 +444,14 @@ fn find_program(program: &OsString, path: Option<&std::ffi::OsStr>) -> Option<Pa
     })
 }
 
-fn count(n: usize) -> u32 {
+fn saturating_u32(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 
 /// Why a queried site was not bound.
 enum Answer {
     /// The server returned no location.
-    None,
+    NoLocation,
     /// The server returned locations this module would not bind.
     Refused(Refusal),
 }
@@ -504,7 +504,7 @@ fn bind(
             _ => found = Some(sym),
         }
     }
-    let sym = found.ok_or(Answer::None)?;
+    let sym = found.ok_or(Answer::NoLocation)?;
     if let Target::Candidates(c) = target
         && !c.contains(&sym)
     {
@@ -554,7 +554,7 @@ fn not_the_runtime_callee(index: &Index, root: &Path) -> Result<HashSet<SymbolId
                 .decorators
                 .iter()
                 .any(|dec| dec == "abstractmethod" || dec.ends_with(".abstractmethod"));
-            if is_abstract || tree.as_ref().is_some_and(|t| stub_body(t, &src, d.span)) {
+            if is_abstract || tree.as_ref().is_some_and(|t| is_stub_body(t, &src, d.span)) {
                 out.insert(id);
             }
         }
@@ -575,7 +575,7 @@ const NOT_IMPLEMENTED: &str = concat!("NotImpl", "ementedError");
 /// Whether the definition at `span` has a body that cannot be what runs:
 /// after an optional docstring, every statement is `...`, `pass` or a raise
 /// of [`NOT_IMPLEMENTED`] (bare or called), and there is at least one.
-fn stub_body(tree: &tree_sitter::Tree, src: &str, span: (usize, usize)) -> bool {
+fn is_stub_body(tree: &tree_sitter::Tree, src: &str, span: (usize, usize)) -> bool {
     let Some(mut node) = tree.root_node().descendant_for_byte_range(span.0, span.1) else {
         return false;
     };
@@ -689,12 +689,13 @@ impl<'a> Files<'a> {
     /// The indexed file `uri` names, or `None` when it names anything else.
     fn file_at(&self, uri: &str) -> Option<FileId> {
         let path = std::fs::canonicalize(uri_to_path(uri)?).ok()?;
-        let rel = path.strip_prefix(&self.root).ok()?;
-        let rel: Vec<String> = rel
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .collect();
-        self.by_path.get(rel.join("/").as_str()).copied()
+        // `rel_path` keeps a path outside the root whole; a location there
+        // is not a first-party file, so it is refused here first.
+        if !path.starts_with(&self.root) {
+            return None;
+        }
+        let rel = crate::resolve::rel_path(&self.root, &path);
+        self.by_path.get(rel.as_str()).copied()
     }
 
     fn name_at(&mut self, file: FileId, line: u32, character: u32) -> Option<SymbolId> {

@@ -194,7 +194,7 @@ async fn find_capped(root: &Path, glob: &str, cap: usize) -> ToolResult {
     let listed = c.stdout.render();
     let mut hits: Vec<&str> = listed
         .split('\0')
-        .filter(|p| !p.is_empty() && glob_match(pat, p) && !crate::orchestrator::names_git_dir(p))
+        .filter(|p| !p.is_empty() && glob_match(pat, p) && !crate::path_rules::names_git_dir(p))
         // `--others` walks into a Windows junction as into any directory,
         // so `g -> .git` listed git's own files (#428).
         .filter(|p| in_repo(root, &root.join(p)))
@@ -213,7 +213,7 @@ pub(crate) fn ls(root: &Path, rel: &str) -> ToolResult {
     let mut names: Vec<String> = rd
         .filter_map(Result::ok)
         // By any spelling: `.GIT` on a case-insensitive filesystem is it.
-        .filter(|e| !crate::orchestrator::names_git_dir(&e.file_name().to_string_lossy()))
+        .filter(|e| !crate::path_rules::names_git_dir(&e.file_name().to_string_lossy()))
         // Nor a link or junction into it or out of the repository (#428).
         .filter(|e| in_repo(root, &e.path()))
         .map(|e| {

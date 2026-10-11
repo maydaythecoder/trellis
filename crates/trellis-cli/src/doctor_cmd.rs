@@ -1,3 +1,8 @@
+//! `trellis doctor`, `check` and `init`: tier, batching and tooling
+//! probes, and the checks run on their own. What doctor reports about a
+//! run's inputs (user config, context files, trust, profiles, routines,
+//! the vault) is in `doctor_extra.rs`.
+
 use crate::floor::floor_line;
 use crate::index_cmd::graph_lines;
 use crate::plain;
@@ -62,6 +67,17 @@ fn codebase_graph(root: &Path) -> trellis_index::ModuleGraph {
     trellis_index::module_graph(&index)
 }
 
+/// How many of a module's edges [`graph_json`] lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Edges {
+    /// The heaviest [`MAX_EDGES_DRAWN`](crate::index_cmd::MAX_EDGES_DRAWN),
+    /// as the drawing shows them.
+    Drawn,
+    /// Every one, for a client that draws the whole graph itself (the
+    /// desktop's Atlas, owner request of 2026-10-11).
+    All,
+}
+
 /// The codebase graph for `root` as data, for rpc's `get_codebase`.
 ///
 /// What `codebase_lines` draws for the same `limit`, field for field: the
@@ -69,14 +85,21 @@ fn codebase_graph(root: &Path) -> trellis_index::ModuleGraph {
 /// left out counted rather than dropped. Bound, ambiguous and unresolved stay
 /// separate counts with no denominator beside them (CLAUDE.md rule 3).
 /// Module names are whole: cutting them to a column is the drawing's.
-pub(crate) fn codebase_json(root: &Path, limit: usize) -> serde_json::Value {
-    graph_json(&codebase_graph(root), limit)
+pub(crate) fn codebase_json(root: &Path, limit: usize, edges: Edges) -> serde_json::Value {
+    graph_json(&codebase_graph(root), limit, edges)
 }
 
 /// `codebase_json`'s shape for a graph already in hand: the overview's,
 /// from a cached index it must not rebuild (#558).
-pub(crate) fn graph_json(g: &trellis_index::ModuleGraph, limit: usize) -> serde_json::Value {
-    use crate::index_cmd::MAX_EDGES_DRAWN;
+pub(crate) fn graph_json(
+    g: &trellis_index::ModuleGraph,
+    limit: usize,
+    edges: Edges,
+) -> serde_json::Value {
+    let shown = match edges {
+        Edges::Drawn => crate::index_cmd::MAX_EDGES_DRAWN,
+        Edges::All => usize::MAX,
+    };
     let modules: Vec<serde_json::Value> = g
         .nodes
         .iter()
@@ -85,7 +108,7 @@ pub(crate) fn graph_json(g: &trellis_index::ModuleGraph, limit: usize) -> serde_
             let calls: Vec<serde_json::Value> = n
                 .calls
                 .iter()
-                .take(MAX_EDGES_DRAWN)
+                .take(shown)
                 .map(|(m, c)| serde_json::json!({"module": m, "call_sites": c}))
                 .collect();
             serde_json::json!({
@@ -96,7 +119,7 @@ pub(crate) fn graph_json(g: &trellis_index::ModuleGraph, limit: usize) -> serde_
                 "path": n.path,
                 "defines": n.defines,
                 "calls": calls,
-                "calls_not_drawn": n.calls.len().saturating_sub(MAX_EDGES_DRAWN),
+                "calls_not_drawn": n.calls.len().saturating_sub(shown),
                 "ambiguous": n.ambiguous,
                 "unresolved": n.unresolved,
             })
@@ -1095,7 +1118,7 @@ fn repo_lines(root: &Path, cfg: &config::RepoConfig) -> Vec<String> {
 
     // Integrated (ADR 0021 wave I): the user config, context files, user
     // skills, trust, profiles and routines, and the vault.
-    out.extend(doctor_extra::lines(root, cfg));
+    out.extend(doctor_extra::input_report_lines(root, cfg));
 
     out
 }

@@ -160,6 +160,10 @@ judgment would be a model deciding whether it had followed the rules.
 |---|---|
 | `docs/BRIEF.md` | the specification |
 | `docs/STATUS.md` | every claim, audited against the code |
+| `docs/ARCHITECTURE.md` | the crates, and one run traced through the code |
+| `docs/GLOSSARY.md` | project terms, each with its file and ADR |
+| `docs/adr/README.md` | index of every ADR, with status |
+| `CONTRIBUTING.md` | setup, branches, review, how-to checklists |
 | `docs/ROADMAP.md` | the v1.0 gate, verbatim, and the non-goals |
 | `docs/BENCHMARK_AND_EVAL.md` | how every figure here was measured |
 | `docs/RISK_REGISTER.md` | soft spots, with a costed patch each |

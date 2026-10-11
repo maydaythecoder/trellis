@@ -20,6 +20,10 @@
 //! uncommitted edits could not make that promise. Carrying context forward is
 //! `--resume`, which reads a committed trail, and is deliberate rather than
 //! automatic (S11).
+//!
+//! `/prompts`, `/models`, `/name` and `/copy`, the `!cmd` shell helper,
+//! the stdin reader used while a run is in flight and `/status`'s tokens
+//! per model live in `session_extra.rs`.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -1694,13 +1698,8 @@ mod tests {
             "def helper(thing):\n    return thing.run()\n\n\ndef other():\n    return 1\n",
         )
         .unwrap();
-        init_git(d.path());
+        git_repo(d.path());
         d
-    }
-
-    fn init_git(root: &std::path::Path) {
-        crate::testutil::git_init(root);
-        crate::testutil::git_commit_all(root, "init");
     }
 
     #[test]
@@ -1777,7 +1776,7 @@ def other():
             "def helper():\n    return 1\n",
         )
         .unwrap();
-        init_git(d.path());
+        git_repo(d.path());
         let mut s = Session::open(d.path(), None).unwrap();
         // Created after the index was built: unexamined, not unbound.
         std::fs::write(
@@ -1941,7 +1940,7 @@ def other():
             "def helper():\n    return 1\n",
         )
         .unwrap();
-        init_git(d.path());
+        git_repo(d.path());
 
         let mut s = Session::open(d.path(), None).unwrap();
         std::fs::write(
@@ -1976,7 +1975,7 @@ def other():
             "def far(x):\n    return x.also_unresolved()\n",
         )
         .unwrap();
-        init_git(d.path());
+        git_repo(d.path());
         let s = Session::open(d.path(), None).unwrap();
 
         let whole = trellis_index::doubt_in_files(
@@ -2117,7 +2116,7 @@ def other():
             "def helper():\n    return 1\n",
         )
         .unwrap();
-        init_git(d.path());
+        git_repo(d.path());
 
         let mut s = Session::open(d.path(), None).unwrap();
         // Created after the index was built, so it is unexamined rather than
@@ -2166,7 +2165,7 @@ def other():
             "def helper():\n    return 1\n",
         )
         .unwrap();
-        init_git(d.path());
+        git_repo(d.path());
 
         let mut s = Session::open(d.path(), None).unwrap();
         std::fs::write(
@@ -2454,7 +2453,7 @@ def other():
             "def one(thing):\n    return thing.run()\n",
         )
         .unwrap();
-        init_git(d.path());
+        git_repo(d.path());
         d
     }
 

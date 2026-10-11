@@ -305,9 +305,11 @@ impl Priority {
     }
 }
 
+/// What a person decided. Not called `Verdict`: that name is the executed
+/// check's in `trellis-checks`, and this one asserts nothing about code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Verdict {
+pub enum ApprovalDecision {
     Approved,
     Rejected,
 }
@@ -315,7 +317,7 @@ pub enum Verdict {
 /// A person's decision on a task that needed one (ADR 0026 §6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Decision {
-    pub decision: Verdict,
+    pub decision: ApprovalDecision,
     pub at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -468,7 +470,7 @@ impl Task {
             && !matches!(
                 self.approval,
                 Some(Decision {
-                    decision: Verdict::Approved,
+                    decision: ApprovalDecision::Approved,
                     ..
                 })
             )
@@ -1436,6 +1438,9 @@ pub fn slugify(task: &str) -> String {
 /// Control characters shown as escapes. Task text is typed by a person, but
 /// it reaches a terminal, and an escape sequence in it could repaint the
 /// line that says how a run ended.
+///
+/// Same output as `trellis_core::text::escape_controls`; kept as a copy
+/// because this crate does not depend on trellis-core.
 pub fn plain(s: &str) -> String {
     s.chars()
         .map(|c| {

@@ -19,11 +19,15 @@
 //!
 //! It also keeps the vault notes view (`state/vault.rs`, #309), typed from
 //! `vault_search` and `vault_graph` answers, and the board's queue view
-//! (`queue.rs`, #311), typed from `get_queue` answers: views of their own,
-//! which a run's start leaves alone and a new child clears.
+//! (`queue.rs`, #311), typed from `get_queue` answers, and the Atlas
+//! (`atlas.rs`, the owner's request of 2026-10-11), typed from its
+//! `get_history`, `get_codebase`, `get_symbols` and `get_radius` answers:
+//! views of their own, which a run's start leaves alone and a new child
+//! clears.
 
 mod vault;
 
+use crate::atlas;
 use crate::frames::{ApprovalRequest, Frame, RunEnd, Turn};
 use crate::graph;
 use crate::queue;
@@ -78,13 +82,16 @@ pub enum Pane {
     Vault,
     /// The board's queue view (`queue.rs`).
     Queue,
+    /// The Atlas: its history, snapshots, symbols, radius and layout
+    /// (`atlas.rs`).
+    Atlas,
 }
 
 /// Every pane the view carries. Each is a key the page must draw:
 /// `view_renders_every_pane_key` in `lockdown.rs` drives a whole run through
 /// [`DesktopState::update`] and fails naming a key here that no module the
 /// page loads reads from the `view` event (ADR 0052 section 1, #513).
-const PANES: [Pane; 21] = [
+const PANES: [Pane; 22] = [
     Pane::Transcript,
     Pane::Actions,
     Pane::Edits,
@@ -106,6 +113,7 @@ const PANES: [Pane; 21] = [
     Pane::Graph,
     Pane::Vault,
     Pane::Queue,
+    Pane::Atlas,
 ];
 
 /// The panes a run starts afresh: everything but the transcript, which,
@@ -154,6 +162,7 @@ impl Pane {
             Pane::Graph => "graph",
             Pane::Vault => "vault",
             Pane::Queue => "queue",
+            Pane::Atlas => "atlas",
         }
     }
 
@@ -329,9 +338,12 @@ impl Undelivered {
 /// vault, queue, models and session tokens panes), not a line in the run's
 /// transcript or the page's one alert. `get_trails` and `get_overview` are
 /// the page's own commands, not rpc lines, so their answers never come here.
-const VIEW_READS: [&str; 7] = [
+/// `get_symbols` and `get_history` are the Atlas's.
+const VIEW_READS: [&str; 9] = [
     "get_codebase",
     "get_radius",
+    "get_symbols",
+    "get_history",
     "vault_search",
     "vault_graph",
     "get_queue",
@@ -603,6 +615,8 @@ pub struct DesktopState {
     vault: vault::Vault,
     /// The board's queue view, kept across runs as the vault view is.
     queue: queue::Queue,
+    /// The Atlas, kept across runs as the vault view is.
+    atlas: atlas::Atlas,
 }
 
 impl DesktopState {
@@ -652,6 +666,9 @@ impl DesktopState {
                 }
                 if self.queue.answer(&r) {
                     views = views.with(Pane::Queue);
+                }
+                if self.atlas.answer(&r) {
+                    views = views.with(Pane::Atlas);
                 }
                 // The core's own models question: its answer is recorded,
                 // and anything but a well-formed success records nothing.
@@ -872,6 +889,13 @@ impl DesktopState {
         self.queue.asked(id);
     }
 
+    /// The page sent `line`, a `command` the Atlas reads through: the
+    /// Atlas takes only its answer from now on, for its kind or its
+    /// snapshot. A line without an Atlas id changes nothing.
+    pub fn atlas_asked(&mut self, command: &str, line: &Value) {
+        self.atlas.asked(command, line);
+    }
+
     /// Clears the whole view, transcript included: colibri's New chat and
     /// Clear. Whether a run is in flight, which specs the child reported,
     /// and the model its session has and offered, are the child's facts,
@@ -1023,6 +1047,7 @@ impl DesktopState {
             .to_json(),
             Pane::Vault => self.vault.to_json(),
             Pane::Queue => self.queue.to_json(),
+            Pane::Atlas => self.atlas.to_json(),
             Pane::Outcome => match &self.outcome {
                 Some(e) => json!({
                     "outcome": e.outcome,
@@ -1699,6 +1724,32 @@ mod tests {
         .to_string();
         assert!(!feed(&mut s, &refused).has(Pane::Tier));
         assert_eq!(all(&s)["tier"], "scripted");
+    }
+
+    #[test]
+    fn atlas_answers_are_its_own_and_a_new_child_clears_them() {
+        // The risk (the owner's request of 2026-10-11): an Atlas read trellis
+        // refused (an older trellis with no get_history) raised the page's
+        // alert as if a run had failed; or another repository's map stayed
+        // drawn, and answerable, after a new child started.
+        let mut s = DesktopState::default();
+        s.atlas_asked(
+            "get_history",
+            &json!({"id": "desktop-atlas-history-1", "type": "get_history"}),
+        );
+        let refusal = json!({"type": "response", "command": "get_history", "success": false,
+                             "id": "desktop-atlas-history-1", "error": "unknown command"})
+        .to_string();
+        let c = feed(&mut s, &refusal);
+        assert_eq!(c, Changed::of(&[Pane::Atlas]), "{c:?}");
+        assert_eq!(all(&s)["atlas"]["history"]["error"], "unknown command");
+        assert_eq!(all(&s)["alert"], Value::Null);
+        // What `start` does for a new child.
+        assert!(s.clear().has(Pane::Atlas));
+        assert_eq!(all(&s)["atlas"], atlas::Atlas::default().to_json());
+        assert_eq!(all(&s)["atlas"]["history"], Value::Null);
+        // The old child's question is not the new one's.
+        assert!(!feed(&mut s, &refusal).has(Pane::Atlas));
     }
 
     fn response(command: &str, success: bool, data: Value) -> String {

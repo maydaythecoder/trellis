@@ -20,6 +20,26 @@ use std::time::Duration;
 ///
 /// The first five are the measured set. Their order is the order of the
 /// tool line every recorded prompt was taken with, so new tools go after.
+///
+/// A new built-in tool is named in each of these, none reordered:
+///
+/// - `agent::ToolCall`, the variant, and `wire::ToolCallWire` with its
+///   conversion into `Step::Call`;
+/// - this list, then `DEFAULT_ON` or `OPT_IN`, and `args_hint` below;
+/// - `call_json` below, the call's JSON for hooks and the hosted transcript;
+/// - in gate.rs: [`crate::APPROVABLE_TOOLS`] (its own order),
+///   `READ_ONLY_TOOLS`, `tool_name` and `call_summary`;
+/// - in orchestrator.rs: `may_change_tree` and the dispatch match;
+/// - in adapter.rs: `shown_observation`, and `carries_coverage` if the
+///   result carries a blast radius's coverage;
+/// - in agent.rs: the observation rendering (ADR 0019 calls it the
+///   `render()` arm);
+/// - trellis-cli run_cmd.rs: the trail `Action` kind and summary.
+///
+/// The compiler finds the exhaustive matches. The name lists it does not:
+/// `builtin_and_approvable_tools_are_the_same_set`,
+/// `read_only_table_names_every_built_in_tool_and_nothing_else` and
+/// `call_json_has_no_read_only_key_for_any_built_in` do.
 pub const BUILTIN_TOOLS: &[&str] = &[
     "blast_radius",
     "read_file",
@@ -836,6 +856,21 @@ pub fn call_json(call: &ToolCall) -> Value {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn builtin_and_approvable_tools_are_the_same_set() {
+        // Two lists of one set, in different orders on purpose (the prompt's
+        // order here, ADR 0018's there). A tool in one and not the other is
+        // either offered to the model but not approvable, or approvable but
+        // never offered.
+        let mut builtin = BUILTIN_TOOLS.to_vec();
+        let mut approvable = crate::APPROVABLE_TOOLS.to_vec();
+        builtin.sort_unstable();
+        approvable.sort_unstable();
+        assert_eq!(builtin, approvable);
+        builtin.dedup();
+        assert_eq!(builtin.len(), BUILTIN_TOOLS.len(), "a name twice");
+    }
 
     fn lint() -> CustomTool {
         CustomTool {
