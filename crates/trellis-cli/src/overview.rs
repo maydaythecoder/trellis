@@ -101,7 +101,7 @@ fn gather(root: Option<&Path>) -> Value {
 /// The listed repositories, newest first, each with its newest trail. A list
 /// that cannot be read is empty, with why beside it.
 fn recent() -> (Value, Option<String>) {
-    let Some(file) = crate::start_screen::file() else {
+    let Some(file) = crate::start_screen::recent_dirs_file() else {
         return (json!([]), None);
     };
     match crate::start_screen::listed(&file) {

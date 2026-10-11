@@ -97,7 +97,7 @@ pub(crate) fn models_json(root: &Path, session: Option<&str>) -> Value {
     let repo = crate::config::RepoConfig::load_with_user(root, None)
         .ok()
         .and_then(|c| c.model());
-    let user = crate::user_config::file().and_then(|f| {
+    let user = crate::user_config::user_config_path().and_then(|f| {
         let text = std::fs::read_to_string(f).ok()?;
         let v: toml::Value = toml::from_str(&text).ok()?;
         v.get("model")?.get("spec")?.as_str().map(str::to_string)

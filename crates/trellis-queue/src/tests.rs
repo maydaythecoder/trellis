@@ -3089,7 +3089,7 @@ fn stale_claim_block_changes_only_the_status_the_block_and_the_claim() {
         t.blockers = vec!["b".into()];
         t.needs_approval = true;
         t.approval = Some(Decision {
-            decision: Verdict::Approved,
+            decision: ApprovalDecision::Approved,
             at: secs_to_iso(at - 9),
             reason: Some("ok".into()),
         });

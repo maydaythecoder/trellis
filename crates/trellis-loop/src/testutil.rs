@@ -17,6 +17,46 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+/// A repository with one module, `app/util.py` defining `helper`, and no
+/// git: the smallest tree the loop can index and edit.
+pub(crate) fn repo() -> tempfile::TempDir {
+    let d = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(d.path().join("app")).unwrap();
+    std::fs::write(
+        d.path().join("app/util.py"),
+        "def helper():\n    return 1\n",
+    )
+    .unwrap();
+    d
+}
+
+/// A ten-iteration budget with every other limit at its default.
+pub(crate) fn budget() -> crate::budget::Budget {
+    crate::budget::Budget {
+        max_iterations: 10,
+        ..crate::budget::Budget::default()
+    }
+}
+
+/// A checker that really runs and exits `code`.
+///
+/// The point of the loop is that a `Verdict` can only come from an
+/// executed process, so a convergence test that faked one would be
+/// testing the opposite of the property. The platform shell is the one
+/// executable guaranteed present wherever these tests run; trailing paths
+/// are appended by `typecheck` and ignored by `exit`.
+pub(crate) fn checker(code: u8) -> trellis_checks::CheckConfig {
+    let argv = if cfg!(windows) {
+        vec!["cmd".into(), "/C".into(), format!("exit {code}")]
+    } else {
+        vec!["sh".into(), "-c".into(), format!("exit {code}")]
+    };
+    trellis_checks::CheckConfig {
+        typecheck: argv,
+        ..trellis_checks::CheckConfig::default()
+    }
+}
+
 /// `git` through `trellis_vcs`, failing the test on a non-zero exit.
 pub(crate) fn git(dir: &Path, args: &[&str]) -> String {
     let out = trellis_vcs::command()
