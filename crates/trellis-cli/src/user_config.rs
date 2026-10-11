@@ -28,7 +28,7 @@ pub(crate) fn dir() -> Option<PathBuf> {
 }
 
 /// `<dir>/config.toml`.
-pub(crate) fn file() -> Option<PathBuf> {
+pub(crate) fn user_config_path() -> Option<PathBuf> {
     dir().map(|d| d.join("config.toml"))
 }
 
@@ -460,60 +460,54 @@ impl RepoConfig {
 /// Write `[model] spec = "<spec>"` into the user's config file at `file`
 /// (ADR 0050 §2), creating the file and its directory if they are missing.
 ///
-/// The path is a parameter rather than [`file`]'s answer because that is
+/// The path is a parameter rather than [`user_config_path`]'s answer because that is
 /// `None` under test, and a writer that cannot be pointed at a temporary
 /// directory is a writer whose only test is a real home directory.
 ///
 /// The existing text is edited, not re-serialised: a round trip through a
-/// `toml::Table` would drop every comment the user wrote. The result is
-/// parsed back before anything is written, and nothing is written unless
-/// `[model] spec` reads back as `spec` — a file that already sets one, or
-/// spells its model table in a form the line edit does not recognise, is
-/// refused with the file untouched rather than left half-changed.
+/// `toml::Table` would drop every comment the user wrote. A `spec` the file
+/// already sets under `[model]` has its value replaced on its own line, its
+/// indentation and trailing comment kept; with none, the line goes right
+/// after the `[model]` header, or a `[model]` table is appended. The result
+/// is parsed back before anything is written, and nothing is written unless
+/// `[model] spec` reads back as `spec` and nothing else in the file reads
+/// differently: a file that spells its model table in a form the line edit
+/// does not recognise is refused with the file untouched rather than left
+/// half-changed.
 pub(crate) fn set_model_spec(file: &Path, spec: &str) -> Result<()> {
     let old = match std::fs::read_to_string(file) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e).with_context(|| format!("reading {}", file.display())),
     };
-    let line = format!("spec = {}", toml::Value::String(spec.to_string()));
-    let mut out = String::with_capacity(old.len() + line.len() + 16);
-    let mut placed = false;
-    for l in old.split_inclusive('\n') {
-        out.push_str(l);
-        // A header may carry a trailing comment; a `#` cannot appear inside
-        // the bare key `model`, so cutting at the first one is exact here.
-        if !placed && l.split('#').next().unwrap_or("").trim() == "[model]" {
-            if !l.ends_with('\n') {
-                out.push('\n');
-            }
-            out.push_str(&line);
-            out.push('\n');
-            placed = true;
-        }
-    }
-    if !placed {
-        if !out.is_empty() && !out.ends_with('\n') {
-            out.push('\n');
-        }
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str("[model]\n");
-        out.push_str(&line);
-        out.push('\n');
-    }
+    let value = toml::Value::String(spec.to_string()).to_string();
+    let line = format!("spec = {value}");
+    let out = edit_model_spec(&old, &value).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{} sets [model] spec in a form this edit does not read (a multi-line string or \
+             a value that is not a string); the file was not changed. Replace it with `{line}` \
+             by hand",
+            file.display()
+        )
+    })?;
 
     let back: RepoConfig = toml::from_str(&out).with_context(|| {
         format!(
-            "adding [model] spec to {} would not leave valid TOML; the file was not changed. \
+            "setting [model] spec in {} would not leave valid TOML; the file was not changed. \
              Add `{line}` under [model] by hand",
             file.display()
         )
     })?;
     if back.model().as_deref() != Some(spec) {
         anyhow::bail!(
-            "adding [model] spec to {} did not read back as {spec}; the file was not changed",
+            "setting [model] spec in {} did not read back as {spec}; the file was not changed",
+            file.display()
+        );
+    }
+    if all_but_model_spec(&old) != all_but_model_spec(&out) {
+        anyhow::bail!(
+            "setting [model] spec in {} would change more than that one setting; the file was \
+             not changed. Set `{line}` under [model] by hand",
             file.display()
         );
     }
@@ -528,6 +522,127 @@ pub(crate) fn set_model_spec(file: &Path, spec: &str) -> Result<()> {
     std::fs::write(&tmp, &out).with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, file).with_context(|| format!("replacing {}", file.display()))?;
     Ok(())
+}
+
+/// `text` with `[model] spec = <value>`, `value` a TOML string as written:
+/// the line edit [`set_model_spec`] describes. `None` when the file's
+/// existing `spec` under `[model]` is not a one-line string whose end the
+/// edit can find, so replacing it could cut through something else.
+fn edit_model_spec(text: &str, value: &str) -> Option<String> {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let (mut header, mut spec, mut in_model) = (None, None, false);
+    for (i, l) in lines.iter().enumerate() {
+        // A header may carry a trailing comment; a `#` cannot appear inside
+        // the bare key `model`, so cutting at the first one is exact here. A
+        // line of a multi-line array that starts with `[` also ends the
+        // table here, which can only miss a `spec` line, and a missed one
+        // is caught by the read back as a duplicate key.
+        let code = l.split('#').next().unwrap_or("").trim();
+        if code.starts_with('[') {
+            in_model = code == "[model]";
+            if in_model && header.is_none() {
+                header = Some(i);
+            }
+        } else if in_model
+            && spec.is_none()
+            && code
+                .strip_prefix("spec")
+                .is_some_and(|r| r.trim_start().starts_with('='))
+        {
+            spec = Some(i);
+        }
+    }
+    let mut out = String::with_capacity(text.len() + value.len() + 16);
+    if let Some(at) = spec {
+        for (i, l) in lines.iter().enumerate() {
+            if i == at {
+                out.push_str(&replace_value(l, value)?);
+            } else {
+                out.push_str(l);
+            }
+        }
+        return Some(out);
+    }
+    for (i, l) in lines.iter().enumerate() {
+        out.push_str(l);
+        if Some(i) == header {
+            if !l.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&format!("spec = {value}\n"));
+        }
+    }
+    if header.is_none() {
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&format!("[model]\nspec = {value}\n"));
+    }
+    Some(out)
+}
+
+/// `line`, a `spec = <string>` line, with its string replaced by `value`;
+/// what comes before the string and after it (indentation, spacing, a
+/// comment, the line ending) is kept. `None` when the value is not a
+/// one-line string, or something other than a comment follows it.
+fn replace_value(line: &str, value: &str) -> Option<String> {
+    let eq = line.find('=')?;
+    let (head, rest) = line.split_at(eq + 1);
+    let lead = rest.len() - rest.trim_start_matches([' ', '\t']).len();
+    let v = &rest[lead..];
+    let len = one_line_string_len(v)?;
+    let after = &v[len..];
+    let tail = after.trim();
+    if !(tail.is_empty() || tail.starts_with('#')) {
+        return None;
+    }
+    Some(format!("{head}{}{value}{after}", &rest[..lead]))
+}
+
+/// The length in bytes, quotes included, of the one-line TOML basic or
+/// literal string `v` starts with; `None` for a multi-line string or any
+/// other value.
+fn one_line_string_len(v: &str) -> Option<usize> {
+    if v.starts_with("\"\"\"") || v.starts_with("'''") {
+        return None;
+    }
+    match v.chars().next()? {
+        '\'' => v[1..]
+            .find(['\'', '\n'])
+            .filter(|&i| v[1 + i..].starts_with('\''))
+            .map(|i| i + 2),
+        '"' => {
+            let mut escaped = false;
+            for (i, c) in v.char_indices().skip(1) {
+                match c {
+                    '\n' => return None,
+                    _ if escaped => escaped = false,
+                    '\\' => escaped = true,
+                    '"' => return Some(i + 1),
+                    _ => {}
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// `text` as TOML with `[model] spec` taken out (and a `[model]` table left
+/// empty by that), so two versions compare equal when that is all that
+/// differs; `None` when it is not TOML.
+fn all_but_model_spec(text: &str) -> Option<toml::Table> {
+    let mut t: toml::Table = toml::from_str(text).ok()?;
+    if let Some(toml::Value::Table(m)) = t.get_mut("model") {
+        m.remove("spec");
+        if m.is_empty() {
+            t.remove("model");
+        }
+    }
+    Some(t)
 }
 
 #[cfg(test)]
@@ -550,6 +665,75 @@ mod tests {
     fn load(repo: &str, user: &str) -> RepoConfig {
         let (d, u) = files(repo, user);
         RepoConfig::load_with_user(d.path(), Some(&u)).unwrap()
+    }
+
+    #[test]
+    fn set_model_spec_adds_a_spec_to_a_file_with_none() {
+        // The risk: the desktop's "save" (#564) loses the user's comments
+        // or other model settings, or writes a second [model] table.
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("config.toml");
+        std::fs::write(&f, "# mine\n[model]\nthinking = \"low\"\n").unwrap();
+        set_model_spec(&f, "vllm:http://127.0.0.1:8000#q").unwrap();
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert_eq!(
+            text,
+            "# mine\n[model]\nspec = \"vllm:http://127.0.0.1:8000#q\"\nthinking = \"low\"\n"
+        );
+        // No file, and a file with no [model] table, get one.
+        let g = d.path().join("new.toml");
+        set_model_spec(&g, "scripted:x.json").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&g).unwrap(),
+            "[model]\nspec = \"scripted:x.json\"\n"
+        );
+        let h = d.path().join("other.toml");
+        std::fs::write(&h, "[control]\nmode = \"approve\"").unwrap();
+        set_model_spec(&h, "scripted:x.json").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&h).unwrap(),
+            "[control]\nmode = \"approve\"\n\n[model]\nspec = \"scripted:x.json\"\n"
+        );
+    }
+
+    #[test]
+    fn set_model_spec_replaces_the_spec_a_file_already_sets() {
+        // The risk (#564 review): a user who already has `[model] spec`
+        // saves another from the desktop, and the line edit adds a second
+        // `spec` key, which TOML refuses: save always failed for them, and
+        // no model was set. The existing line is replaced in place, its
+        // comment and the user's other lines kept.
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("config.toml");
+        let before = "# mine\n[model]\nthinking = \"low\"\n  spec = \"old:1\"  # was\n\
+                      [budget]\nspec = \"not the model's\"\n";
+        std::fs::write(&f, before).unwrap();
+        set_model_spec(&f, "vllm:http://127.0.0.1:8000#new").unwrap();
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert_eq!(
+            text,
+            "# mine\n[model]\nthinking = \"low\"\n  spec = \"vllm:http://127.0.0.1:8000#new\"  # was\n\
+             [budget]\nspec = \"not the model's\"\n",
+            "only [model]'s spec line changed"
+        );
+        let back: RepoConfig = toml::from_str(&text).unwrap();
+        assert_eq!(
+            back.model().as_deref(),
+            Some("vllm:http://127.0.0.1:8000#new")
+        );
+        // Saving the same spec again is not an error either.
+        set_model_spec(&f, "vllm:http://127.0.0.1:8000#new").unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), text);
+        // A spelling the line edit does not read is refused, file untouched.
+        for odd in [
+            "[model]\nspec = \"\"\"old\"\"\"\n",
+            "model = { spec = \"old:1\" }\n",
+            "[model]\nspec = [\n\"a\"]\n",
+        ] {
+            std::fs::write(&f, odd).unwrap();
+            assert!(set_model_spec(&f, "scripted:x.json").is_err(), "{odd:?}");
+            assert_eq!(std::fs::read_to_string(&f).unwrap(), odd, "{odd:?}");
+        }
     }
 
     #[test]
