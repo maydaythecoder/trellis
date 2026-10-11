@@ -2,6 +2,7 @@
 //! queue and the heartbeat share with them: loading profiles with the
 //! checks only the binary can make, and turning trails into spend records.
 
+use crate::plain;
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use std::collections::BTreeMap;
@@ -9,7 +10,7 @@ use std::path::Path;
 use trellis_queue::ledger::{self, SpendRecord};
 use trellis_queue::profile::{self, PausedBy, Profile, Window};
 use trellis_queue::routine;
-use trellis_queue::{Actor, Event, Queue, plain};
+use trellis_queue::{Actor, Event, Queue};
 
 #[derive(Subcommand)]
 pub(crate) enum AgentsAction {
