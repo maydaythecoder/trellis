@@ -13,6 +13,7 @@
 // One line per module: what it holds. Alphabetical; a command's
 // implementation lives in its `*_cmd` module or in the module it names.
 mod ask; // a question answered, as distinct from a task run
+mod atlas; // the Atlas's reads: symbols, history and a codebase at a ref (rpc)
 mod config; // `.trellis/config.toml`
 mod context_files; // context files, system prompt and skills a run's prompt takes (ADR 0025)
 mod doctor_cmd; // `doctor`, `check` and `init`

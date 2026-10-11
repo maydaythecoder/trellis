@@ -1343,9 +1343,23 @@ fn rpc_get_radius_returns_reach_and_doubt_as_separate_counts() {
     // Last: `radius` builds through the cache, which writes it.
     let o = run(&f, &["radius", "f"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // Every field `trellis radius` prints, compared whole. The lists the
+    // Atlas reads beside them (owner request of 2026-10-11) are not
+    // printed, so they are not in what is read off the text.
+    let mut printed_fields = data.clone();
+    for listed in ["reached", "reached_not_listed", "sites", "sites_not_listed"] {
+        assert!(
+            printed_fields
+                .as_object_mut()
+                .unwrap()
+                .remove(listed)
+                .is_some(),
+            "{listed}: {data}"
+        );
+    }
     assert_eq!(
         printed_radius(&String::from_utf8_lossy(&o.stdout)),
-        data,
+        printed_fields,
         "the counts `trellis radius f` prints"
     );
     // Both blocks carry something, so the comparison is not of zeros.
