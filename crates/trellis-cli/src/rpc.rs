@@ -892,8 +892,10 @@ impl Server {
         let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
         let symbol = symbol.to_string();
         self.waiters.push(std::thread::spawn(move || {
-            let index = trellis_index::build_from_sources(&trellis_index::read_sources(&root));
-            let result = crate::index_cmd::radius_json(&index, &symbol).map_err(|e| e.to_string());
+            let sources = trellis_index::read_sources(&root);
+            let index = trellis_index::build_from_sources(&sources);
+            let result =
+                crate::index_cmd::radius_json(&index, &sources, &symbol).map_err(|e| e.to_string());
             respond_on(&sink, id.as_deref(), "get_radius", result);
         }));
     }

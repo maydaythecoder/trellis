@@ -6446,3 +6446,72 @@ fn rpc_atlas_get_symbols_refuses_an_unknown_module_a_non_string_and_a_root_with_
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&bare);
 }
+
+#[test]
+fn rpc_atlas_get_radius_lists_the_symbols_reached_and_the_sites_beside_the_counts() {
+    // The risks: the Atlas tinting reached modules from a list trellis
+    // never gave (the prototype decoded index.bin for it); an ambiguous
+    // site listed as certain; and the lists replacing or changing the
+    // counts, which stay whole and separate (ADR 0014).
+    let d = empty_repo("rpc-atlas-radius");
+    std::fs::create_dir_all(d.join("app")).unwrap();
+    std::fs::write(d.join("app/__init__.py"), "").unwrap();
+    std::fs::write(
+        d.join("app/shapes.py"),
+        concat!(
+            "class Base:\n",
+            "    def area(self):\n",
+            "        return 0\n",
+            "\n",
+            "\n",
+            "class Square(Base):\n",
+            "    def side(self):\n",
+            "        return 1\n",
+            "\n",
+            "    def area(self):\n",
+            "        return self.side() * self.side()\n",
+            "\n",
+            "\n",
+            "def measure(s: Base):\n",
+            "    return s.area()\n",
+        ),
+    )
+    .unwrap();
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "shapes"]);
+    let records = rpc_records(
+        &d,
+        None,
+        &[serde_json::json!({"id": "r", "type": "get_radius", "symbol": "side"})],
+    );
+    let r = rpc_answer(&records, "r");
+    assert_eq!(r["success"], true, "{r}");
+    let data = &r["data"];
+    assert_eq!(
+        data["reach"],
+        serde_json::json!({"resolved": 2, "ambiguous": 1, "symbols_reached": 2}),
+        "{data}"
+    );
+    assert_eq!(
+        data["reached"],
+        serde_json::json!([
+            {"symbol": "app.shapes.area", "module": "app.shapes", "path": "app/shapes.py",
+             "kind": "method", "line": 10},
+            {"symbol": "app.shapes.measure", "module": "app.shapes", "path": "app/shapes.py",
+             "kind": "function", "line": 14},
+        ]),
+        "{data}"
+    );
+    assert_eq!(
+        data["sites"],
+        serde_json::json!([
+            {"path": "app/shapes.py", "line": 11, "certain": true},
+            {"path": "app/shapes.py", "line": 11, "certain": true},
+            {"path": "app/shapes.py", "line": 15, "certain": false},
+        ]),
+        "{data}"
+    );
+    assert_eq!(data["reached_not_listed"], 0, "{data}");
+    assert_eq!(data["sites_not_listed"], 0, "{data}");
+    let _ = std::fs::remove_dir_all(&d);
+}
