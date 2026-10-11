@@ -17,6 +17,18 @@ const LISTING_TIMEOUT: Duration = Duration::from_secs(60);
 /// How many paths `find` and `ls` name before they say how many they left out.
 const MAX_LISTED: usize = 500;
 
+/// [`trellis_vcs::ENV`] as [`Spec::env`] takes it, for a `git_argv` argv,
+/// which carries the overrides but no environment. Neither listing reads
+/// an object today (`grep --untracked` reads the worktree, `ls-files`
+/// reads the index); set anyway, so one that later does cannot have a
+/// planted promisor remote run (security finding F1).
+fn git_env() -> Vec<(String, String)> {
+    trellis_vcs::ENV
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
 pub(crate) async fn grep(root: &Path, pattern: &str, path: Option<&str>) -> ToolResult {
     if pattern.is_empty() {
         return ToolResult::Error("grep needs a non-empty pattern".into());
@@ -37,7 +49,7 @@ pub(crate) async fn grep(root: &Path, pattern: &str, path: Option<&str>) -> Tool
     let r = exec::run(Spec {
         argv: &argv,
         cwd: root,
-        env: &[],
+        env: &git_env(),
         env_remove: &[],
         stdin: None,
         timeout: LISTING_TIMEOUT,
@@ -160,7 +172,7 @@ async fn find_capped(root: &Path, glob: &str, cap: usize) -> ToolResult {
     let r = exec::run(Spec {
         argv: &argv,
         cwd: root,
-        env: &[],
+        env: &git_env(),
         env_remove: &[],
         stdin: None,
         timeout: LISTING_TIMEOUT,

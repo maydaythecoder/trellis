@@ -12,9 +12,11 @@
 //! why the copy is not a `git checkout` into another work tree, which
 //! writes the repository's index, nor a `git worktree add`, which writes
 //! `.git/worktrees`, nor `git archive`, whose tar stream trellis would need
-//! a tar reader or a `tar` child to unpack. One limit, stated rather than
-//! worked around: in a partial clone, `cat-file` fetches a blob the clone
-//! lacks into the object store, as any read of it would.
+//! a tar reader or a `tar` child to unpack. In a partial clone, a blob the
+//! clone lacks is not fetched, since the fetch runs whatever transport
+//! `.git/config` names: [`command`] sets [`crate::ENV`], and the copy is
+//! refused as [`HistoryError::Missing`] (security finding F1). On a git
+//! too old to honour that variable, the fetch still happens.
 
 use super::{VcsError, command, run_git, run_git_optional};
 use std::io::{BufRead, Read, Write};
