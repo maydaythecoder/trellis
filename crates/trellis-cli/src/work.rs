@@ -911,6 +911,10 @@ pub(crate) fn queue_json(root: &Path) -> std::result::Result<serde_json::Value, 
                         "labels": t.labels,
                         "assignee": t.assignee,
                         "waiting": waiting,
+                        // Always present, empty or null when none, so a
+                        // board can tell "no chain" from "not sent" (#559).
+                        "blockers": t.blockers,
+                        "parent": t.parent,
                     })
                 }
             }
