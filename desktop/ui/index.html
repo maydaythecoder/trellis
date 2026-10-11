@@ -3,7 +3,10 @@
   The TRELLIS desktop page (ADR 0048 section 5).
 
   Static: Tauri serves this file, style.css and the ES modules from
-  desktop/ui/ with no Node, npm or bundler. It carries no inline script, no
+  desktop/ui/ with no Node, npm or bundler; `trellis-desktop --web` serves
+  the same files over HTTP on 127.0.0.1 (ADR 0050 section 5), where web.js,
+  loaded first, stands in for Tauri's window.__TAURI__ over the page's own
+  path and does nothing in the window. It carries no inline script, no
   style attribute and no inline event handler, so the CSP the shell sets
   never needs 'unsafe-inline'. Every string it shows is written by
   render.js, overview.js and main.js through textContent or createElement,
@@ -57,6 +60,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>trellis</title>
     <link rel="stylesheet" href="style.css">
+    <script type="module" src="web.js"></script>
     <script type="module" src="main.js"></script>
     <script type="module" src="graph.js"></script>
     <script type="module" src="codebase.js"></script>
