@@ -5654,11 +5654,24 @@ fn rpc_records(
     root: Option<&Path>,
     commands: &[serde_json::Value],
 ) -> Vec<serde_json::Value> {
+    rpc_records_env(cwd, root, &[], commands)
+}
+
+/// [`rpc_records`], with `env` set on the child.
+fn rpc_records_env(
+    cwd: &Path,
+    root: Option<&Path>,
+    env: &[(&str, &Path)],
+    commands: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
     use std::io::{BufRead, Write};
     use std::process::Stdio;
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_trellis"));
     if let Some(r) = root {
         cmd.arg("--root").arg(r);
+    }
+    for (k, v) in env {
+        cmd.env(k, v);
     }
     let mut child = cmd
         .arg("rpc")
@@ -5944,4 +5957,314 @@ fn rpc_contract_lists_every_field_get_state_answers() {
         "get_state's fields and tests/client_contract.json's get_state.data.always differ"
     );
     let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// rpc for the desktop's Atlas section, the owner's request of 2026-10-11:
+// "the current view is nice in the trellis atlas, could you add that to the
+// current view without removing the other ones"
+// ---------------------------------------------------------------------------
+
+/// Every file under `dir`, `.git` included, by relative path with its
+/// bytes: the before and after of a read that must write nothing.
+fn bytes_under(dir: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                let bytes = std::fs::read(&p).unwrap();
+                out.insert(p.strip_prefix(dir).unwrap().to_path_buf(), bytes);
+            }
+        }
+    }
+    out
+}
+
+/// `status --porcelain` with no optional lock, so the look itself writes
+/// no refreshed index.
+fn porcelain_unlocked(root: &Path) -> String {
+    git(root, &["--no-optional-locks", "status", "--porcelain"])
+}
+
+/// `git <args>` in `root` with the committer date set, through
+/// `trellis_vcs::command()`.
+fn git_dated(root: &Path, date: &str, args: &[&str]) {
+    let out = trellis_vcs::command()
+        .args(args)
+        .env("GIT_COMMITTER_DATE", date)
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The committer date of `v1` in [`atlas_repo`], in a zone other than UTC.
+const V1_DATE: &str = "2024-06-01T00:00:00+02:00";
+
+/// A repository with two commits. The first, tagged `v1` (annotated),
+/// holds `app/old.py`; the second deletes it and adds `app/new.py`. In
+/// both, `hub.py` calls into twelve modules, two more than `get_codebase`
+/// draws per module by default. Returns the root and `v1`'s commit.
+fn atlas_repo(name: &str) -> (PathBuf, String) {
+    let d = empty_repo(name);
+    let mut hub = String::new();
+    let mut body = String::from("\ndef hub():\n    return 0");
+    for i in 0..12 {
+        std::fs::write(
+            d.join(format!("m{i}.py")),
+            format!("def f{i}():\n    return {i}\n"),
+        )
+        .unwrap();
+        hub.push_str(&format!("from m{i} import f{i}\n"));
+        body.push_str(&format!(" + f{i}()"));
+    }
+    std::fs::write(d.join("hub.py"), format!("{hub}{body}\n")).unwrap();
+    std::fs::create_dir_all(d.join("app")).unwrap();
+    std::fs::write(d.join("app/__init__.py"), "").unwrap();
+    std::fs::write(d.join("app/core.py"), "def greet(who):\n    return who\n").unwrap();
+    std::fs::write(
+        d.join("app/old.py"),
+        "from app.core import greet\n\ndef legacy():\n    return greet('old')\n",
+    )
+    .unwrap();
+    git(&d, &["add", "-A"]);
+    git_dated(&d, V1_DATE, &["commit", "-qm", "first"]);
+    git(&d, &["tag", "-a", "v1", "-m", "release"]);
+    let v1 = git(&d, &["rev-parse", "HEAD"]).trim().to_string();
+    git(&d, &["rm", "-q", "app/old.py"]);
+    std::fs::write(
+        d.join("app/new.py"),
+        "from app.core import greet\n\ndef modern():\n    return greet('new')\n",
+    )
+    .unwrap();
+    git(&d, &["add", "-A"]);
+    git_dated(
+        &d,
+        "2024-07-01T12:00:00+00:00",
+        &["commit", "-qm", "second"],
+    );
+    (d, v1)
+}
+
+/// The module named `name` in a `get_codebase` answer's `data`.
+fn module_in<'a>(data: &'a serde_json::Value, name: &str) -> Option<&'a serde_json::Value> {
+    data["modules"]
+        .as_array()
+        .unwrap_or_else(|| panic!("modules: {data}"))
+        .iter()
+        .find(|m| m["module"] == name)
+}
+
+#[test]
+fn rpc_atlas_get_codebase_edges_all_lists_every_module_edge() {
+    // The risk: the Atlas drawing a module's edges from a list cut at ten,
+    // so a hub module looks coupled to ten modules when it calls twelve,
+    // and package edges summed from it undercount. Without the argument
+    // the answer stays what it was (#292).
+    let (d, _) = atlas_repo("rpc-atlas-edges");
+    let records = rpc_records(
+        &d,
+        None,
+        &[
+            serde_json::json!({"id": "d", "type": "get_codebase", "limit": 1000}),
+            serde_json::json!({"id": "a", "type": "get_codebase", "limit": 1000, "edges": "all"}),
+        ],
+    );
+    let drawn = rpc_answer(&records, "d");
+    let all = rpc_answer(&records, "a");
+    assert_eq!(drawn["success"], true, "{drawn}");
+    assert_eq!(all["success"], true, "{all}");
+    let (drawn, all) = (&drawn["data"], &all["data"]);
+    let hub = module_in(drawn, "hub").unwrap();
+    assert_eq!(hub["calls"].as_array().unwrap().len(), 10, "{hub}");
+    assert_eq!(hub["calls_not_drawn"], 2, "{hub}");
+    let hub = module_in(all, "hub").unwrap();
+    assert_eq!(hub["calls"].as_array().unwrap().len(), 12, "{hub}");
+    let mut sum = 0;
+    for m in all["modules"].as_array().unwrap() {
+        assert_eq!(m["calls_not_drawn"], 0, "{m}");
+        for c in m["calls"].as_array().unwrap() {
+            sum += c["call_sites"].as_u64().unwrap();
+        }
+    }
+    assert_eq!(serde_json::json!(sum), all["bound_call_sites"], "{all}");
+    for k in [
+        "modules_indexed",
+        "bound_call_sites",
+        "ambiguous",
+        "unresolved",
+        "modules_not_drawn",
+        "commit",
+        "date",
+    ] {
+        assert_eq!(drawn[k], all[k], "{k}");
+    }
+    let names = |v: &serde_json::Value| -> Vec<String> {
+        v["modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["module"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(
+        names(drawn),
+        names(all),
+        "the same modules in the same order"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn rpc_atlas_get_codebase_ref_answers_the_codebase_at_that_commit_and_writes_nothing() {
+    // The risks: a snapshot indexed from the worktree rather than the
+    // commit; one taken by a checkout, which rewrites the repository's
+    // index, or a `worktree add`, which writes `.git/worktrees`; a copy
+    // left behind in the temporary directory; and a date in this
+    // machine's zone rather than the commit's.
+    let (d, v1) = atlas_repo("rpc-atlas-ref");
+    let tmp = scratch("rpc-atlas-ref-tmp");
+    // A status first, so an index refresh it might make is not counted.
+    assert_eq!(porcelain_unlocked(&d), "");
+    let before = bytes_under(&d);
+    let head = git(&d, &["rev-parse", "HEAD"]).trim().to_string();
+    let head_date = git(&d, &["log", "-1", "--format=%cI", "HEAD"]);
+    let records = rpc_records_env(
+        &d,
+        None,
+        &[("TMPDIR", &tmp), ("TMP", &tmp), ("TEMP", &tmp)],
+        &[
+            serde_json::json!({"id": "r", "type": "get_codebase", "limit": 1000, "ref": "v1"}),
+            serde_json::json!({"id": "c", "type": "get_codebase", "limit": 1000, "ref": v1}),
+            serde_json::json!({"id": "h", "type": "get_codebase", "limit": 1000}),
+        ],
+    );
+    assert_eq!(bytes_under(&d), before, "the repository changed");
+    assert_eq!(porcelain_unlocked(&d), "");
+    let left: Vec<_> = std::fs::read_dir(&tmp).unwrap().collect();
+    assert!(left.is_empty(), "left in the temporary directory: {left:?}");
+
+    let r = rpc_answer(&records, "r");
+    assert_eq!(r["success"], true, "{r}");
+    let at = &r["data"];
+    assert_eq!(at["ref"], "v1", "{at}");
+    assert_eq!(at["commit"], v1.as_str(), "the commit, not the tag object");
+    assert_eq!(at["date"], V1_DATE, "{at}");
+    let old = module_in(at, "app.old").unwrap_or_else(|| panic!("app.old at v1: {at}"));
+    assert_eq!(old["path"], "app/old.py", "{old}");
+    assert!(module_in(at, "app.new").is_none(), "{at}");
+    for m in at["modules"].as_array().unwrap() {
+        let p = m["path"].as_str().unwrap();
+        assert!(!Path::new(p).is_absolute() && !p.contains('\\'), "{m}");
+        git(&d, &["cat-file", "-e", &format!("{v1}:{p}")]);
+    }
+    let core = module_in(at, "app.old").unwrap()["calls"].clone();
+    assert_eq!(
+        core,
+        serde_json::json!([{"module": "app.core", "call_sites": 1}]),
+        "indexed, not only listed"
+    );
+    let by_id = rpc_answer(&records, "c");
+    assert_eq!(by_id["data"]["commit"], v1.as_str(), "{by_id}");
+    assert_eq!(by_id["data"]["modules"], at["modules"], "{by_id}");
+
+    let h = rpc_answer(&records, "h");
+    let now = &h["data"];
+    assert!(now.get("ref").is_none(), "no ref was asked for: {now}");
+    assert_eq!(now["commit"], head.as_str(), "{now}");
+    assert_eq!(now["date"], head_date.trim(), "{now}");
+    assert!(module_in(now, "app.new").is_some(), "{now}");
+    assert!(module_in(now, "app.old").is_none(), "{now}");
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn rpc_atlas_get_codebase_refuses_an_option_an_unknown_ref_and_edges_other_than_all() {
+    // The risks: a client's `ref` read by git as an option (`--output`
+    // writes a file); an unknown ref answered as HEAD's codebase, which
+    // the Atlas would draw as that snapshot; an argument it does not know
+    // taken as the default.
+    let (d, _) = atlas_repo("rpc-atlas-refuse");
+    let tree = git(&d, &["rev-parse", "HEAD^{tree}"]).trim().to_string();
+    let cases = [
+        (serde_json::json!("-n"), "`-n`"),
+        (serde_json::json!("--output=out.txt"), "`--output=out.txt`"),
+        (serde_json::json!("no-such-ref"), "`no-such-ref`"),
+        (serde_json::json!(tree), tree.as_str()),
+        (serde_json::json!(""), "`ref`"),
+        (serde_json::json!("v1\nHEAD"), "`ref`"),
+        (serde_json::json!(7), "`ref`"),
+    ];
+    let mut commands: Vec<serde_json::Value> = cases
+        .iter()
+        .enumerate()
+        .map(|(i, (r, _))| serde_json::json!({"id": format!("r{i}"), "type": "get_codebase", "ref": r}))
+        .collect();
+    commands.push(serde_json::json!({"id": "e1", "type": "get_codebase", "edges": "some"}));
+    commands.push(serde_json::json!({"id": "e2", "type": "get_codebase", "edges": true}));
+    let before = bytes_under(&d);
+    let records = rpc_records(&d, None, &commands);
+    assert_eq!(bytes_under(&d), before, "a refusal wrote something");
+    for (i, (_, named)) in cases.iter().enumerate() {
+        let r = rpc_answer(&records, &format!("r{i}"));
+        assert_eq!(r["command"], "get_codebase", "{r}");
+        assert_eq!(r["success"], false, "{r}");
+        assert!(r.get("data").is_none(), "{r}");
+        let e = r["error"].as_str().unwrap();
+        assert!(e.contains(named), "names {named}: {e}");
+    }
+    for id in ["e1", "e2"] {
+        let r = rpc_answer(&records, id);
+        assert_eq!(r["success"], false, "{r}");
+        assert!(r["error"].as_str().unwrap().contains("`edges`"), "{r}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn rpc_atlas_get_codebase_with_no_commit_or_no_git_says_so() {
+    // The risks: a repository with no commit yet answered with an invented
+    // commit, or refused outright, when its worktree can still be drawn;
+    // and `ref` opening a way past #559's refusal of a root with no `.git`.
+    let d = empty_repo("rpc-atlas-unborn");
+    std::fs::write(d.join("a.py"), "def f():\n    return 1\n").unwrap();
+    let records = rpc_records(
+        &d,
+        None,
+        &[
+            serde_json::json!({"id": "g", "type": "get_codebase"}),
+            serde_json::json!({"id": "r", "type": "get_codebase", "ref": "HEAD"}),
+        ],
+    );
+    let g = rpc_answer(&records, "g");
+    assert_eq!(g["success"], true, "{g}");
+    assert_eq!(g["data"]["commit"], serde_json::Value::Null, "{g}");
+    assert_eq!(g["data"]["date"], serde_json::Value::Null, "{g}");
+    assert!(module_in(&g["data"], "a").is_some(), "{g}");
+    let r = rpc_answer(&records, "r");
+    assert_eq!(r["success"], false, "{r}");
+    assert!(r["error"].as_str().unwrap().contains("`HEAD`"), "{r}");
+
+    let bare = scratch("rpc-atlas-no-git");
+    std::fs::write(bare.join("loose.py"), "def f():\n    return 1\n").unwrap();
+    let records = rpc_records(
+        &bare,
+        Some(&bare),
+        &[serde_json::json!({"id": "r", "type": "get_codebase", "ref": "HEAD"})],
+    );
+    let r = rpc_answer(&records, "r");
+    assert_eq!(r["success"], false, "{r}");
+    assert!(r["error"].as_str().unwrap().contains("no .git"), "{r}");
+    assert!(!bare.join(".trellis").exists());
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&bare);
 }

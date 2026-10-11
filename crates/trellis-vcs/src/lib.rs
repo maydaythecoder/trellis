@@ -11,6 +11,7 @@
 //! be reliable. See `docs/adr/0009-clean-worktree-requirement.md`.
 
 pub mod git_guard;
+pub mod history;
 pub mod ignored;
 
 use std::path::{Path, PathBuf};

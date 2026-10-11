@@ -241,6 +241,12 @@ const GIT_ALLOWED: &[(&str, usize, &str)] = &[
         2,
         "`GuardError` labels naming the command (`what: \"git ls-files\"`)",
     ),
+    (
+        "trellis-vcs/src/history.rs",
+        1,
+        "the `GitFailed` message naming the command that failed (`\"git {}\"`); its \
+         spawns are `command()` (the Atlas's reads, owner request of 2026-10-11)",
+    ),
 ];
 
 /// Whether `line` names `git` as a program in a string literal: `"git"`
