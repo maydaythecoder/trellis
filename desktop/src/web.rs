@@ -70,6 +70,7 @@ pub const PAGE: &[(&str, &[u8])] = &[
     ("trails.js", include_bytes!("../ui/trails.js")),
     ("vault.js", include_bytes!("../ui/vault.js")),
     ("queue.js", include_bytes!("../ui/queue.js")),
+    ("atlas.js", include_bytes!("../ui/atlas.js")),
 ];
 
 /// The page's commands (`commands.rs`), the same four `build.rs` lists.
