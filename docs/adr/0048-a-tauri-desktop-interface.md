@@ -122,6 +122,20 @@ listed, and prompt input (the composer, Send and steering) stays disabled
 until a model is chosen in that window. A spec the user saves is written to
 the user's own config, never `.trellis/config.toml` (ADR 0024 §3); section
 4 on hosted specs is unchanged. Accepted, not built (#564).
+*As built 2026-10-10 (#564):* `trellis rpc` refuses `prompt` with "choose a
+model first" until `set_model` has given the session a model, and answers
+`list_models` with the configured spec, `first_run`'s probed specs and the
+user's providers by name and key variable (ADR 0025 §5, added 2026-10-10).
+The desktop's model pane (`ui/model.js`), open at launch, lists them with
+the user's configured spec preselected, or with none the configured spec
+(*corrected 2026-10-10, #564 review:* it had preselected the spec the
+configuration resolves to, where the repository's wins over the user's).
+The page is served with the composer's
+textarea, Send and control `disabled`, and opens them only once the view's
+`model`, the core's record of the child's successful `set_model` answer, is
+set; `rpc_send` refuses a `prompt` before then. Choosing the configured
+spec sends `set_model {configured: true}`, which names no model, so section
+4's guard is unchanged; a listed or typed spec is held to it as before.
 
 ### 6. The client contract
 

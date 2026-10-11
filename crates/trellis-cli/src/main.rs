@@ -14,6 +14,7 @@ mod ask;
 mod config;
 mod doctor_cmd;
 mod first_run;
+mod floor;
 mod hosted;
 mod image_input;
 mod index_cmd;
@@ -763,6 +764,17 @@ fn main() -> Result<()> {
                     .model()
                     .with_context(first_run::no_model)?,
             };
+            // Here, not in `run_body`: this is `trellis run`'s own path, and
+            // the session, the TUI and rpc share `run_body`, where a line on
+            // stderr would land under a drawn interface. Before `agents_for`
+            // and `cmd_run_with`, so before any request reaches the runtime.
+            // A spec that does not parse gets no warning; `cmd_run_with`
+            // refuses it with the reason.
+            if let Ok(spec) = model.parse::<trellis_model::ModelSpec>()
+                && let Some(w) = floor::run_warning(&spec)
+            {
+                eprintln!("{}", plain(&w));
+            }
             // With no target the width is 1 (refused above otherwise), and
             // the run is today's single-agent run with nothing added. With
             // targets, the plan's partitions run each in its own agent (#466),

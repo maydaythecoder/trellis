@@ -6,8 +6,16 @@
 //! Once the page has loaded, the core (`commands.rs`) opens the startup
 //! repository: it starts the child (`child.rs`, the one file that spawns)
 //! and turns what the child prints into events, the run panes among them
-//! (`frames.rs`, `state.rs`). The page has four commands: `rpc_send`,
-//! `get_trails`, `open_repository` and `get_overview`.
+//! (`frames.rs`, `state.rs`) and the action graph's layout with them
+//! (`graph.rs`, the `view` event's `graph` key). A `get_codebase` answer
+//! becomes the codebase view's layout (`codebase.rs`, the `codebase`
+//! event), and a `get_radius` answer its reach and doubt (`radius.rs`, the
+//! `radius` event). `vault_search` and `vault_graph` answers become the
+//! vault notes view (`state/vault.rs`, the `view` event's `vault` key), and
+//! `get_queue` answers the board's queue view (`queue.rs`, its `queue`
+//! key). The page has four commands: `rpc_send`, `get_trails`
+//! (the trails view's rows, `trails.rs`), `open_repository` and
+//! `get_overview`.
 //!
 //! With no `--root`, the repository is the current directory or the nearest
 //! parent holding a `.git` entry, as trellis itself finds one. Outside any
@@ -21,10 +29,15 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod child;
+mod codebase;
 mod commands;
 mod frames;
+mod graph;
 mod lockdown;
+mod queue;
+mod radius;
 mod state;
+mod trails;
 
 use commands::Core;
 use std::path::PathBuf;
