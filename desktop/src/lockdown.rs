@@ -214,9 +214,14 @@ mod tests {
         found[0]
     }
 
-    /// The six sections the rail switches, in rail order (#300 as amended
-    /// 2026-10-07; overview is the landing section).
-    const SECTIONS: [&str; 6] = ["overview", "run", "trails", "codebase", "board", "vault"];
+    /// The seven sections the rail switches, in rail order (#300 as amended
+    /// 2026-10-07; overview is the landing section). The seventh, atlas,
+    /// sits after codebase: the owner asked on 2026-10-11 for the Atlas
+    /// "without removing the other ones", so it is added beside them and
+    /// every other section keeps its place.
+    const SECTIONS: [&str; 7] = [
+        "overview", "run", "trails", "codebase", "atlas", "board", "vault",
+    ];
 
     /// The sections that are built, and so do not read "Not built yet":
     /// run (#300), overview (#562), codebase (#307), trails (#304), vault
@@ -350,9 +355,10 @@ mod tests {
     fn page_rail_buttons_control_sections_that_exist() {
         // The risk: a rail button that shows nothing, or a section no
         // button reaches; a later view shown before it is built, or a run
-        // section that says it is not built. Six sections (#300 as amended
-        // 2026-10-07), overview first and the one shown at load; the ones
-        // in BUILT are built.
+        // section that says it is not built. Seven sections (#300 as amended
+        // 2026-10-07, and the Atlas the owner asked for on 2026-10-11),
+        // overview first and the one shown at load; the ones in BUILT are
+        // built.
         let page = page();
         let navs: Vec<usize> = (0..page.len()).filter(|&i| page[i].tag == "nav").collect();
         assert_eq!(navs.len(), 1, "one nav");
