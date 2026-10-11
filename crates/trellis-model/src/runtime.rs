@@ -20,6 +20,7 @@
 //! silently downgraded — a remote endpoint is tier 1 or tier 4 and needs a
 //! real client.
 
+use crate::transport::{ERROR_BODY_CHARS, excerpt};
 use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -270,7 +271,10 @@ impl RuntimeClient {
             .await
             .map_err(|_| RuntimeError::Timeout(self.timeout))??;
         let v: Value = serde_json::from_str(&raw).map_err(|e| {
-            RuntimeError::Shape(format!("response is not JSON: {e}; body: {}", head(&raw)))
+            RuntimeError::Shape(format!(
+                "response is not JSON: {e}; body: {}",
+                excerpt(&raw, ERROR_BODY_CHARS)
+            ))
         })?;
         self.extract(&v)
     }
@@ -327,7 +331,10 @@ impl RuntimeClient {
                     .await
                     .map_err(|_| RuntimeError::Timeout(self.timeout))??;
                 let v: Value = serde_json::from_str(&raw).map_err(|e| {
-                    RuntimeError::Shape(format!("/props is not JSON: {e}; body: {}", head(&raw)))
+                    RuntimeError::Shape(format!(
+                        "/props is not JSON: {e}; body: {}",
+                        excerpt(&raw, ERROR_BODY_CHARS)
+                    ))
                 })?;
                 Ok(v["total_slots"]
                     .as_u64()
@@ -414,18 +421,11 @@ impl RuntimeClient {
         if !(200..300).contains(&status) {
             return Err(RuntimeError::Http {
                 status,
-                body: body.chars().take(400).collect(),
+                body: excerpt(&body, ERROR_BODY_CHARS),
             });
         }
         Ok(body)
     }
-}
-
-/// The first 400 characters of a body an error quotes, as the HTTP error
-/// quotes it: the whole of a reply up to the size cap is not a message
-/// anyone reads.
-fn head(raw: &str) -> String {
-    raw.chars().take(400).collect()
 }
 
 #[cfg(test)]

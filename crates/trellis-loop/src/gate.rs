@@ -347,7 +347,7 @@ impl ToolGate for ApprovalGate {
                     // the path rules, an existing file, and git's ignore
                     // rules (one `git check-ignore`, only when the others
                     // pass, as in `write_file`).
-                    let refused = crate::orchestrator::write_refusal(&self.root, path).is_some()
+                    let refused = crate::path_rules::write_refusal(&self.root, path).is_some()
                         || self.root.join(path).exists()
                         || crate::orchestrator::ignored_refusal(&self.root, path)
                             .await
@@ -388,7 +388,7 @@ impl ToolGate for ApprovalGate {
                         detail,
                     )
                 }
-                other => (label(other), String::new()),
+                other => (call_summary(other), String::new()),
             };
             let (reply, rx) = oneshot::channel();
             if self
@@ -423,8 +423,10 @@ impl ToolGate for ApprovalGate {
     }
 }
 
-/// A call in a few words, for a question, a log line or the trail.
-pub(crate) fn label(call: &ToolCall) -> String {
+/// A call in a few words, for a question, a log line or the trail. The
+/// agent's per-turn tracing uses `agent::turn_event_label`, which defers
+/// to this for every call but `run_checks`.
+pub(crate) fn call_summary(call: &ToolCall) -> String {
     match call {
         ToolCall::BlastRadius { symbol } => format!("blast_radius {symbol}"),
         ToolCall::ReadFile { path } => format!("read_file {path}"),
@@ -571,7 +573,7 @@ pub struct EditPreview {
 pub fn preview_edit(root: &Path, path: &str, old: &str, new: &str) -> Option<EditPreview> {
     // The orchestrator's predicate: `/x` on Windows is not `is_absolute()`,
     // and a preview must not read outside the repository either.
-    if crate::orchestrator::write_refusal(root, path).is_some() {
+    if crate::path_rules::write_refusal(root, path).is_some() {
         return None;
     }
     let src = std::fs::read_to_string(root.join(path))

@@ -101,7 +101,7 @@ fn gather(root: Option<&Path>) -> Value {
 /// The listed repositories, newest first, each with its newest trail. A list
 /// that cannot be read is empty, with why beside it.
 fn recent() -> (Value, Option<String>) {
-    let Some(file) = crate::start_screen::file() else {
+    let Some(file) = crate::start_screen::recent_dirs_file() else {
         return (json!([]), None);
     };
     match crate::start_screen::listed(&file) {
@@ -194,7 +194,11 @@ fn codebase(root: &Path) -> (Value, Option<&'static str>) {
     let sources = trellis_index::read_sources(root);
     match trellis_index::cache::load(&path, trellis_index::cache::fingerprint(&sources)) {
         Some(index) => (
-            crate::doctor_cmd::graph_json(&trellis_index::module_graph(&index), CODEBASE_LIMIT),
+            crate::doctor_cmd::graph_json(
+                &trellis_index::module_graph(&index),
+                CODEBASE_LIMIT,
+                crate::doctor_cmd::Edges::Drawn,
+            ),
             None,
         ),
         None => (Value::Null, Some("index is stale; run trellis index")),
