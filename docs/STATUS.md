@@ -38,6 +38,59 @@ ratatui TUI at parity. It is **Proposed**, pending the owner's acceptance on
 #500, and nothing in it is built: the ratatui TUI is still the one that ships.
 MISSION.md goal 8 reads "Not delivered".
 
+*As built 2026-10-07 (#558, #560, #374, #561):* the Tauri desktop
+(`desktop/`) now starts from the command line. `trellis overview` (and
+`--json overview`) prints, with or without a repository, the recent
+repositories with each one's last outcome and, inside one, its last run, its
+codebase from a current index only, and its board, with PR and CI state from
+the user's own `gh` when it is installed and logged in (ADR 0050 section 3).
+`trellis --dsk` starts `trellis-desktop` from beside the `trellis` binary,
+detached, with its environment unchanged: the one key-exempt launch
+`INTERFACE_LAUNCHES` allows so far (ADR 0052). Bare `trellis` at a terminal
+now starts the desktop and prints the overview; with no desktop installed, no
+display or a failed start, it says so on stderr, prints the overview and falls
+back to the start screen and the TUI. `--tui` and `trellis tui` keep the TUI
+(ADR 0050 section 1). Not built: the desktop drawing the overview (#562),
+its model prompt before input (#564), the web view, and the handoff to the
+Go TUI (#514).
+
+*As built 2026-10-10 (#513), on the desktop S15 branch:* the desktop half of
+goal 8, "a Tauri desktop that renders a whole run" (ADR 0052 section 1:
+every pane of the reducer's view reaches the page), is delivered, and #562
+and #564 above are built with it. Three tests in `desktop/src/lockdown.rs`
+hold it, each a cross-check of names and not a render, since no JavaScript
+engine runs under `cargo test` (ADR 0048 section 5):
+`view_renders_every_pane_key` drives `DesktopState::update` through a whole
+run in `client_contract.json`'s shapes (`run_start`, `run budget`, turns
+with a radius, an applied edit and a passed check, an `approval_request`, a
+stderr line, a stdout line that is not JSON, `run_end` and the `get_state`
+answer with its tier), serializes the view with every pane, and fails naming
+each of its 21 keys that no module `ui/index.html` loads reads from the
+`view` event, or a key the page reads that the view does not carry;
+`view_renders_every_run_section` fails naming each element id or region in
+the run section that `render.js` never writes to; and
+`view_renders_every_overview_pane` does the same for the overview section
+against `overview.js`, and fails on a top-level key of
+`client_contract.json`'s `overview` entry that `overview.js` never reads.
+Each test passes on this tree and was shown to fail by planting the gap it
+guards against (a pane added to the reducer, a key dropped from
+`render.js`'s table, a run pane nothing fills, an overview pane dropped);
+the planted cases are kept in the tests. The window: CI run
+[37731262937](https://github.com/maydaythecoder/trellis/actions/runs/37731262937)
+(push to `main` at 84cdc4a, 2026-10-08) built, linted and tested
+`desktop/` with `--locked` in its `desktop` job on both self-hosted runners,
+`trellis-win` (Windows) and `trellis-wsl` (Linux), and ran
+`scripts/checks/desktop-guards.sh --self-test` (40 planted cases, each
+refused naming its rule) and `desktop-guards.sh` there. Since 84cdc4a,
+`desktop/tauri.conf.json`, `Cargo.toml`, `Cargo.lock`, `build.rs` and
+`permissions/` are unchanged and `src/main.rs` has gained only module
+declarations and its doc comment; the page under `desktop/ui/` and the
+panes are new since, and the three tests above have passed locally on Linux
+only. They run in the `desktop` job on both runners once this branch
+reaches a pull request into `dev`; until then, CI has not run them. Not
+built: the Go TUI half of goal 8 (T2 to T8, #514), so MISSION.md goal 8 as
+a whole still reads "Not delivered".
+
 ## The measurement (resolves S1's reach; S16 fired, then averted)
 
 Benchmark: poetry 2.5.0 sdist, SHA-256 in `01-v0.1-measure.md` §2.
@@ -949,6 +1002,11 @@ done.
   after that document was written. Recorded as a deviation rather than
   quietly resolved: the roadmap says one thing and the repository now does
   another, and a reader should not have to discover that by running it.
+
+  *2026-10-07 (#561):* bare `trellis` at a terminal now starts the desktop
+  and prints the overview instead; the TUI is what `--tui`, `trellis tui`
+  and the fallback with no desktop or display open (ADR 0050 section 1, as
+  built). The paragraph below records how it stood before.
 
   **It is now what bare `trellis` opens**, which widens the deviation rather
   than narrowing it, and is also at the owner's instruction. The line session

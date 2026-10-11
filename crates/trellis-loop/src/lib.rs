@@ -22,6 +22,7 @@ mod listing;
 mod notes;
 mod orchestrator;
 pub mod partition;
+mod path_rules;
 mod registry;
 mod scripted;
 mod skills;
@@ -56,10 +57,9 @@ pub use hooks::{
     InputDecision, fence_before_run,
 };
 pub use integrate::{Integrated, Integration, SuspectedRecallGap};
-pub use orchestrator::{
-    Dispatched, GateDenial, Handle, HumanDecision, Orchestrator, Request, names_trellis_dir,
-};
+pub use orchestrator::{Dispatched, GateDenial, Handle, HumanDecision, Orchestrator, Request};
 pub use partition::{FailurePolicy, Partition, WorkUnit, plan};
+pub use path_rules::names_trellis_dir;
 pub use registry::{
     BUILTIN_TOOLS, BashSettings, CustomTool, DEFAULT_CUSTOM_TIMEOUT_S, NotesSource, ToolCallError,
     ToolConfigError, ToolSelection, ToolSet, call_json,

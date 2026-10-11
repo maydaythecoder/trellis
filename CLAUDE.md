@@ -79,6 +79,7 @@ trellis-queue    local task queue + heartbeat loop (file-backed, in the git dir;
 trellis-tickets  ticketing standard's label rules    (pure functions + a separate binary; depends only on trellis-core; ADR 0040)
 trellis-cli      the binary
 tui-demo         the TUI against a mock event source (depends on no trellis crate; trellis-cli takes it with default-features = false)
+desktop/         its own workspace and lock; depends on no trellis crate (ADR 0048; rules in desktop/CLAUDE.md)
 ```
 
 Two of these are not stylistic:
@@ -93,8 +94,7 @@ Two of these are not stylistic:
 
 ## Invariants the PR #1 review rounds put in place
 
-Each one is held by a test that names it. Read the ADR before loosening any
-of them.
+Each one is held by a test that names it. Read the ADR before loosening any of them.
 
 - **Every `git` spawn goes through `trellis_vcs` (`command()`/`git_argv`)**,
   so a `core.fsmonitor` or hooks path planted in `.git/config` never runs

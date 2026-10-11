@@ -24,7 +24,7 @@ cargo run -p trellis-cli -- trust [--show | --revoke]      # hooks, custom tools
 cargo run -p trellis-cli -- run "<task>" --model anthropic:https://api.anthropic.com#<model>  # hosted (ADR 0024)
 cargo run -p trellis-cli -- run "<task>" --json            # JSONL on stdout (ADR 0025)
 cargo run -p trellis-cli -- rpc                            # JSONL commands on stdin (ADR 0025)
-cargo run -p trellis-cli -- [--root <repo>] [--json] overview   # recent repos' last outcomes, last run, codebase, board; read-only, never indexes; owner 2026-10-07 (#557), accepted, not built (#558; ADR 0050 §3, ADR 0025 §4)
+cargo run -p trellis-cli -- [--root <repo>] [--json] overview   # recent repos' last outcomes, last run, codebase, board; read-only, never indexes; owner 2026-10-07 (#557); as built 2026-10-07 (#558): needs no repo, gh read-only and bounded to 10 s, exits 0 without it (ADR 0050 §3, ADR 0025 §4)
 cargo run -p trellis-cli -- agents list | routines list    # profiles, routines (ADR 0026)
 cargo run -p trellis-cli -- resume [<run_id>]              # a named run's trail, as data (ADR 0038)
 cargo run -p trellis-cli -- install <source>@<ref> | --list | --remove <name>   # skills and templates only (ADR 0039)

@@ -315,24 +315,7 @@ pub fn load_all(root: &Path) -> Result<BTreeMap<String, Profile>, QueueError> {
 }
 
 pub fn load_dir(dir: &Path) -> Result<BTreeMap<String, Profile>, QueueError> {
-    let mut set = BTreeMap::new();
-    let rd = match std::fs::read_dir(dir) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(set),
-        Err(e) => return Err(crate::files::io(dir)(e)),
-    };
-    for e in rd.filter_map(Result::ok) {
-        let path = e.path();
-        let Some(name) = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .and_then(|n| n.strip_suffix(".toml"))
-        else {
-            continue;
-        };
-        let text = std::fs::read_to_string(&path).map_err(crate::files::io(&path))?;
-        set.insert(name.to_string(), parse(name, &text)?);
-    }
+    let set = crate::files::load_toml_dir(dir, parse)?;
     validate(&set)?;
     Ok(set)
 }

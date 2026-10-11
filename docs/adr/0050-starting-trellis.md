@@ -54,7 +54,8 @@ found, a spawn that fails, or no display, it says so on one stderr line,
 prints the overview and falls back to the start screen, then the TUI. With
 no terminal, behaviour is unchanged. The 2026-10-06 handoff line above is
 restated for `--tui` and `trellis tui` only: they, not bare `trellis`, hand
-off to `trellis-tui` at parity. Accepted, not built (#561).
+off to `trellis-tui` at parity. Accepted; built 2026-10-07 (#374 and #561,
+below), except the handoff to `trellis-tui`, which is #514's and not built.
 *As built 2026-10-07 (#374):* `trellis --dsk` starts `trellis-desktop`
 from beside `current_exe()` only, never from PATH, detached (no standard
 streams; on Windows its own process group with no console, on Unix
@@ -112,7 +113,25 @@ never indexes: the codebase comes from `.trellis/index.bin` only when that
 cache is current, and is otherwise reported as not indexed or stale, never
 built or saved. A root with no `.git` entry (the `current_dir()` fallback
 from a home directory) is treated as no root, and nothing under it is read,
-so the reason `root_from` refuses stands. Accepted, not built (#558).
+so the reason `root_from` refuses stands. Accepted; built 2026-10-07 (#558).
+*As built 2026-10-07 (#558):* `trellis overview` (`overview.rs`) needs no
+repository. Its JSON object, with C1 controls escaped as `log --json`
+escapes them, carries `recent`: the start screen's list, each entry with its
+newest trail's run id, start, outcome, integrity and task, null with no
+trail, or an error for a corrupt newest trail, which is not skipped for an
+older one. For a root with a `.git` entry it adds `last_run` (the same, plus
+turns, edits, each check's result, verified and reviewed as two counts, and
+the tier), `codebase` (`codebase_json`'s shape from `.trellis/index.bin` only
+when `cache::load` accepts the current sources' fingerprint, else null with
+"not indexed" or "index is stale") and `board` (the queue's tasks and
+`pr_ci`). With no such root, only `recent` is shown and neither the
+directory's trails nor its config are read. The text form prints the same
+sections. `pr_ci` comes from the first `gh` on PATH (absolute entries only),
+started in the root through `secrets::scrub` with no stdin and no token, as
+`gh pr list --state open` and `gh run list -L 10`, each bounded to 10
+seconds, after which it and what it started are killed. Missing, not logged
+in, timed out, failing or not JSON, it is `{"available": false, "reason"}`
+and the command still exits 0. Nothing is written.
 *As built 2026-10-07 (#555):* a root is recorded only from an interface
 start (bare `trellis`, `trellis tui`, `--tui`, `--dsk`), never from another
 command, and never when it is under the temporary directory. In the home

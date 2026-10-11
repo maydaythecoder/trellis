@@ -12,16 +12,31 @@
 //! the last turn's prompt in bytes (no per-turn prompt token count reaches
 //! the stream) and its reply in output tokens, with the TUI's rate and queue
 //! wait (#312); and a figure trellis did not report is `null` in the view,
-//! never 0. Every string in the view is trellis- or model-supplied
-//! text, which the page writes through `textContent` only (ADR 0007, S10).
+//! never 0. The action graph is laid out from the actions (`graph.rs`), so
+//! the two never disagree. Every string in the view is trellis- or
+//! model-supplied text, which the page writes through `textContent` only
+//! (ADR 0007, S10).
+//!
+//! It also keeps the vault notes view (`state/vault.rs`, #309), typed from
+//! `vault_search` and `vault_graph` answers, and the board's queue view
+//! (`queue.rs`, #311), typed from `get_queue` answers: views of their own,
+//! which a run's start leaves alone and a new child clears.
+
+mod vault;
 
 use crate::frames::{ApprovalRequest, Frame, RunEnd, Turn};
+use crate::graph;
+use crate::queue;
 use serde_json::{Map, Value, json};
 use std::collections::VecDeque;
 
 /// The transcript keeps this many lines, as the TUI's does: a run streams
 /// for as long as it lasts, and an uncapped log grows with it.
 pub const TRANSCRIPT_CAP: usize = 2000;
+
+/// The trellis messages pane keeps this many stderr lines (#302): the cap
+/// ADR 0052's amendment to ADR 0048 section 2 puts on showing stderr.
+pub const STDERR_CAP: usize = 500;
 
 /// One pane of the view, named as the view's key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,9 +52,39 @@ pub enum Pane {
     Outcome,
     /// The adapter tier the last `get_state` reply reported.
     Tier,
+    /// The prompt templates the child's `get_commands` listed (#301).
+    Starters,
+    /// What the last `abort` answer said was sent and never delivered.
+    Undelivered,
+    /// What last failed, as one line of text (#302).
+    Alert,
+    /// trellis's stderr, its human text, kept apart from the transcript.
+    Stderr,
+    /// The model this child's session runs prompts on, as its last
+    /// successful `set_model` answer said; `null` until one (#564).
+    Model,
+    /// What the child's last `list_models` answer offered to choose from.
+    Models,
+    /// The prompt and completion tokens of this child's runs, per model,
+    /// as its last `get_session_stats` answer gave them (#313).
+    SessionTokens,
+    /// The child's configured specs and the model catalog, from its answer
+    /// to the core's own [`MODELS_ID`] question: what the picker offers
+    /// (#306), from the same answer the model guard reads.
+    Available,
+    /// The action graph's layout (`graph.rs`), drawn from the actions.
+    Graph,
+    /// The vault notes view (`state/vault.rs`).
+    Vault,
+    /// The board's queue view (`queue.rs`).
+    Queue,
 }
 
-const PANES: [Pane; 10] = [
+/// Every pane the view carries. Each is a key the page must draw:
+/// `view_renders_every_pane_key` in `lockdown.rs` drives a whole run through
+/// [`DesktopState::update`] and fails naming a key here that no module the
+/// page loads reads from the `view` event (ADR 0052 section 1, #513).
+const PANES: [Pane; 21] = [
     Pane::Transcript,
     Pane::Actions,
     Pane::Edits,
@@ -50,13 +95,28 @@ const PANES: [Pane; 10] = [
     Pane::Running,
     Pane::Outcome,
     Pane::Tier,
+    Pane::Starters,
+    Pane::Undelivered,
+    Pane::Alert,
+    Pane::Stderr,
+    Pane::Model,
+    Pane::Models,
+    Pane::SessionTokens,
+    Pane::Available,
+    Pane::Graph,
+    Pane::Vault,
+    Pane::Queue,
 ];
 
 /// The panes a run starts afresh: everything but the transcript, which,
-/// as the TUI's, carries on across runs within its cap, and the tier, which
+/// as the TUI's, carries on across runs within its cap; the tier, which
 /// only a `get_state` reply sets: the view shows the tier trellis last
-/// reported, and a run's own start reports none.
-const RUN_PANES: [Pane; 8] = [
+/// reported, and a run's own start reports none; and the starters, which
+/// are the repository's templates, not the run's. The undelivered list is
+/// the last stopped run's, so a new run drops it, and so is the alert: what
+/// failed before this run started is not this run's failure. The stderr
+/// pane, as the transcript, carries on.
+const RUN_PANES: [Pane; 11] = [
     Pane::Actions,
     Pane::Edits,
     Pane::Checks,
@@ -65,6 +125,9 @@ const RUN_PANES: [Pane; 8] = [
     Pane::Approvals,
     Pane::Running,
     Pane::Outcome,
+    Pane::Undelivered,
+    Pane::Alert,
+    Pane::Graph,
 ];
 
 impl Pane {
@@ -80,22 +143,38 @@ impl Pane {
             Pane::Running => "running",
             Pane::Outcome => "outcome",
             Pane::Tier => "tier",
+            Pane::Starters => "starters",
+            Pane::Undelivered => "undelivered",
+            Pane::Alert => "alert",
+            Pane::Stderr => "stderr",
+            Pane::Model => "model",
+            Pane::Models => "models",
+            Pane::SessionTokens => "session_tokens",
+            Pane::Available => "available",
+            Pane::Graph => "graph",
+            Pane::Vault => "vault",
+            Pane::Queue => "queue",
         }
     }
 
-    fn bit(self) -> u16 {
-        1 << (self as u16)
+    /// One bit per pane; `u32`, since seventeen panes are past a `u16`.
+    fn bit(self) -> u32 {
+        1 << (self as u32)
     }
 }
 
 /// Which panes an update changed: what the core sends the page as one
 /// `view` event, so a frame that changes nothing sends nothing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Changed(u16);
+pub struct Changed(u32);
 
 impl Changed {
     fn with(self, p: Pane) -> Self {
         Self(self.0 | p.bit())
+    }
+
+    fn and(self, other: Self) -> Self {
+        Self(self.0 | other.0)
     }
 
     fn of(panes: &[Pane]) -> Self {
@@ -185,6 +264,294 @@ impl Budget {
     }
 }
 
+/// A prompt template `get_commands` listed, offered as a starter: sending
+/// it is a `prompt` whose `prompt` is `name` (#301). Both are repository
+/// text, shown as text.
+#[derive(Debug, Clone, PartialEq)]
+struct Starter {
+    name: String,
+    description: Option<String>,
+}
+
+impl Starter {
+    /// `get_commands`'s `prompts`, or `None` when the answer does not carry
+    /// them as a list. An entry with no string `name` cannot be sent, so it
+    /// is not offered.
+    fn list_from(data: Option<&Value>) -> Option<Vec<Self>> {
+        let prompts = data?.get("prompts")?.as_array()?;
+        Some(
+            prompts
+                .iter()
+                .filter_map(|p| {
+                    Some(Self {
+                        name: p.get("name")?.as_str()?.to_string(),
+                        description: p
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    })
+                })
+                .collect(),
+        )
+    }
+}
+
+/// One line an `abort` answer handed back as sent and never delivered: a
+/// `steer` or a `follow_up`, with the text the user typed, kept so it is not
+/// lost with the run (`rpc.rs`'s `Unsent`).
+#[derive(Debug, Clone, PartialEq)]
+struct Undelivered {
+    kind: String,
+    message: String,
+}
+
+impl Undelivered {
+    /// `abort`'s `undelivered`, in the order trellis gave it, or `None`
+    /// when the answer carries no such list. An entry without a string
+    /// `type` and `message` holds no text to give back, so it is skipped.
+    fn list_from(data: Option<&Value>) -> Option<Vec<Self>> {
+        let list = data?.get("undelivered")?.as_array()?;
+        Some(
+            list.iter()
+                .filter_map(|u| {
+                    Some(Self {
+                        kind: u.get("type")?.as_str()?.to_string(),
+                        message: u.get("message")?.as_str()?.to_string(),
+                    })
+                })
+                .collect(),
+        )
+    }
+}
+
+/// The read-only requests a view of its own sends and answers in place: its
+/// refusal is that view's to say (the `codebase` and `radius` events, the
+/// vault, queue, models and session tokens panes), not a line in the run's
+/// transcript or the page's one alert. `get_trails` and `get_overview` are
+/// the page's own commands, not rpc lines, so their answers never come here.
+const VIEW_READS: [&str; 7] = [
+    "get_codebase",
+    "get_radius",
+    "vault_search",
+    "vault_graph",
+    "get_queue",
+    "list_models",
+    "get_session_stats",
+];
+
+/// The id of the `get_available_models` the core writes first to every
+/// child it starts (#305); only the answer to it is recorded.
+pub const MODELS_ID: &str = "desktop-models";
+
+/// `get_available_models`'s `configured` specs, by source, as the child
+/// sent them. `None` is a source with no spec (`null`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Configured {
+    pub repository: Option<String>,
+    /// The user's own config's `[model] spec`: the only hosted spec the
+    /// core forwards as the user's choice (ADR 0048 section 4).
+    pub user: Option<String>,
+    pub session: Option<String>,
+}
+
+impl Configured {
+    /// The answer's `data`, or `None` when it is not the shape `rpc.rs`
+    /// sends: `configured` an object whose three sources are each a string
+    /// or `null`. A malformed answer records nothing, so the guard stays
+    /// shut rather than reading a source it cannot trust.
+    fn from_data(data: Option<&Value>) -> Option<Self> {
+        let c = data?.get("configured")?.as_object()?;
+        let source = |k: &str| match c.get(k) {
+            None | Some(Value::Null) => Some(None),
+            Some(Value::String(s)) => Some(Some(s.clone())),
+            Some(_) => None,
+        };
+        Some(Self {
+            repository: source("repository")?,
+            user: source("user")?,
+            session: source("session")?,
+        })
+    }
+}
+
+/// One entry of `get_available_models`' `catalog`: weights `trellis model
+/// pull` fetches. Shown, never sent: a catalogue name is not a spec, and
+/// runs under a runtime the user starts (#306).
+#[derive(Debug, Clone, PartialEq)]
+struct CatalogEntry {
+    name: String,
+    license: Option<String>,
+    /// As trellis rounded it; `None` when it sent no number.
+    download_gib: Option<f64>,
+    default: bool,
+}
+
+impl CatalogEntry {
+    /// The answer's `catalog`, or an empty list when it carries none. An
+    /// entry with no string `name` cannot be shown by name, so it is skipped.
+    fn list_from(data: Option<&Value>) -> Vec<Self> {
+        let Some(list) = data
+            .and_then(|d| d.get("catalog"))
+            .and_then(Value::as_array)
+        else {
+            return Vec::new();
+        };
+        list.iter()
+            .filter_map(|e| {
+                Some(Self {
+                    name: e.get("name")?.as_str()?.to_string(),
+                    license: e.get("license").and_then(Value::as_str).map(str::to_string),
+                    download_gib: e.get("download_gib").and_then(Value::as_f64),
+                    default: e.get("default").and_then(Value::as_bool) == Some(true),
+                })
+            })
+            .collect()
+    }
+}
+
+/// The session's model, as the child's last successful `set_model` answer
+/// gave it (#564). Until one has come, `rpc.rs` refuses every `prompt`, and
+/// so does `rpc_send`; the page keeps prompt input disabled.
+#[derive(Debug, Clone, PartialEq)]
+struct Chosen {
+    spec: String,
+    /// Whether it was the configured spec confirmed, not one named.
+    configured: bool,
+    /// The user config file it was written to, when the user asked.
+    saved_to: Option<String>,
+}
+
+impl Chosen {
+    /// The answer's `data`, or `None` when it does not carry the spec as a
+    /// string: an answer the core cannot name a model from opens nothing.
+    fn from_data(data: Option<&Value>) -> Option<Self> {
+        let d = data?;
+        Some(Self {
+            spec: d.get("model")?.as_str()?.to_string(),
+            configured: d.get("configured").and_then(Value::as_bool) == Some(true),
+            saved_to: d
+                .get("saved_to")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        })
+    }
+}
+
+/// One address `list_models` probed, and why it gave no model if it did not.
+#[derive(Debug, Clone, PartialEq)]
+struct Probe {
+    runtime: String,
+    address: String,
+    error: Option<String>,
+}
+
+/// A user-config provider `list_models` named: its name and the variable a
+/// key would be read from, never a value (#564).
+#[derive(Debug, Clone, PartialEq)]
+struct Provider {
+    name: String,
+    variable: Option<String>,
+}
+
+/// What the child's `list_models` answer offered to choose from.
+#[derive(Debug, Clone, PartialEq)]
+struct ModelList {
+    configured: Option<String>,
+    local: Vec<String>,
+    probed: Vec<Probe>,
+    providers: Vec<Provider>,
+}
+
+impl ModelList {
+    /// The answer's `data`, or `None` when it is not the shape `rpc.rs`
+    /// sends. An entry missing a string the pane would show is skipped, as
+    /// a starter with no name is, rather than drawn with a gap.
+    fn from_data(data: Option<&Value>) -> Option<Self> {
+        let d = data?.as_object()?;
+        let text = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+        Some(Self {
+            configured: match d.get("configured")? {
+                Value::Null => None,
+                Value::String(s) => Some(s.clone()),
+                _ => return None,
+            },
+            local: d
+                .get("local")?
+                .as_array()?
+                .iter()
+                .filter_map(|s| s.as_str().map(str::to_string))
+                .collect(),
+            probed: d
+                .get("probed")?
+                .as_array()?
+                .iter()
+                .filter_map(|p| {
+                    Some(Probe {
+                        runtime: text(p, "runtime")?,
+                        address: text(p, "address")?,
+                        error: text(p, "error"),
+                    })
+                })
+                .collect(),
+            providers: d
+                .get("providers")?
+                .as_array()?
+                .iter()
+                .filter_map(|p| {
+                    Some(Provider {
+                        name: text(p, "name")?,
+                        variable: text(p, "key_variable"),
+                    })
+                })
+                .collect(),
+        })
+    }
+}
+
+/// One model's row of a `get_session_stats` answer: its prompt and
+/// completion tokens over this child's runs, two figures never summed, each
+/// `None` when a run of that model did not report it (#313, PI-10). The
+/// model name is trail text (ADR 0007), shown as text.
+#[derive(Debug, Clone, PartialEq)]
+struct ModelTokens {
+    model: String,
+    prompt: Option<u64>,
+    completion: Option<u64>,
+}
+
+/// The child's last `get_session_stats` answer.
+#[derive(Debug, Clone, PartialEq)]
+struct SessionTokens {
+    models: Vec<ModelTokens>,
+    /// Runs whose trail did not read back, so the rows are not taken for
+    /// the whole session; `None` when the answer did not say.
+    runs_not_counted: Option<u64>,
+}
+
+impl SessionTokens {
+    /// The answer's `data`, or `None` when it carries no `models` list. A
+    /// row with no string `model` cannot be named, so it is not drawn; a
+    /// figure that is not a count is unknown, as a null one is, and never 0.
+    fn from_data(data: Option<&Value>) -> Option<Self> {
+        let d = data?;
+        Some(Self {
+            models: d
+                .get("models")?
+                .as_array()?
+                .iter()
+                .filter_map(|m| {
+                    Some(ModelTokens {
+                        model: m.get("model")?.as_str()?.to_string(),
+                        prompt: m.get("prompt_tokens").and_then(Value::as_u64),
+                        completion: m.get("completion_tokens").and_then(Value::as_u64),
+                    })
+                })
+                .collect(),
+            runs_not_counted: d.get("runs_not_counted").and_then(Value::as_u64),
+        })
+    }
+}
+
 /// The desktop's run panes.
 #[derive(Debug, Default)]
 pub struct DesktopState {
@@ -202,6 +569,40 @@ pub struct DesktopState {
     /// `get_state`'s `tier`, as trellis labels it; `None` while it is null
     /// (no run has decided one) or not yet asked for. Never guessed.
     tier: Option<String>,
+    /// The child's answer to [`MODELS_ID`]; `None` until it arrives, after
+    /// a malformed one, and from each child's start. `rpc_send`'s model
+    /// guard reads it, and the picker shows it (`available`, #306), so the
+    /// page offers the user's configured spec exactly as the guard has it.
+    configured: Option<Configured>,
+    /// The same answer's catalogue; empty while `configured` is `None`.
+    catalog: Vec<CatalogEntry>,
+    /// The prompt templates the last `get_commands` answer listed; `None`
+    /// until one has come, or after a refused one.
+    starters: Option<Vec<Starter>>,
+    /// What the last `abort` answer said was never delivered.
+    undelivered: Vec<Undelivered>,
+    /// The last failure, as text: a refused command, a run that ended in
+    /// error, or a stdout line that is not a JSON object. `None` until one,
+    /// and from each run's start.
+    alert: Option<String>,
+    /// trellis's stderr lines, shown as human text and never read as data
+    /// (ADR 0048 section 2, amended by ADR 0052), capped at [`STDERR_CAP`].
+    stderr: VecDeque<String>,
+    /// The session's model; `None` until this child has taken one, which
+    /// is what keeps prompt input shut (#564).
+    model: Option<Chosen>,
+    /// The last `list_models` answer: what it offered, or why it was
+    /// refused. `None` until one has come.
+    models: Option<Result<ModelList, String>>,
+    /// The last `get_session_stats` answer, or why it gave no rows. Only
+    /// that answer changes it: the desktop adds up no turn itself, so
+    /// trellis keeps one source for the totals (#313). `None` until one,
+    /// and once the child has exited.
+    session_tokens: Option<Result<SessionTokens, String>>,
+    /// The vault notes view: not a run pane, so a run's start keeps it.
+    vault: vault::Vault,
+    /// The board's queue view, kept across runs as the vault view is.
+    queue: queue::Queue,
 }
 
 impl DesktopState {
@@ -234,31 +635,142 @@ impl DesktopState {
                 self.running = false;
                 // Nobody is left to answer a question the run asked.
                 self.approvals.clear();
+                let mut c = Changed::of(&[Pane::Running, Pane::Approvals, Pane::Outcome]);
+                if let Some(error) = &e.error {
+                    self.alert = Some(format!("The run ended in error: {error}"));
+                    c = c.with(Pane::Alert);
+                }
                 self.outcome = Some(e);
-                Changed::of(&[Pane::Running, Pane::Approvals, Pane::Outcome])
+                c
             }
             Frame::Response(r) => {
-                // A refused command is said in the transcript; a successful
-                // answer changes no run pane but the tier a `get_state`
-                // reports.
-                if r.success == Some(true) && r.command.as_deref() == Some("get_state") {
+                // A vault read's or get_queue's answer is its view's,
+                // whatever else the branches below make of it.
+                let mut views = Changed::default();
+                if self.vault.answer(&r) {
+                    views = views.with(Pane::Vault);
+                }
+                if self.queue.answer(&r) {
+                    views = views.with(Pane::Queue);
+                }
+                // The core's own models question: its answer is recorded,
+                // and anything but a well-formed success records nothing.
+                // It changes the picker's `available` pane (#306), and a
+                // refusal still reaches the transcript below. It is a
+                // snapshot from the child's start: a config edited later
+                // takes effect on the next child.
+                let mut c = Changed::default();
+                if r.command.as_deref() == Some("get_available_models")
+                    && r.id.as_deref() == Some(MODELS_ID)
+                {
+                    self.configured = if r.success == Some(true) {
+                        Configured::from_data(r.data.as_ref())
+                    } else {
+                        None
+                    };
+                    self.catalog = match self.configured {
+                        Some(_) => CatalogEntry::list_from(r.data.as_ref()),
+                        None => Vec::new(),
+                    };
+                    c = c.with(Pane::Available);
+                }
+                // The composer's two answers (#301): the starters a
+                // `get_commands` lists, and the text an `abort` hands back.
+                // A refused `get_commands` leaves no starters to offer; its
+                // reason reaches the transcript below.
+                match (r.command.as_deref(), r.success) {
+                    (Some("get_commands"), Some(true)) => {
+                        self.starters = Starter::list_from(r.data.as_ref());
+                        c = c.with(Pane::Starters);
+                    }
+                    (Some("get_commands"), _) => {
+                        self.starters = None;
+                        c = c.with(Pane::Starters);
+                    }
+                    // The model pane's two answers (#564). A refused
+                    // `set_model` leaves the model the child already had, as
+                    // `rpc.rs` does; its reason reaches the alert below.
+                    (Some("set_model"), Some(true)) => {
+                        if let Some(m) = Chosen::from_data(r.data.as_ref()) {
+                            self.model = Some(m);
+                            c = c.with(Pane::Model);
+                        }
+                    }
+                    (Some("list_models"), Some(true)) => {
+                        self.models =
+                            Some(ModelList::from_data(r.data.as_ref()).ok_or_else(|| {
+                                "trellis answered list_models in a shape this desktop does not \
+                                read"
+                                    .to_string()
+                            }));
+                        c = c.with(Pane::Models);
+                    }
+                    (Some("list_models"), _) => {
+                        let why = r.error.clone().unwrap_or_else(|| "no reason given".into());
+                        self.models = Some(Err(why));
+                        c = c.with(Pane::Models);
+                    }
+                    (Some("get_session_stats"), Some(true)) => {
+                        self.session_tokens =
+                            Some(SessionTokens::from_data(r.data.as_ref()).ok_or_else(|| {
+                                "trellis answered get_session_stats in a shape this desktop \
+                                 does not read"
+                                    .to_string()
+                            }));
+                        c = c.with(Pane::SessionTokens);
+                    }
+                    (Some("get_session_stats"), _) => {
+                        let why = r.error.clone().unwrap_or_else(|| "no reason given".into());
+                        self.session_tokens = Some(Err(why));
+                        c = c.with(Pane::SessionTokens);
+                    }
+                    (Some("abort"), Some(true)) => {
+                        if let Some(u) = Undelivered::list_from(r.data.as_ref()) {
+                            self.undelivered = u;
+                            c = c.with(Pane::Undelivered);
+                        }
+                    }
+                    // An `approve` is sent with the question's own id, and
+                    // either answer means trellis holds it open no more: an
+                    // answer taken, or a question it no longer has (#302).
+                    (Some("approve"), Some(_)) => {
+                        let before = self.approvals.len();
+                        self.approvals
+                            .retain(|a| Some(a.id.as_str()) != r.id.as_deref());
+                        if self.approvals.len() != before {
+                            c = c.with(Pane::Approvals);
+                        }
+                    }
+                    _ => {}
+                }
+                // A refused command is said in the transcript, unless a view
+                // asked and shows the reason itself; a successful answer
+                // changes no run pane but the tier a `get_state` reports.
+                let view_read = r
+                    .command
+                    .as_deref()
+                    .is_some_and(|c| VIEW_READS.contains(&c));
+                let c = if r.success == Some(true) && r.command.as_deref() == Some("get_state") {
                     self.tier = r
                         .data
                         .as_ref()
                         .and_then(|d| d.get("tier"))
                         .and_then(Value::as_str)
                         .map(str::to_string);
-                    Changed::of(&[Pane::Tier])
-                } else if r.success == Some(false) {
+                    c.with(Pane::Tier)
+                } else if r.success == Some(false) && !view_read {
                     let command = r.command.as_deref().unwrap_or("command");
-                    self.push_line(match r.error {
-                        Some(e) => format!("· {command} refused: {e}"),
-                        None => format!("· {command} refused"),
-                    });
-                    Changed::of(&[Pane::Transcript])
+                    let said = match r.error {
+                        Some(e) => format!("{command} refused: {e}"),
+                        None => format!("{command} refused"),
+                    };
+                    self.push_line(format!("· {said}"));
+                    self.alert = Some(said);
+                    c.with(Pane::Transcript).with(Pane::Alert)
                 } else {
-                    Changed::default()
-                }
+                    c
+                };
+                c.and(views)
             }
             Frame::ApprovalRequest(a) => {
                 if self.approvals.iter().any(|o| o.id == a.id) {
@@ -268,11 +780,24 @@ impl DesktopState {
                 Changed::of(&[Pane::Approvals])
             }
             Frame::Ignored => Changed::default(),
-            // Both are text, and the transcript is the capped pane that
-            // shows text as it came.
-            Frame::Unparsed(line) | Frame::Human(line) => {
+            // Text on stdout, which carries only JSON objects: shown as it
+            // came in the transcript, and said in the alert, since a reader
+            // that cannot parse the stream may be missing a frame.
+            Frame::Unparsed(line) => {
+                self.alert = Some(format!(
+                    "trellis rpc printed a line that is not a JSON object: {line}"
+                ));
                 self.push_line(line);
-                Changed::of(&[Pane::Transcript])
+                Changed::of(&[Pane::Transcript, Pane::Alert])
+            }
+            // trellis's human text: its own capped pane, apart from the
+            // run's transcript, and never read for anything (#302).
+            Frame::Human(line) => {
+                self.stderr.push_back(line);
+                while self.stderr.len() > STDERR_CAP {
+                    self.stderr.pop_front();
+                }
+                Changed::of(&[Pane::Stderr])
             }
         }
     }
@@ -282,7 +807,22 @@ impl DesktopState {
     pub fn child_exited(&mut self) -> Changed {
         self.running = false;
         self.approvals.clear();
-        Changed::of(&[Pane::Running, Pane::Approvals])
+        self.configured = None;
+        self.catalog.clear();
+        // The model was that child's session's; the next child has none.
+        self.model = None;
+        self.models = None;
+        // So were the runs the totals counted (#313): a new child's start
+        // empty.
+        self.session_tokens = None;
+        Changed::of(&[
+            Pane::Running,
+            Pane::Approvals,
+            Pane::Model,
+            Pane::Models,
+            Pane::SessionTokens,
+            Pane::Available,
+        ])
     }
 
     /// Whether a run is in flight, from `run_start` to `run_end` or the
@@ -291,14 +831,64 @@ impl DesktopState {
         self.running
     }
 
+    /// Whether `id` is an approval question the child asked and nobody has
+    /// answered yet: the only kind `rpc_send` lets an `approve` answer.
+    pub fn approval_open(&self, id: &str) -> bool {
+        self.approvals.iter().any(|a| a.id == id)
+    }
+
+    /// The configured specs the current child reported, `None` until it
+    /// has answered [`MODELS_ID`].
+    pub fn configured(&self) -> Option<&Configured> {
+        self.configured.as_ref()
+    }
+
+    /// Whether this child's session has a model, from its own answer to a
+    /// `set_model`: what `rpc_send` lets a `prompt` through on (#564).
+    pub fn model_chosen(&self) -> bool {
+        self.model.is_some()
+    }
+
+    /// A new child is starting: what the last one reported is not its
+    /// answer, so the guard is shut until it gives its own, and the model
+    /// its session had is not the new session's.
+    pub fn forget_models(&mut self) {
+        self.configured = None;
+        self.catalog.clear();
+        self.model = None;
+        self.models = None;
+    }
+
+    /// The page sent a `vault_search` or `vault_graph` with `id`: the
+    /// vault view takes only that question's answer from now on, so an
+    /// earlier question answered late cannot replace it.
+    pub fn vault_asked(&mut self, command: &str, id: Option<&str>) {
+        self.vault.asked(command, id);
+    }
+
+    /// The page sent a `get_queue` with `id`: the queue view takes only
+    /// that answer from now on.
+    pub fn queue_asked(&mut self, id: Option<&str>) {
+        self.queue.asked(id);
+    }
+
     /// Clears the whole view, transcript included: colibri's New chat and
-    /// Clear. Whether a run is in flight is the child's fact, not the
-    /// view's, so it is kept. Returns every pane, so the view event that
-    /// follows carries all of them.
+    /// Clear. Whether a run is in flight, which specs the child reported,
+    /// and the model its session has and offered, are the child's facts,
+    /// not the view's, so they are kept. Returns every pane, so the view
+    /// event that follows carries all of them.
     pub fn clear(&mut self) -> Changed {
         let running = self.running;
+        let configured = self.configured.take();
+        let catalog = std::mem::take(&mut self.catalog);
+        let model = self.model.take();
+        let models = self.models.take();
         *self = Self {
             running,
+            configured,
+            catalog,
+            model,
+            models,
             ..Self::default()
         };
         Changed::of(&PANES)
@@ -364,6 +954,75 @@ impl DesktopState {
             ),
             Pane::Running => json!(self.running),
             Pane::Tier => json!(self.tier),
+            Pane::Starters => match &self.starters {
+                Some(list) => Value::Array(
+                    list.iter()
+                        .map(|t| json!({"name": t.name, "description": t.description}))
+                        .collect(),
+                ),
+                None => Value::Null,
+            },
+            Pane::Undelivered => Value::Array(
+                self.undelivered
+                    .iter()
+                    .map(|u| json!({"type": u.kind, "message": u.message}))
+                    .collect(),
+            ),
+            Pane::Alert => json!(self.alert),
+            Pane::Stderr => json!(self.stderr),
+            Pane::Model => match &self.model {
+                Some(m) => json!({"spec": m.spec, "configured": m.configured,
+                                  "saved_to": m.saved_to, "source": self.source(m)}),
+                None => Value::Null,
+            },
+            Pane::Available => match &self.configured {
+                None => Value::Null,
+                Some(c) => json!({
+                    "configured": {"repository": c.repository, "user": c.user,
+                                   "session": c.session},
+                    "catalog": self.catalog.iter().map(|e| json!({
+                        "name": e.name, "license": e.license,
+                        "download_gib": e.download_gib, "default": e.default,
+                    })).collect::<Vec<_>>(),
+                }),
+            },
+            Pane::SessionTokens => match &self.session_tokens {
+                None => Value::Null,
+                Some(Err(e)) => json!({"models": [], "runs_not_counted": null, "error": e}),
+                Some(Ok(t)) => json!({
+                    "models": t.models.iter().map(|m| json!({
+                        "model": m.model,
+                        "prompt_tokens": m.prompt,
+                        "completion_tokens": m.completion,
+                    })).collect::<Vec<_>>(),
+                    "runs_not_counted": t.runs_not_counted,
+                    "error": null,
+                }),
+            },
+            Pane::Models => match &self.models {
+                None => Value::Null,
+                Some(Err(e)) => json!({"error": e}),
+                Some(Ok(l)) => json!({
+                    "configured": l.configured,
+                    "local": l.local,
+                    "probed": l.probed.iter().map(|p| json!({
+                        "runtime": p.runtime, "address": p.address, "error": p.error,
+                    })).collect::<Vec<_>>(),
+                    "providers": l.providers.iter().map(|p| json!({
+                        "name": p.name, "key_variable": p.variable,
+                    })).collect::<Vec<_>>(),
+                }),
+            },
+            // Laid out from the actions each time it is sent, so it cannot
+            // fall out of step with the actions pane beside it.
+            Pane::Graph => graph::layout(self.actions.iter().map(|a| graph::Called {
+                tool: &a.tool,
+                target: &a.target,
+                wrote: a.wrote,
+            }))
+            .to_json(),
+            Pane::Vault => self.vault.to_json(),
+            Pane::Queue => self.queue.to_json(),
             Pane::Outcome => match &self.outcome {
                 Some(e) => json!({
                     "outcome": e.outcome,
@@ -378,9 +1037,34 @@ impl DesktopState {
         }
     }
 
+    /// Where the session's model came from, for the status bar (#306), in
+    /// `get_available_models`' words: for a spec `set_model` named, `user`
+    /// when it is the user's configured spec byte for byte and `session`
+    /// otherwise; for the configured spec confirmed, `repository` or `user` by
+    /// which of the child's own `configured` specs it is byte for byte, the
+    /// repository's first since its file wins (ADR 0025 §7). `None` when it
+    /// is neither, or the child gave no `configured` answer: never guessed.
+    fn source(&self, m: &Chosen) -> Option<&'static str> {
+        let c = self.configured.as_ref();
+        if !m.configured {
+            // Named by the picker's "your configured spec": the user's own,
+            // byte for byte, as the model guard compares it.
+            let users = c.and_then(|c| c.user.as_deref()) == Some(m.spec.as_str());
+            return Some(if users { "user" } else { "session" });
+        }
+        let c = c?;
+        if c.repository.as_deref() == Some(m.spec.as_str()) {
+            Some("repository")
+        } else if c.user.as_deref() == Some(m.spec.as_str()) {
+            Some("user")
+        } else {
+            None
+        }
+    }
+
     /// A turn, as `tui_bridge.rs` maps it.
     fn turn(&mut self, t: Turn) -> Changed {
-        let mut c = Changed::of(&[Pane::Transcript, Pane::Actions, Pane::Budget]);
+        let mut c = Changed::of(&[Pane::Transcript, Pane::Actions, Pane::Budget, Pane::Graph]);
         // The verdict as the loop renders it; only these two mean a check
         // ran (DESK-07's contract). "None", or any other string, is no
         // check.
@@ -459,6 +1143,8 @@ impl DesktopState {
         self.budget = Budget::default();
         self.approvals.clear();
         self.outcome = None;
+        self.undelivered.clear();
+        self.alert = None;
     }
 
     fn push_line(&mut self, line: String) {
@@ -1015,10 +1701,650 @@ mod tests {
         assert_eq!(all(&s)["tier"], "scripted");
     }
 
+    fn response(command: &str, success: bool, data: Value) -> String {
+        let mut r = json!({"type": "response", "command": command, "success": success,
+                           "id": "desktop-x"});
+        if success {
+            r["data"] = data;
+        } else {
+            r["error"] = data;
+        }
+        r.to_string()
+    }
+
     #[test]
-    fn unknown_and_unparsed_lines_change_nothing_but_the_transcript() {
+    fn abort_response_lists_the_undelivered_steers() {
+        // The risk (#301): text the user typed into a run they then
+        // stopped is lost with the run, because the page drew Stop's answer
+        // nowhere; or one run's leftovers are shown under the next.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p"));
+        let c = feed(
+            &mut s,
+            &response(
+                "abort",
+                true,
+                json!({"undelivered": [
+                    {"id": "u1", "type": "follow_up", "message": "first"},
+                    {"id": "s1", "type": "steer", "message": "<b>second</b>"},
+                    {"id": null, "type": "steer"},
+                    {"type": "steer", "message": 3}
+                ]}),
+            ),
+        );
+        assert!(c.has(Pane::Undelivered), "{c:?}");
+        assert_eq!(
+            all(&s)["undelivered"],
+            json!([
+                {"type": "follow_up", "message": "first"},
+                {"type": "steer", "message": "<b>second</b>"}
+            ]),
+            "in trellis's order, text as text, and nothing it did not send"
+        );
+        // The run ends after its abort answer is written; the list stays.
+        feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "interrupted", "exit": 130, "id": "p"})
+                .to_string(),
+        );
+        assert_eq!(all(&s)["undelivered"].as_array().unwrap().len(), 2);
+        // A refused abort, or an answer with no list, keeps it as it was.
+        assert!(
+            !feed(
+                &mut s,
+                &response("abort", false, json!("no run in progress"))
+            )
+            .has(Pane::Undelivered)
+        );
+        assert!(!feed(&mut s, &response("abort", true, json!({}))).has(Pane::Undelivered));
+        assert_eq!(all(&s)["undelivered"].as_array().unwrap().len(), 2);
+        // The next run starts with none.
+        let c = feed(&mut s, &run_start("p2"));
+        assert!(c.has(Pane::Undelivered));
+        assert_eq!(all(&s)["undelivered"], json!([]));
+    }
+
+    #[test]
+    fn get_commands_response_fills_the_starters() {
+        // The risk (#301): a starter sends a template name trellis never
+        // listed, or a repository's template text is drawn as markup; or a
+        // refused get_commands leaves the last repository's starters up.
+        let mut s = DesktopState::default();
+        assert_eq!(all(&s)["starters"], Value::Null, "none before an answer");
+        let c = feed(
+            &mut s,
+            &response(
+                "get_commands",
+                true,
+                json!({"commands": [{"name": "prompt", "description": "run a task"}],
+                       "prompts": [
+                           {"name": "fix", "description": "Fix <i>it</i>",
+                            "argument_hint": "<file>"},
+                           {"name": "review", "description": null},
+                           {"description": "no name"},
+                           {"name": 7}
+                       ],
+                       "skills": [{"name": "s", "description": "d"}]}),
+            ),
+        );
+        assert!(c.has(Pane::Starters), "{c:?}");
+        assert_eq!(
+            all(&s)["starters"],
+            json!([
+                {"name": "fix", "description": "Fix <i>it</i>"},
+                {"name": "review", "description": null}
+            ]),
+            "the prompt templates only, by name, description as text"
+        );
+        // A run does not touch them: they are the repository's.
+        feed(&mut s, &run_start("p"));
+        assert_eq!(all(&s)["starters"].as_array().unwrap().len(), 2);
+        // An answer with no prompts list offers none; a refused one too.
+        feed(
+            &mut s,
+            &response("get_commands", true, json!({"commands": []})),
+        );
+        assert_eq!(all(&s)["starters"], Value::Null);
+        feed(
+            &mut s,
+            &response("get_commands", true, json!({"prompts": []})),
+        );
+        assert_eq!(all(&s)["starters"], json!([]));
+        let c = feed(
+            &mut s,
+            &response("get_commands", false, json!("manifest unreadable")),
+        );
+        assert!(c.has(Pane::Starters) && c.has(Pane::Transcript), "{c:?}");
+        assert_eq!(all(&s)["starters"], Value::Null);
+    }
+
+    #[test]
+    fn failed_responses_and_unparsed_lines_set_the_alert() {
+        // The risk (#302): a refused command, a run that ended in error, or
+        // a stdout line nothing could parse goes by with no sign on the
+        // page, so the user waits on something that already failed.
+        let mut s = DesktopState::default();
+        assert_eq!(all(&s)["alert"], Value::Null, "nothing failed yet");
+        let c = feed(
+            &mut s,
+            &response("set_model", false, json!("<b>bad</b> spec")),
+        );
+        assert!(c.has(Pane::Alert), "{c:?}");
+        assert_eq!(all(&s)["alert"], "set_model refused: <b>bad</b> spec");
+        // A success says nothing, and leaves the last failure up.
+        assert!(
+            !feed(&mut s, &response("get_state", true, json!({"tier": null}))).has(Pane::Alert)
+        );
+        assert_eq!(all(&s)["alert"], "set_model refused: <b>bad</b> spec");
+
+        // A run's start is a fresh attempt: its failures are its own.
+        let c = feed(&mut s, &run_start("p"));
+        assert!(c.has(Pane::Alert));
+        assert_eq!(all(&s)["alert"], Value::Null);
+        let c = feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "error", "exit": 1,
+                    "error": "a clean git worktree is required", "id": "p"})
+            .to_string(),
+        );
+        assert!(c.has(Pane::Alert), "{c:?}");
+        assert_eq!(
+            all(&s)["alert"],
+            "The run ended in error: a clean git worktree is required"
+        );
+        // A run that ended without an error raises none.
+        feed(&mut s, &run_start("p2"));
+        let c = feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p2"}).to_string(),
+        );
+        assert!(!c.has(Pane::Alert));
+        assert_eq!(all(&s)["alert"], Value::Null);
+
+        let c = feed(&mut s, "<script>not json</script>");
+        assert!(c.has(Pane::Alert) && c.has(Pane::Transcript), "{c:?}");
+        assert_eq!(
+            all(&s)["alert"],
+            "trellis rpc printed a line that is not a JSON object: <script>not json</script>"
+        );
+        // A frame of a type the desktop does not read is not a failure.
+        feed(&mut s, &run_start("p3"));
+        assert!(feed(&mut s, r#"{"type":"something_new"}"#).is_empty());
+        assert_eq!(all(&s)["alert"], Value::Null);
+    }
+
+    #[test]
+    fn a_refused_view_read_stays_in_its_own_view() {
+        // The risk (#307, #308 review): a refused read-only view request
+        // (a radius for an unknown symbol, a codebase of a folder with no
+        // .git, a vault with none configured) said in the run's transcript
+        // as if the run had failed, and raised as the page's one alert,
+        // when the view that asked shows trellis's reason itself.
+        for (command, own) in [
+            ("get_codebase", None),
+            ("get_radius", None),
+            ("vault_search", Some(Pane::Vault)),
+            ("vault_graph", Some(Pane::Vault)),
+            ("get_queue", Some(Pane::Queue)),
+            ("list_models", Some(Pane::Models)),
+            ("get_session_stats", Some(Pane::SessionTokens)),
+        ] {
+            for error in [json!("<b>no</b> such symbol"), Value::Null] {
+                let mut s = DesktopState::default();
+                let mut r = json!({"type": "response", "command": command,
+                                   "success": false, "id": "desktop-x"});
+                if !error.is_null() {
+                    r["error"] = error.clone();
+                }
+                let c = feed(&mut s, &r.to_string());
+                assert!(!c.has(Pane::Transcript), "{command} {error}: {c:?}");
+                assert!(!c.has(Pane::Alert), "{command} {error}: {c:?}");
+                if let Some(p) = own {
+                    assert!(c.has(p), "{command}: its own view is told: {c:?}");
+                }
+                let v = all(&s);
+                assert_eq!(v["transcript"], json!([]), "{command}");
+                assert_eq!(v["alert"], Value::Null, "{command}");
+            }
+        }
+        // A refused command that is not a view's read is still said.
+        let mut s = DesktopState::default();
+        let c = feed(&mut s, &response("set_model", false, json!("bad spec")));
+        assert!(c.has(Pane::Transcript) && c.has(Pane::Alert), "{c:?}");
+    }
+
+    #[test]
+    fn stderr_lines_are_kept_apart_and_capped() {
+        // The risk (#302, ADR 0048 section 2): trellis's human text mixed
+        // into the run's transcript, where it reads as the run's own
+        // output, or kept without bound.
+        let mut s = DesktopState::default();
+        let c = s.update(Frame::Human("warning: <i>human</i>".into()));
+        assert_eq!(c, Changed::of(&[Pane::Stderr]));
+        let v = all(&s);
+        assert_eq!(v["stderr"], json!(["warning: <i>human</i>"]));
+        assert_eq!(v["transcript"], json!([]), "not in the transcript");
+        assert_eq!(v["alert"], Value::Null, "human text is not a failure");
+        for i in 0..STDERR_CAP + 5 {
+            s.update(Frame::Human(format!("line {i}")));
+        }
+        let lines = all(&s)["stderr"].as_array().unwrap().clone();
+        assert_eq!(lines.len(), STDERR_CAP);
+        assert_eq!(STDERR_CAP, 500);
+        assert_eq!(lines[0], "line 5", "the oldest go first");
+        // A run's start leaves it: it is the process's text, not the run's.
+        feed(&mut s, &run_start("p"));
+        assert_eq!(all(&s)["stderr"].as_array().unwrap().len(), STDERR_CAP);
+    }
+
+    #[test]
+    fn model_gate_composer_enables_only_after_a_model_is_set() {
+        // The risk (#564): prompt input opens before the user has chosen a
+        // model, on a list answer, a refused choice or the last child's
+        // choice, so a prompt runs on whatever the repository's config
+        // names with the user's keys in the child's environment. The page
+        // enables the composer on the view's `model` alone, so it must stay
+        // null until this child has taken a `set_model`.
+        let mut s = DesktopState::default();
+        assert_eq!(all(&s)["model"], Value::Null, "shut at launch");
+        assert!(!s.model_chosen());
+        // What there is to choose from opens nothing.
+        let c = feed(
+            &mut s,
+            &response(
+                "list_models",
+                true,
+                json!({"configured": "vllm:http://127.0.0.1:8000#<b>q</b>",
+                       "local": ["vllm:http://127.0.0.1:11434#qwen3:8b", 7],
+                       "probed": [{"runtime": "Ollama",
+                                   "address": "http://127.0.0.1:11434/api/tags",
+                                   "error": null},
+                                  {"runtime": "vLLM"}],
+                       "providers": [{"name": "mine", "key_variable": "TRELLIS_TEST_VAR"},
+                                     {"key_variable": "X"}]}),
+            ),
+        );
+        assert_eq!(c, Changed::of(&[Pane::Models]));
+        assert_eq!(
+            all(&s)["models"],
+            json!({"configured": "vllm:http://127.0.0.1:8000#<b>q</b>",
+                   "local": ["vllm:http://127.0.0.1:11434#qwen3:8b"],
+                   "probed": [{"runtime": "Ollama",
+                               "address": "http://127.0.0.1:11434/api/tags",
+                               "error": null}],
+                   "providers": [{"name": "mine", "key_variable": "TRELLIS_TEST_VAR"}]}),
+            "text as text, and nothing it did not send whole"
+        );
+        assert_eq!(all(&s)["model"], Value::Null, "a list is not a choice");
+        // A refused choice, or an answer naming no spec, opens nothing.
+        feed(
+            &mut s,
+            &response("set_model", false, json!("choose a model first")),
+        );
+        feed(
+            &mut s,
+            &response("set_model", true, json!({"configured": true})),
+        );
+        assert_eq!(all(&s)["model"], Value::Null);
+        assert!(!s.model_chosen());
+        // The child's own yes opens it.
+        let c = feed(
+            &mut s,
+            &response(
+                "set_model",
+                true,
+                json!({"model": "vllm:http://127.0.0.1:11434#qwen3:8b", "configured": false,
+                       "saved_to": "/home/u/.config/trellis/config.toml"}),
+            ),
+        );
+        assert!(c.has(Pane::Model), "{c:?}");
+        assert!(s.model_chosen());
+        assert_eq!(
+            all(&s)["model"],
+            json!({"spec": "vllm:http://127.0.0.1:11434#qwen3:8b", "configured": false,
+                   "saved_to": "/home/u/.config/trellis/config.toml", "source": "session"})
+        );
+        // A run, a clear and a refused change leave it: it is the session's.
+        feed(&mut s, &run_start("p"));
+        s.clear();
+        feed(&mut s, &response("set_model", false, json!("not a spec")));
+        assert!(s.model_chosen());
+        // The child's exit shuts it, and so does a new child's start.
+        let c = s.child_exited();
+        assert!(c.has(Pane::Model) && c.has(Pane::Models), "{c:?}");
+        assert_eq!(all(&s)["model"], Value::Null);
+        assert_eq!(all(&s)["models"], Value::Null);
+        feed(
+            &mut s,
+            &response(
+                "set_model",
+                true,
+                json!({"model": "scripted:x", "configured": true, "saved_to": null}),
+            ),
+        );
+        assert_eq!(
+            all(&s)["model"],
+            json!({"spec": "scripted:x", "configured": true, "saved_to": null,
+                   "source": null}),
+            "no configured answer to name its source by"
+        );
+        s.forget_models();
+        assert!(!s.model_chosen());
+        // A refused list says why, in place of the list.
+        feed(&mut s, &response("list_models", false, json!("bad config")));
+        assert_eq!(all(&s)["models"], json!({"error": "bad config"}));
+    }
+
+    #[test]
+    fn model_source_is_the_child_s_own_word_never_a_guess() {
+        // The risk (#306): the status bar names a model's source the child
+        // never reported: a confirmed spec called the user's when it is the
+        // repository's, whose endpoint then reads as one the user chose.
+        let models = |repository: Value, user: Value| {
+            json!({"type": "response", "command": "get_available_models", "id": MODELS_ID,
+                   "success": true,
+                   "data": {"catalog": [],
+                            "configured": {"repository": repository, "user": user,
+                                           "session": null}}})
+            .to_string()
+        };
+        let chose = |spec: &str, configured: bool| {
+            response(
+                "set_model",
+                true,
+                json!({"model": spec, "configured": configured, "saved_to": null}),
+            )
+        };
+        let source = |s: &DesktopState| all(s)["model"]["source"].clone();
+        for (repository, user, spec, want) in [
+            (json!("r:x"), json!("u:y"), "r:x", json!("repository")),
+            (Value::Null, json!("u:y"), "u:y", json!("user")),
+            // Both files name it: the repository's wins the layering.
+            (
+                json!("same:z"),
+                json!("same:z"),
+                "same:z",
+                json!("repository"),
+            ),
+            // Reformatted, or from a config edited since: not known.
+            (json!("r:x"), json!("u:y"), "r:x ", Value::Null),
+        ] {
+            let mut s = DesktopState::default();
+            feed(&mut s, &models(repository, user));
+            feed(&mut s, &chose(spec, true));
+            assert_eq!(source(&s), want, "{spec:?}");
+        }
+        // A spec set_model named is the session's, even the repository's,
+        // which rpc then counts as the user's choice; the user's own spec
+        // named is the user's.
+        let mut s = DesktopState::default();
+        feed(&mut s, &models(json!("r:x"), json!("u:y")));
+        feed(&mut s, &chose("r:x", false));
+        assert_eq!(source(&s), json!("session"));
+        feed(&mut s, &chose("u:y", false));
+        assert_eq!(source(&s), json!("user"));
+        feed(&mut s, &chose("u:y ", false));
+        assert_eq!(source(&s), json!("session"), "byte for byte");
+    }
+
+    #[test]
+    fn picker_available_comes_only_from_the_core_s_own_models_answer() {
+        // The risk (#306): the picker offers a spec the child never
+        // reported as the user's, or a catalogue figure trellis did not
+        // send, or keeps the last child's list for a new repository.
+        let mut s = DesktopState::default();
+        assert_eq!(all(&s)["available"], Value::Null);
+        let answer = |id: &str| {
+            json!({"type": "response", "command": "get_available_models", "id": id,
+                   "success": true,
+                   "data": {"catalog": [
+                                {"name": "bonsai-2-27b", "license": "Apache-2.0",
+                                 "download_gib": 5.3, "default": true},
+                                {"name": "<b>x</b>", "license": null},
+                                {"license": "MIT"}],
+                            "configured": {"repository": "r:x", "user": "u:y",
+                                           "session": null}}})
+            .to_string()
+        };
+        // The page's own ask is not the core's: it changes nothing.
+        assert!(!feed(&mut s, &answer("page")).has(Pane::Available));
+        assert_eq!(all(&s)["available"], Value::Null);
+        let c = feed(&mut s, &answer(MODELS_ID));
+        assert!(c.has(Pane::Available), "{c:?}");
+        assert_eq!(
+            all(&s)["available"],
+            json!({"configured": {"repository": "r:x", "user": "u:y", "session": null},
+                   "catalog": [
+                       {"name": "bonsai-2-27b", "license": "Apache-2.0", "download_gib": 5.3,
+                        "default": true},
+                       {"name": "<b>x</b>", "license": null, "download_gib": null,
+                        "default": false}]})
+        );
+        // The child's exit, or a new child, empties it.
+        s.child_exited();
+        assert_eq!(all(&s)["available"], Value::Null);
+        feed(&mut s, &answer(MODELS_ID));
+        s.forget_models();
+        assert_eq!(all(&s)["available"], Value::Null);
+    }
+
+    /// A `get_session_stats` answer as `rpc.rs` writes it, in the shape
+    /// `rpc_get_session_stats_counts_each_model_s_tokens_from_the_trails_apart`
+    /// asserts.
+    fn session_stats(models: Value) -> String {
+        response(
+            "get_session_stats",
+            true,
+            json!({"models": models, "runs_not_counted": 0}),
+        )
+    }
+
+    #[test]
+    fn session_tokens_one_row_per_model_with_two_figures() {
+        // The risk (#313): two models' figures merged into one row, a
+        // model's prompt and completion joined into one figure, or a row
+        // the answer did not send.
+        let mut s = DesktopState::default();
+        assert_eq!(all(&s)["session_tokens"], Value::Null, "none asked yet");
+        let c = feed(
+            &mut s,
+            &session_stats(json!([
+                {"model": "vllm:http://127.0.0.1:8000#qwen", "prompt_tokens": 2750,
+                 "completion_tokens": 77},
+                {"model": "<b>scripted</b>", "prompt_tokens": 10, "completion_tokens": 2},
+                {"prompt_tokens": 1, "completion_tokens": 1},
+            ])),
+        );
+        assert_eq!(c, Changed::of(&[Pane::SessionTokens]));
+        assert_eq!(
+            all(&s)["session_tokens"],
+            json!({"models": [
+                       {"model": "vllm:http://127.0.0.1:8000#qwen", "prompt_tokens": 2750,
+                        "completion_tokens": 77},
+                       {"model": "<b>scripted</b>", "prompt_tokens": 10,
+                        "completion_tokens": 2}],
+                   "runs_not_counted": 0, "error": null}),
+            "one row per named model, two figures each, the name as text"
+        );
+    }
+
+    #[test]
+    fn session_tokens_unknown_is_null_never_zero() {
+        // The risk (#313): colibri counts a missing usage figure as 0, which
+        // here would read as an exact total trellis did not record.
+        let mut s = DesktopState::default();
+        feed(
+            &mut s,
+            &session_stats(json!([
+                {"model": "scripted:x", "prompt_tokens": null, "completion_tokens": null},
+                {"model": "m", "prompt_tokens": "12", "completion_tokens": -3},
+                {"model": "n"},
+            ])),
+        );
+        let rows = all(&s)["session_tokens"]["models"].clone();
+        for r in rows.as_array().unwrap() {
+            assert_eq!(r["prompt_tokens"], Value::Null, "{rows}");
+            assert_eq!(r["completion_tokens"], Value::Null, "{rows}");
+        }
+        assert_eq!(rows.as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn session_tokens_have_no_sum() {
+        // The risk (#313, PI-10): the desktop adds prompt and completion, or
+        // the models, into a figure no trail records.
+        let mut s = DesktopState::default();
+        feed(
+            &mut s,
+            &session_stats(json!([
+                {"model": "a", "prompt_tokens": 5, "completion_tokens": 6},
+                {"model": "b", "prompt_tokens": 7, "completion_tokens": 8},
+            ])),
+        );
+        let v = s.view(Changed::of(&[Pane::SessionTokens]));
+        let mut ks = Vec::new();
+        keys(&v, &mut ks);
+        let bad: Vec<&String> = ks
+            .iter()
+            .filter(|k| {
+                let k = k.to_lowercase();
+                k.contains("total") || k.contains("sum")
+            })
+            .collect();
+        assert!(bad.is_empty(), "the view sums: {bad:?} in {v}");
+        let numbers: Vec<u64> = v["session_tokens"]["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|m| [&m["prompt_tokens"], &m["completion_tokens"]])
+            .filter_map(Value::as_u64)
+            .collect();
+        assert_eq!(numbers, [5, 6, 7, 8], "only the figures sent");
+    }
+
+    #[test]
+    fn session_tokens_change_only_on_a_get_session_stats_answer() {
+        // The risk (#313): a run's start clears the session's totals, or
+        // turns and run ends are added into them, so the desktop holds a
+        // count of its own beside trellis's.
+        let mut s = DesktopState::default();
+        feed(
+            &mut s,
+            &session_stats(json!([{"model": "m", "prompt_tokens": 100,
+                                    "completion_tokens": 3}])),
+        );
+        let before = all(&s)["session_tokens"].clone();
+        for line in [
+            run_start("p"),
+            turn(
+                json!({"turn": 1, "call": "read_file a.py", "verdict": "None",
+                        "check_kind": "", "observation": "", "prompt_bytes": 900,
+                        "completion_tokens": 40, "model_ms": 1000}),
+            ),
+            json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p"}).to_string(),
+            response("get_state", true, json!({"tier": null})),
+        ] {
+            assert!(!feed(&mut s, &line).has(Pane::SessionTokens), "{line}");
+        }
+        assert_eq!(all(&s)["session_tokens"], before);
+        feed(
+            &mut s,
+            &session_stats(json!([{"model": "m", "prompt_tokens": 200,
+                                    "completion_tokens": 6}])),
+        );
+        assert_eq!(all(&s)["session_tokens"]["models"][0]["prompt_tokens"], 200);
+    }
+
+    #[test]
+    fn session_tokens_drop_when_the_child_exits() {
+        // The risk (#313): a child that exited leaves its totals up, and
+        // the next child's runs read as continuing them.
+        let mut s = DesktopState::default();
+        feed(
+            &mut s,
+            &session_stats(json!([{"model": "m", "prompt_tokens": 1,
+                                    "completion_tokens": 1}])),
+        );
+        let c = s.child_exited();
+        assert!(c.has(Pane::SessionTokens), "{c:?}");
+        assert_eq!(all(&s)["session_tokens"], Value::Null, "no rows");
+        // A new child's view starts with none too.
+        feed(
+            &mut s,
+            &session_stats(json!([{"model": "m", "prompt_tokens": 1,
+                                    "completion_tokens": 1}])),
+        );
+        s.clear();
+        assert_eq!(all(&s)["session_tokens"], Value::Null);
+    }
+
+    #[test]
+    fn session_tokens_refused_answer_shows_the_error_text() {
+        // The risk (#313): a refused get_session_stats leaves the last rows
+        // up as if current, or shows no reason.
+        let mut s = DesktopState::default();
+        feed(
+            &mut s,
+            &session_stats(json!([{"model": "m", "prompt_tokens": 1,
+                                    "completion_tokens": 1}])),
+        );
+        let c = feed(
+            &mut s,
+            &response("get_session_stats", false, json!("<i>trail</i> unreadable")),
+        );
+        // Its pane says why; the run's alert does not (#308 review).
+        assert!(c.has(Pane::SessionTokens) && !c.has(Pane::Alert), "{c:?}");
+        assert_eq!(
+            all(&s)["session_tokens"],
+            json!({"models": [], "runs_not_counted": null,
+                   "error": "<i>trail</i> unreadable"})
+        );
+        // An answer this desktop cannot read says so, with no rows.
+        feed(
+            &mut s,
+            &response("get_session_stats", true, json!({"x": 1})),
+        );
+        let v = all(&s)["session_tokens"].clone();
+        assert_eq!(v["models"], json!([]), "{v}");
+        assert!(
+            v["error"].as_str().unwrap().contains("does not read"),
+            "{v}"
+        );
+    }
+
+    #[test]
+    fn approve_answer_closes_its_question() {
+        // The risk (#302): the dialog shows a question trellis has already
+        // had its answer to, so the user is asked twice.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p"));
+        for id in ["approval-1", "approval-2"] {
+            feed(
+                &mut s,
+                &json!({"type": "approval_request", "id": id, "question": "q", "detail": "d"})
+                    .to_string(),
+            );
+        }
+        assert!(s.approval_open("approval-1") && s.approval_open("approval-2"));
+        let answer = json!({"type": "response", "command": "approve", "success": true,
+                            "id": "approval-1", "data": {"approved": false}})
+        .to_string();
+        assert!(feed(&mut s, &answer).has(Pane::Approvals));
+        assert!(!s.approval_open("approval-1"));
+        assert_eq!(all(&s)["approvals"].as_array().unwrap().len(), 1);
+        // Refused (trellis no longer has it): closed too.
+        let gone = json!({"type": "response", "command": "approve", "success": false,
+                          "id": "approval-2", "error": "no open approval request"})
+        .to_string();
+        assert!(feed(&mut s, &gone).has(Pane::Approvals));
+        assert_eq!(all(&s)["approvals"], json!([]));
+    }
+
+    #[test]
+    fn unknown_lines_change_nothing_and_unparsed_lines_reach_transcript_and_alert() {
         // The risk: an unknown frame type, a non-object line or a field of
-        // the wrong type panics the core or reaches a pane as data.
+        // the wrong type panics the core or reaches a pane as data; or a
+        // line that is not an object goes by unsaid (#302).
         let mut s = DesktopState::default();
         for line in [
             r#"{"type":"something_new","x":1}"#,
@@ -1031,10 +2357,12 @@ mod tests {
         ] {
             assert!(feed(&mut s, line).is_empty(), "{line}");
         }
+        // A line that is not an object is text, and a failure (#302).
+        let text = Changed::of(&[Pane::Transcript, Pane::Alert]);
         let c = feed(&mut s, "<b>not json</b>\r\n");
-        assert_eq!(c, Changed::of(&[Pane::Transcript]));
+        assert_eq!(c, text);
         assert_eq!(all(&s)["transcript"], json!(["<b>not json</b>"]));
-        assert_eq!(feed(&mut s, "[1,2]"), Changed::of(&[Pane::Transcript]));
+        assert_eq!(feed(&mut s, "[1,2]"), text);
     }
 
     #[test]
