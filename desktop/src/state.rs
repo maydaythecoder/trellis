@@ -80,6 +80,10 @@ pub enum Pane {
     Queue,
 }
 
+/// Every pane the view carries. Each is a key the page must draw:
+/// `view_renders_every_pane_key` in `lockdown.rs` drives a whole run through
+/// [`DesktopState::update`] and fails naming a key here that no module the
+/// page loads reads from the `view` event (ADR 0052 section 1, #513).
 const PANES: [Pane; 21] = [
     Pane::Transcript,
     Pane::Actions,

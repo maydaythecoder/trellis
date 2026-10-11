@@ -33,8 +33,10 @@ pub(crate) fn new_window_allowed(_url: &Url) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frames::{Frame, parse_stdout};
+    use crate::state::{Changed, DesktopState};
     use serde_json::{Value, json};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::path::Path;
 
     fn conf() -> Value {
@@ -82,10 +84,14 @@ mod tests {
     /// `<script>`) panics rather than passing, so a page that outgrows it
     /// fails here, not quietly.
     fn page() -> Vec<Element> {
-        let html = ui_file("index.html");
+        page_of(&ui_file("index.html"))
+    }
+
+    /// [`page`] over `html`, so a test can scan a planted copy of the page.
+    fn page_of(html: &str) -> Vec<Element> {
         let mut out: Vec<Element> = Vec::new();
         let mut open: Vec<usize> = Vec::new();
-        let mut rest = html.as_str();
+        let mut rest = html;
         while let Some(lt) = rest.find('<') {
             let text = &rest[..lt];
             for &i in &open {
@@ -593,6 +599,544 @@ mod tests {
                 .enumerate()
                 .any(|(i, e)| e.parent == Some(graph) && i != graph),
             "#graph has children"
+        );
+    }
+
+    /// Every `.js` file under ui/, by file name, with its `//` comments
+    /// removed, so a key named only in a comment is not read: a whole-line
+    /// comment, and a comment after code from its ` //`. A URL in a string
+    /// (`http://`) has no space before its `//` and is kept. No file has a
+    /// block comment, asserted, since one would count as code.
+    fn ui_code() -> BTreeMap<String, String> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
+        let mut out = BTreeMap::new();
+        for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+            let name = entry.unwrap().file_name().into_string().unwrap();
+            if !name.ends_with(".js") {
+                continue;
+            }
+            let text = ui_file(&name);
+            let code = text
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .map(|l| l.split_once(" //").map_or(l, |(code, _)| code))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(!code.contains("/*"), "{name} has a block comment");
+            out.insert(name, code);
+        }
+        for want in ["main.js", "render.js", "overview.js"] {
+            assert!(out.contains_key(want), "ui/{want} was not read");
+        }
+        out
+    }
+
+    /// The entries of the object literal `const <name> = {` in `code`, one
+    /// per line, as `(key, the first string in its value)`: render.js's
+    /// `key: ["pane-id", draw]` gives the pane id, overview.js's
+    /// `"ov-id": draw` none.
+    fn table(code: &str, name: &str) -> Vec<(String, Option<String>)> {
+        let open = format!("const {name} = {{");
+        let start = code.find(&open).unwrap_or_else(|| panic!("no `{open}`")) + open.len();
+        let end = code[start..].find("\n};").expect("the table closes") + start;
+        let entries: Vec<(String, Option<String>)> = code[start..end]
+            .lines()
+            .filter_map(|l| {
+                let (key, value) = l.trim().split_once(':')?;
+                let key = key.trim().trim_matches('"');
+                let named = !key.is_empty()
+                    && key
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c == '_' || c == '-');
+                named.then(|| (key.to_string(), value.split('"').nth(1).map(str::to_string)))
+            })
+            .collect();
+        assert!(!entries.is_empty(), "`{open}` has no entries");
+        entries
+    }
+
+    /// The top-level function `name` in `code`, from `function name(` to
+    /// its closing line.
+    fn function_body<'a>(code: &'a str, name: &str) -> &'a str {
+        let at = code
+            .find(&format!("function {name}("))
+            .unwrap_or_else(|| panic!("no function {name}"));
+        let rest = &code[at..];
+        &rest[..rest.find("\n}").expect("the function closes")]
+    }
+
+    /// `import { a, b } from "./m.js";` in `code`, as name -> `m.js`.
+    fn imports_of(code: &str) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        for line in code.lines().filter(|l| l.starts_with("import {")) {
+            let (names, from) = line["import {".len()..]
+                .split_once("} from \"./")
+                .unwrap_or_else(|| panic!("an import from outside ui/: {line}"));
+            let module = from.trim_end_matches(';').trim_end_matches('"');
+            for n in names.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+                out.insert(n.to_string(), module.to_string());
+            }
+        }
+        out
+    }
+
+    /// The keys `snippet` reads: each `"key" in <object>`, and each
+    /// `<prefix>key` for the prefixes given (`view.`, `payload.`, `o.`).
+    fn keys_read(snippet: &str, prefixes: &[&str]) -> BTreeSet<String> {
+        let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        let key = |k: &str| !k.is_empty() && k.chars().all(|c| c.is_ascii_lowercase() || c == '_');
+        let mut out = BTreeSet::new();
+        for (i, _) in snippet.match_indices("\" in ") {
+            let before = &snippet[..i];
+            if let Some(q) = before.rfind('"')
+                && key(&before[q + 1..])
+            {
+                out.insert(before[q + 1..].to_string());
+            }
+        }
+        for prefix in prefixes {
+            for (i, _) in snippet.match_indices(prefix) {
+                if snippet[..i].chars().next_back().is_some_and(ident) {
+                    continue;
+                }
+                let k: String = snippet[i + prefix.len()..]
+                    .chars()
+                    .take_while(|&c| ident(c))
+                    .collect();
+                if key(&k) {
+                    out.insert(k);
+                }
+            }
+        }
+        out
+    }
+
+    /// The modules `page` runs: each `<script src>` in it, and what those
+    /// import, transitively. A module that listens for the view but is never
+    /// loaded draws nothing.
+    fn loaded_modules(page: &[Element], ui: &BTreeMap<String, String>) -> BTreeSet<String> {
+        let mut todo: Vec<String> = page
+            .iter()
+            .filter(|e| e.tag == "script")
+            .filter_map(|e| e.attr("src").map(str::to_string))
+            .collect();
+        let mut out = BTreeSet::new();
+        while let Some(m) = todo.pop() {
+            if out.insert(m.clone()) {
+                let code = ui
+                    .get(&m)
+                    .unwrap_or_else(|| panic!("the page loads {m}, which ui/ lacks"));
+                todo.extend(imports_of(code).into_values());
+            }
+        }
+        out
+    }
+
+    /// The view keys the page reads, each with the files that read it. The
+    /// page takes the `view` event two ways: main.js's listener hands the
+    /// payload whole to a draw function, found through main.js's imports
+    /// (render.js's, composer.js's, model.js's...); and a module may listen
+    /// for it itself (vault.js, queue.js...). A draw function that looks a
+    /// key up in its module's `PANES` table reads every key the table names.
+    /// A key read any other way (destructuring, a computed name) is not
+    /// seen, so it is reported unread: the check fails rather than passing.
+    /// Only the modules `page` loads count.
+    fn view_reads(
+        page: &[Element],
+        ui: &BTreeMap<String, String>,
+    ) -> BTreeMap<String, BTreeSet<String>> {
+        let loaded = loaded_modules(page, ui);
+        let mut reads: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut note = |keys: BTreeSet<String>, file: &str| {
+            for k in keys {
+                reads.entry(k).or_default().insert(file.to_string());
+            }
+        };
+        let mut listeners = 0;
+        for (file, code) in ui.iter().filter(|(f, _)| loaded.contains(*f)) {
+            let imports = imports_of(code);
+            for body in code.split(r#"listen("view""#).skip(1) {
+                let body = body.split("});").next().unwrap_or(body);
+                listeners += 1;
+                note(keys_read(body, &["view.", "payload."]), file);
+                for line in body.lines().map(str::trim) {
+                    // `drawX(document, event.payload, ...)`: the view, whole.
+                    let name: String = line
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                        .collect();
+                    if name.is_empty()
+                        || !line[name.len()..].starts_with('(')
+                        || !line.contains("event.payload")
+                    {
+                        continue;
+                    }
+                    let module = imports.get(&name).unwrap_or(file);
+                    let callee = ui
+                        .get(module)
+                        .unwrap_or_else(|| panic!("{file} imports {name} from {module}, not read"));
+                    let f = function_body(callee, &name);
+                    note(keys_read(f, &["view.", "payload."]), module);
+                    if f.contains("PANES[") {
+                        note(
+                            table(callee, "PANES").into_iter().map(|(k, _)| k).collect(),
+                            module,
+                        );
+                    }
+                }
+            }
+        }
+        assert!(listeners > 0, "no module listens for the view event");
+        reads
+    }
+
+    /// The view keys nothing on the page reads, and the keys the page reads
+    /// that the view does not carry, each `key (files)`.
+    fn view_cross_check(
+        view: &BTreeSet<String>,
+        page: &[Element],
+        ui: &BTreeMap<String, String>,
+    ) -> (Vec<String>, Vec<String>) {
+        let reads = view_reads(page, ui);
+        let undrawn = view
+            .iter()
+            .filter(|k| !reads.contains_key(*k))
+            .cloned()
+            .collect();
+        let unsent = reads
+            .iter()
+            .filter(|(k, _)| !view.contains(*k))
+            .map(|(k, files)| format!("{k} ({files:?})"))
+            .collect();
+        (undrawn, unsent)
+    }
+
+    /// A loop event as `trellis rpc` writes it: a `tracing` JSON line, its
+    /// fields beside `message` (client_contract.json's `rpc.events`).
+    fn loop_event(message: &str, fields: Value) -> String {
+        let mut f = fields.as_object().cloned().expect("fields are an object");
+        f.insert("message".into(), json!(message));
+        json!({"timestamp": "2026-10-10T12:00:00.000000Z", "level": "INFO",
+               "fields": f, "target": "trellis_loop::agent"})
+        .to_string()
+    }
+
+    /// A whole run as the child prints it, in client_contract.json's shapes:
+    /// its start, its budget, a turn each for a radius, an edit and a check,
+    /// an approval question, a stderr line, a stdout line that is not JSON,
+    /// its end, and the `get_state` answer that reports its tier.
+    fn whole_run() -> Vec<Frame> {
+        let stdout = [
+            json!({"type": "run_start", "version": 1, "trellis": "0.1.0",
+                   "task": "rename f to g", "model": "scripted:x", "root": "/w/app",
+                   "id": "desktop-prompt-1"})
+            .to_string(),
+            loop_event("run budget", json!({"max_iterations": 8})),
+            loop_event(
+                "turn",
+                json!({"turn": 1, "call": "blast_radius app.core.f", "verdict": "None",
+                       "check_kind": "", "observation": "4 callers resolved",
+                       "resolved": 4, "candidates": 1, "unresolved": 2,
+                       "model_ms": 1200, "prompt_bytes": 2048, "completion_tokens": 40}),
+            ),
+            loop_event(
+                "turn",
+                json!({"turn": 2, "call": "edit app/core.py", "verdict": "None",
+                       "check_kind": "", "observation": "applied: true (+1 -1)",
+                       "model_ms": 900, "prompt_bytes": 2300, "completion_tokens": 55,
+                       "queue_wait_ms": 100}),
+            ),
+            loop_event(
+                "turn",
+                json!({"turn": 3, "call": "run_checks app/core.py", "verdict": "Some(true)",
+                       "check_kind": "Tests", "observation": "3 passed",
+                       "model_ms": 700, "prompt_bytes": 2500, "completion_tokens": 12}),
+            ),
+            json!({"type": "approval_request", "id": "approval-1",
+                   "question": "Run bash?", "detail": "pytest -q"})
+            .to_string(),
+        ];
+        let end = [
+            json!({"type": "run_end", "outcome": "converged", "exit": 0,
+                   "id": "desktop-prompt-1", "run_id": "20261010-120000-000"})
+            .to_string(),
+            json!({"type": "response", "command": "get_state", "success": true,
+                   "id": "desktop-state",
+                   "data": {"running": false, "classifying": false, "run_request_id": null,
+                            "model": "scripted:x", "root": "/w/app",
+                            "last_run": {"outcome": "converged", "exit": 0,
+                                         "id": "desktop-prompt-1",
+                                         "run_id": "20261010-120000-000"},
+                            "pending_approvals": [], "tier": "scripted"}})
+            .to_string(),
+        ];
+        let typed = |line: &String| {
+            let f = parse_stdout(line);
+            assert!(
+                !matches!(f, Frame::Ignored | Frame::Unparsed(_)),
+                "not a frame the desktop reads: {line}"
+            );
+            f
+        };
+        let mut frames: Vec<Frame> = stdout.iter().map(typed).collect();
+        frames.push(Frame::Human("trellis: indexed 12 modules".into()));
+        let text = parse_stdout("Traceback (most recent call last):");
+        assert!(matches!(text, Frame::Unparsed(_)), "{text:?}");
+        frames.push(text);
+        frames.extend(end.iter().map(typed));
+        frames
+    }
+
+    #[test]
+    fn view_renders_every_pane_key() {
+        // The risk (#513, ADR 0052 section 1): the reducer gains a pane the
+        // page never draws, so a run the core reports in full shows part of
+        // it, and every test still passes; or the page reads a key the
+        // reducer no longer sends, so a pane stays blank. No JavaScript runs
+        // under cargo test (ADR 0048 section 5), so this crosses names: the
+        // keys of the view the reducer serializes after a whole run, against
+        // the keys the page's modules read from the `view` event.
+        let mut s = DesktopState::default();
+        for (i, frame) in whole_run().into_iter().enumerate() {
+            let what = format!("{frame:?}");
+            let changed = s.update(frame);
+            assert!(!changed.is_empty(), "frame {i} changed no pane: {what}");
+        }
+        // What the core sends for a forwarded get_state (commands.rs's
+        // `resend`): every pane, so every key the view has.
+        let view = s.view(Changed::everything());
+        assert_eq!(view["edits"], json!(["app/core.py"]), "{view}");
+        assert_eq!(view["checks"][0]["result"], "passed", "{view}");
+        assert_eq!(view["radius"]["resolved"], 4, "{view}");
+        assert_eq!(view["budget"]["turn"], 3, "{view}");
+        assert_eq!(view["outcome"]["outcome"], "converged", "{view}");
+        assert_eq!(view["tier"], "scripted", "{view}");
+        assert!(view["alert"].is_string(), "{view}");
+        assert_eq!(view["stderr"], json!(["trellis: indexed 12 modules"]));
+        let keys: BTreeSet<String> = view
+            .as_object()
+            .expect("the view is an object")
+            .keys()
+            .cloned()
+            .collect();
+
+        let ui = ui_code();
+        let page = page();
+        let (undrawn, unsent) = view_cross_check(&keys, &page, &ui);
+        assert!(
+            undrawn.is_empty(),
+            "the page draws no pane for view key(s) {undrawn:?}: no module the page \
+             loads reads them from the view event (render.js's PANES, or a \
+             `\"key\" in view`)"
+        );
+        assert!(
+            unsent.is_empty(),
+            "the page reads view key(s) the reducer never sends: {unsent:?}"
+        );
+
+        // The check refuses each gap: a pane the reducer gains, a pane
+        // render.js stops drawing, a key the page reads that no pane is, and
+        // a module that draws a pane but that the page never loads.
+        let mut gained = keys.clone();
+        gained.insert("planted_pane".into());
+        assert_eq!(view_cross_check(&gained, &page, &ui).0, ["planted_pane"]);
+        let mut dropped = ui.clone();
+        let render = dropped.get_mut("render.js").unwrap();
+        let tier = "  tier: [\"pane-tier\", tier],\n";
+        assert!(render.contains(tier), "render.js's tier entry moved");
+        *render = render.replace(tier, "");
+        assert_eq!(view_cross_check(&keys, &page, &dropped).0, ["tier"]);
+        let mut extra = ui.clone();
+        let render = extra.get_mut("render.js").unwrap();
+        *render = render.replace(
+            "const PANES = {",
+            "const PANES = {\n  planted_key: [\"pane-tier\", tier],",
+        );
+        assert_eq!(
+            view_cross_check(&keys, &page, &extra).1,
+            [r#"planted_key ({"render.js"})"#]
+        );
+        let script = r#"<script type="module" src="vault.js"></script>"#;
+        let html = ui_file("index.html");
+        assert!(
+            html.contains(script),
+            "index.html loads vault.js differently"
+        );
+        let unloaded = page_of(&html.replace(script, ""));
+        assert_eq!(view_cross_check(&keys, &unloaded, &ui).0, ["vault"]);
+    }
+
+    /// What in the section `section` nothing writes: each element id there
+    /// that is neither in `written` nor a label (an id an `aria-labelledby`
+    /// names, a heading the page writes itself), and each region holding no
+    /// written element, by its heading; then each id in `written` that is
+    /// not one element inside the section.
+    fn unfilled(page: &[Element], section: &str, written: &BTreeSet<String>) -> Vec<String> {
+        let s = index_of(page, section);
+        let labels: BTreeSet<&str> = page
+            .iter()
+            .filter_map(|e| e.attr("aria-labelledby"))
+            .flat_map(str::split_whitespace)
+            .collect();
+        let mut out = Vec::new();
+        for (i, e) in page.iter().enumerate() {
+            if !within(page, i, s) {
+                continue;
+            }
+            if e.attr("role") == Some("region")
+                && !(0..page.len()).any(|j| {
+                    within(page, j, i) && page[j].attr("id").is_some_and(|id| written.contains(id))
+                })
+            {
+                let title = e
+                    .attr("aria-labelledby")
+                    .and_then(|l| by_id(page, l).first().map(|h| h.text.trim().to_string()))
+                    .unwrap_or_default();
+                out.push(format!("the region \"{title}\""));
+            }
+            if let Some(id) = e.attr("id")
+                && !labels.contains(id)
+                && !written.contains(id)
+            {
+                out.push(format!("#{id}"));
+            }
+        }
+        for id in written {
+            let found: Vec<usize> = (0..page.len())
+                .filter(|&i| page[i].attr("id") == Some(id.as_str()))
+                .collect();
+            if found.len() != 1 || !within(page, found[0], s) {
+                out.push(format!("#{id} (drawn, but not one element in #{section})"));
+            }
+        }
+        out
+    }
+
+    /// The ids render.js's `drawView` writes to: its `PANES` table's.
+    fn render_writes(render: &str) -> BTreeSet<String> {
+        table(render, "PANES")
+            .into_iter()
+            .map(|(k, id)| id.unwrap_or_else(|| panic!("render.js's {k} names no element")))
+            .collect()
+    }
+
+    #[test]
+    fn view_renders_every_run_section() {
+        // The risk (#513): a pane in the run section that nothing fills, so
+        // the page shows an empty box under a title as if trellis reported
+        // nothing; or render.js drawing into an id the run section lacks.
+        let ui = ui_code();
+        let render = &ui["render.js"];
+        let draw = function_body(render, "drawView");
+        for want in ["PANES[key]", "getElementById(entry[0])"] {
+            assert!(
+                draw.contains(want),
+                "drawView does not draw through PANES: {want}"
+            );
+        }
+        let written = render_writes(render);
+        let page = page();
+        let gaps = unfilled(&page, "run", &written);
+        assert!(
+            gaps.is_empty(),
+            "in the run section, render.js never writes to {gaps:?}"
+        );
+
+        // The check refuses each gap: a pane added to the page that nothing
+        // draws, and a pane render.js stops drawing.
+        let html = ui_file("index.html");
+        let at = r#"<div class="pane pane-graph""#;
+        assert!(html.contains(at), "the graph pane moved");
+        let planted = html.replace(
+            at,
+            &format!(
+                r#"<div class="pane" role="region" aria-labelledby="planted-title"><h3 id="planted-title">Planted</h3><ul id="pane-planted"></ul></div>{at}"#
+            ),
+        );
+        assert_eq!(
+            unfilled(&page_of(&planted), "run", &written),
+            [r#"the region "Planted""#, "#pane-planted"]
+        );
+        let mut fewer = written.clone();
+        fewer.remove("pane-edits");
+        assert_eq!(
+            unfilled(&page, "run", &fewer),
+            [r#"the region "Edits""#, "#pane-edits"]
+        );
+    }
+
+    #[test]
+    fn view_renders_every_overview_pane() {
+        // The risk (#513 as amended 2026-10-07): the overview trellis prints
+        // gains a part overview.js never reads, or the overview section has
+        // a pane nothing fills, so bare `trellis` lands on a page that
+        // leaves out what `trellis overview` said. The overview is its own
+        // object, not the reducer's view, so its keys come from
+        // client_contract.json's `overview` entry, which trellis's own tests
+        // hold the binary to.
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../crates/trellis-cli/tests/client_contract.json"
+        ))
+        .expect("the contract is JSON");
+        let ov = &contract["overview"];
+        let top = |path: &str| path.split(['.', '[']).next().unwrap_or(path).to_string();
+        let mut keys: BTreeSet<String> = BTreeSet::new();
+        for list in ["always", "outside_a_repository"] {
+            for p in ov[list].as_array().expect("a list of paths") {
+                keys.insert(top(p.as_str().expect("a path")));
+            }
+        }
+        keys.extend(
+            ov["optional"]
+                .as_object()
+                .expect("optional paths")
+                .keys()
+                .map(|p| top(p)),
+        );
+        assert!(keys.len() >= 6, "the overview entry was read: {keys:?}");
+
+        let ui = ui_code();
+        let js = &ui["overview.js"];
+        let read = keys_read(js, &["o."]);
+        let unread: Vec<&String> = keys.iter().filter(|k| !read.contains(*k)).collect();
+        assert!(unread.is_empty(), "overview.js never reads {unread:?}");
+        let unlisted: Vec<&String> = read.iter().filter(|k| !keys.contains(*k)).collect();
+        assert!(
+            unlisted.is_empty(),
+            "overview.js reads {unlisted:?}, which the overview does not carry"
+        );
+
+        let draw = function_body(js, "drawOverview");
+        for want in ["Object.entries(PANES)", "getElementById(id)"] {
+            assert!(
+                draw.contains(want),
+                "drawOverview does not draw through PANES: {want}"
+            );
+        }
+        let written: BTreeSet<String> = table(js, "PANES").into_iter().map(|(id, _)| id).collect();
+        let page = page();
+        let gaps = unfilled(&page, "overview", &written);
+        assert!(
+            gaps.is_empty(),
+            "in the overview section, overview.js never writes to {gaps:?}"
+        );
+
+        // The check refuses each gap: a part the overview gains, and a pane
+        // overview.js stops drawing.
+        let mut gained = keys.clone();
+        gained.insert("planted".into());
+        assert_eq!(
+            gained
+                .iter()
+                .filter(|k| !read.contains(*k))
+                .collect::<Vec<_>>(),
+            ["planted"]
+        );
+        let mut fewer = written.clone();
+        fewer.remove("ov-board");
+        assert_eq!(
+            unfilled(&page, "overview", &fewer),
+            [r#"the region "Board""#, "#ov-board"]
         );
     }
 
