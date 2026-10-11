@@ -3894,6 +3894,31 @@ fn interface_flag_web_says_it_is_not_built() {
     assert!(err.contains("the web view is not built yet"), "{err}");
 }
 
+/// Runs the executable just written at `path` with `--version` until the
+/// kernel stops refusing it as busy, and at most for a few seconds (#581).
+///
+/// The risk: `ETXTBSY` failing a test that has nothing wrong with it. On
+/// Linux, a test thread that forks while another holds the new file's write
+/// handle open carries that handle into its child until the child execs, and
+/// executing the file in that window fails with "Text file busy". Waiting
+/// here moves the wait out of the assertion. Only `ExecutableFileBusy` is
+/// retried: any other outcome, success or not, is the file being runnable,
+/// and the test's own exec reports the rest.
+fn wait_until_executable(path: &Path) {
+    let start = std::time::Instant::now();
+    loop {
+        match Command::new(path).arg("--version").output() {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && start.elapsed() < std::time::Duration::from_secs(5) =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            _ => return,
+        }
+    }
+}
+
 #[test]
 fn interface_flag_dsk_with_no_desktop_beside_trellis_says_where_it_looked() {
     // ADR 0050 section 1 (#374): the desktop is looked for beside the
@@ -3907,6 +3932,7 @@ fn interface_flag_dsk_with_no_desktop_beside_trellis_says_where_it_looked() {
     let on_path = tempfile::tempdir().unwrap();
     let exe = bin.path().join(&exe_name);
     std::fs::copy(env!("CARGO_BIN_EXE_trellis"), &exe).unwrap();
+    wait_until_executable(&exe);
     std::fs::write(on_path.path().join(&desktop_name), b"").unwrap();
     let out = Command::new(&exe)
         .arg("--dsk")
@@ -5506,6 +5532,7 @@ fn startup_pty_bare_trellis_with_stdout_redirected_in_a_repository_opens_the_ses
 fn trellis_copy(name: &str) -> PathBuf {
     let exe = scratch(name).join("trellis");
     std::fs::copy(env!("CARGO_BIN_EXE_trellis"), &exe).unwrap();
+    wait_until_executable(&exe);
     exe
 }
 
@@ -5525,6 +5552,10 @@ fn trellis_with_stub_desktop(name: &str) -> PathBuf {
     )
     .unwrap();
     std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // The probe runs the stub, which records `--version` as its arguments;
+    // removed so the test reads only what trellis passed.
+    wait_until_executable(&stub);
+    let _ = std::fs::remove_file(exe.parent().unwrap().join("args.txt"));
     exe
 }
 

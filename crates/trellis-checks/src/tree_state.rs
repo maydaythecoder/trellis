@@ -4,7 +4,7 @@
 //! A passing check is a claim about the tree as it stood when the checker
 //! exited. A process the checker left running can still write after that,
 //! and the pass would then describe a tree that no longer exists. The
-//! leftover is killed (the job or the group, see `run`); what it wrote
+//! leftover is killed (the job or the group, see `run_checker`); what it wrote
 //! between the exit and the kill is found by comparing two of these, one
 //! taken when the exit is observed and one after the kill.
 //!
@@ -263,8 +263,8 @@ fn stamp(md: std::io::Result<std::fs::Metadata>) -> Stamp {
 mod tests {
     use super::*;
 
-    /// The comparison `run` rests on: an untouched tree compares equal, and
-    /// an appended file, a new file and a removed file each count.
+    /// The comparison `run_checker` rests on: an untouched tree compares
+    /// equal, and an appended file, a new file and a removed file each count.
     #[test]
     fn two_walks_differ_exactly_when_the_tree_changed() {
         let d = tempfile::tempdir().unwrap();

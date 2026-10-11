@@ -3583,8 +3583,17 @@ fn rpc_model_select_set_model_save_writes_the_user_config_not_the_repository_s()
     );
     let written = std::fs::read_to_string(f.user.join("config.toml")).unwrap();
     assert!(written.starts_with("# mine\n"), "{written}");
-    assert!(
-        written.contains(&format!("spec = {}", toml_string(&f.spec))),
+    // Read the value, not one quoting style: a Windows path holds
+    // backslashes, so the writer uses a TOML literal string there (#604).
+    let parsed: toml::Value = toml::from_str(&written).unwrap();
+    assert_eq!(
+        parsed["model"]["spec"].as_str(),
+        Some(f.spec.as_str()),
+        "{written}"
+    );
+    assert_eq!(
+        parsed["model"]["thinking"].as_str(),
+        Some("low"),
         "{written}"
     );
     assert_eq!(
@@ -3613,8 +3622,10 @@ fn rpc_model_select_set_model_save_writes_the_user_config_not_the_repository_s()
     let rewritten = std::fs::read_to_string(f.user.join("config.toml")).unwrap();
     assert!(rewritten.starts_with("# mine\n"), "{rewritten}");
     assert_eq!(rewritten.matches("spec = ").count(), 1, "{rewritten}");
-    assert!(
-        rewritten.contains(&format!("spec = {}", toml_string(&other))),
+    let parsed: toml::Value = toml::from_str(&rewritten).unwrap();
+    assert_eq!(
+        parsed["model"]["spec"].as_str(),
+        Some(other.as_str()),
         "{rewritten}"
     );
     assert_eq!(

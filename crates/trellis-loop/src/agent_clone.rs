@@ -18,7 +18,7 @@
 
 use crate::governance::Governance;
 use crate::isolate::{GIT_LOCATION_VARS, Sandbox, hash_file, is_git_instruction_file};
-use crate::orchestrator::{names_trellis_dir, real_rel, write_refusal};
+use crate::path_rules::{names_trellis_dir, real_rel, write_refusal};
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::Path;

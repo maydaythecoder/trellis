@@ -119,7 +119,7 @@ impl BatchingCapability {
 }
 
 /// The tier's number, the head of a tier label.
-fn head(t: AdapterTier) -> &'static str {
+fn tier_number(t: AdapterTier) -> &'static str {
     match t {
         AdapterTier::Native => "1",
         AdapterTier::RuntimeConstrained => "2",
@@ -173,7 +173,11 @@ impl Probe {
             // `tier_label`), so the bar's `4, no schema` and this line read
             // as the same answer (#523).
             match self.tier {
-                Some(t) => format!("tier:       {}, {t:?} — {}", head(t), t.degradation()),
+                Some(t) => format!(
+                    "tier:       {}, {t:?} — {}",
+                    tier_number(t),
+                    t.degradation()
+                ),
                 None => "tier:       unknown, not probed; pass --model to find out".to_string(),
             },
         ];
