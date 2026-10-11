@@ -226,6 +226,22 @@ list --state open`, `gh run list -L 10`), each bounded to 10 seconds; when
 it is missing, not logged in, times out or fails, the overview's `pr_ci`
 says so as `{"available": false, "reason"}` (ADR 0050 section 3, as
 built).
+*As built 2026-10-11, owner-directed (the owner's request of 2026-10-11:
+"the current view is nice in the trellis atlas, could you add that to the
+current view without removing the other ones"):* rpc gives the desktop's
+Atlas section what it draws, read-only and each on its own thread, each
+refusing a root with no `.git` entry: `get_codebase` with `edges: "all"`
+for every module edge and `ref` for the graph at a commit (its `ref`,
+`commit` and `date`; HEAD's `commit` and `date` without one), `get_symbols`
+for definitions with their lines and their `calls_in`,
+`calls_in_ambiguous` and `calls_out` counts, `get_radius`'s `reached` and
+`sites` lists beside its unchanged counts, and `get_history` for HEAD's
+first-parent commits, the tags in its history and per-path churn measured
+back from HEAD's committer date (ADR 0025 §5, added 2026-10-11). A
+commit's tree is read through `trellis_vcs` into a temporary directory
+outside the repository and removed; nothing the repository holds is
+written. No `--json` is added to `index`, `radius` or any other command,
+and section 2's spawns are unchanged.
 
 ## Alternatives rejected
 

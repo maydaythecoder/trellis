@@ -6799,3 +6799,108 @@ fn rpc_atlas_get_history_of_no_commit_is_empty_and_bad_counts_and_no_git_are_ref
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&bare);
 }
+
+/// Every dotted path in `v` as the contract writes them: a key, `a.b`
+/// under it, and `a[].b` under each element of an array.
+fn answered_paths(v: &serde_json::Value, at: &str, out: &mut std::collections::BTreeSet<String>) {
+    match v {
+        serde_json::Value::Object(o) => {
+            for (k, child) in o {
+                let p = if at.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{at}.{k}")
+                };
+                out.insert(p.clone());
+                answered_paths(child, &p, out);
+            }
+        }
+        serde_json::Value::Array(a) => {
+            for e in a {
+                if e.is_object() {
+                    answered_paths(e, &format!("{at}[]"), out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn rpc_atlas_contract_lists_every_field_the_atlas_commands_answer() {
+    // The risk (ADR 0048 §6): the desktop's Atlas reads these answers by
+    // name, and a field renamed here, or answered and never promised,
+    // passes every other test. Both directions: each field the contract
+    // lists is answered, and each field answered is listed.
+    let (d, _) = atlas_repo("rpc-atlas-contract");
+    // An unbound call, so the radius's doubt lists carry entries.
+    std::fs::write(
+        d.join("app/core.py"),
+        "def greet(who):\n    return who.strip()\n",
+    )
+    .unwrap();
+    git(&d, &["commit", "-qam", "doubt"]);
+    let records = rpc_records(
+        &d,
+        None,
+        &[
+            serde_json::json!({"id": "g", "type": "get_codebase", "limit": 1000, "edges": "all"}),
+            serde_json::json!({"id": "r", "type": "get_codebase", "ref": "v1"}),
+            serde_json::json!({"id": "s", "type": "get_symbols"}),
+            serde_json::json!({"id": "x", "type": "get_radius", "symbol": "greet"}),
+            serde_json::json!({"id": "h", "type": "get_history"}),
+        ],
+    );
+    let c = client_contract();
+    let responses = &c["rpc"]["responses"];
+    for (id, command, lists) in [
+        ("g", "get_codebase", &["always"][..]),
+        ("r", "get_codebase", &["always", "ref_only"][..]),
+        ("s", "get_symbols", &["always"][..]),
+        ("x", "get_radius", &["always"][..]),
+        ("h", "get_history", &["always", "head_only"][..]),
+    ] {
+        let r = rpc_answer(&records, id);
+        assert_eq!(r["success"], true, "{r}");
+        let data = &r["data"];
+        let entry = &responses[command];
+        let promised: Vec<&str> = lists
+            .iter()
+            .flat_map(|l| contract_paths(&entry[*l]))
+            .collect();
+        let gaps: Vec<&&str> = promised.iter().filter(|p| !carries_each(data, p)).collect();
+        assert!(
+            gaps.is_empty(),
+            "{command} ({id}) lacks what tests/client_contract.json lists: {gaps:?}\n{data}"
+        );
+        let mut listed: std::collections::BTreeSet<String> = Default::default();
+        for (k, l) in entry.as_object().unwrap() {
+            if k == "always" || k.ends_with("_only") {
+                listed.extend(contract_paths(l).into_iter().map(str::to_string));
+            }
+        }
+        let mut answered = Default::default();
+        answered_paths(data, "", &mut answered);
+        let unlisted: Vec<&String> = answered.difference(&listed).collect();
+        assert!(
+            unlisted.is_empty(),
+            "{command} ({id}) answers what tests/client_contract.json does not list: {unlisted:?}"
+        );
+    }
+    // The fixture gives every list something to carry, so an element's
+    // fields are checked rather than passed by an empty array.
+    let x = &rpc_answer(&records, "x")["data"];
+    for list in ["reached", "sites", "doubt.reasons", "doubt.files"] {
+        let v = list.split('.').fold(x, |v, k| &v[k]);
+        assert!(v.as_array().is_some_and(|a| !a.is_empty()), "{list}: {x}");
+    }
+    let h = &rpc_answer(&records, "h")["data"];
+    for list in ["churn", "commits", "tags"] {
+        assert!(
+            h[list].as_array().is_some_and(|a| !a.is_empty()),
+            "{list}: {h}"
+        );
+    }
+    assert!(h["churn"][0]["commits"].is_u64(), "a tag is listed: {h}");
+    let _ = std::fs::remove_dir_all(&d);
+}
