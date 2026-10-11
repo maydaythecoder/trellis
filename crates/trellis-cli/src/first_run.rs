@@ -62,7 +62,9 @@ pub(crate) enum Api {
 }
 
 impl Api {
-    fn path(self) -> &'static str {
+    /// The listing path, which rpc's `list_models` names beside each
+    /// address it tried, as [`nothing_found`] does.
+    pub(crate) fn path(self) -> &'static str {
         match self {
             Api::OllamaTags => "/api/tags",
             Api::OpenAiModels => "/v1/models",

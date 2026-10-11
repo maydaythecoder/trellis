@@ -18,6 +18,7 @@ mod context_files; // context files, system prompt and skills a run's prompt tak
 mod doctor_cmd; // `doctor`, `check` and `init`
 mod doctor_extra; // `doctor`'s lines on user config, context, trust, profiles and vault
 mod first_run; // choosing a model on a first run with none configured (ADR 0050 §2)
+mod floor; // the S7 floor as measured: doctor's floor line and run's warning
 mod hosted; // hosted providers: a spec resolved against the user's config (ADR 0024)
 mod image_input; // `run --image` (ADR 0041)
 mod index_cmd; // `index`, `radius` and `partitions`
@@ -763,6 +764,17 @@ fn main() -> Result<()> {
                     .model()
                     .with_context(first_run::no_model)?,
             };
+            // Here, not in `run_body`: this is `trellis run`'s own path, and
+            // the session, the TUI and rpc share `run_body`, where a line on
+            // stderr would land under a drawn interface. Before `agents_for`
+            // and `cmd_run_with`, so before any request reaches the runtime.
+            // A spec that does not parse gets no warning; `cmd_run_with`
+            // refuses it with the reason.
+            if let Ok(spec) = model.parse::<trellis_model::ModelSpec>()
+                && let Some(w) = floor::run_warning(&spec)
+            {
+                eprintln!("{}", plain(&w));
+            }
             // With no target the width is 1 (refused above otherwise), and
             // the run is today's single-agent run with nothing added. With
             // targets, the plan's partitions run each in its own agent (#466),
