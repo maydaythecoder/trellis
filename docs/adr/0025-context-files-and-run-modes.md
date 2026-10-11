@@ -240,6 +240,10 @@ on stderr.
   - `list_models`, and `set_model {model, save?}` or `{configured: true}`
     (*added 2026-10-10, #564, ADR 0048 §5 as amended; see "list_models and
     the model gate" below*)
+  - `get_symbols {module?}` and `get_history {commits?, tags?}`, with
+    `get_codebase {edges?, ref?}` and `get_radius`'s `reached` and `sites`
+    (*added 2026-10-11, owner-directed, for the desktop's Atlas; see "The
+    Atlas's reads" below*)
 - **Why these 9 of pi's 33:** (10 since `compact`, 12 since `steer` and
   `follow_up`; `get_codebase`, the 13th, `get_radius`, the 14th,
   `get_queue`, the 15th, and `vault_search` and `vault_graph`, the 16th and
@@ -249,7 +253,9 @@ on stderr.
   of pi 1.0.2's 33 is in the table under "get_session_stats and
   get_last_assistant_text" below, built or not built, with its reason.
   `list_paths`, trellis's own, adds one more to what `get_commands` lists
-  (#502), and `list_models`, trellis's own, one more again (#564).)
+  (#502), and `list_models`, trellis's own, one more again (#564);
+  `get_symbols` and `get_history`, trellis's own, two more (the Atlas,
+  2026-10-11).)
   - `steer`, `follow_up` and `clear_queue` need mid-run input (ADR 0021
     1.2, deferred). *Amended 2026-09-29 (#114): `steer` and `follow_up`
     are built, on the owner's decision of 2026-09-28 recorded there; see
@@ -825,6 +831,77 @@ on stderr.
   - `tests/client_contract.json` lists both under `rpc.responses`. Held by
     the `rpc_model_select_` tests in `tests/modes.rs` and `rpc.rs`; every
     earlier test that sends a `prompt` now sends `set_model` first.
+- *Added 2026-10-11, owner-directed (the owner's request of 2026-10-11:
+  "the current view is nice in the trellis atlas, could you add that to the
+  current view without removing the other ones"), as built.* **The Atlas's
+  reads.** The desktop gains an Atlas section beside its six (ADR 0048
+  §10, as built 2026-10-11); it draws from these, each read-only, each
+  answered on its own thread as `get_codebase` is, and each refusing a root
+  with no `.git` entry before any thread starts, as #559 made
+  `get_codebase` and `get_radius` do. Every existing field and default is
+  unchanged.
+  - **`get_codebase {edges?, ref?}`.** `edges: "all"` lists every module
+    edge, so `calls_not_drawn` is 0; absent, ten per module as before.
+    `ref` answers the graph of that commit's tree, with `ref` as asked,
+    `commit` (the full id, a tag peeled) and `date` (committer date, strict
+    ISO 8601, the commit's own offset). Without `ref`, `commit` and `date`
+    are HEAD's, null when there is no commit; the graph is still the
+    worktree's. A `ref` that is not a non-empty string, holds a control
+    character or starts with `-` is refused before git runs; the rest is
+    resolved with `rev-parse -q --verify --end-of-options <ref>^{commit}`,
+    and one that names no commit is refused by name. The tree comes out
+    through `trellis_vcs::history::tree_copy`: `ls-tree -r -z` lists it and
+    one `cat-file --batch` writes its `.py` blobs, as committed, into a new
+    `0700` directory under the temporary directory, which is indexed as a
+    worktree is and removed. Neither touches the worktree, the index or
+    `.git/worktrees`, as a checkout into another work tree or `worktree
+    add` would; `git archive` would need a `tar` child or a tar reader.
+    Links and submodules are not written; a tree path with an empty, `..`
+    or `.git` component refuses the copy, as git refuses to check it out.
+    In a partial clone, `cat-file` fetches a blob the clone lacks.
+  - **`get_symbols {module?}`** answers `{modules_indexed, symbols}`:
+    every definition, or one module's, in the index's order, with module,
+    path, bare name, kind, and `line` and `end_line` (1-based, from the
+    index's byte span over the bytes it parsed), and three counts of call
+    sites: `calls_in` (bound by a `Resolved` edge), `calls_in_ambiguous`
+    (among a `Candidates` set, once per site) and `calls_out` (in its own
+    body, bound by a `Resolved` edge). None is a part or a share of
+    another (CLAUDE.md rule 3). A module the index holds no file for is
+    refused by name. The index is built as `get_codebase` builds it.
+  - **`get_radius`** gains `reached` (`{symbol, module, path, kind,
+    line}` per symbol the radius reached, in the index's order) and
+    `sites` (`{path, line, certain}` per call site it walked, the certain
+    ones first, each kind nearest first), each cut at 2000 with the rest in
+    `reached_not_listed` and `sites_not_listed`. `reach` keeps the whole
+    counts.
+  - **`get_history {commits?, tags?}`** (default 20 and 12, each held to
+    200; anything but a count from 0 refused by name) answers `{head,
+    windows_days, churn, commits, tags}` from git through
+    `trellis_vcs::history`: HEAD's commit and date (null, with every list
+    empty, when there is no commit); the newest first-parent commits with
+    subject and the paths changed against the first parent; the newest
+    tags HEAD can reach, peeled and dated by commit; and per path, `d30`,
+    `d90` and `d365`, counted in the run of first-parent commits from HEAD
+    back to the first dated before the window opens, measured from HEAD's
+    committer date so the answer does not depend on the clock, and
+    `commits`, the count after the oldest tag listed (null when none is).
+    Every `log` runs with `--no-show-signature`, so `log.showSignature`
+    cannot start a configured `gpg.program`. A subject is text a commit's
+    author wrote.
+  - `tests/client_contract.json` lists each under `rpc.responses`. Every
+    new git spawn is `trellis_vcs::command()`; `tests/hygiene.rs` counts
+    `history.rs`'s one `"git {}"` message line. Evidence, each failing
+    before its change: the `rpc_atlas_` tests in `tests/cli.rs`, through
+    the binary over stdio (among them
+    `rpc_atlas_get_codebase_ref_answers_the_codebase_at_that_commit_and_writes_nothing`,
+    which compares every file under the repository, `.git` and its index
+    included, byte for byte before and after, and finds the temporary
+    directory empty again, and
+    `rpc_atlas_contract_lists_every_field_the_atlas_commands_answer`, both
+    directions); the `rpc_atlas_` unit tests in `atlas.rs`, `index_cmd.rs`
+    and `rpc.rs`; and the `history::tests` in `trellis-vcs`.
+    `rpc_get_radius_returns_reach_and_doubt_as_separate_counts` compares
+    every field `trellis radius` prints, the four new keys set aside.
 
 ### 6. Session additions
 
