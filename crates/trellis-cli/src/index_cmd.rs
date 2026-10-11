@@ -238,6 +238,10 @@ pub(crate) fn radius_of(index: &trellis_index::Index, query: &str) -> Result<()>
     Ok(())
 }
 
+/// How many entries `radius_json`'s `reached` and `sites` lists hold at
+/// most; the rest are counted, not dropped.
+const RADIUS_LISTED: usize = 2000;
+
 /// The radius `radius_of` prints for `query`, as data, for rpc's `get_radius`.
 ///
 /// The same symbol matching and the same report, so the two cannot drift.
@@ -245,11 +249,83 @@ pub(crate) fn radius_of(index: &trellis_index::Index, query: &str) -> Result<()>
 /// populations: no ratio, fraction or total sits beside them (ADR 0014,
 /// CLAUDE.md rule 3). The reasons and files are whole, by frequency; cutting
 /// them to a screen is the printed report's.
-pub(crate) fn radius_json(index: &trellis_index::Index, query: &str) -> Result<serde_json::Value> {
+///
+/// Beside the counts, for the desktop's Atlas (owner request of
+/// 2026-10-11), two lists from the same report: `reached`, the symbols it
+/// reached, in the index's order; and `sites`, the call sites it walked,
+/// the certain ones first and each kind nearest first, with lines from
+/// `sources`, the bytes the index parsed. Each is cut at
+/// [`RADIUS_LISTED`] with the rest counted in `reached_not_listed` and
+/// `sites_not_listed`; `reach` keeps the whole counts.
+pub(crate) fn radius_json(
+    index: &trellis_index::Index,
+    sources: &[(String, String)],
+    query: &str,
+) -> Result<serde_json::Value> {
     let target = resolve_symbol(index, query)?;
     let report = trellis_index::radius::blast_radius(index, target);
     let s = &index.symbols[target.index()];
     let c = &report.coverage;
+    let text: std::collections::HashMap<&str, &str> = sources
+        .iter()
+        .map(|(p, s)| (p.as_str(), s.as_str()))
+        .collect();
+    let mut starts: std::collections::HashMap<usize, Vec<usize>> = Default::default();
+    let mut line = |file: trellis_core::FileId, at: usize| -> usize {
+        let lines = starts.entry(file.index()).or_insert_with(|| {
+            let path = index
+                .files
+                .get(file.index())
+                .map_or("", |f| f.path.as_str());
+            crate::atlas::line_starts(text.get(path).copied().unwrap_or(""))
+        });
+        crate::atlas::line_at(lines, at)
+    };
+    let path = |file: trellis_core::FileId| {
+        index
+            .files
+            .get(file.index())
+            .map_or("", |f| f.path.as_str())
+    };
+    let reached: Vec<serde_json::Value> = report
+        .symbols
+        .iter()
+        .take(RADIUS_LISTED)
+        .filter_map(|id| index.symbols.get(id.index()))
+        .map(|r| {
+            serde_json::json!({
+                "symbol": qualified(index, r),
+                "module": index.files.get(r.file.index()).map_or("", |f| f.module.as_str()),
+                "path": path(r.file),
+                "kind": match r.kind {
+                    trellis_index::SymbolKind::Function => "function",
+                    trellis_index::SymbolKind::Method => "method",
+                    trellis_index::SymbolKind::Class => "class",
+                },
+                "line": line(r.file, r.span.0),
+            })
+        })
+        .collect();
+    let walked = report.certain.len() + report.ambiguous.len();
+    let sites: Vec<serde_json::Value> = report
+        .certain
+        .iter()
+        .chain(&report.ambiguous)
+        .take(RADIUS_LISTED)
+        .filter_map(|e| {
+            index
+                .sites
+                .get(e.site.index())
+                .map(|site| (site, e.certain))
+        })
+        .map(|(site, certain)| {
+            serde_json::json!({
+                "path": path(site.file),
+                "line": line(site.file, site.span.0),
+                "certain": certain,
+            })
+        })
+        .collect();
     let reasons: Vec<serde_json::Value> = c
         .reasons_by_frequency()
         .into_iter()
@@ -280,6 +356,10 @@ pub(crate) fn radius_json(index: &trellis_index::Index, query: &str) -> Result<s
             "reasons": reasons,
             "files": files,
         },
+        "reached_not_listed": report.symbols.len() - reached.len(),
+        "reached": reached,
+        "sites_not_listed": walked - sites.len(),
+        "sites": sites,
     }))
 }
 
@@ -486,4 +566,37 @@ pub(crate) fn graph_lines(g: &trellis_index::ModuleGraph, limit: usize) -> Vec<S
     out.push("  An edge is a call site the resolver bound to a definition in another".into());
     out.push("  module. Absence of an edge is absence of a binding, not absence of a call.".into());
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rpc_atlas_radius_lists_are_cut_at_the_cap_and_the_rest_counted_while_reach_stays_whole() {
+        // The risk: a hub's radius sending every caller of a large
+        // repository in one answer, or a cut list read as the whole reach.
+        // One past the cap on both lists: 2001 callers, one site each.
+        let n = RADIUS_LISTED + 1;
+        let mut src = String::from("def hub():\n    return 0\n");
+        for i in 0..n {
+            src.push_str(&format!("def c{i}():\n    return hub()\n"));
+        }
+        let sources = vec![("m.py".to_string(), src)];
+        let index = trellis_index::build_from_sources(&sources);
+        let v = radius_json(&index, &sources, "hub").unwrap();
+        assert_eq!(v["reach"]["resolved"], n, "the count stays whole");
+        assert_eq!(v["reach"]["symbols_reached"], n);
+        assert_eq!(v["reached"].as_array().unwrap().len(), RADIUS_LISTED);
+        assert_eq!(v["reached_not_listed"], 1);
+        assert_eq!(v["sites"].as_array().unwrap().len(), RADIUS_LISTED);
+        assert_eq!(v["sites_not_listed"], 1);
+        // In the index's order, each with the line its `def` is on.
+        assert_eq!(v["reached"][0]["symbol"], "m.c0");
+        assert_eq!(v["reached"][0]["line"], 3);
+        assert_eq!(
+            v["sites"][0],
+            serde_json::json!({"path": "m.py", "line": 4, "certain": true})
+        );
+    }
 }
