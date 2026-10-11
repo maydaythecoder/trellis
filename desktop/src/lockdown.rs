@@ -214,14 +214,21 @@ mod tests {
         found[0]
     }
 
-    /// The six sections the rail switches, in rail order (#300 as amended
-    /// 2026-10-07; overview is the landing section).
-    const SECTIONS: [&str; 6] = ["overview", "run", "trails", "codebase", "board", "vault"];
+    /// The seven sections the rail switches, in rail order (#300 as amended
+    /// 2026-10-07; overview is the landing section). The seventh, atlas,
+    /// sits after codebase: the owner asked on 2026-10-11 for the Atlas
+    /// "without removing the other ones", so it is added beside them and
+    /// every other section keeps its place.
+    const SECTIONS: [&str; 7] = [
+        "overview", "run", "trails", "codebase", "atlas", "board", "vault",
+    ];
 
     /// The sections that are built, and so do not read "Not built yet":
     /// run (#300), overview (#562), codebase (#307), trails (#304), vault
-    /// (#309) and board (#311).
-    const BUILT: [&str; 6] = ["run", "overview", "codebase", "trails", "vault", "board"];
+    /// (#309), board (#311) and atlas (the owner's request of 2026-10-11).
+    const BUILT: [&str; 7] = [
+        "run", "overview", "codebase", "trails", "vault", "board", "atlas",
+    ];
 
     #[test]
     fn csp_has_no_unsafe_source_and_no_network_origin() {
@@ -350,9 +357,10 @@ mod tests {
     fn page_rail_buttons_control_sections_that_exist() {
         // The risk: a rail button that shows nothing, or a section no
         // button reaches; a later view shown before it is built, or a run
-        // section that says it is not built. Six sections (#300 as amended
-        // 2026-10-07), overview first and the one shown at load; the ones
-        // in BUILT are built.
+        // section that says it is not built. Seven sections (#300 as amended
+        // 2026-10-07, and the Atlas the owner asked for on 2026-10-11),
+        // overview first and the one shown at load; the ones in BUILT are
+        // built.
         let page = page();
         let navs: Vec<usize> = (0..page.len()).filter(|&i| page[i].tag == "nav").collect();
         assert_eq!(navs.len(), 1, "one nav");
@@ -1698,6 +1706,263 @@ mod tests {
         }
     }
 
+    /// The ids atlas.js draws into or reads, every one inside #atlas.
+    const ATLAS_IDS: [&str; 30] = [
+        "at-where",
+        "at-open-search",
+        "at-status",
+        "at-lens",
+        "at-win",
+        "at-win-field",
+        "at-win-since",
+        "at-base-field",
+        "at-base",
+        "at-snap",
+        "at-ticks",
+        "at-readout",
+        "at-back",
+        "at-fwd",
+        "at-crumbs",
+        "at-zout",
+        "at-zin",
+        "at-zfit",
+        "at-map",
+        "at-canvas",
+        "at-legend",
+        "at-minimap",
+        "at-tab-sel",
+        "at-tab-chg",
+        "at-tab-pin",
+        "at-detail",
+        "at-search",
+        "at-q",
+        "at-qclose",
+        "at-qhint",
+    ];
+
+    #[test]
+    fn atlas_section_holds_what_atlas_js_draws() {
+        // The risk (the owner's request of 2026-10-11): atlas.js drawing into
+        // an id the page lacks, so the map, the scrubber or the detail pane
+        // never shows; a control with no name; a map the keyboard cannot
+        // reach; or the section still saying it is not built.
+        let page = page();
+        let section = index_of(&page, "atlas");
+        let js = code_of("atlas.js");
+        for id in ATLAS_IDS {
+            // The three tabs are named through one template, `at-tab-${t}`,
+            // over their suffixes.
+            let tab = id
+                .strip_prefix("at-tab-")
+                .is_some_and(|t| js.contains("`at-tab-${t}`") && js.contains(&format!("\"{t}\"")));
+            assert!(
+                js.contains(&format!("\"{id}\"")) || js.contains(&format!("#{id} ")) || tab,
+                "atlas.js draws no {id}"
+            );
+            assert!(
+                within(&page, index_of(&page, id), section),
+                "#{id} is outside #atlas"
+            );
+        }
+        for id in ["at-snap", "at-base"] {
+            assert!(
+                page.iter()
+                    .any(|e| e.tag == "label" && e.attr("for") == Some(id)),
+                "#{id} has no label"
+            );
+        }
+        assert!(page[index_of(&page, "at-q")].attr("aria-label").is_some());
+        let canvas = &page[index_of(&page, "at-canvas")];
+        assert_eq!(canvas.tag, "canvas");
+        assert_eq!(canvas.attr("tabindex"), Some("0"), "the map takes keys");
+        assert_eq!(canvas.attr("role"), Some("img"));
+        assert!(canvas.attr("aria-label").is_some());
+        assert_eq!(canvas.attr("aria-describedby"), Some("at-keys"));
+        assert!(
+            within(&page, index_of(&page, "at-keys"), section),
+            "the map's keys are said in the section"
+        );
+        for id in ["at-search", "at-minimap", "at-win-field", "at-base-field"] {
+            assert!(
+                page[index_of(&page, id)].attrs.contains_key("hidden"),
+                "#{id} is shown before atlas.js decides"
+            );
+        }
+        assert!(!page[section].text.contains("Not built yet"));
+        assert!(
+            ui_file("index.html").contains(r#"<script type="module" src="atlas.js"></script>"#),
+            "index.html does not load atlas.js as a module"
+        );
+    }
+
+    #[test]
+    fn atlas_js_draws_text_and_asks_only_for_reads() {
+        // The risk (ADR 0007, S10; the owner's request of 2026-10-11): a
+        // module name, path, tag or commit subject, repository or git text,
+        // parsed as markup or drawn as a link; the page asking trellis for
+        // anything but the four reads; or a figure drawn as a share, which
+        // CLAUDE.md rule 3 forbids. No JavaScript runs under cargo test, so
+        // this holds the text; a node smoke script with a fake DOM and a
+        // recording canvas ran atlas.js over views the core emitted for the
+        // poetry data (see the commit).
+        let js = code_of("atlas.js");
+        for bad in [
+            "innerHTML",
+            "outerHTML",
+            "insertAdjacentHTML",
+            "document.write",
+            "createElement(\"a\")",
+            "href",
+            "fetch(",
+            "\"prompt\"",
+            "%",
+            "percent",
+            "ratio",
+        ] {
+            assert!(!js.contains(bad), "atlas.js uses {bad}");
+        }
+        assert!(js.contains("textContent"), "atlas.js writes no text");
+        let sent: BTreeSet<&str> = js
+            .split("type: \"")
+            .skip(1)
+            .map(|rest| &rest[..rest.find('"').unwrap()])
+            .collect();
+        assert_eq!(
+            sent,
+            BTreeSet::from(["get_codebase", "get_history", "get_radius", "get_symbols"]),
+            "atlas.js sends a type that is not one of its four reads"
+        );
+        let invoked: Vec<&str> = js
+            .split("invoke(\"")
+            .skip(1)
+            .map(|rest| &rest[..rest.find('"').unwrap()])
+            .collect();
+        assert_eq!(invoked, ["rpc_send"], "{invoked:?}");
+        // Every question carries an Atlas id, so the core keeps its
+        // answers apart from the Codebase view's and the radius pane's.
+        assert!(js.contains(r#"const ID = "desktop-atlas-";"#));
+        assert_eq!(
+            js.matches("id: nextId(A, ").count(),
+            5,
+            "a question with no Atlas id"
+        );
+        // One index at a time: nothing is asked while a question is in
+        // flight here, or in the core's record.
+        let pump = function_body(&js, "pump");
+        for want in [
+            "if (A.inflight !== null) return;",
+            "snaps.some((s) => s.state === \"asked\")",
+        ] {
+            assert!(pump.contains(want), "pump lacks {want}");
+        }
+    }
+
+    #[test]
+    fn atlas_js_reads_colours_from_the_stylesheet_and_follows_the_system_theme() {
+        // The risk: a map drawn in colours of its own, which ignore the
+        // system theme and the page's palette; or a map that stays light
+        // when the system turns dark, since the desktop has no theme toggle.
+        let js = code_of("atlas.js");
+        let palette = function_body(&js, "readPalette");
+        for want in ["getComputedStyle(", "getPropertyValue(`--${t}`)"] {
+            assert!(palette.contains(want), "readPalette lacks {want}");
+        }
+        assert!(
+            js.contains(
+                r#"win.matchMedia("(prefers-color-scheme: dark)").addEventListener("change""#
+            ),
+            "the map is not redrawn on a theme change"
+        );
+        let hex = js.char_indices().any(|(i, c)| {
+            c == '#'
+                && js[i + 1..]
+                    .chars()
+                    .take_while(char::is_ascii_hexdigit)
+                    .count()
+                    >= 3
+                && !js[i + 1..].starts_with("at-")
+        });
+        assert!(!hex, "atlas.js names a colour of its own");
+        // Each colour it reads is one style.css sets, in both themes.
+        let css = ui_file("style.css");
+        let tokens = js
+            .split("const TOKENS = [")
+            .nth(1)
+            .and_then(|r| r.split("];").next())
+            .expect("atlas.js lists its colours");
+        for t in tokens
+            .split(',')
+            .map(|t| t.trim().trim_matches('"'))
+            .filter(|t| !t.is_empty())
+        {
+            assert!(
+                css.matches(&format!("--{t}:")).count() >= 2,
+                "style.css does not set --{t} for both themes"
+            );
+        }
+    }
+
+    #[test]
+    fn atlas_js_flies_only_when_motion_is_allowed() {
+        // The risk: an animated flight across the map for someone whose
+        // system asks for reduced motion; or a stylesheet rule for the
+        // Atlas that moves on its own.
+        let js = code_of("atlas.js");
+        assert!(js.contains(r#"reduced: win.matchMedia("(prefers-reduced-motion: reduce)")"#));
+        let go = function_body(&js, "go");
+        let jump = go
+            .find("A.reduced.matches")
+            .expect("go does not ask about motion");
+        let animate = go
+            .find("requestAnimationFrame(step)")
+            .expect("go has no flight");
+        assert!(
+            jump < animate,
+            "a flight starts before reduced motion is asked about"
+        );
+        assert!(
+            go[jump..animate].contains("setT(A, t);"),
+            "go does not jump under reduced motion"
+        );
+        let (rules, moving) = crate::graph::motion_in_rules_naming("at-");
+        assert!(rules > 0, "style.css has no rule for the Atlas");
+        assert!(moving.is_empty(), "Atlas rules that move: {moving:?}");
+    }
+
+    #[test]
+    fn atlas_js_works_without_storage_and_forgets_the_last_repository() {
+        // The risk: a page where storage is refused failing to draw the map
+        // because the working set threw; or, after another repository is
+        // opened, the last one's map, selection and questions in flight
+        // staying drawn and answerable as the new one's.
+        let js = code_of("atlas.js");
+        for f in ["loadPins", "savePins"] {
+            let body = function_body(&js, f);
+            assert!(
+                body.contains("try {") && body.contains("localStorage") && body.contains("catch"),
+                "{f} does not survive refused storage"
+            );
+        }
+        let started = js
+            .split(r#"listen("child-started""#)
+            .nth(1)
+            .and_then(|r| r.split("});").next())
+            .expect("atlas.js listens for child-started");
+        assert!(started.contains("reset(A, "), "{started}");
+        let reset = function_body(&js, "reset");
+        for want in [
+            "A.view = null;",
+            "A.D = null;",
+            "A.sel = null;",
+            "A.askedHistory = false;",
+            "A.askedSymbols = false;",
+            "A.inflight = null;",
+            "A.pins = loadPins(A);",
+        ] {
+            assert!(reset.contains(want), "reset lacks {want}");
+        }
+    }
+
     #[test]
     fn page_has_no_style_attribute() {
         // The risk: an inline style, which the CSP's `style-src 'self'`
@@ -1723,6 +1988,7 @@ mod tests {
             "trails.js",
             "vault.js",
             "queue.js",
+            "atlas.js",
         ] {
             let js = ui_file(name);
             for bad in [".style", "cssText", "\"style\"", "'style'"] {
