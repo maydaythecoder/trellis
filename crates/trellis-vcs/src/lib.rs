@@ -198,7 +198,30 @@ const NO_HOOKS: &str = "core.hooksPath=NUL";
 #[cfg(not(windows))]
 const NO_HOOKS: &str = "core.hooksPath=/dev/null";
 
-/// `git` with [`OVERRIDES`], its environment scrubbed of keys.
+/// Environment every `git` trellis runs is given beside [`OVERRIDES`], for
+/// what no `-c` turns off (security finding F1, AUDIT-2026-10-11):
+/// - `GIT_NO_LAZY_FETCH=1`: in a partial clone, git fetches an object it
+///   is asked to read and lacks (`cat-file` for the Atlas, `diff HEAD`,
+///   the rollback's `reset --hard`), and the fetch runs the transport the
+///   repository's config names, `remote.<r>.uploadpack` or
+///   `core.sshCommand`. Config cannot stop that: any remote with
+///   `remote.<r>.promisor=true` is a promisor, a `-c` can add one but not
+///   remove one, and a planted `protocol.<name>.allow=always` beats
+///   `-c protocol.allow=never`. With the variable set, git answers the
+///   object as missing or fails the command, and trellis reports that.
+///
+/// Honoured by git 2.45.0 and later, and by the CVE-2024-32465 releases
+/// 2.39.4, 2.40.2, 2.41.1, 2.42.2, 2.43.4 and 2.44.1, and distribution
+/// builds that carry that fix (Ubuntu's 2.43.0-1ubuntu7.3 is one). Any
+/// other git ignores it and fetches, so in a partial clone the planted
+/// command runs: on such a git, trellis does not prevent it. The
+/// `--no-lazy-fetch` option is not used: it was added in 2.45, and an older
+/// git refuses the whole command when given it. What this gives up: in
+/// the user's own partial clone, trellis's reads never fetch, so the
+/// Atlas reports an old commit whose blobs the clone lacks as missing.
+pub const ENV: [(&str, &str); 1] = [("GIT_NO_LAZY_FETCH", "1")];
+
+/// `git` with [`OVERRIDES`] and [`ENV`], its environment scrubbed of keys.
 ///
 /// Every `git` the workspace starts outside tests comes from here,
 /// [`command_with_hooks`] or [`git_argv`] (review round 10: `grep` and
@@ -208,13 +231,14 @@ const NO_HOOKS: &str = "core.hooksPath=/dev/null";
 /// `tokio::process::Command::from(command())`.
 pub fn command() -> Command {
     let mut c = Command::new("git");
-    c.args(OVERRIDES);
+    c.args(OVERRIDES).envs(ENV);
     trellis_core::secrets::scrub(&mut c);
     c
 }
 
 /// `git`, [`OVERRIDES`], then `args`, as an argv for a runner that takes
-/// one (`trellis-loop`'s `exec::run`, which scrubs keys itself).
+/// one (`trellis-loop`'s `exec::run`, which scrubs keys itself). The
+/// runner must set [`ENV`] too: an argv carries no environment.
 pub fn git_argv(args: &[&str]) -> Vec<String> {
     std::iter::once("git")
         .chain(OVERRIDES)
@@ -226,10 +250,11 @@ pub fn git_argv(args: &[&str]) -> Vec<String> {
 /// `git` with `core.fsmonitor` off and the hooks left alone: for the
 /// trail's commit, which runs the user's hooks as any commit does, and for
 /// the git guard's `rev-parse --git-path hooks`, which must name the real
-/// hooks directory.
+/// hooks directory. [`ENV`] all the same: a hook is the user's, a lazy
+/// fetch's transport is whatever `.git/config` names.
 pub(crate) fn command_with_hooks() -> Command {
     let mut c = Command::new("git");
-    c.args(["-c", "core.fsmonitor="]);
+    c.args(["-c", "core.fsmonitor="]).envs(ENV);
     trellis_core::secrets::scrub(&mut c);
     c
 }
@@ -1385,6 +1410,248 @@ mod tests {
         assert_eq!(marked(&marks), ["fsmonitor", "filter", "hook"], "control");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&marks);
+    }
+
+    /// The two ways a planted promisor remote runs a command that
+    /// `.git/config` names when git fetches from it.
+    #[derive(Clone, Copy, Debug)]
+    enum Transport {
+        /// A local path, whose `remote.<r>.uploadpack` git runs in a shell.
+        UploadPack,
+        /// An ssh URL, for which git runs `core.sshCommand` in place of
+        /// `ssh`, so nothing reaches the network.
+        SshCommand,
+    }
+
+    /// Makes `dir` a partial clone whose promisor remote writes `marker`
+    /// and then fails, as a remote holding nothing would: what an
+    /// attacker-supplied `.git/` (an archive, a shared folder) can carry
+    /// (security finding F1, AUDIT-2026-10-11). The transport's
+    /// `protocol.<name>.allow=always` is planted too, since that beats a
+    /// `-c protocol.allow=never` on the command line. Shell builtins only,
+    /// so Git for Windows' `sh` runs it as well.
+    fn plant_promisor(dir: &Path, marker: &Path, via: Transport) {
+        let m = marker.display().to_string().replace('\\', "/");
+        let planted = format!("echo ran > '{m}'; false");
+        let (url, key, scheme) = match via {
+            Transport::UploadPack => (
+                dir.display().to_string().replace('\\', "/"),
+                "remote.origin.uploadpack",
+                "file",
+            ),
+            Transport::SshCommand => (
+                "ssh://example.invalid/x".to_string(),
+                "core.sshCommand",
+                "ssh",
+            ),
+        };
+        let allow = format!("protocol.{scheme}.allow");
+        for (k, v) in [
+            ("extensions.partialClone", "origin"),
+            ("remote.origin.promisor", "true"),
+            ("remote.origin.url", url.as_str()),
+            (key, planted.as_str()),
+            (allow.as_str(), "always"),
+        ] {
+            run_git(dir, &["config", k, v]).unwrap();
+        }
+    }
+
+    /// `cmd` run in `dir` with `input` on its stdin.
+    fn with_stdin(mut cmd: Command, dir: &Path, input: &[u8]) -> std::process::Output {
+        use std::io::Write;
+        use std::process::Stdio;
+        let mut child = cmd
+            .current_dir(dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        child.wait_with_output().unwrap()
+    }
+
+    /// `f`'s answer, or a failure naming `what` after a minute: a read
+    /// left waiting on a fetch fails the test rather than hanging it.
+    fn within<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(60)) {
+            Ok(v) => v,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!("{what} hung"),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!("{what} panicked"),
+        }
+    }
+
+    /// A fresh repository planted per [`plant_promisor`], whose `HEAD` adds
+    /// `b.py` as a blob that was never written (`mktree --missing`), with
+    /// those bytes in the worktree and the index, so the tree is clean and
+    /// any read of the blob's content goes to the planted remote. Returns
+    /// the repository, the marker's path, `HEAD` and the missing blob's id.
+    fn lazy_repo(name: &str, via: Transport) -> (PathBuf, PathBuf, String, String) {
+        let dir = temp_repo(&format!("{name}-{via:?}"));
+        let marker = dir.with_file_name(format!("{}-ran", dir.file_name().unwrap().display()));
+        let _ = std::fs::remove_file(&marker);
+        let text = b"Y = 2\n";
+        let blob = |args: &[&str]| {
+            let mut c = command();
+            c.args(args);
+            let out = with_stdin(c, &dir, text);
+            assert!(out.status.success(), "{args:?}");
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        let missing = blob(&["hash-object", "--stdin"]);
+        let a = run_git(&dir, &["rev-parse", "HEAD:a.py"]).unwrap();
+        let mut mktree = command();
+        mktree.args(["mktree", "--missing"]);
+        let listing = format!(
+            "100644 blob {}\ta.py\n100644 blob {missing}\tb.py\n",
+            a.trim()
+        );
+        let tree = with_stdin(mktree, &dir, listing.as_bytes());
+        assert!(tree.status.success(), "mktree --missing");
+        let tree = String::from_utf8(tree.stdout).unwrap().trim().to_string();
+        let head = run_git(&dir, &["commit-tree", &tree, "-p", "HEAD", "-m", "missing"])
+            .unwrap()
+            .trim()
+            .to_string();
+        run_git(&dir, &["update-ref", "HEAD", &head]).unwrap();
+        // The index from the tree's ids and the worktree file from the
+        // blob's bytes: neither reads the blob.
+        run_git(&dir, &["read-tree", "HEAD"]).unwrap();
+        std::fs::write(dir.join("b.py"), text).unwrap();
+        plant_promisor(&dir, &marker, via);
+        (dir, marker, head, missing)
+    }
+
+    /// The control every lazy-fetch test ends on: `args` with trellis's
+    /// own `command()` but without `GIT_NO_LAZY_FETCH` runs the planted
+    /// remote, so the assertions before it are about that variable and not
+    /// a fixture that fetches nothing.
+    fn control_runs_the_planted_remote(dir: &Path, marker: &Path, args: &[&str], input: &[u8]) {
+        let mut plain = command();
+        plain.args(args).env_remove("GIT_NO_LAZY_FETCH");
+        let (d, input) = (dir.to_path_buf(), input.to_vec());
+        within("control", move || with_stdin(plain, &d, &input));
+        assert!(
+            marker.exists(),
+            "control: `git {args:?}` without GIT_NO_LAZY_FETCH did not run the planted remote \
+             (is GIT_SSH_COMMAND set?), so the assertions above prove nothing"
+        );
+    }
+
+    fn git_version(dir: &Path) -> String {
+        run_git(dir, &["--version"]).unwrap().trim().to_string()
+    }
+
+    #[test]
+    fn a_planted_partial_clone_remote_never_runs_from_a_read() {
+        // The risk (security finding F1, AUDIT-2026-10-11): in a partial
+        // clone, git fetches an object it is asked to read and lacks, and
+        // the fetch runs the transport `.git/config` names. The Atlas's
+        // `get_codebase {ref}` reads every blob of a tagged commit through
+        // `cat-file --batch`, so opening it on a received repository ran a
+        // planted command; `OVERRIDES` does not reach this.
+        for via in [Transport::UploadPack, Transport::SshCommand] {
+            let (dir, marker, head, missing) = lazy_repo("lazy-read", via);
+            let version = git_version(&dir);
+            let request = format!("{missing}\n");
+
+            let mut batch = command();
+            batch.args(["cat-file", "--batch"]);
+            let (d, r) = (dir.clone(), request.clone());
+            let out = within("cat-file", move || with_stdin(batch, &d, r.as_bytes()));
+            assert!(
+                !marker.exists(),
+                "{via:?}: command() ran the planted remote ({version})"
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                format!("{missing} missing\n"),
+                "{via:?}"
+            );
+
+            let (d, h) = (dir.clone(), head.clone());
+            let copy = within("tree_copy", move || history::tree_copy(&d, &h, |_| true));
+            assert!(
+                !marker.exists(),
+                "{via:?}: the Atlas's tree copy ran the planted remote ({version})"
+            );
+            match copy {
+                Err(history::HistoryError::Missing { path, oid, .. }) => {
+                    assert_eq!((path.as_str(), oid.as_str()), ("b.py", missing.as_str()));
+                }
+                other => panic!("{via:?}: {other:?}"),
+            }
+
+            control_runs_the_planted_remote(
+                &dir,
+                &marker,
+                &["cat-file", "--batch"],
+                request.as_bytes(),
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::remove_file(&marker);
+        }
+    }
+
+    #[test]
+    fn a_planted_partial_clone_remote_never_runs_from_diff_or_a_rollback() {
+        // The risk (F1): `diff HEAD`, which the session shows after a run,
+        // and the rollback's `reset --hard` read HEAD's blobs, and one the
+        // store lacks was fetched from the planted remote. A blob git
+        // cannot read is reported as a failure, not handed to that remote.
+        for via in [Transport::UploadPack, Transport::SshCommand] {
+            let (dir, marker, _, _) = lazy_repo("lazy-rollback", via);
+            let version = git_version(&dir);
+            let snap = snapshot(&dir).unwrap();
+            std::fs::write(dir.join("b.py"), "Y = 3\n").unwrap();
+
+            let d = dir.clone();
+            let shown = within("diff", move || diff(&d));
+            assert!(
+                !marker.exists(),
+                "{via:?}: diff ran the planted remote ({version})"
+            );
+            assert!(
+                matches!(shown, Err(VcsError::GitFailed { .. })),
+                "{via:?}: {shown:?}"
+            );
+
+            let restored = within("rollback", move || snap.rollback());
+            assert!(
+                !marker.exists(),
+                "{via:?}: the rollback ran the planted remote ({version})"
+            );
+            assert!(
+                matches!(restored, Err(VcsError::RollbackFailed { .. })),
+                "{via:?}: {restored:?}"
+            );
+
+            control_runs_the_planted_remote(&dir, &marker, &["--no-pager", "diff", "HEAD"], b"");
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::remove_file(&marker);
+        }
+    }
+
+    #[test]
+    fn every_git_constructor_sets_no_lazy_fetch() {
+        // The risk (F1): `command_with_hooks` runs the trail's commit and
+        // the guard's hooks lookup, neither of which a fixture can make
+        // read a missing object today, so a constructor that drops the
+        // variable would pass every behavioural test above.
+        for (name, c) in [
+            ("command", command()),
+            ("command_with_hooks", command_with_hooks()),
+        ] {
+            let set = c
+                .get_envs()
+                .any(|(k, v)| k == "GIT_NO_LAZY_FETCH" && v.is_some_and(|v| v == "1"));
+            assert!(set, "{name} does not set GIT_NO_LAZY_FETCH=1");
+        }
     }
 
     fn loose_objects(dir: &Path) -> u64 {
