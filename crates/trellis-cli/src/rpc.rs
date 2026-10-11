@@ -46,10 +46,19 @@ const COMMANDS: &[(&str, &str)] = &[
         "whether a run is in flight or a classify pending, the model, the last run",
     ),
     ("get_messages", "the current or last run's turns"),
-    ("set_model", "the model for later prompts: {model}"),
+    (
+        "set_model",
+        "this session's model, which `prompt` needs first: {model, save?} names one, and \
+         save writes it to your user config; {configured: true} confirms the configured one",
+    ),
     (
         "get_available_models",
         "the catalog and the configured specs",
+    ),
+    (
+        "list_models",
+        "the configured spec, the specs local runtimes on their default ports report, and \
+         your user config's providers by name and key variable, read-only",
     ),
     ("approve", "answer an approval request: {id, yes}"),
     (
@@ -594,8 +603,14 @@ struct Server {
     root: PathBuf,
     sink: Sink,
     mode: Mode,
-    /// Set by `set_model`; falls back to `[model] spec`.
+    /// Set by `set_model {model}`: the client's choice, which ADR 0024 §3
+    /// counts as the user's.
     model: Option<String>,
+    /// Set by `set_model {configured: true}`: the configured spec, as it
+    /// read when the client confirmed it. Not the user's choice: a
+    /// repository's spec confirmed is still the repository's, so a hosted
+    /// endpoint it names gets a key only where `hosted` already allows one.
+    confirmed: Option<String>,
     running: Option<Running>,
     /// Holds the slot a run holds while it is pending: no run starts, and
     /// no second model request is made, until it is answered or dropped.
@@ -618,13 +633,46 @@ struct Server {
     /// Threads waiting to answer a `compact`. Joined before `serve`
     /// returns, so no answer is lost to the process exiting.
     waiters: Vec<std::thread::JoinHandle<()>>,
+    /// Where `list_models` looks and `set_model {save}` writes.
+    sources: ModelSources,
 }
+
+/// Where `list_models` probes for local runtimes and which user config file
+/// it reads and `set_model {save: true}` writes: `first_run`'s defaults and
+/// the user's own file, so the desktop's picker and bare `trellis`'s
+/// first-run list offer the same specs and save to the same place (ADR 0050
+/// §2). A parameter so a test can point both at its own stub and directory,
+/// since `user_config::user_config_path()` is `None` under test.
+pub(crate) struct ModelSources {
+    pub(crate) runtimes: Vec<crate::first_run::Runtime>,
+    pub(crate) user_file: Option<PathBuf>,
+}
+
+impl ModelSources {
+    /// The defaults `first_run` probes, and the user's own config file.
+    pub(crate) fn user() -> Self {
+        Self {
+            runtimes: crate::first_run::defaults().to_vec(),
+            user_file: crate::user_config::user_config_path(),
+        }
+    }
+}
+
+/// What `prompt` is refused with until this session has a model (#564; ADR
+/// 0048 section 5, amended): the owner's condition for starting the desktop
+/// with its environment unchanged is that no prompt runs before the user has
+/// said which model it runs on. A prompt's own `model` does not count, so a
+/// client cannot pass the choice by naming one in the same line.
+const CHOOSE_FIRST: &str = "choose a model first: send set_model {\"model\": \"<spec>\"} \
+     to choose one, or {\"configured\": true} to confirm the configured one; list_models \
+     lists what there is";
 
 /// Reads commands until `quit` or end of input.
 ///
 /// End of input waits for a run in flight to finish, so
-/// `printf '{"type":"prompt",...}\n' | trellis rpc` runs one task to
-/// completion. `quit` aborts it instead.
+/// `printf '{"type":"set_model",...}\n{"type":"prompt",...}\n' | trellis rpc`
+/// runs one task to completion. `quit` aborts it instead. A `prompt` is
+/// refused until `set_model` has given the session a model (#564).
 ///
 /// End of input also means no `approve` can come: every question open
 /// then, and every one the run asks after, is declined (a dropped reply
@@ -632,11 +680,23 @@ struct Server {
 /// with a question still open would wait forever on an answer nobody can
 /// send.
 pub(crate) fn serve(root: &Path, input: impl BufRead, sink: Sink, mode: Mode) -> Result<()> {
+    serve_with(root, input, sink, mode, ModelSources::user())
+}
+
+/// [`serve`], with where models are looked for and saved given.
+fn serve_with(
+    root: &Path,
+    input: impl BufRead,
+    sink: Sink,
+    mode: Mode,
+    sources: ModelSources,
+) -> Result<()> {
     let mut s = Server {
         root: root.to_path_buf(),
         sink,
         mode,
         model: None,
+        confirmed: None,
         running: None,
         classifying: None,
         last: Arc::default(),
@@ -647,6 +707,7 @@ pub(crate) fn serve(root: &Path, input: impl BufRead, sink: Sink, mode: Mode) ->
         next_approval: Arc::default(),
         input_closed: Arc::default(),
         waiters: Vec::new(),
+        sources,
     };
     // A read error is the end of input, not a return: `?` here left `serve`
     // with a run in flight, and the process exited with no rollback and no
@@ -776,6 +837,10 @@ impl Server {
                 }
             },
         };
+        if let Err(e) = repository_root(&self.root, "get_codebase") {
+            self.respond(id, "get_codebase", Err(e));
+            return;
+        }
         let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
         self.waiters.push(std::thread::spawn(move || {
             let data = crate::doctor_cmd::codebase_json(&root, limit);
@@ -799,6 +864,10 @@ impl Server {
             );
             return;
         };
+        if let Err(e) = repository_root(&self.root, "get_radius") {
+            self.respond(id, "get_radius", Err(e));
+            return;
+        }
         let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
         let symbol = symbol.to_string();
         self.waiters.push(std::thread::spawn(move || {
@@ -1120,15 +1189,10 @@ impl Server {
                 self.respond(id, kind, Ok(json!({"text": text})));
             }
             "set_model" => {
-                let r = match cmd.get("model").and_then(Value::as_str) {
-                    Some(m) => validate_model_spec(m).map(|()| {
-                        self.model = Some(m.to_string());
-                        json!({"model": m})
-                    }),
-                    None => Err("set_model needs {\"model\": \"<spec>\"}".into()),
-                };
+                let r = self.set_model(cmd);
                 self.respond(id, kind, r);
             }
+            "list_models" => self.list_models(id),
             "get_available_models" => {
                 let data = crate::session_extra::models_json(&self.root, self.model.as_deref());
                 self.respond(id, kind, Ok(data));
@@ -1235,13 +1299,172 @@ impl Server {
         });
     }
 
-    /// The model for a run: the command's, then `set_model`'s, then config.
+    /// The model for a run: the command's, then `set_model`'s, then the
+    /// configured spec as it was confirmed, then config.
     fn model(&self, given: Option<&str>) -> Result<String, String> {
         given
             .map(str::to_string)
             .or_else(|| self.model.clone())
+            .or_else(|| self.confirmed.clone())
             .or_else(|| config::RepoConfig::load(&self.root).ok()?.model())
             .ok_or_else(|| "no model: pass \"model\", use set_model, or set [model] spec".into())
+    }
+
+    /// Whether this session has a model `prompt` may run on: one named by
+    /// `set_model {model}`, or the configured one confirmed (#564).
+    fn has_model(&self) -> bool {
+        self.model.is_some() || self.confirmed.is_some()
+    }
+
+    /// The repository's configuration over the user file `sources` names:
+    /// what `list_models` reports and `set_model {configured}` confirms.
+    fn config(&self) -> Result<config::RepoConfig, String> {
+        config::RepoConfig::load_with_user(&self.root, self.sources.user_file.as_deref())
+            .map_err(|e| format!("{e:#}"))
+    }
+
+    /// `set_model`: this session's model (#564, ADR 0048 section 5 as
+    /// amended), in one of two forms.
+    ///
+    /// `{model, save?}` names a spec, validated as `--model` is, and counts
+    /// as the user's choice (ADR 0024 §3). With `save: true` it is also
+    /// written to the user's own config file by `first_run`'s writer, never
+    /// to `.trellis/config.toml`; a write that fails sets nothing, so the
+    /// client is never told a model is in force that was not saved as asked.
+    ///
+    /// `{configured: true}` confirms the configured spec, as it reads now,
+    /// and pins it for this session. It names no model, so a repository's
+    /// hosted spec confirmed this way is still the repository's choice and
+    /// meets `hosted`'s key rule as one: the desktop forwards it for that
+    /// reason, where it refuses a repository's hosted spec sent as `model`.
+    fn set_model(&mut self, cmd: &Value) -> Result<Value, String> {
+        let flag = |k: &str| match cmd.get(k) {
+            None => Ok(false),
+            Some(Value::Bool(b)) => Ok(*b),
+            Some(v) => Err(format!("`{k}` is true or false, not {v}")),
+        };
+        let (save, configured) = (flag("save")?, flag("configured")?);
+        match (cmd.get("model"), configured) {
+            (Some(_), true) => Err(
+                "set_model takes {\"model\": \"<spec>\"} or {\"configured\": true}, not both"
+                    .into(),
+            ),
+            (None, true) => {
+                if save {
+                    return Err("the configured spec is already in a config file; `save` \
+                         takes a model you name with {\"model\": \"<spec>\"}"
+                        .into());
+                }
+                let spec = self.config()?.model().ok_or_else(|| {
+                    "nothing is configured to confirm: neither the repository's config nor \
+                     yours sets [model] spec; choose one with {\"model\": \"<spec>\"}"
+                        .to_string()
+                })?;
+                validate_model_spec(&spec)?;
+                self.model = None;
+                self.confirmed = Some(spec.clone());
+                Ok(json!({"model": spec, "configured": true, "saved_to": null}))
+            }
+            (Some(Value::String(m)), false) => {
+                validate_model_spec(m)?;
+                let saved_to = if save {
+                    Some(self.save_model(m)?)
+                } else {
+                    None
+                };
+                self.model = Some(m.clone());
+                self.confirmed = None;
+                Ok(json!({"model": m, "configured": false,
+                          "saved_to": saved_to.map(|f| f.display().to_string())}))
+            }
+            (_, false) => Err("set_model needs {\"model\": \"<spec>\"}, or \
+                 {\"configured\": true} to confirm the configured one"
+                .into()),
+        }
+    }
+
+    /// Writes `spec` to the user's config file as `first_run` does, and says
+    /// where. Refused with no user config directory, and refused when that
+    /// file is the repository's own `.trellis/config.toml` (a
+    /// `TRELLIS_CONFIG_DIR` pointed into the repository), since where a model
+    /// is, is the user's to say and never the repository's (ADR 0024 §3).
+    fn save_model(&self, spec: &str) -> Result<PathBuf, String> {
+        let Some(file) = &self.sources.user_file else {
+            return Err("no user config directory to save the model in: set \
+                 TRELLIS_CONFIG_DIR; nothing was written and no model was set"
+                .into());
+        };
+        let repo = self.root.join(".trellis").join("config.toml");
+        if same_place(file, &repo) {
+            return Err(format!(
+                "your user config file {} is the repository's own .trellis/config.toml; a \
+                 model you choose is saved to your config, never the repository's (ADR 0024 \
+                 §3), so nothing was written and no model was set",
+                file.display()
+            ));
+        }
+        crate::user_config::set_model_spec(file, spec)
+            .map_err(|e| format!("{e:#}; no model was set"))?;
+        Ok(file.clone())
+    }
+
+    /// `list_models`: what a client offers the user to choose from (#564).
+    /// The configured spec; the specs `first_run`'s probes find, bounded and
+    /// checked as `first_run` bounds and checks them, with every address
+    /// tried and what it answered; and the user config's `[[providers]]` by
+    /// name and the variable a key is read from. No variable is read, so no
+    /// key value can be in the answer. The probes take up to
+    /// `first_run::BOUND`, so they run on another thread, as `get_queue`
+    /// does, and a waiting run's `approve` or `abort` is still read at once.
+    fn list_models(&mut self, id: Option<&str>) {
+        let cfg = match self.config() {
+            Ok(c) => c,
+            Err(e) => {
+                self.respond(id, "list_models", Err(e));
+                return;
+            }
+        };
+        let configured = cfg.model();
+        // `key_variable`, not `key_env`: the desktop holds no `key_env`
+        // anywhere in its source (desktop-guards.sh), and this is the name
+        // of a variable, never its value. Null for a protocol trellis does
+        // not know, which a run would refuse by name.
+        let providers: Vec<Value> = cfg
+            .provenance
+            .providers
+            .iter()
+            .map(|p| {
+                let variable = if p.key_env.is_empty() {
+                    trellis_model::Protocol::parse_config(&p.protocol)
+                        .map(|pr| pr.default_key_env().to_string())
+                } else {
+                    Some(p.key_env.clone())
+                };
+                json!({"name": p.name, "key_variable": variable})
+            })
+            .collect();
+        let runtimes = self.sources.runtimes.clone();
+        let (sink, id) = (self.sink.clone(), id.map(str::to_string));
+        self.waiters.push(std::thread::spawn(move || {
+            let probed = crate::first_run::probe(&runtimes, crate::first_run::BOUND);
+            let tried: Vec<Value> = probed
+                .iter()
+                .map(|p| {
+                    json!({
+                        "runtime": p.runtime.name,
+                        "address": format!("http://{}{}", p.runtime.addr, p.runtime.api.path()),
+                        "error": p.answer.as_ref().err(),
+                    })
+                })
+                .collect();
+            let data = json!({
+                "configured": configured,
+                "local": crate::first_run::specs(&probed),
+                "probed": tried,
+                "providers": providers,
+            });
+            respond_on(&sink, id.as_deref(), "list_models", Ok(data));
+        }));
     }
 
     /// `classify`: whether `text` is a question or a task, by `ask::classify`,
@@ -1349,6 +1572,9 @@ impl Server {
     /// worktree is `cmd_run`'s to check, and its refusal arrives as `run_end`.
     fn prompt(&mut self, cmd: &Value, id: Option<&str>) -> Result<(), String> {
         self.one_at_a_time()?;
+        if !self.has_model() {
+            return Err(CHOOSE_FIRST.into());
+        }
         let text = |k: &str| cmd.get(k).and_then(Value::as_str).map(str::to_string);
         let task = text("task").unwrap_or_default();
         let task = match text("prompt") {
@@ -1696,6 +1922,41 @@ fn respond_on(sink: &Sink, id: Option<&str>, command: &str, result: Result<Value
     frame(sink, &v);
 }
 
+/// `Ok` when `root` is a repository, by the test every other root check
+/// in trellis makes: a `.git` entry, a directory or the file a worktree or
+/// submodule has. Otherwise the refusal `command` answers with.
+///
+/// `get_codebase` and `get_radius` index whatever is under the root, and
+/// `rpc` started outside a repository falls back to the working directory:
+/// from a home folder that walk read every file under it before anyone
+/// could tell no repository had been found (ADR 0048 §10, amended for
+/// #557). Checked before the walk's thread is started, so nothing under the
+/// root is read.
+fn repository_root(root: &Path, command: &str) -> Result<(), String> {
+    if root.join(".git").exists() {
+        return Ok(());
+    }
+    Err(format!(
+        "{command} refused: {} has no .git entry, and {command} reads only a repository \
+         (ADR 0048 section 10), so nothing was indexed; open trellis on a repository's root",
+        root.display()
+    ))
+}
+
+/// Whether two file paths name one file, by their directories resolved: the
+/// files themselves may not exist yet. Unresolvable, they are compared as
+/// written.
+fn same_place(a: &Path, b: &Path) -> bool {
+    let resolved = |p: &Path| -> Option<PathBuf> {
+        let dir = std::fs::canonicalize(p.parent()?).ok()?;
+        Some(dir.join(p.file_name()?))
+    };
+    match (resolved(a), resolved(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => a == b,
+    }
+}
+
 /// `get_state`'s view of how the last run ended.
 fn run_end_response(r: &Result<RunExit>, id: Option<&str>) -> Value {
     let mut v = output::run_end(r, None, id);
@@ -1766,7 +2027,18 @@ mod tests {
     }
 
     impl Client {
+        /// A server that probes no runtime and has no user config file.
         fn start(root: &Path) -> Self {
+            Self::start_with(
+                root,
+                ModelSources {
+                    runtimes: Vec::new(),
+                    user_file: None,
+                },
+            )
+        }
+
+        fn start_with(root: &Path, sources: ModelSources) -> Self {
             let (tx, rx) = mpsc::channel();
             let out: Arc<Mutex<Vec<u8>>> = Arc::default();
             let sink: Sink = out.clone();
@@ -1777,13 +2049,28 @@ mod tests {
                     buf: Vec::new(),
                     pos: 0,
                 });
-                serve(&root, input, sink, Mode::Quiet)
+                serve_with(&root, input, sink, Mode::Quiet, sources)
             });
             Self {
                 tx: Some(tx),
                 out,
                 server: Some(server),
             }
+        }
+
+        /// [`Client::start`], with `spec` chosen as the session's model, as
+        /// a client must before its first `prompt` (#564).
+        fn chosen(root: &Path, spec: &str) -> Self {
+            let c = Self::start(root);
+            c.choose(spec);
+            c
+        }
+
+        /// Sends `set_model {model: spec}` and waits for it to be taken.
+        fn choose(&self, spec: &str) {
+            self.send(json!({"id": "choose", "type": "set_model", "model": spec}));
+            let r = self.wait_for(|r| r["id"] == "choose");
+            assert_eq!(r["success"], true, "{r}");
         }
 
         fn send(&self, v: Value) {
@@ -1848,12 +2135,15 @@ mod tests {
     #[test]
     fn a_prompt_runs_like_trellis_run_and_is_bracketed_by_start_and_end() {
         let (dir, spec) = fixture("prompt", "");
-        let c = Client::start(&dir);
+        let c = Client::chosen(&dir, &spec);
         c.send(json!({"id": "1", "type": "prompt", "task": "change f", "model": spec}));
         let rs = c.finish();
+        // The prompt's answer is the one after the model choice's.
         let resp = of_type(&rs, "response");
-        assert_eq!(resp[0]["id"], "1");
-        assert_eq!(resp[0]["success"], true, "{rs:?}");
+        assert_eq!(resp.len(), 2, "{rs:?}");
+        assert_eq!(resp[0]["id"], "choose");
+        assert_eq!(resp[1]["id"], "1");
+        assert_eq!(resp[1]["success"], true, "{rs:?}");
         let start = rs.iter().position(|r| r["type"] == "run_start").unwrap();
         let end = rs.iter().position(|r| r["type"] == "run_end").unwrap();
         assert!(start < end);
@@ -1874,7 +2164,7 @@ mod tests {
     /// recorded.
     fn approval_round(name: &str, yes: Value) -> (Value, Vec<String>) {
         let (dir, spec) = fixture(name, "[control]\nmode = \"approve\"\n");
-        let c = Client::start(&dir);
+        let c = Client::chosen(&dir, &spec);
         c.send(json!({"id": "p", "type": "prompt", "task": "change f", "model": spec}));
         let q = c.wait_for(|r| r["type"] == "approval_request");
         assert_eq!(q["id"], "approval-1");
@@ -1937,8 +2227,22 @@ mod tests {
         // never resolves, so no request is made whether or not this machine
         // has OPENAI_API_KEY set; how the run ends depends on that variable,
         // so only the absence of the refusal is checked.
-        let (dir, _) = fixture("prompt-model", "");
+        //
+        // The session's model is the configured one confirmed (#564), not
+        // one named with `set_model {model}`: that would make every later
+        // prompt the client's choice, and this would pass whether or not
+        // the prompt's own `model` counted.
+        let (dir, spec) = fixture("prompt-model", "");
+        std::fs::write(
+            dir.join(".trellis/config.toml"),
+            format!("[model]\nspec = {}\n", toml::Value::String(spec)),
+        )
+        .unwrap();
+        crate::testutil::git_commit_all(&dir, "configure the script");
         let c = Client::start(&dir);
+        c.send(json!({"id": "c", "type": "set_model", "configured": true}));
+        let confirmed = c.wait_for(|r| r["id"] == "c");
+        assert_eq!(confirmed["success"], true, "{confirmed}");
         c.send(json!({
             "id": "p",
             "type": "prompt",
@@ -1962,6 +2266,7 @@ mod tests {
             sink: out,
             mode: Mode::Quiet,
             model: None,
+            confirmed: None,
             running: None,
             classifying: None,
             last: Arc::default(),
@@ -1972,6 +2277,10 @@ mod tests {
             next_approval: Arc::default(),
             input_closed: Arc::default(),
             waiters: Vec::new(),
+            sources: ModelSources {
+                runtimes: Vec::new(),
+                user_file: None,
+            },
         };
         let answered = std::thread::spawn(|| {});
         while !answered.is_finished() {
@@ -1992,7 +2301,7 @@ mod tests {
     #[test]
     fn abort_interrupts_the_run_and_it_rolls_back() {
         let (dir, spec) = fixture("abort", "[control]\nmode = \"approve\"\n");
-        let c = Client::start(&dir);
+        let c = Client::chosen(&dir, &spec);
         c.send(json!({"type": "prompt", "task": "change f", "model": spec}));
         c.wait_for(|r| r["type"] == "approval_request");
         c.send(json!({"id": "x", "type": "abort"}));
@@ -2052,7 +2361,7 @@ mod tests {
             "the hook names the fixture's file"
         );
         crate::testutil::trust(&dir);
-        let c = Client::start(&dir);
+        let c = Client::chosen(&dir, &spec);
         c.send(json!({"type": "prompt", "task": "change f", "model": spec}));
         c.wait_for(|r| r["type"] == "approval_request");
         c.send(json!({"id": "x", "type": "abort"}));
@@ -2124,7 +2433,7 @@ mod tests {
             ),
         );
         crate::testutil::trust(&dir);
-        let c = Client::start(&dir);
+        let c = Client::chosen(&dir, &spec);
         c.send(json!({"type": "prompt", "task": "change f", "model": spec}));
         c.wait_for(|r| r["type"] == "approval_request");
         c.send(json!({"id": "x", "type": "abort"}));
@@ -2148,7 +2457,7 @@ mod tests {
         // waited on a person. The server joined the run, the run waited on
         // a reply channel the server still held, and nothing ever ended.
         let (dir, spec) = fixture("eof-approval", "[control]\nmode = \"approve\"\n");
-        let mut c = Client::start(&dir);
+        let mut c = Client::chosen(&dir, &spec);
         c.send(json!({"id": "p", "type": "prompt", "task": "change f", "model": spec}));
         c.wait_for(|r| r["type"] == "approval_request");
         drop(c.tx.take());
@@ -2180,7 +2489,7 @@ mod tests {
         // finding 4). A line that is not UTF-8 is bad input, answered as
         // bad JSON is; the question is still open and still answerable.
         let (dir, spec) = fixture("not-utf8", "[control]\nmode = \"approve\"\n");
-        let c = Client::start(&dir);
+        let c = Client::chosen(&dir, &spec);
         c.send(json!({"id": "p", "type": "prompt", "task": "change f", "model": spec}));
         c.wait_for(|r| r["type"] == "approval_request");
         c.raw(vec![b'{', 0xff, 0xfe, b'}']);
@@ -2198,7 +2507,7 @@ mod tests {
         // Any other read error is the end of input, handled as end of input
         // is: open questions declined, the run joined, then the error.
         let (dir, spec) = fixture("read-error", "[control]\nmode = \"approve\"\n");
-        let mut c = Client::start(&dir);
+        let mut c = Client::chosen(&dir, &spec);
         c.send(json!({"id": "p", "type": "prompt", "task": "change f", "model": spec}));
         c.wait_for(|r| r["type"] == "approval_request");
         c.tx.as_ref().unwrap().send(Chunk::Fail).unwrap();
@@ -2231,7 +2540,7 @@ mod tests {
     fn a_dirty_worktree_is_refused_as_trellis_run_refuses_it() {
         let (dir, spec) = fixture("dirty", "");
         std::fs::write(dir.join("a.py"), "def f():\n    return 9\n").unwrap();
-        let c = Client::start(&dir);
+        let c = Client::chosen(&dir, &spec);
         c.send(json!({"type": "prompt", "task": "change f", "model": spec}));
         let rs = c.finish();
         let end = of_type(&rs, "run_end")[0];
@@ -2287,6 +2596,58 @@ mod tests {
     }
 
     #[test]
+    fn rpc_contract_refusal_starts_no_indexing_thread() {
+        // The risk: a root with no `.git` (the `current_dir()` fallback
+        // from a home folder) refused only after `read_sources` had walked
+        // it. The refusal is answered before any thread is started, so
+        // nothing under the root is read.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("loose.py"), "def f():\n    return 1\n").unwrap();
+        let out: Arc<Mutex<Vec<u8>>> = Arc::default();
+        let mut s = Server {
+            root: d.path().to_path_buf(),
+            sink: out.clone(),
+            mode: Mode::Quiet,
+            model: None,
+            confirmed: None,
+            running: None,
+            classifying: None,
+            last: Arc::default(),
+            ran: Arc::default(),
+            done: output::DoneSlot::default(),
+            tier: output::TierSlot::default(),
+            approvals: Arc::default(),
+            next_approval: Arc::default(),
+            input_closed: Arc::default(),
+            waiters: Vec::new(),
+            sources: ModelSources {
+                runtimes: Vec::new(),
+                user_file: None,
+            },
+        };
+        for cmd in [
+            json!({"id": "g", "type": "get_codebase"}),
+            json!({"id": "r", "type": "get_radius", "symbol": "f"}),
+        ] {
+            s.dispatch_command(&cmd);
+            assert!(s.waiters.is_empty(), "{cmd} started a thread");
+        }
+        let text = String::from_utf8(out.lock().unwrap().clone()).unwrap();
+        let answers: Vec<Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(answers.len(), 2, "{text}");
+        for a in &answers {
+            assert_eq!(a["success"], false, "{a}");
+            assert!(
+                a["error"].as_str().is_some_and(|e| e.contains("no .git")),
+                "{a}"
+            );
+        }
+    }
+
+    #[test]
     fn get_queue_outside_a_repository_answers_the_queue_s_own_error() {
         // The risk: a root with no git directory answered as an empty queue,
         // which a client would show as "nothing queued".
@@ -2308,7 +2669,7 @@ mod tests {
         // handed to it would wait for one that never comes, and the client
         // with it. It is answered while the run is still paused.
         let (dir, spec) = fixture("compact-scripted", "[control]\nmode = \"approve\"\n");
-        let c = Client::start(&dir);
+        let c = Client::chosen(&dir, &spec);
         c.send(json!({"id": "p", "type": "prompt", "task": "change f", "model": spec}));
         c.wait_for(|r| r["type"] == "approval_request");
         c.send(json!({"id": "c", "type": "compact"}));
@@ -2327,7 +2688,7 @@ mod tests {
         // server's own record, and a steer that never reached a request must
         // be told so rather than left waiting.
         let (dir, spec) = fixture("steer-abort", "[control]\nmode = \"approve\"\n");
-        let c = Client::start(&dir);
+        let c = Client::chosen(&dir, &spec);
         c.send(json!({"id": "p", "type": "prompt", "task": "change f", "model": spec}));
         c.wait_for(|r| r["type"] == "approval_request");
         c.send(json!({"id": "u1", "type": "follow_up", "message": "first"}));
@@ -2453,7 +2814,7 @@ mod tests {
     #[test]
     fn a_prompt_without_a_task_or_with_args_and_no_template_says_which() {
         let (dir, spec) = fixture("prompt-shape", "");
-        let c = Client::start(&dir);
+        let c = Client::chosen(&dir, &spec);
         c.send(json!({"id": "a", "type": "prompt", "task": "t", "args": "x", "model": spec}));
         c.send(json!({"id": "b", "type": "prompt", "task": "  ", "model": spec}));
         let rs = c.finish();
@@ -2474,7 +2835,7 @@ mod tests {
         // The risk: `last_run` empty, or the finished run still reported
         // as running, so a client waits on a run that will never end.
         let (dir, spec) = fixture("state", "");
-        let c = Client::start(&dir);
+        let c = Client::chosen(&dir, &spec);
         c.send(json!({"id": "p", "type": "prompt", "task": "change f", "model": spec}));
         c.wait_for(|r| r["type"] == "run_end");
         let until = Instant::now() + Duration::from_secs(60);
@@ -2497,6 +2858,135 @@ mod tests {
         assert_eq!(last["id"], "p", "{state}");
         assert!(last.get("type").is_none(), "{state}");
         c.finish();
+    }
+
+    /// One connection on a loopback port, answered as Ollama's `/api/tags`
+    /// answers with `body`: what `list_models` probes stands in for.
+    fn ollama_stub(body: &'static str) -> (std::net::SocketAddr, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let h = std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            let mut req = Vec::new();
+            let mut b = [0u8; 1];
+            while !req.ends_with(b"\r\n\r\n") && s.read(&mut b).unwrap() == 1 {
+                req.push(b[0]);
+            }
+            assert!(req.starts_with(b"GET /api/tags "), "{req:?}");
+            write!(
+                s,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        (addr, h)
+    }
+
+    #[test]
+    fn rpc_model_select_list_models_against_an_ollama_stub_lists_its_specs_and_the_configured_one()
+    {
+        // The risk (#564): the desktop's model pane offers nothing a local
+        // runtime serves, so the user cannot choose one and prompt input
+        // never opens; or it offers a spec first_run would not (an id
+        // carrying an escape sequence), or a name in place of the configured
+        // spec the pane preselects.
+        let (dir, spec) = fixture("list-models", "");
+        std::fs::write(
+            dir.join(".trellis/config.toml"),
+            format!("[model]\nspec = {}\n", toml::Value::String(spec.clone())),
+        )
+        .unwrap();
+        let (addr, stub) = ollama_stub(
+            r#"{"models":[{"name":"qwen3:8b"},{"name":"bad\u001b[2J"},{"name":"qwen2.5:3b"}]}"#,
+        );
+        let user = crate::testutil::scratch("rpc-list-models-user");
+        std::fs::write(
+            user.join("config.toml"),
+            "[[providers]]\nname = \"mine\"\nprotocol = \"anthropic\"\n\
+             base_url = \"https://mine.invalid\"\n",
+        )
+        .unwrap();
+        let ollama = crate::first_run::Runtime {
+            name: "Ollama",
+            addr,
+            api: crate::first_run::Api::OllamaTags,
+        };
+        let c = Client::start_with(
+            &dir,
+            ModelSources {
+                runtimes: vec![ollama],
+                user_file: Some(user.join("config.toml")),
+            },
+        );
+        c.send(json!({"id": "l", "type": "list_models"}));
+        let r = c.wait_for(|r| r["id"] == "l");
+        stub.join().unwrap();
+        c.finish();
+        assert_eq!(r["success"], true, "{r}");
+        let d = &r["data"];
+        assert_eq!(d["configured"], json!(spec), "{r}");
+        assert_eq!(
+            d["local"],
+            json!([
+                format!("vllm:http://{addr}#qwen3:8b"),
+                format!("vllm:http://{addr}#qwen2.5:3b")
+            ]),
+            "first_run's specs, the unusable id dropped: {r}"
+        );
+        assert_eq!(
+            d["probed"],
+            json!([{"runtime": "Ollama", "address": format!("http://{addr}/api/tags"),
+                    "error": null}])
+        );
+        // The protocol's own variable, named and never read.
+        assert_eq!(
+            d["providers"],
+            json!([{"name": "mine", "key_variable": "ANTHROPIC_API_KEY"}])
+        );
+        let _ = std::fs::remove_dir_all(&user);
+    }
+
+    #[test]
+    fn rpc_model_select_save_refuses_a_user_file_that_is_the_repository_s() {
+        // The risk (ADR 0024 §3): a user config directory pointed into the
+        // repository's own `.trellis/` makes "save to your config" write the
+        // repository's file, where a model chosen for this user would then
+        // be the repository's to change.
+        let (dir, spec) = fixture("save-into-repo", "");
+        let before = std::fs::read_to_string(dir.join(".trellis/config.toml")).unwrap();
+        let c = Client::start_with(
+            &dir,
+            ModelSources {
+                runtimes: Vec::new(),
+                user_file: Some(dir.join(".trellis").join("config.toml")),
+            },
+        );
+        c.send(json!({"id": "s", "type": "set_model", "model": spec, "save": true}));
+        c.send(json!({"id": "p", "type": "prompt", "task": "change f"}));
+        let rs = c.finish();
+        let by = |id: &str| rs.iter().find(|r| r["id"] == id).unwrap().clone();
+        assert_eq!(by("s")["success"], false, "{rs:?}");
+        assert!(
+            by("s")["error"]
+                .as_str()
+                .unwrap()
+                .contains("never the repository's"),
+            "{rs:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join(".trellis/config.toml")).unwrap(),
+            before
+        );
+        assert!(
+            by("p")["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("choose a model first"),
+            "a refused save sets no model: {rs:?}"
+        );
     }
 
     #[test]
