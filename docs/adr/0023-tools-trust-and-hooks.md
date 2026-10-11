@@ -717,6 +717,17 @@ this amendment a hook that wrote at any of those points left bytes in a
     - Settings that run commands only in commands trellis does not run
       during a run (`diff.external`, textconv, `core.pager`,
       `core.sshCommand`, credential helpers) are not overridden.
+      *[2026-10-11, security finding F1 in AUDIT-2026-10-11: the premise
+      was false for `core.sshCommand`, and for `remote.<r>.uploadpack`,
+      which this list left out. In a partial clone, a git command that
+      reads an object the store lacks fetches it from the promisor remote
+      `.git/config` names, through that remote's transport. The Atlas's
+      `cat-file --batch`, `diff HEAD` and the rollback's `reset --hard`
+      each ran a planted command that way, under the overrides above. Every
+      git trellis runs now carries `GIT_NO_LAZY_FETCH=1`
+      (`trellis_vcs::ENV`), so a read never fetches, and on a git that
+      honours the variable these settings again run only in commands
+      trellis does not run. See "As built".]*
     - A partition worktree's `git worktree add` runs no `post-checkout`
       hook now; its checkout still applies the user's filters.
 
@@ -1309,6 +1320,29 @@ names are in the code beside each.
 - **`coverage_report` is an opt-in built-in** (#129), after `callees_of`:
   `doubt_in_files` over the named paths as counts only, never the
   index-wide `resolved` figure or a percentage.
+- **No lazy fetch (security finding F1, AUDIT-2026-10-11).** `command()`,
+  `command_with_hooks()` and the environment `grep` and `find` hand
+  `exec::run` with their `git_argv` argv all set `GIT_NO_LAZY_FETCH=1`
+  (`trellis_vcs::ENV`). A planted promisor remote (`remote.<r>.uploadpack`
+  or `core.sshCommand`, with `protocol.<name>.allow=always`) is then not
+  run by `cat-file --batch`, `history::tree_copy`, `diff` or the
+  rollback. The read answers the object as missing, or the command fails
+  and trellis reports the failure. No `-c` does this on git 2.43: a planted
+  `allow` beat `-c protocol.allow=never`, and `-c
+  extensions.partialClone=`, `-c remote.<r>.promisor=false` and `-c
+  fetch.uriProtocols=` changed nothing. `--no-lazy-fetch` was added in
+  2.45, and an older git refuses the command. Covered: git 2.45.0 and
+  later, the CVE-2024-32465 releases (2.39.4, 2.40.2, 2.41.1, 2.42.2,
+  2.43.4, 2.44.1), and distribution builds that carry that fix. Any other
+  git ignores the variable and still runs the planted command, and
+  trellis does not detect that. Given up: in the user's own partial
+  clone, the Atlas reports an old commit whose blobs the clone lacks as
+  missing rather than fetching them. Tests, in `trellis-vcs`:
+  `a_planted_partial_clone_remote_never_runs_from_a_read` and
+  `a_planted_partial_clone_remote_never_runs_from_diff_or_a_rollback`,
+  for both transports, each of which failed before with the marker
+  written and ends on a control that runs the planted remote without
+  the variable; and `every_git_constructor_sets_no_lazy_fetch`.
 
 Not built: a `search_notes` tool (ADR 0021 row 30), per-item trust (kept
 out on purpose, above),
