@@ -86,6 +86,11 @@ const COMMANDS: &[(&str, &str)] = &[
          reach and doubt as separate counts, never a ratio",
     ),
     (
+        "get_symbols",
+        "every definition the index holds, or one module's: {module?}; each with its \
+         lines and its call sites in, ambiguously in and out as separate counts, read-only",
+    ),
+    (
         "get_queue",
         "the tasks `trellis queue list` prints, as data, read-only; claims nothing",
     ),
@@ -893,6 +898,30 @@ impl Server {
         }));
     }
 
+    /// `get_symbols`: every definition the index holds, or one module's,
+    /// with its lines and three call-site counts (the Atlas, owner request
+    /// of 2026-10-11); nothing is written. The index is built as
+    /// `get_codebase` builds it, on its own thread for the same reason, and
+    /// a root with no `.git` is refused first, as there (#559).
+    fn get_symbols(&mut self, cmd: &Value, id: Option<&str>) {
+        let module = match crate::atlas::module_arg(cmd.get("module")) {
+            Ok(m) => m,
+            Err(e) => {
+                self.respond(id, "get_symbols", Err(e));
+                return;
+            }
+        };
+        if let Err(e) = repository_root(&self.root, "get_symbols") {
+            self.respond(id, "get_symbols", Err(e));
+            return;
+        }
+        let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
+        self.waiters.push(std::thread::spawn(move || {
+            let result = crate::atlas::symbols(&root, module.as_deref());
+            respond_on(&sink, id.as_deref(), "get_symbols", result);
+        }));
+    }
+
     /// `get_queue`: every queued task as data; nothing is written, claimed
     /// or moved. The queue's writes are `trellis queue`'s and `trellis
     /// work`'s (ADR 0020 §5). Answered from another thread, as
@@ -1268,6 +1297,7 @@ impl Server {
             "compact" => self.compact(id),
             "get_codebase" => self.get_codebase(cmd, id),
             "get_radius" => self.get_radius(cmd, id),
+            "get_symbols" => self.get_symbols(cmd, id),
             "get_queue" => self.get_queue(id),
             "list_paths" => self.list_paths(cmd, id),
             "vault_search" => self.vault_search(cmd, id),
@@ -2670,6 +2700,62 @@ mod tests {
                 "{a}"
             );
         }
+    }
+
+    #[test]
+    fn rpc_atlas_refusals_start_no_thread() {
+        // The risk: the Atlas's reads (owner request of 2026-10-11) walking
+        // a root with no `.git` before refusing it (#559), or starting git
+        // on an argument they then refuse.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("loose.py"), "def f():\n    return 1\n").unwrap();
+        let out: Arc<Mutex<Vec<u8>>> = Arc::default();
+        let mut s = Server {
+            root: d.path().to_path_buf(),
+            sink: out.clone(),
+            mode: Mode::Quiet,
+            model: None,
+            confirmed: None,
+            running: None,
+            classifying: None,
+            last: Arc::default(),
+            ran: Arc::default(),
+            done: output::DoneSlot::default(),
+            tier: output::TierSlot::default(),
+            approvals: Arc::default(),
+            next_approval: Arc::default(),
+            input_closed: Arc::default(),
+            waiters: Vec::new(),
+            sources: ModelSources {
+                runtimes: Vec::new(),
+                user_file: None,
+            },
+        };
+        let cmds = [
+            json!({"id": "s", "type": "get_symbols"}),
+            json!({"id": "m", "type": "get_symbols", "module": ["a"]}),
+            json!({"id": "r", "type": "get_codebase", "ref": "HEAD"}),
+            json!({"id": "o", "type": "get_codebase", "ref": "--output=x"}),
+            json!({"id": "e", "type": "get_codebase", "edges": "most"}),
+        ];
+        for cmd in &cmds {
+            s.handle(cmd);
+            assert!(s.waiters.is_empty(), "{cmd} started a thread");
+        }
+        let text = String::from_utf8(out.lock().unwrap().clone()).unwrap();
+        let answers: Vec<Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(answers.len(), cmds.len(), "{text}");
+        for a in &answers {
+            assert_eq!(a["success"], false, "{a}");
+            assert!(
+                a["error"].as_str().is_some_and(|e| e.contains(" refused")),
+                "{a}"
+            );
+        }
+        assert!(!d.path().join("x").exists());
     }
 
     #[test]
