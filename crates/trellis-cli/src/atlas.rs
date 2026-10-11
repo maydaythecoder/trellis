@@ -206,6 +206,137 @@ fn symbols_json(
     Ok(json!({"modules_indexed": index.files.len(), "symbols": out}))
 }
 
+/// The windows `get_history` counts churn in: days back from HEAD's
+/// committer date, never from this machine's clock, so one repository
+/// gives one answer whenever it is asked.
+const WINDOWS_DAYS: [i64; 3] = [30, 90, 365];
+
+/// The most commits or tags `get_history` lists, however many are asked
+/// for.
+const HISTORY_CAP: u64 = 200;
+
+/// A `commits` or `tags` argument: absent for `default`, or a count from 0,
+/// held to [`HISTORY_CAP`].
+pub(crate) fn count_arg(cmd: &Value, field: &str, default: u64) -> Result<usize, String> {
+    let n = match cmd.get(field) {
+        None => default,
+        Some(v) => v
+            .as_u64()
+            .ok_or_else(|| format!("get_history refused: `{field}` is a count from 0, not {v}"))?,
+    };
+    Ok(usize::try_from(n.min(HISTORY_CAP)).unwrap_or(0))
+}
+
+/// `get_history`'s answer, all of it from git through `trellis_vcs`.
+///
+/// - `head`: HEAD's commit and committer date; `null`, with every list
+///   empty, when the repository has no commit yet.
+/// - `commits`: the newest `commits` on HEAD's first-parent line, each with
+///   its subject (data its author wrote) and the paths it changed against
+///   its first parent, so a merge carries what it brought in.
+/// - `tags`: the newest `tags` tags HEAD can reach, by their commits' dates.
+/// - `churn`: per path, how many first-parent commits changed it within
+///   each of [`WINDOWS_DAYS`] (a window is the run of commits from HEAD up
+///   to the first one committed before it opens, as `git log --since`
+///   walks), and `commits`, how many after the oldest tag listed; `null`
+///   when no tag is listed, as there is then nothing to count from. A path
+///   is a row when a commit in either range changed it, and `last_commit`
+///   and `last_date` name the newest such commit. Renames are a deletion
+///   and an addition.
+pub(crate) fn history(root: &Path, commits: usize, tags: usize) -> Result<Value, String> {
+    const DAY: i64 = 86_400;
+    let failed = |e: trellis_vcs::VcsError| format!("get_history failed: {e}");
+    let Some(head) = history::head(root).map_err(failed)? else {
+        return Ok(json!({
+            "head": null, "windows_days": WINDOWS_DAYS,
+            "churn": [], "commits": [], "tags": [],
+        }));
+    };
+    let mut listed_tags = history::tags_in_head(root).map_err(failed)?;
+    listed_tags.truncate(tags);
+    let oldest = WINDOWS_DAYS[WINDOWS_DAYS.len() - 1];
+    let year = history::first_parent_count_since(root, head.time - oldest * DAY).map_err(failed)?;
+    let since_tag = listed_tags
+        .last()
+        .map(|t| history::first_parent_count_after(root, &t.stamp.commit))
+        .transpose()
+        .map_err(failed)?;
+    let walked = history::first_parent_changes(root, commits.max(year).max(since_tag.unwrap_or(0)))
+        .map_err(failed)?;
+    let windows: Vec<usize> = WINDOWS_DAYS
+        .iter()
+        .map(|d| {
+            walked
+                .iter()
+                .position(|c| c.stamp.time < head.time - d * DAY)
+                .unwrap_or(walked.len())
+        })
+        .collect();
+    let range = windows[windows.len() - 1]
+        .max(since_tag.unwrap_or(0))
+        .min(walked.len());
+    struct Row<'a> {
+        windows: [u32; WINDOWS_DAYS.len()],
+        after_tag: u32,
+        last: &'a history::Stamp,
+    }
+    let mut rows: std::collections::BTreeMap<&str, Row> = Default::default();
+    for (i, c) in walked.iter().enumerate().take(range) {
+        for p in &c.paths {
+            let row = rows.entry(p.as_str()).or_insert(Row {
+                windows: [0; WINDOWS_DAYS.len()],
+                after_tag: 0,
+                last: &c.stamp,
+            });
+            for (n, len) in row.windows.iter_mut().zip(&windows) {
+                if i < *len {
+                    *n += 1;
+                }
+            }
+            if since_tag.is_some_and(|n| i < n) {
+                row.after_tag += 1;
+            }
+        }
+    }
+    let churn: Vec<Value> = rows
+        .into_iter()
+        .map(|(path, r)| {
+            json!({
+                "path": path,
+                "d30": r.windows[0],
+                "d90": r.windows[1],
+                "d365": r.windows[2],
+                "commits": since_tag.map(|_| r.after_tag),
+                "last_commit": r.last.commit,
+                "last_date": r.last.date,
+            })
+        })
+        .collect();
+    let commits: Vec<Value> = walked
+        .iter()
+        .take(commits)
+        .map(|c| {
+            json!({
+                "commit": c.stamp.commit,
+                "date": c.stamp.date,
+                "subject": c.subject,
+                "paths": c.paths,
+            })
+        })
+        .collect();
+    let tags: Vec<Value> = listed_tags
+        .iter()
+        .map(|t| json!({"name": t.name, "commit": t.stamp.commit, "date": t.stamp.date}))
+        .collect();
+    Ok(json!({
+        "head": {"commit": head.commit, "date": head.date},
+        "windows_days": WINDOWS_DAYS,
+        "churn": churn,
+        "commits": commits,
+        "tags": tags,
+    }))
+}
+
 /// The byte offset each line of `src` starts at, the first being 0.
 pub(crate) fn line_starts(src: &str) -> Vec<usize> {
     std::iter::once(0)
@@ -226,6 +357,20 @@ pub(crate) fn line_at(starts: &[usize], at: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rpc_atlas_history_counts_default_cap_at_200_and_refuse_what_is_not_a_count() {
+        // The risk: a client asking for every commit of a long history in
+        // one answer, or a count it misspelt taken as the default.
+        let cmd = json!({"commits": 500, "tags": 0});
+        assert_eq!(count_arg(&cmd, "commits", 20).unwrap(), 200);
+        assert_eq!(count_arg(&cmd, "tags", 12).unwrap(), 0);
+        assert_eq!(count_arg(&json!({}), "commits", 20).unwrap(), 20);
+        for bad in [json!("5"), json!(-1), json!(2.5), json!(null)] {
+            let e = count_arg(&json!({"tags": bad}), "tags", 12).unwrap_err();
+            assert!(e.contains("`tags`"), "{e}");
+        }
+    }
 
     #[test]
     fn rpc_atlas_lines_are_counted_from_one_and_a_newline_ends_its_own_line() {
