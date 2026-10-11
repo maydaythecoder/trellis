@@ -845,8 +845,10 @@ on stderr.
     `ref` answers the graph of that commit's tree, with `ref` as asked,
     `commit` (the full id, a tag peeled) and `date` (committer date, strict
     ISO 8601, the commit's own offset). Without `ref`, `commit` and `date`
-    are HEAD's, null when there is no commit; the graph is still the
-    worktree's. A `ref` that is not a non-empty string, holds a control
+    are HEAD's, and never fail the answer: null when there is no commit,
+    and null with `head_error` (git's message, trimmed) when git cannot
+    read HEAD, as for a hand-made `.git` git refuses; the graph is the
+    worktree's either way, as it was before. A `ref` that is not a non-empty string, holds a control
     character or starts with `-` is refused before git runs; the rest is
     resolved with `rev-parse -q --verify --end-of-options <ref>^{commit}`,
     and one that names no commit is refused by name. The tree comes out

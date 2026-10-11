@@ -6904,3 +6904,67 @@ fn rpc_atlas_contract_lists_every_field_the_atlas_commands_answer() {
     assert!(h["churn"][0]["commits"].is_u64(), "a tag is listed: {h}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn rpc_atlas_get_codebase_answers_its_modules_when_head_cannot_be_read() {
+    // The risk: `commit` and `date`, metadata the Atlas added, failing a
+    // read that needs no git: the desktop's own codebase test gives the
+    // root a hand-made `.git`, which git refuses, and the index never
+    // asks git anything. A git error is said in `head_error`; a
+    // repository with no commit yet is not an error, so it has none.
+    // Discovery is held to the scratch directory, so a `.git` git refuses
+    // is not passed over for a repository above it.
+    let ceiling = std::env::temp_dir();
+    let env: &[(&str, &Path)] = &[("GIT_CEILING_DIRECTORIES", &ceiling)];
+    let refused = scratch("rpc-atlas-head-refused");
+    std::fs::create_dir_all(refused.join(".git")).unwrap();
+    let unborn = scratch("rpc-atlas-head-unborn");
+    for d in [".git/objects", ".git/refs"] {
+        std::fs::create_dir_all(unborn.join(d)).unwrap();
+    }
+    std::fs::write(unborn.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    for root in [&refused, &unborn] {
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        std::fs::write(root.join("app/a.py"), "def f():\n    return 1\n").unwrap();
+        std::fs::write(
+            root.join("app/b.py"),
+            "from app.a import f\n\ndef g():\n    return f()\n",
+        )
+        .unwrap();
+    }
+    let ask = [serde_json::json!({"id": "g", "type": "get_codebase"})];
+
+    let r = rpc_answer(&rpc_records_env(&refused, Some(&refused), env, &ask), "g").clone();
+    assert_eq!(r["success"], true, "{r}");
+    let data = &r["data"];
+    assert_eq!(data["modules_indexed"], 2, "{data}");
+    assert!(module_in(data, "app.b").is_some(), "{data}");
+    assert_eq!(data["commit"], serde_json::Value::Null, "{data}");
+    assert_eq!(data["date"], serde_json::Value::Null, "{data}");
+    let e = data["head_error"]
+        .as_str()
+        .unwrap_or_else(|| panic!("git's refusal is said: {data}"));
+    assert!(e.contains("not a git repository"), "{e}");
+    assert_eq!(e, e.trim(), "trimmed");
+
+    let r = rpc_answer(&rpc_records_env(&unborn, Some(&unborn), env, &ask), "g").clone();
+    assert_eq!(r["success"], true, "{r}");
+    let data = &r["data"];
+    assert_eq!(data["modules_indexed"], 2, "{data}");
+    assert_eq!(data["commit"], serde_json::Value::Null, "{data}");
+    assert!(
+        data.get("head_error").is_none(),
+        "no commit is not an error: {data}"
+    );
+
+    // A ref still needs git, and a ref git cannot resolve is still refused.
+    let r = rpc_records_env(
+        &refused,
+        Some(&refused),
+        env,
+        &[serde_json::json!({"id": "r", "type": "get_codebase", "ref": "HEAD"})],
+    );
+    assert_eq!(rpc_answer(&r, "r")["success"], false, "{r:?}");
+    let _ = std::fs::remove_dir_all(&refused);
+    let _ = std::fs::remove_dir_all(&unborn);
+}
