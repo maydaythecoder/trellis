@@ -861,6 +861,10 @@ on stderr.
     Links and submodules are not written; a tree path with an empty, `..`
     or `.git` component refuses the copy, as git refuses to check it out.
     In a partial clone, `cat-file` fetches a blob the clone lacks.
+    *[2026-10-11, security finding F1: no longer. The fetch ran whatever
+    transport `.git/config` names, so trellis's git now runs with
+    `GIT_NO_LAZY_FETCH=1`, and such a blob refuses the copy as missing;
+    ADR 0023, "As built".]*
   - **`get_symbols {module?}`** answers `{modules_indexed, symbols}`:
     every definition, or one module's, in the index's order, with module,
     path, bare name, kind, and `line` and `end_line` (1-based, from the
