@@ -54,6 +54,23 @@ pub struct ProcessOutput {
     pub duration_ms: u64,
 }
 
+impl ProcessOutput {
+    /// A checker that never ran: no exit code, so it cannot read as a pass,
+    /// and `stderr` says why.
+    pub(crate) fn not_run(command: String, stderr: String, duration_ms: u64) -> Self {
+        ProcessOutput {
+            command,
+            exit_code: None,
+            failure_count: None,
+            stdout: String::new(),
+            stderr,
+            stdout_truncated: None,
+            stderr_truncated: None,
+            duration_ms,
+        }
+    }
+}
+
 /// How to invoke this repository's checks, from `.trellis/config.toml`.
 ///
 /// Commands are configured rather than detected because a wrong guess here
@@ -139,7 +156,7 @@ impl Default for CheckConfig {
 pub async fn typecheck(root: &Path, cfg: &CheckConfig, paths: &[PathBuf]) -> Verdict {
     let mut argv = cfg.typecheck.clone();
     argv.extend(paths.iter().map(|p| p.display().to_string()));
-    Verdict::from_typecheck(Box::pin(run(root, cfg, &argv)).await)
+    Verdict::from_typecheck(Box::pin(run_checker(root, cfg, &argv)).await)
 }
 
 /// Runs the configured test runner over `paths`.
@@ -150,7 +167,7 @@ pub async fn typecheck(root: &Path, cfg: &CheckConfig, paths: &[PathBuf]) -> Ver
 pub async fn run_tests(root: &Path, cfg: &CheckConfig, paths: &[PathBuf]) -> Verdict {
     let mut argv = cfg.tests.clone();
     argv.extend(paths.iter().map(|p| p.display().to_string()));
-    Verdict::from_tests(Box::pin(run(root, cfg, &argv)).await)
+    Verdict::from_tests(Box::pin(run_checker(root, cfg, &argv)).await)
 }
 
 /// Imports `module` in a fresh subprocess.
@@ -161,7 +178,7 @@ pub async fn run_tests(root: &Path, cfg: &CheckConfig, paths: &[PathBuf]) -> Ver
 #[tracing::instrument(skip(cfg))]
 pub async fn import_check(root: &Path, cfg: &CheckConfig, module: &str) -> Verdict {
     let argv = vec![cfg.python.clone(), "-c".into(), format!("import {module}")];
-    Verdict::from_import(Box::pin(run(root, cfg, &argv)).await)
+    Verdict::from_import(Box::pin(run_checker(root, cfg, &argv)).await)
 }
 
 /// Audits the repository's own governance rules.
@@ -323,22 +340,13 @@ fn dot_trellis_holds_python(root: &Path) -> bool {
 /// the timer) is large, and inline it made the orchestrator's future deep
 /// enough that a debug build overflowed the main thread's 1 MiB stack on
 /// Windows (`child_env.rs`), as `trellis-loop`'s `exec::run` once did.
-async fn run(root: &Path, cfg: &CheckConfig, argv: &[String]) -> ProcessOutput {
+async fn run_checker(root: &Path, cfg: &CheckConfig, argv: &[String]) -> ProcessOutput {
     let started = Instant::now();
     let command = argv.join(" ");
     let Some((program, args)) = argv.split_first() else {
-        return ProcessOutput {
-            command,
-            exit_code: None,
-            failure_count: None,
-            stdout: String::new(),
-            stderr: "empty command".into(),
-            stdout_truncated: None,
-            stderr_truncated: None,
-            duration_ms: 0,
-        };
+        return ProcessOutput::not_run(command, "empty command".into(), 0);
     };
-    let limit = bound(cfg, started);
+    let limit = check_time_limit(cfg, started);
 
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args)
@@ -374,16 +382,11 @@ async fn run(root: &Path, cfg: &CheckConfig, argv: &[String]) -> ProcessOutput {
         // Windows that includes a Job Object that could not be made or
         // joined: running the checker unheld is what #172 replaced.
         Err(e) => {
-            return ProcessOutput {
+            return ProcessOutput::not_run(
                 command,
-                exit_code: None,
-                failure_count: None,
-                stdout: String::new(),
-                stderr: format!("failed to spawn: {e}"),
-                stdout_truncated: None,
-                stderr_truncated: None,
-                duration_ms: started.elapsed().as_millis() as u64,
-            };
+                format!("failed to spawn: {e}"),
+                started.elapsed().as_millis() as u64,
+            );
         }
     };
     // Taken now: tokio's `id()` is `None` once the child has been reaped,
@@ -401,7 +404,7 @@ async fn run(root: &Path, cfg: &CheckConfig, argv: &[String]) -> ProcessOutput {
     #[cfg(unix)]
     let mut holder = pid.and_then(hold_group);
 
-    let (mut out, mut err) = (Captured::default(), Captured::default());
+    let (mut out, mut err) = (CappedOutput::default(), CappedOutput::default());
     let (so, se) = pipes(&mut child);
     let keys = tree_state::Keys::new();
     let (exited, drained, changes) = {
@@ -427,7 +430,7 @@ async fn run(root: &Path, cfg: &CheckConfig, argv: &[String]) -> ProcessOutput {
             // failing check has nothing a later write could void, and the
             // walk costs a large tree real time.
             let before = match waited {
-                Ok(s) if s.code() == Some(0) => Some(walk(root, &keys).await),
+                Ok(s) if s.code() == Some(0) => Some(snapshot_tree(root, &keys).await),
                 _ => None,
             };
             // What is left in the pipes, for a short grace within the
@@ -459,7 +462,7 @@ async fn run(root: &Path, cfg: &CheckConfig, argv: &[String]) -> ProcessOutput {
                     .is_ok();
             }
             if let Some(before) = before {
-                let after = walk(root, &keys).await;
+                let after = snapshot_tree(root, &keys).await;
                 changes = Some(before.changes(&after, root, &keys));
             }
         } else {
@@ -523,7 +526,7 @@ async fn run(root: &Path, cfg: &CheckConfig, argv: &[String]) -> ProcessOutput {
         Ok(Err(e)) => failed(format!("could not wait for the check: {e}\n{err}")),
         Err(_) => failed(format!(
             "timed out after {} s; the check's process tree was killed\n{err}",
-            seconds(limit),
+            format_seconds(limit),
         )),
     }
 }
@@ -542,7 +545,7 @@ const AFTER_KILL_DRAIN: Duration = Duration::from_secs(2);
 /// The tree under `root`, walked off the async runtime. A walk that
 /// panicked is an unknown state, which compares as changed: "could not
 /// tell" is not "unchanged".
-async fn walk(root: &Path, keys: &tree_state::Keys) -> tree_state::TreeState {
+async fn snapshot_tree(root: &Path, keys: &tree_state::Keys) -> tree_state::TreeState {
     let (root, keys) = (root.to_path_buf(), keys.clone());
     tokio::task::spawn_blocking(move || tree_state::TreeState::take(&root, &keys))
         .await
@@ -574,8 +577,8 @@ fn tree_changed(status: std::process::ExitStatus, c: &tree_state::Changes) -> St
     )
 }
 
-/// What `run` spawned. On Windows the checker is wrapped in a Job Object
-/// (ADR 0035), and the wrapper owns the process.
+/// What `run_checker` spawned. On Windows the checker is wrapped in a Job
+/// Object (ADR 0035), and the wrapper owns the process.
 #[cfg(unix)]
 type Child = tokio::process::Child;
 #[cfg(windows)]
@@ -664,7 +667,7 @@ fn hold_group(pgid: u32) -> Option<tokio::process::Child> {
 
 /// Kills the process group the checker led, after it has exited
 /// ([`trellis_core::process::kill_group`]). Called only while the holder
-/// `run` keeps unreaped is a member, so the group id is still ours.
+/// `run_checker` keeps unreaped is a member, so the group id is still ours.
 #[cfg(unix)]
 async fn kill_group(pid: Option<u32>) {
     let Some(pid) = pid else { return };
@@ -696,7 +699,7 @@ async fn kill_tree(child: &mut Child) {
 /// How long a check may run: `timeout_s`, or less when the run's budget
 /// ends sooner. A `Duration`, never an `Instant` sum: `timeout_s` comes from
 /// a repository's file, and `now + u64::MAX s` overflows.
-fn bound(cfg: &CheckConfig, now: Instant) -> Duration {
+fn check_time_limit(cfg: &CheckConfig, now: Instant) -> Duration {
     let own = Duration::from_secs(cfg.timeout_s);
     match cfg.deadline {
         Some(d) => own.min(d.saturating_duration_since(now)),
@@ -705,7 +708,7 @@ fn bound(cfg: &CheckConfig, now: Instant) -> Duration {
 }
 
 /// `d` as a reader would write it: whole seconds when it is whole.
-fn seconds(d: Duration) -> String {
+fn format_seconds(d: Duration) -> String {
     if d.subsec_nanos() == 0 {
         d.as_secs().to_string()
     } else {
@@ -720,12 +723,12 @@ fn seconds(d: Duration) -> String {
 /// front moves the whole 8 MiB for every 8 KiB read once the cap is
 /// reached, and a checker printing gigabytes would pay that many times over.
 #[derive(Default)]
-struct Captured {
+struct CappedOutput {
     tail: std::collections::VecDeque<u8>,
     total: u64,
 }
 
-impl Captured {
+impl CappedOutput {
     fn push(&mut self, bytes: &[u8]) {
         self.total = self.total.saturating_add(bytes.len() as u64);
         // Only the last `CHECK_OUTPUT_CAP` of one read can survive it.
@@ -769,7 +772,7 @@ impl Captured {
 /// Reads `stream` to its end into `into`, keeping what was read if the read
 /// is abandoned part way: a timed-out check's partial output is still worth
 /// showing.
-async fn read_all<R: AsyncRead + Unpin>(stream: Option<R>, into: &mut Captured) {
+async fn read_all<R: AsyncRead + Unpin>(stream: Option<R>, into: &mut CappedOutput) {
     let Some(mut s) = stream else { return };
     let mut buf = [0u8; 8192];
     loop {
@@ -779,6 +782,11 @@ async fn read_all<R: AsyncRead + Unpin>(stream: Option<R>, into: &mut Captured) 
         }
     }
 }
+
+// Tests in this file are split by the risk each group defends, so a
+// failure names its area: default_config_tests, governance_audit_tests,
+// bytecode_tests, timeout_tests, output_cap_tests and leftover_tests.
+// The verdict seal is held in tests/seal.rs.
 
 #[cfg(test)]
 mod default_config_tests {
@@ -1379,7 +1387,7 @@ mod output_cap_tests {
         let d = tempfile::tempdir().unwrap();
         let (argv, big) = printer(d.path(), 0);
         let cfg = CheckConfig::default();
-        let o = run(d.path(), &cfg, &argv).await;
+        let o = run_checker(d.path(), &cfg, &argv).await;
         let kept = body(&o.stdout);
         assert_eq!(kept.len(), CHECK_OUTPUT_CAP);
         assert!(
@@ -1402,7 +1410,7 @@ mod output_cap_tests {
             tests: argv.clone(),
             ..CheckConfig::default()
         };
-        let o = run(d.path(), &cfg, &argv).await;
+        let o = run_checker(d.path(), &cfg, &argv).await;
         assert_eq!(o.stdout_truncated, Some(WRITTEN as u64));
         assert_eq!(o.stderr_truncated, None);
         let note = format!(
@@ -1414,7 +1422,7 @@ mod output_cap_tests {
         let v = run_tests(d.path(), &cfg, &[]).await;
         assert!(v.detail().stdout.starts_with(&note));
 
-        let mut c = Captured::default();
+        let mut c = CappedOutput::default();
         c.push("é".as_bytes());
         c.push(&vec![b'x'; CHECK_OUTPUT_CAP - 1]);
         let (text, total) = c.into_text();

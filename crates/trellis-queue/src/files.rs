@@ -10,6 +10,10 @@
 //! A file that must change in place — a finished task gaining a note, a
 //! profile's pause overlay, a routine's last-fired time — is [`replace`]d
 //! under an exclusive [`Lock`], itself a published file (ADR 0026 §2).
+//!
+//! The reads that go with them are here too, so a record and the checked-in
+//! definitions beside it are read one way: [`read_settled`] for records,
+//! [`load_toml_dir`] for the routine and profile definitions.
 
 use crate::QueueError;
 use serde::Serialize;
@@ -22,6 +26,34 @@ pub(crate) fn io(path: &Path) -> impl FnOnce(std::io::Error) -> QueueError + '_ 
         path: path.to_path_buf(),
         source,
     }
+}
+
+/// Every `<name>.toml` in `dir`, parsed by `parse` and keyed by name. A
+/// missing directory is an empty set, since a repository need not define
+/// any; one that cannot be read is an error, never read as empty.
+pub(crate) fn load_toml_dir<T>(
+    dir: &Path,
+    parse: impl Fn(&str, &str) -> Result<T, QueueError>,
+) -> Result<std::collections::BTreeMap<String, T>, QueueError> {
+    let mut set = std::collections::BTreeMap::new();
+    let rd = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(set),
+        Err(e) => return Err(io(dir)(e)),
+    };
+    for e in rd.filter_map(Result::ok) {
+        let path = e.path();
+        let Some(name) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_suffix(".toml"))
+        else {
+            continue;
+        };
+        let text = std::fs::read_to_string(&path).map_err(io(&path))?;
+        set.insert(name.to_string(), parse(name, &text)?);
+    }
+    Ok(set)
 }
 
 /// Reads the record at `path` through [`read_settled`].
