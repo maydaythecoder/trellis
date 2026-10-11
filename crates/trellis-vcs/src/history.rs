@@ -67,7 +67,8 @@ impl From<std::io::Error> for HistoryError {
 /// The commit `HEAD` resolves to, dated; `None` when it resolves to none
 /// (an unborn branch: a repository with no commit yet).
 pub fn head(root: &Path) -> Result<Option<Stamp>, VcsError> {
-    let Some(out) = run_git_optional(root, &["rev-parse", "-q", "--verify", "HEAD^{commit}"])? else {
+    let Some(out) = run_git_optional(root, &["rev-parse", "-q", "--verify", "HEAD^{commit}"])?
+    else {
         return Ok(None);
     };
     stamp(root, out.trim()).map(Some)
