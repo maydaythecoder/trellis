@@ -26,6 +26,9 @@
   show; the others carry the hidden attribute. The overview section is the
   landing section: its four panes (recent repositories, last run, codebase,
   board) are drawn by overview.js from trellis's overview object (#562).
+  A pane added to the run or overview section that nothing writes to fails
+  view_renders_every_run_section or view_renders_every_overview_pane in
+  src/lockdown.rs (#513).
 
   One role="alert" banner, above every section, says what last failed;
   the approval dialog and the "trellis messages" pane, trellis's stderr
