@@ -1145,6 +1145,23 @@ article.past-run section + section {
   cursor: pointer;
 }
 
+/* What the wheel does over a map without focus, said for a moment. */
+.at-hint {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--pane-bg);
+  color: var(--fg);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 #at-canvas:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: -3px;
