@@ -78,7 +78,7 @@ const COMMANDS: &[(&str, &str)] = &[
     (
         "get_codebase",
         "the module graph `trellis index --graph` draws, as data, read-only: {limit?} \
-         (default 40)",
+         (default 40), {edges?: \"all\"} for every edge, {ref?} for the graph at a commit",
     ),
     (
         "get_radius",
@@ -821,7 +821,9 @@ impl Server {
     ///
     /// Answered from another thread, as `compact` is: indexing a large
     /// repository takes seconds, and on this thread it would hold up the
-    /// `approve` or `abort` a waiting run needs.
+    /// `approve` or `abort` a waiting run needs. `edges` and `ref` (the
+    /// Atlas, owner request of 2026-10-11) are checked here, before that
+    /// thread or any git starts.
     fn get_codebase(&mut self, cmd: &Value, id: Option<&str>) {
         let limit = match cmd.get("limit") {
             None => 40,
@@ -837,14 +839,28 @@ impl Server {
                 }
             },
         };
+        let edges = match crate::atlas::edges(cmd.get("edges")) {
+            Ok(e) => e,
+            Err(e) => {
+                self.respond(id, "get_codebase", Err(e));
+                return;
+            }
+        };
+        let rev = match cmd.get("ref").map(crate::atlas::revision).transpose() {
+            Ok(r) => r,
+            Err(e) => {
+                self.respond(id, "get_codebase", Err(e));
+                return;
+            }
+        };
         if let Err(e) = repository_root(&self.root, "get_codebase") {
             self.respond(id, "get_codebase", Err(e));
             return;
         }
         let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
         self.waiters.push(std::thread::spawn(move || {
-            let data = crate::doctor_cmd::codebase_json(&root, limit);
-            respond_on(&sink, id.as_deref(), "get_codebase", Ok(data));
+            let result = crate::atlas::codebase(&root, limit, edges, rev.as_deref());
+            respond_on(&sink, id.as_deref(), "get_codebase", result);
         }));
     }
 
