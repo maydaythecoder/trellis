@@ -17,6 +17,7 @@
 use crate::agent::ToolCall;
 use crate::gate::{GateDecision, GovernanceGate, ToolGate, tool_name};
 use crate::hooks::{Hooks, TurnOutcome};
+use crate::path_rules::{read_refusal, unsafe_repo_path, write_refusal};
 use crate::registry::ToolSet;
 use crate::tools::{EditOutcome, ToolResult};
 use std::path::{Path, PathBuf};
@@ -122,6 +123,26 @@ pub struct Dispatched {
     /// changed nothing trellis carries back. The trail records it
     /// (ADR 0023 §7).
     pub changed: Vec<String>,
+}
+
+impl Dispatched {
+    /// A call that did not run: no radius, no carry-back, no trust breach.
+    /// `may_have_changed_tree` is the caller's to say, because a gate that
+    /// refused may still have written.
+    fn refused(
+        result: ToolResult,
+        human: Option<HumanDecision>,
+        may_have_changed_tree: bool,
+    ) -> Self {
+        Self {
+            result,
+            radius_sites: Vec::new(),
+            human,
+            may_have_changed_tree,
+            trust_breach: None,
+            changed: Vec::new(),
+        }
+    }
 }
 
 /// The tool's own part in [`Dispatched::may_have_changed_tree`], for a call
@@ -251,14 +272,13 @@ impl Handle {
                 budget_left,
                 reply,
             },
-            || Dispatched {
-                result: ToolResult::Error("orchestrator stopped".into()),
-                radius_sites: Vec::new(),
-                human: None,
-                // A stopped actor owns the only write path and wrote nothing.
-                may_have_changed_tree: false,
-                trust_breach: None,
-                changed: Vec::new(),
+            || {
+                Dispatched::refused(
+                    ToolResult::Error("orchestrator stopped".into()),
+                    None,
+                    // A stopped actor owns the only write path and wrote nothing.
+                    false,
+                )
             },
         )
         .await
@@ -460,11 +480,11 @@ impl Orchestrator {
             match req {
                 Request::BlastRadius { symbol, reply } => {
                     let call = ToolCall::BlastRadius { symbol };
-                    let _ = reply.send(self.gated(call, None, false).await.result);
+                    let _ = reply.send(self.dispatch_gated(call, None, false).await.result);
                 }
                 Request::ReadFile { path, reply } => {
                     let call = ToolCall::ReadFile { path };
-                    let _ = reply.send(self.gated(call, None, false).await.result);
+                    let _ = reply.send(self.dispatch_gated(call, None, false).await.result);
                 }
                 Request::ApplyEdit {
                     path,
@@ -473,7 +493,7 @@ impl Orchestrator {
                     reply,
                 } => {
                     let call = ToolCall::Edit { path, old, new };
-                    let _ = reply.send(self.gated(call, None, false).await.result);
+                    let _ = reply.send(self.dispatch_gated(call, None, false).await.result);
                 }
                 Request::RunChecks {
                     paths,
@@ -481,7 +501,7 @@ impl Orchestrator {
                     reply,
                 } => {
                     let call = ToolCall::RunChecks { paths, kinds };
-                    let _ = reply.send(self.gated(call, None, false).await.result);
+                    let _ = reply.send(self.dispatch_gated(call, None, false).await.result);
                 }
                 Request::Call {
                     call,
@@ -489,7 +509,7 @@ impl Orchestrator {
                     reply,
                 } => {
                     self.calls += 1;
-                    let _ = reply.send(self.gated(call, budget_left, true).await);
+                    let _ = reply.send(self.dispatch_gated(call, budget_left, true).await);
                 }
                 Request::GateLog { reply } => {
                     let _ = reply.send(self.gate_log.clone());
@@ -508,10 +528,11 @@ impl Orchestrator {
         self
     }
 
-    /// [`gated_inner`](Self::gated_inner), then `turn_end` when `turn`, then
-    /// the trust guard, read on the way out whichever way the call ended: a
-    /// `pre_tool` hook refused by the guard returns early as a denial, and
-    /// that is a breach as much as a `bash` command that rewrote a hook.
+    /// [`run_gates_and_tool`](Self::run_gates_and_tool), then `turn_end`
+    /// when `turn`, then the trust guard, read on the way out whichever way
+    /// the call ended: a `pre_tool` hook refused by the guard returns early
+    /// as a denial, and that is a breach as much as a `bash` command that
+    /// rewrote a hook.
     ///
     /// Only a model's call is a turn; the audit at convergence and the
     /// direct requests are not, so `turn_end` does not run for them.
@@ -522,14 +543,14 @@ impl Orchestrator {
     /// the hook's spawn (about 19 KB of future) was held inline; the boxing
     /// in `Hooks::turn_end` is what fixed that then. `turn_end` is folded in
     /// here rather than wrapped around this so it adds no layer of its own.
-    async fn gated(
+    async fn dispatch_gated(
         &mut self,
         call: ToolCall,
         budget_left: Option<Duration>,
         turn: bool,
     ) -> Dispatched {
         let tool = turn.then(|| tool_name(&call).to_string());
-        let mut d = self.gated_inner(call, budget_left).await;
+        let mut d = self.run_gates_and_tool(call, budget_left).await;
         if let Some(tool) = tool {
             d.may_have_changed_tree |= self.turn_end(&tool, &d.result).await;
         }
@@ -654,22 +675,23 @@ impl Orchestrator {
     /// Consults the gates in order, then dispatches. The first `Deny` wins
     /// and nothing after it is asked — a human should not be asked about a
     /// call a rule has already refused.
-    async fn gated_inner(&mut self, call: ToolCall, budget_left: Option<Duration>) -> Dispatched {
+    async fn run_gates_and_tool(
+        &mut self,
+        call: ToolCall,
+        budget_left: Option<Duration>,
+    ) -> Dispatched {
         let received = Instant::now();
         let mut human = None;
         let name = tool_name(&call);
         if !self.tools.enabled(name) {
-            return Dispatched {
-                result: ToolResult::Error(format!(
+            return Dispatched::refused(
+                ToolResult::Error(format!(
                     "`{name}` is not a tool in this run; the tools are {}",
                     self.tools.names().join(", ")
                 )),
-                radius_sites: Vec::new(),
                 human,
-                may_have_changed_tree: false,
-                trust_breach: None,
-                changed: Vec::new(),
-            };
+                false,
+            );
         }
         self.wrote = false;
         self.denied = false;
@@ -737,18 +759,15 @@ impl Orchestrator {
                     self.gate_log.push(GateDenial {
                         call: self.calls,
                         gate: gate.to_string(),
-                        target: crate::gate::label(&call),
+                        target: crate::gate::call_summary(&call),
                         reason: reason.clone(),
                     });
                 }
-                return Dispatched {
-                    result: ToolResult::Error(reason),
-                    radius_sites: Vec::new(),
+                return Dispatched::refused(
+                    ToolResult::Error(reason),
                     human,
-                    may_have_changed_tree: changed_since(&self.root, before_gates).await,
-                    trust_breach: None,
-                    changed: Vec::new(),
-                };
+                    changed_since(&self.root, before_gates).await,
+                );
             }
         }
         let gates_changed = changed_since(&self.root, before_gates).await;
@@ -845,6 +864,9 @@ impl Orchestrator {
             }
             post_changed = changed_since(&self.root, before_post).await;
         }
+        // A struct literal rather than a constructor, on purpose: a field
+        // added to `Dispatched` then fails to compile here, so someone decides
+        // what a call that ran reports for it.
         Dispatched {
             result,
             radius_sites,
@@ -1494,114 +1516,6 @@ pub(crate) async fn ignored_refusal(root: &Path, rel: &str) -> Option<String> {
     }
 }
 
-/// Defined in `trellis-core`, where the binary's prompt-input reader uses
-/// the same predicate.
-pub(crate) use trellis_core::paths::names_git_dir;
-
-/// Whether `rel` names trellis's own directory, `.trellis/` at the root,
-/// by any spelling that resolves to it: its first component (after any
-/// `.`) compared case-insensitively, after the trailing dots and spaces
-/// Windows strips, and including the 8.3 short name `TRELLI~n` Windows
-/// gives a dot-leading name. Only the first component: a nested
-/// `app/.trellis/` is not the one trellis reads.
-///
-/// The one predicate for "under `.trellis/`" (ADR 0023 §5): the model's
-/// `edit` and `write_file`, the approval gate's prediction of them, and a
-/// process agent's breach test all use it.
-pub fn names_trellis_dir(rel: &str) -> bool {
-    let Some(first) = rel
-        .split(['/', '\\'])
-        .find(|seg| !seg.is_empty() && *seg != ".")
-    else {
-        return false;
-    };
-    let s = first.trim_end_matches(['.', ' ']).to_ascii_lowercase();
-    s == ".trellis"
-        || s.strip_prefix("trelli~")
-            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-}
-
-/// `rel` as it really lands, through any link on the way, by the one rule
-/// for a model-named path (`trellis_core::paths::resolve_repo_path`, #441):
-/// the canonical form of its nearest existing entry, relative to the
-/// canonical root, with the part that does not exist yet appended as
-/// written. `Err` when it lands outside the repository or in `.git`, or
-/// passes through a link to nothing or an entry that cannot be looked at:
-/// a committed link to `/etc` or to `~` is a path the string rules cannot
-/// see. Worded for the model, which is not told where outside it lands.
-pub(crate) fn real_rel(root: &Path, rel: &str) -> Result<String, String> {
-    use trellis_core::paths::RepoInputError as E;
-    trellis_core::paths::resolve_repo_path(root, rel).map_err(|e| match e {
-        E::Outside { .. } => format!("`{rel}` leads outside the repository, through a link"),
-        E::IntoGit { .. } => format!("`{rel}` is inside .git"),
-        E::Dangling { .. } => format!(
-            "`{rel}` passes through a link that resolves to nothing, so where it lands \
-             cannot be checked"
-        ),
-        E::Uninspectable { source, .. } => {
-            format!(
-                "`{rel}` could not be looked at ({source}), so where it lands cannot be checked"
-            )
-        }
-        E::RootUnresolved { source, .. } => format!(
-            "the repository root could not be resolved ({source}), so where `{rel}` lands \
-             cannot be checked"
-        ),
-    })
-}
-
-/// Why the model may not read or list `rel`, or `None`: a path outside the
-/// repository, or git's own directory by any spelling or through any link.
-///
-/// The model proposes these paths and the grammar guarantees only that
-/// they are well-formed strings (S7 metric 3). `..` is the cheap way a
-/// well-formed path becomes a write outside the tree the rollback covers,
-/// and a committed link the less cheap one.
-/// `.git/config` can hold a remote URL with a credential in it, and an
-/// observation goes into a hosted request body and the committed trail.
-pub(crate) fn read_refusal(root: &Path, rel: &str) -> Option<String> {
-    if let Some(why) = unsafe_repo_path(rel) {
-        return Some(why);
-    }
-    match real_rel(root, rel) {
-        Err(why) => Some(why),
-        Ok(real) if names_git_dir(rel) || names_git_dir(&real) => {
-            Some(format!("`{rel}` is inside .git"))
-        }
-        Ok(_) => None,
-    }
-}
-
-/// Why the model may not write at `rel`, or `None`. The one predicate
-/// `edit`, `write_file` and the approval gate's prediction of them share,
-/// so a call the gate lets through unasked is one the orchestrator
-/// refuses: outside the repository, inside `.git` (rollback is git's own
-/// reset and does not restore git's directory), or under `.trellis/`,
-/// which holds the hooks, rules and checks that judge the run — by any
-/// spelling, and through any link.
-pub(crate) fn write_refusal(root: &Path, rel: &str) -> Option<String> {
-    if let Some(why) = read_refusal(root, rel) {
-        return Some(why);
-    }
-    let real = real_rel(root, rel).unwrap_or_else(|_| rel.to_string());
-    if names_trellis_dir(rel) || names_trellis_dir(&real) {
-        return Some(format!(
-            "`{rel}` is under .trellis/, which holds the hooks, rules and checks that judge \
-             this run. Nothing a run does may change them."
-        ));
-    }
-    None
-}
-
-/// Why `rel` cannot be used as a path inside the repository, or `None`.
-///
-/// Shared with the approval gate, which lets through (unasked) any call it
-/// predicts the orchestrator will refuse: a gate and an orchestrator that
-/// disagreed would skip the person on a call that then ran. Defined in
-/// `trellis-core`, where the binary's prompt-template names obey it too;
-/// the rules it applies are documented there.
-pub(crate) use trellis_core::paths::unsafe_repo_path;
-
 /// How many lines of a file a failed anchor is allowed to quote back.
 ///
 /// The window is the scarce resource on local weights (S5), and the
@@ -1638,10 +1552,7 @@ fn excerpt(src: &str) -> String {
         // On a character boundary: a Python file is UTF-8 and slicing by
         // bytes would panic on the identifier of anyone who does not write
         // in ASCII.
-        let cut = (0..=EXCERPT_BYTES)
-            .rev()
-            .find(|i| out.is_char_boundary(*i))
-            .unwrap_or(0);
+        let cut = out.floor_char_boundary(EXCERPT_BYTES);
         out.truncate(cut);
         out.push_str("\n...cut here; the rest of this file is too large to show.");
     }

@@ -465,6 +465,7 @@ pub(crate) fn load(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::link;
 
     fn dir() -> tempfile::TempDir {
         let d = tempfile::tempdir().unwrap();
@@ -625,18 +626,6 @@ mod tests {
         let d = dir();
         std::fs::write(d.path().join("AGENTS.md"), [0xff, 0xfe, 0x00]).unwrap();
         assert!(load(d.path(), None, true, &[], &[]).is_err());
-    }
-
-    /// A link at `link` to `target`, or `false` with the reason printed
-    /// when this host cannot make one (Windows without Developer Mode).
-    fn link(target: &Path, link: &Path) -> bool {
-        match trellis_core::paths::symlink_for_test(target, link) {
-            Ok(()) => true,
-            Err(why) => {
-                eprintln!("{why}");
-                false
-            }
-        }
     }
 
     #[test]

@@ -653,7 +653,7 @@ struct Server {
 /// the user's own file, so the desktop's picker and bare `trellis`'s
 /// first-run list offer the same specs and save to the same place (ADR 0050
 /// §2). A parameter so a test can point both at its own stub and directory,
-/// since `user_config::file()` is `None` under test.
+/// since `user_config::user_config_path()` is `None` under test.
 pub(crate) struct ModelSources {
     pub(crate) runtimes: Vec<crate::first_run::Runtime>,
     pub(crate) user_file: Option<PathBuf>,
@@ -664,7 +664,7 @@ impl ModelSources {
     pub(crate) fn user() -> Self {
         Self {
             runtimes: crate::first_run::defaults().to_vec(),
-            user_file: crate::user_config::file(),
+            user_file: crate::user_config::user_config_path(),
         }
     }
 }
@@ -754,7 +754,7 @@ fn serve_with(
                 continue;
             }
         };
-        if !s.handle(&cmd) {
+        if !s.dispatch_command(&cmd) {
             return Ok(());
         }
     }
@@ -1211,7 +1211,7 @@ impl Server {
     }
 
     /// Returns false to stop serving.
-    fn handle(&mut self, cmd: &Value) -> bool {
+    fn dispatch_command(&mut self, cmd: &Value) -> bool {
         let id = cmd.get("id").and_then(Value::as_str).map(str::to_string);
         let id = id.as_deref();
         let kind = cmd.get("type").and_then(Value::as_str).unwrap_or("");
@@ -1441,13 +1441,13 @@ impl Server {
                      yours sets [model] spec; choose one with {\"model\": \"<spec>\"}"
                         .to_string()
                 })?;
-                check_spec(&spec)?;
+                validate_model_spec(&spec)?;
                 self.model = None;
                 self.confirmed = Some(spec.clone());
                 Ok(json!({"model": spec, "configured": true, "saved_to": null}))
             }
             (Some(Value::String(m)), false) => {
-                check_spec(m)?;
+                validate_model_spec(m)?;
                 let saved_to = if save {
                     Some(self.save_model(m)?)
                 } else {
@@ -1583,7 +1583,7 @@ impl Server {
         };
         let model_from_user = self.model.is_some();
         let model = self.model(None)?;
-        check_spec(&model)?;
+        validate_model_spec(&model)?;
         let spec: trellis_model::ModelSpec = model.parse().map_err(|e| format!("{e}"))?;
         // With `?`, as the TUI loads it: a default in its place would refuse
         // the user's own provider as the repository's choice.
@@ -1682,7 +1682,7 @@ impl Server {
         // repository did (`[model] spec`); ADR 0024 §3 treats them differently.
         let model_from_user = text("model").is_some() || self.model.is_some();
         let model = self.model(text("model").as_deref())?;
-        check_spec(&model)?;
+        validate_model_spec(&model)?;
         let flag = match text("control").as_deref() {
             None => None,
             Some("auto") => Some(config::ControlMode::Auto),
@@ -1816,7 +1816,7 @@ impl Chain {
             }
             started = true;
             let cur = self.current();
-            self.one(&task, &cur);
+            self.run_one_task(&task, &cur);
             let unsent = cur.steering.close();
             if self.abort.requested() {
                 // Queued before this run's own, so received before them.
@@ -1853,7 +1853,7 @@ impl Chain {
     }
 
     /// One run, as `trellis run` runs it.
-    fn one(&self, task: &str, cur: &Current) {
+    fn run_one_task(&self, task: &str, cur: &Current) {
         if let Ok(mut t) = TURNS.lock() {
             t.clear();
         }
@@ -1960,7 +1960,7 @@ impl Chain {
             a.clear();
         }
         if let Ok(mut l) = self.last.lock() {
-            *l = Some(summary(&r, rid.as_deref()));
+            *l = Some(run_end_response(&r, rid.as_deref()));
         }
     }
 }
@@ -2039,7 +2039,7 @@ fn same_place(a: &Path, b: &Path) -> bool {
 }
 
 /// `get_state`'s view of how the last run ended.
-fn summary(r: &Result<RunExit>, id: Option<&str>) -> Value {
+fn run_end_response(r: &Result<RunExit>, id: Option<&str>) -> Value {
     let mut v = output::run_end(r, None, id);
     if let Some(o) = v.as_object_mut() {
         o.remove("type");
@@ -2048,7 +2048,7 @@ fn summary(r: &Result<RunExit>, id: Option<&str>) -> Value {
 }
 
 /// A spec that parses, and for a script, a file that exists.
-fn check_spec(spec: &str) -> Result<(), String> {
+fn validate_model_spec(spec: &str) -> Result<(), String> {
     let parsed: trellis_model::ModelSpec = spec.parse().map_err(|e| format!("{e}"))?;
     if let trellis_model::ModelSpec::Scripted(p) = &parsed
         && !p.is_file()
@@ -2061,6 +2061,7 @@ fn check_spec(spec: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::sh;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
@@ -2396,16 +2397,6 @@ mod tests {
         );
     }
 
-    /// A shell argv for `script`, as TOML, with literal strings so a Windows
-    /// path's backslashes are not escapes.
-    fn sh(script: &str) -> String {
-        if cfg!(windows) {
-            format!("['cmd', '/C', '{script}']")
-        } else {
-            format!("['sh', '-c', '{script}']")
-        }
-    }
-
     /// Where `fixture(name, ..)` puts its repository, known before it is
     /// made so a hook in its configuration can name a file in it.
     fn fixture_dir(name: &str) -> PathBuf {
@@ -2719,7 +2710,7 @@ mod tests {
             json!({"id": "g", "type": "get_codebase"}),
             json!({"id": "r", "type": "get_radius", "symbol": "f"}),
         ] {
-            s.handle(&cmd);
+            s.dispatch_command(&cmd);
             assert!(s.waiters.is_empty(), "{cmd} started a thread");
         }
         let text = String::from_utf8(out.lock().unwrap().clone()).unwrap();
@@ -2776,7 +2767,7 @@ mod tests {
             json!({"id": "c", "type": "get_history", "commits": "all"}),
         ];
         for cmd in &cmds {
-            s.handle(cmd);
+            s.dispatch_command(cmd);
             assert!(s.waiters.is_empty(), "{cmd} started a thread");
         }
         let text = String::from_utf8(out.lock().unwrap().clone()).unwrap();

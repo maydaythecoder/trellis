@@ -16,7 +16,7 @@
 //! worked around: in a partial clone, `cat-file` fetches a blob the clone
 //! lacks into the object store, as any read of it would.
 
-use super::{VcsError, command, git, git_opt};
+use super::{VcsError, command, run_git, run_git_optional};
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -67,7 +67,7 @@ impl From<std::io::Error> for HistoryError {
 /// The commit `HEAD` resolves to, dated; `None` when it resolves to none
 /// (an unborn branch: a repository with no commit yet).
 pub fn head(root: &Path) -> Result<Option<Stamp>, VcsError> {
-    let Some(out) = git_opt(root, &["rev-parse", "-q", "--verify", "HEAD^{commit}"])? else {
+    let Some(out) = run_git_optional(root, &["rev-parse", "-q", "--verify", "HEAD^{commit}"])? else {
         return Ok(None);
     };
     stamp(root, out.trim()).map(Some)
@@ -86,7 +86,7 @@ pub fn resolve(root: &Path, rev: &str) -> Result<Stamp, HistoryError> {
     let peeled = format!("{rev}^{{commit}}");
     // `-q --verify` exits 1, saying nothing, for a name that resolves to no
     // commit; any other failure is git's and is reported as one.
-    let Some(out) = git_opt(
+    let Some(out) = run_git_optional(
         root,
         &["rev-parse", "-q", "--verify", "--end-of-options", &peeled],
     )?
@@ -108,7 +108,7 @@ fn stamp(root: &Path, commit: &str) -> Result<Stamp, VcsError> {
         commit,
         "--",
     ];
-    let out = git(root, &args)?;
+    let out = run_git(root, &args)?;
     let line = out.trim_end();
     let mut f = line.splitn(3, '\t');
     match (f.next(), f.next().and_then(|t| t.parse().ok()), f.next()) {
@@ -229,7 +229,7 @@ pub fn first_parent_count_after(root: &Path, commit: &str) -> Result<usize, VcsE
 }
 
 fn count(root: &Path, args: &[&str]) -> Result<usize, VcsError> {
-    let out = git(root, args)?;
+    let out = run_git(root, args)?;
     out.trim()
         .parse()
         .map_err(|_| failed(args, &format!("not a count: {out:?}")))
@@ -578,7 +578,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn sh(root: &Path, args: &[&str]) -> String {
-        git(root, args).unwrap_or_else(|e| panic!("git {args:?}: {e}"))
+        run_git(root, args).unwrap_or_else(|e| panic!("git {args:?}: {e}"))
     }
 
     /// A repository whose first commit holds Python files, a README, an
