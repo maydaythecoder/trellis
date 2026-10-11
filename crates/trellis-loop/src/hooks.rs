@@ -481,18 +481,7 @@ fn code(c: Option<i32>) -> String {
 }
 
 fn cap_head(s: &str, cap: usize) -> String {
-    if s.len() <= cap {
-        return s.to_string();
-    }
-    let cut = (0..=cap)
-        .rev()
-        .find(|i| s.is_char_boundary(*i))
-        .unwrap_or(0);
-    format!(
-        "{}\n...(cut at {cap} bytes; the hook printed {})",
-        &s[..cut],
-        s.len()
-    )
+    head_of(s, s.len(), cap)
 }
 
 /// The first `cap` bytes of a stream whose start is `head` and whose size
@@ -501,10 +490,8 @@ fn head_of(head: &str, total: usize, cap: usize) -> String {
     if total <= cap && head.len() <= cap {
         return head.to_string();
     }
-    let cut = (0..=cap.min(head.len()))
-        .rev()
-        .find(|i| head.is_char_boundary(*i))
-        .unwrap_or(0);
+    // Clamps to `head.len()` when `cap` is past the end.
+    let cut = head.floor_char_boundary(cap);
     format!(
         "{}\n...(cut at {cap} bytes; the hook printed {total})",
         &head[..cut]

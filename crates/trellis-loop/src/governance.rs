@@ -242,7 +242,7 @@ impl Governance {
         // Resolved at most once, and only when the spelling is not refused.
         let real = std::cell::OnceCell::new();
         let real = || {
-            real.get_or_init(|| crate::orchestrator::real_rel(root, rel).ok())
+            real.get_or_init(|| crate::path_rules::real_rel(root, rel).ok())
                 .as_deref()
         };
         if let Some(r) = self
@@ -272,7 +272,7 @@ impl Governance {
     pub fn outside_allow_write_at(&self, root: &std::path::Path, rel: &str) -> Option<String> {
         let scope = self.scope.as_ref()?;
         let inside = scope.admits(rel)
-            && crate::orchestrator::real_rel(root, rel).is_ok_and(|real| scope.admits(&real));
+            && crate::path_rules::real_rel(root, rel).is_ok_and(|real| scope.admits(&real));
         (!inside).then(|| {
             let written: Vec<String> = scope
                 .rules

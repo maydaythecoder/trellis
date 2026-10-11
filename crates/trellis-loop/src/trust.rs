@@ -148,18 +148,7 @@ fn repo_file(root: &Path, arg: &str, cache: &HashCache) -> Option<(String, Strin
 /// holds a control character hashes differently than before; a refused
 /// fingerprint is never trusted or compared, so no trust decision moves.
 fn plain(s: &str) -> String {
-    if !s.chars().any(char::is_control) {
-        return s.to_string();
-    }
-    s.chars()
-        .map(|c| {
-            if c.is_control() {
-                c.escape_debug().to_string()
-            } else {
-                c.to_string()
-            }
-        })
-        .collect()
+    trellis_core::text::escape_controls(s)
 }
 
 fn rel(root: &Path, full: &Path) -> String {
@@ -405,7 +394,7 @@ fn package_code(packages: Option<&Path>, root: &Path, items: &[TrustItem]) -> Op
 ///
 /// Two tests, and a file failing either is refused. The first is on the
 /// files the item hashed, by the path as written
-/// ([`crate::orchestrator::names_trellis_dir`]). The second has its own
+/// ([`crate::path_rules::names_trellis_dir`]). The second has its own
 /// resolver (review round 12), because what gets hashed is narrower than
 /// what a command can name: [`repo_file`] drops a path with `..` and an
 /// absolute one that is not lexically under `root`, so
@@ -444,7 +433,7 @@ fn outside_code(root: &Path, items: &[TrustItem]) -> Option<String> {
     };
     for item in items {
         for (path, _) in &item.files {
-            if !crate::orchestrator::names_trellis_dir(path) {
+            if !crate::path_rules::names_trellis_dir(path) {
                 note(format!("{} names `{}`", plain(&item.label), plain(path)));
             }
         }
@@ -1086,7 +1075,7 @@ impl TrustStore {
             });
         }
         let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        Ok(match self.read()?.repos.get(&key(root)) {
+        Ok(match self.read()?.repos.get(&store_key(root)) {
             None => TrustState::Unknown,
             Some(e) if e.sha256 == fp.sha256 => TrustState::Trusted,
             Some(_) => TrustState::Changed,
@@ -1105,7 +1094,7 @@ impl TrustStore {
         fp: &Fingerprint,
     ) -> Result<TrustDiagnosis, TrustStoreError> {
         let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let Some(entry) = self.read()?.repos.remove(&key(root)) else {
+        let Some(entry) = self.read()?.repos.remove(&store_key(root)) else {
             return Ok(TrustDiagnosis::NotRecorded);
         };
         if entry.items.is_empty() {
@@ -1137,7 +1126,7 @@ impl TrustStore {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         f.repos.insert(
-            key(root),
+            store_key(root),
             Entry {
                 sha256: fp.sha256.clone(),
                 trusted_at: now,
@@ -1151,7 +1140,7 @@ impl TrustStore {
     pub fn revoke(&self, root: &Path) -> Result<bool, TrustStoreError> {
         let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let mut f = self.read()?;
-        let had = f.repos.remove(&key(root)).is_some();
+        let had = f.repos.remove(&store_key(root)).is_some();
         if had {
             self.write(&f)?;
         }
@@ -1160,7 +1149,7 @@ impl TrustStore {
 }
 
 /// The canonical repository root, so `C:\r` and `c:\r\.` are one entry.
-fn key(root: &Path) -> String {
+fn store_key(root: &Path) -> String {
     std::fs::canonicalize(root)
         .unwrap_or_else(|_| root.to_path_buf())
         .to_string_lossy()

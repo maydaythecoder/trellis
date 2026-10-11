@@ -8,7 +8,7 @@
 use crate::activity::{Actor, Event};
 use crate::files::{Lock, move_to, publish, read_json, remove};
 use crate::profile::{self, PausedBy, Raise, Window};
-use crate::{Decision, Queue, QueueError, State, Verdict};
+use crate::{ApprovalDecision, Decision, Queue, QueueError, State};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -159,7 +159,7 @@ fn supersede(q: &Queue, id: &str, why: &str, actor: Actor) -> Result<bool, Queue
     }
     let mut r: BudgetRequest = read_json(&from)?;
     r.decision = Some(Decision {
-        decision: Verdict::Rejected,
+        decision: ApprovalDecision::Rejected,
         at: crate::iso_now(),
         reason: Some(format!("superseded: {why}")),
     });
@@ -211,7 +211,7 @@ pub fn approve_budget(
     let pending: BudgetRequest = read_json(&from)?;
     let mut r = pending.clone();
     r.decision = Some(Decision {
-        decision: Verdict::Approved,
+        decision: ApprovalDecision::Approved,
         at: crate::iso_now(),
         reason: None,
     });
@@ -276,7 +276,7 @@ pub fn reject_budget(
     }
     let mut r: BudgetRequest = read_json(&from)?;
     r.decision = Some(Decision {
-        decision: Verdict::Rejected,
+        decision: ApprovalDecision::Rejected,
         at: crate::iso_now(),
         reason: reason.map(str::to_string),
     });
@@ -304,7 +304,7 @@ pub fn approve_task(q: &Queue, id: &str, actor: Actor) -> Result<(), QueueError>
             )));
         }
         t.approval = Some(Decision {
-            decision: Verdict::Approved,
+            decision: ApprovalDecision::Approved,
             at: crate::iso_now(),
             reason: None,
         });
@@ -329,7 +329,7 @@ pub fn reject_task(
             )));
         }
         t.approval = Some(Decision {
-            decision: Verdict::Rejected,
+            decision: ApprovalDecision::Rejected,
             at: crate::iso_now(),
             reason: reason.map(str::to_string),
         });

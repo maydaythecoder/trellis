@@ -379,7 +379,7 @@ fn key(scope: &[String], name: &str) -> String {
 }
 
 /// Repository-relative path with forward slashes, whatever the platform.
-fn rel_path(root: &Path, p: &Path) -> String {
+pub(crate) fn rel_path(root: &Path, p: &Path) -> String {
     p.strip_prefix(root)
         .unwrap_or(p)
         .components()
@@ -1104,7 +1104,7 @@ impl Resolver<'_> {
             let binds = t.imports.get(prefix)?;
             let mut found = None;
             for b in binds {
-                if let Bound::Module(f) = self.follow(b, MAX_REEXPORT_DEPTH)
+                if let Bound::Module(f) = self.follow_import(b, MAX_REEXPORT_DEPTH)
                     && let Bound::Symbol(s) =
                         self.lookup_in_module(f, last, MAX_REEXPORT_DEPTH, &mut HashSet::new())
                     && is_class(&s)
@@ -1128,7 +1128,7 @@ impl Resolver<'_> {
         let binds = t.imports.get(ty)?;
         let mut found = None;
         for b in binds {
-            if let Bound::Symbol(s) = self.follow(b, MAX_REEXPORT_DEPTH)
+            if let Bound::Symbol(s) = self.follow_import(b, MAX_REEXPORT_DEPTH)
                 && is_class(&s)
             {
                 if found.is_some() {
@@ -1176,7 +1176,7 @@ impl Resolver<'_> {
         match t.imports.get(lookup) {
             Some(binds) if !binds.is_empty() => binds
                 .iter()
-                .all(|b| matches!(self.follow(b, MAX_REEXPORT_DEPTH), Bound::External)),
+                .all(|b| matches!(self.follow_import(b, MAX_REEXPORT_DEPTH), Bound::External)),
             // No import and no definition. A builtin is the only way a bare
             // name is legitimately in scope, and a qualified name whose
             // prefix is bound to nothing tells us nothing at all.
@@ -1415,7 +1415,7 @@ impl Resolver<'_> {
             return out;
         };
         for b in binds {
-            match self.follow(b, MAX_REEXPORT_DEPTH) {
+            match self.follow_import(b, MAX_REEXPORT_DEPTH) {
                 Bound::Symbol(s) => out.push(s),
                 Bound::Symbols(v) => out.extend(v),
                 Bound::Module(_) | Bound::External | Bound::Unfollowed(_) => {}
@@ -1561,7 +1561,7 @@ impl Resolver<'_> {
     fn outcome_of_bindings(&self, binds: &[ImportBinding]) -> Outcome {
         let bounds: Vec<Bound> = binds
             .iter()
-            .map(|b| self.follow(b, MAX_REEXPORT_DEPTH))
+            .map(|b| self.follow_import(b, MAX_REEXPORT_DEPTH))
             .collect();
         self.collapse(&bounds)
     }
@@ -1569,7 +1569,7 @@ impl Resolver<'_> {
     fn attr_of_bindings(&self, binds: &[ImportBinding], attr: &str) -> Outcome {
         let bounds: Vec<Bound> = binds
             .iter()
-            .map(|b| self.follow(b, MAX_REEXPORT_DEPTH))
+            .map(|b| self.follow_import(b, MAX_REEXPORT_DEPTH))
             .collect();
         let outs: Vec<Outcome> = bounds.iter().map(|b| self.attr_of_bound(b, attr)).collect();
         merge_outcomes(outs)
@@ -1617,7 +1617,7 @@ impl Resolver<'_> {
     }
 
     /// Follows an import binding to something nameable.
-    fn follow(&self, b: &ImportBinding, depth: u32) -> Bound {
+    fn follow_import(&self, b: &ImportBinding, depth: u32) -> Bound {
         match b {
             ImportBinding::ModuleRef(f) => Bound::Module(*f),
             ImportBinding::External => Bound::External,
@@ -1665,7 +1665,7 @@ impl Resolver<'_> {
                     ImportBinding::FromModule { file: f2, name: n2 } => {
                         self.lookup_in_module(*f2, n2, depth - 1, visited)
                     }
-                    other => self.follow(other, depth - 1),
+                    other => self.follow_import(other, depth - 1),
                 })
                 .collect();
             return merge_bounds(bounds);

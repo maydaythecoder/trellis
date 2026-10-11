@@ -12,7 +12,7 @@ use crate::{context_files, orchestrate, tooling, user_config};
 use std::path::{Path, PathBuf};
 
 /// The lines, in the order `doctor` prints them.
-pub(crate) fn lines(root: &Path, cfg: &RepoConfig) -> Vec<String> {
+pub(crate) fn input_report_lines(root: &Path, cfg: &RepoConfig) -> Vec<String> {
     vec![
         user_config_line(),
         context_line(root, cfg),
@@ -30,7 +30,7 @@ pub(crate) fn lines(root: &Path, cfg: &RepoConfig) -> Vec<String> {
 }
 
 fn user_config_line() -> String {
-    match user_config::file() {
+    match user_config::user_config_path() {
         None => {
             "user cfg:   none (no TRELLIS_CONFIG_DIR, APPDATA, XDG_CONFIG_HOME or HOME)".to_string()
         }
@@ -315,7 +315,7 @@ mod tests {
 
     fn all(d: &Path) -> String {
         let cfg = RepoConfig::load(d).unwrap();
-        lines(d, &cfg).join("\n")
+        input_report_lines(d, &cfg).join("\n")
     }
 
     #[test]
