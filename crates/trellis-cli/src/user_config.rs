@@ -28,7 +28,7 @@ pub(crate) fn dir() -> Option<PathBuf> {
 }
 
 /// `<dir>/config.toml`.
-pub(crate) fn file() -> Option<PathBuf> {
+pub(crate) fn user_config_path() -> Option<PathBuf> {
     dir().map(|d| d.join("config.toml"))
 }
 
@@ -460,7 +460,7 @@ impl RepoConfig {
 /// Write `[model] spec = "<spec>"` into the user's config file at `file`
 /// (ADR 0050 §2), creating the file and its directory if they are missing.
 ///
-/// The path is a parameter rather than [`file`]'s answer because that is
+/// The path is a parameter rather than [`user_config_path`]'s answer because that is
 /// `None` under test, and a writer that cannot be pointed at a temporary
 /// directory is a writer whose only test is a real home directory.
 ///

@@ -376,8 +376,23 @@ pub(crate) fn status_error(r: &Response, key: Option<&ApiKey>) -> RuntimeError {
     let body = key.map_or_else(|| r.body.clone(), |k| k.scrub(&r.body));
     RuntimeError::Http {
         status: r.status,
-        body: body.chars().take(400).collect(),
+        body: excerpt(&body, ERROR_BODY_CHARS),
     }
+}
+
+/// How many characters of an error body an `Http` error or a shape error
+/// quotes: the whole of a reply up to the size cap is not a message anyone
+/// reads.
+pub(crate) const ERROR_BODY_CHARS: usize = 400;
+
+/// How many characters of a malformed reply a hosted shape error quotes.
+pub(crate) const SHAPE_QUOTE_CHARS: usize = 200;
+
+/// The first `max_chars` characters of `s`, with no marker for what was
+/// left out. Counted in characters, not bytes, so a cut never lands inside
+/// a multi-byte character.
+pub(crate) fn excerpt(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
 }
 
 /// A failed TCP connect as a `SendError`, `what` naming where it was going.
@@ -650,7 +665,7 @@ impl Framer {
         if self.body.is_none() {
             let from = self.scanned.saturating_sub(3);
             self.examined += raw.len() - from;
-            let Some(i) = find(&raw[from..], b"\r\n\r\n") else {
+            let Some(i) = find_subslice(&raw[from..], b"\r\n\r\n") else {
                 self.scanned = raw.len();
                 return false;
             };
@@ -672,7 +687,7 @@ impl Framer {
         }
         match self.body.as_mut() {
             Some(Body::Length(n)) => raw.len() >= *n,
-            Some(Body::Chunked { pos, at }) => chunked(raw, pos, at, &mut self.examined),
+            Some(Body::Chunked { pos, at }) => advance_chunked(raw, pos, at, &mut self.examined),
             Some(Body::Unframed) | None => false,
         }
     }
@@ -756,14 +771,14 @@ fn parse_head(head: &[u8]) -> Result<Head, String> {
 /// Advances through a chunked body from `pos`. True once the zero-size
 /// chunk and the blank line after its trailers have arrived, or once the
 /// framing is broken — then the parser, which is stricter, says how.
-fn chunked(raw: &[u8], pos: &mut usize, at: &mut Chunk, examined: &mut usize) -> bool {
+fn advance_chunked(raw: &[u8], pos: &mut usize, at: &mut Chunk, examined: &mut usize) -> bool {
     loop {
         let rest = &raw[*pos..];
         match *at {
             Chunk::Size | Chunk::Trailers => {
                 let window = &rest[..rest.len().min(MAX_SIZE_LINE + 2)];
                 *examined += window.len();
-                let Some(eol) = find(window, b"\r\n") else {
+                let Some(eol) = find_subslice(window, b"\r\n") else {
                     return rest.len() > MAX_SIZE_LINE;
                 };
                 *pos += eol + 2;
@@ -817,12 +832,12 @@ fn complete(raw: &[u8]) -> bool {
     Framer::default().complete(raw)
 }
 
-fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+fn find_subslice(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
 pub(crate) fn parse_response(raw: &[u8]) -> Result<Response, String> {
-    let end = find(raw, b"\r\n\r\n").ok_or("no HTTP header terminator in the response")?;
+    let end = find_subslice(raw, b"\r\n\r\n").ok_or("no HTTP header terminator in the response")?;
     let Head {
         status,
         headers,
@@ -850,7 +865,7 @@ pub(crate) fn parse_response(raw: &[u8]) -> Result<Response, String> {
 fn dechunk(mut b: &[u8]) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     loop {
-        let line_end = find(b, b"\r\n").ok_or("a chunk size line is unterminated")?;
+        let line_end = find_subslice(b, b"\r\n").ok_or("a chunk size line is unterminated")?;
         let size = chunk_size(&b[..line_end])?;
         b = &b[line_end + 2..];
         if size == 0 {

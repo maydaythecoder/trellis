@@ -24,8 +24,8 @@ use trellis_core::PartitionId;
 use trellis_vcs::Worktree;
 
 use crate::budget::{Budget, BudgetTooSmall};
-use crate::orchestrator::names_trellis_dir;
 use crate::partition::{FailurePolicy, Partition, Plan};
+use crate::path_rules::names_trellis_dir;
 
 /// What one partition's work is handed.
 #[derive(Debug, Clone)]

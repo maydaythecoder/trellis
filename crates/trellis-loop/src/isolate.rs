@@ -20,7 +20,7 @@
 //! one that looks for the repository by absolute path, reads the home
 //! directory or opens a socket; the ADR lists what it does not do.
 
-use crate::orchestrator::{names_git_dir, real_rel, unsafe_repo_path};
+use crate::path_rules::{names_git_dir, real_rel, unsafe_repo_path};
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -101,7 +101,7 @@ impl Sandbox {
     pub(crate) fn prepare(host: &Path) -> Result<Sandbox, IsolateError> {
         let host = std::path::absolute(host).map_err(|e| IsolateError::Io(e.to_string()))?;
         let files = listed(&host)?;
-        let host_head = head(&host)?;
+        let host_head = head_commit(&host)?;
         let dir = fresh_dir()?;
         // Owned from here, so an error below still removes it.
         let mut sb = Sandbox {
@@ -124,7 +124,7 @@ impl Sandbox {
                 sb.dir.as_os_str().to_owned(),
             ],
         )?;
-        let clone_head = head(&sb.dir)?;
+        let clone_head = head_commit(&sb.dir)?;
         if clone_head != host_head {
             return Err(IsolateError::Head {
                 host: host_head.unwrap_or_else(|| "no commit".into()),
@@ -440,7 +440,7 @@ fn listed(host: &Path) -> Result<Vec<String>, IsolateError> {
 }
 
 /// The commit `HEAD` names in `dir`, `None` on an unborn branch.
-fn head(dir: &Path) -> Result<Option<String>, IsolateError> {
+fn head_commit(dir: &Path) -> Result<Option<String>, IsolateError> {
     let args: [std::ffi::OsString; 4] = [
         "rev-parse".into(),
         "-q".into(),

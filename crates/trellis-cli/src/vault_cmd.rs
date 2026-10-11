@@ -13,7 +13,7 @@ use crate::{config, plain};
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use std::path::{Path, PathBuf};
-use trellis_vault::dates::{self, FileDays, State};
+use trellis_vault::dates::{self, DatesState, FileDays};
 use trellis_vault::edit::{self, Outcome};
 use trellis_vault::search::{Index, Mode, Ranked, search_results};
 use trellis_vault::{Graph, Issue, Vault};
@@ -460,15 +460,15 @@ pub(crate) fn compile_for_run(
         ));
     }
     match dates::load(&trellis_vault::notes_root(dir)) {
-        State::Absent => Ok((
+        DatesState::Absent => Ok((
             trellis_vault::compile(dir, stem, trellis_vault::DEFAULT_CAP)?,
             Some("dates on, but no dates.json; headings not dated".to_string()),
         )),
-        State::Invalid(e) => anyhow::bail!(
+        DatesState::Invalid(e) => anyhow::bail!(
             "[context] dates = true and dates.json does not validate: {e}. Fix it with \
              `trellis vault dates`, or turn dates off"
         ),
-        State::Valid(f) => Ok((
+        DatesState::Valid(f) => Ok((
             trellis_vault::compile_with_dates(dir, stem, trellis_vault::DEFAULT_CAP, Some(&f.doc))?,
             Some("headings dated from dates.json".to_string()),
         )),
@@ -478,18 +478,18 @@ pub(crate) fn compile_for_run(
 fn dates_cmd(dir: &Path, seed: bool) -> Result<()> {
     let v = Vault::open(dir)?;
     let file = match dates::load(&v.root) {
-        State::Invalid(e) => {
+        DatesState::Invalid(e) => {
             anyhow::bail!("dates.json does not validate, and is never overwritten: {e}")
         }
-        State::Absent if !seed => {
+        DatesState::Absent if !seed => {
             println!(
                 "no dates.json in {}; `trellis vault dates --seed` creates one",
                 v.root.display()
             );
             return Ok(());
         }
-        State::Absent => None,
-        State::Valid(f) => Some(f),
+        DatesState::Absent => None,
+        DatesState::Valid(f) => Some(f),
     };
     if seed {
         let mut doc = file.as_ref().map(|f| f.doc.clone()).unwrap_or_default();

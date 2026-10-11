@@ -7,6 +7,8 @@
 //! Of paths it knows which ones a repository may hand to the prompt or to
 //! a write (`paths`), for the same reason. And how to kill a child and what
 //! it started (`process`), which the tool runner and the checks both need.
+//! And how to print repository text without letting it drive the terminal
+//! (`text`), which the loop and the binary both do.
 //! Everything else in the workspace may depend on it; it depends on nothing
 //! in the workspace.
 
@@ -15,6 +17,7 @@ pub mod interner;
 pub mod paths;
 pub mod process;
 pub mod secrets;
+pub mod text;
 
 pub use ids::{CallSiteId, FileId, PartitionId, RunId, SymbolId};
 pub use interner::Interner;
