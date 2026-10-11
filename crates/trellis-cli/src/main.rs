@@ -11,6 +11,7 @@
 //! testable without inference. Results from it are never a model floor (S7).
 
 mod ask;
+mod atlas;
 mod config;
 mod doctor_cmd;
 mod first_run;
