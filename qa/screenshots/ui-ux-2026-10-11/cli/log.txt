@@ -1,0 +1,104 @@
+$ (cd demo) <scratch>/bin/trellis log
+52 run(s), newest first
+
+20261011-194441-099-demo-task  no check ran
+    demo task
+    1 file(s) proposed, 0 reached, checks: none
+
+20260922-132303-830-make-a-graph-of-the-repo  converged
+    make a /graph of the repo
+    1 file(s) proposed, 0 reached, checks: Typecheck- Typecheck+ Governance+
+    ALTERED: the factual section no longer matches its digest
+
+20260922-060714-940-rename-the-total-function-to-total-of-updating-e  not converged
+    rename the total function to total_of, updating every caller
+    2 file(s) proposed, 0 reached, checks: Typecheck- Typecheck- Typecheck-
+    ALTERED: the factual section no longer matches its digest
+
+20260922-060511-287-rename-the-total-function-to-total-of-updating-e  not converged
+    rename the total function to total_of, updating every caller
+    2 file(s) proposed, 0 reached, checks: Typecheck- Typecheck-
+    ALTERED: the factual section no longer matches its digest
+
+20260922-055427-065-rename-the-total-function-to-total-of-updating-e  not converged
+    rename the total function to total_of, updating every caller
+    1 file(s) proposed, 0 reached, checks: Typecheck-
+    ALTERED: the factual section no longer matches its digest
+
+20260922-054852-740-rename-the-total-function-to-total-of-updating-e  no check ran
+    rename the total function to total_of, updating every caller
+    1 file(s) proposed, 0 reached, checks: none
+    ALTERED: the factual section no longer matches its digest
+
+20260922-054639-435-rename-the-total-function-to-total-of-updating-e  no check ran
+    rename the total function to total_of, updating every caller
+    1 file(s) proposed, 0 reached, checks: none
+    ALTERED: the factual section no longer matches its digest
+
+20260922-054426-132-rename-the-total-function-to-total-of-updating-e  no check ran
+    rename the total function to total_of, updating every caller
+    1 file(s) proposed, 0 reached, checks: none
+    ALTERED: the factual section no longer matches its digest
+
+20260922-054212-853-rename-the-total-function-to-total-of-updating-e  no check ran
+    rename the total function to total_of, updating every caller
+    1 file(s) proposed, 0 reached, checks: none
+    ALTERED: the factual section no longer matches its digest
+
+20260922-051825-528-the-describe-function-is-annotated-to-return-int  converged
+    the describe function is annotated to return int but returns a string; fix the annotation
+    1 file(s) proposed, 0 reached, checks: Typecheck+ Governance+
+    ALTERED: the factual section no longer matches its digest
+
+20260922-051425-960-the-describe-function-is-annotated-to-return-int  converged
+    the describe function is annotated to return int but returns a string; fix the annotation
+    1 file(s) proposed, 0 reached, checks: Typecheck+ Governance+
+    ALTERED: the factual section no longer matches its digest
+
+20260922-050847-002-the-describe-function-is-annotated-to-return-int  converged
+    the describe function is annotated to return int but returns a string; fix the annotation
+    1 file(s) proposed, 0 reached, checks: Typecheck+ Governance+
+    ALTERED: the factual section no longer matches its digest
+
+20260922-050820-080-the-describe-function-is-annotated-to-return-int  converged
+    the describe function is annotated to return int but returns a string; fix the annotation
+    1 file(s) proposed, 0 reached, checks: Typecheck+ Governance+
+    ALTERED: the factual section no longer matches its digest
+
+20260922-050753-149-the-describe-function-is-annotated-to-return-int  converged
+    the describe function is annotated to return int but returns a string; fix the annotation
+    1 file(s) proposed, 0 reached, checks: Typecheck+ Governance+
+    ALTERED: the factual section no longer matches its digest
+
+20260922-050726-211-the-describe-function-is-annotated-to-return-int  converged
+    the describe function is annotated to return int but returns a string; fix the annotation
+    1 file(s) proposed, 0 reached, checks: Typecheck+ Governance+
+    ALTERED: the factual section no longer matches its digest
+
+20260922-050659-280-the-describe-function-is-annotated-to-return-int  converged
+    the describe function is annotated to return int but returns a string; fix the annotation
+    1 file(s) proposed, 0 reached, checks: Typecheck+ Governance+
+    ALTERED: the factual section no longer matches its digest
+
+20260922-050631-965-the-describe-function-is-annotated-to-return-int  converged
+    the describe function is annotated to return int but returns a string; fix the annotation
+    1 file(s) proposed, 0 reached, checks: Typecheck+ Governance+
+    ALTERED: the factual section no longer matches its digest
+
+20260922-044101-509-the-describe-function-is-annotated-to-return-int  converged
+    the describe function is annotated to return int but returns a string; fix the annotation
+    1 file(s) proposed, 0 reached, checks: Typecheck+ Governance+
+    ALTERED: the factual section no longer matches its digest
+
+20260922-044022-768-the-describe-function-is-annotated-to-return-int  converged
+    the describe function is annotated to return int but returns a string; fix the annotation
+    1 file(s) proposed, 0 reached, checks: Typecheck+ Governance+
+    ALTERED: the factual section no longer matches its digest
+
+20260922-043944-028-the-describe-function-is-annotated-to-return-int  converged
+    the describe function is annotated to return int but returns a string; fix the annotation
+    1 file(s) proposed, 0 reached, checks: Typecheck+ Governance+
+    ALTERED: the factual section no longer matches its digest
+
+... 32 older, use --limit
+[exit 0]

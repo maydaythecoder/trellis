@@ -1,0 +1,5 @@
+$ (cd norepo) <scratch>/bin/trellis overview
+recent repositories: none recorded
+
+<scratch>/norepo is not inside a git repository, so only the recent list is shown.
+[exit 0]
