@@ -6268,3 +6268,181 @@ fn rpc_atlas_get_codebase_with_no_commit_or_no_git_says_so() {
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&bare);
 }
+
+/// A repository whose `app/shapes.py` has a class hierarchy (so a call
+/// through a declared base is ambiguous between two overrides), a helper
+/// called from two places in it, and `app/use.py` calling the helper from
+/// another module.
+fn symbols_repo(name: &str) -> PathBuf {
+    let d = empty_repo(name);
+    std::fs::create_dir_all(d.join("app")).unwrap();
+    std::fs::write(d.join("app/__init__.py"), "").unwrap();
+    std::fs::write(
+        d.join("app/shapes.py"),
+        concat!(
+            "class Base:\n",
+            "    def run(self):\n",
+            "        return helper()\n",
+            "\n",
+            "\n",
+            "class Child(Base):\n",
+            "    def run(self):\n",
+            "        return 2\n",
+            "\n",
+            "\n",
+            "def helper():\n",
+            "    return 1\n",
+            "\n",
+            "\n",
+            "def go(b: Base):\n",
+            "    return b.run() + helper() + b.missing()\n",
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("app/use.py"),
+        "from app.shapes import helper\n\n\ndef use():\n    return helper()\n",
+    )
+    .unwrap();
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "symbols"]);
+    d
+}
+
+#[test]
+fn rpc_atlas_get_symbols_lists_each_definition_with_its_lines_and_call_site_counts() {
+    // The risks: the Atlas's near zoom reading symbol lines from a second
+    // parser that disagrees with the index (the prototype used Python's
+    // ast); a call through a declared base counted as bound to one
+    // override; a count folded into another, or a share of them; and a
+    // read that writes the index cache.
+    let d = symbols_repo("rpc-atlas-symbols");
+    let before = bytes_under(&d);
+    let records = rpc_records(
+        &d,
+        None,
+        &[
+            serde_json::json!({"id": "all", "type": "get_symbols"}),
+            serde_json::json!({"id": "one", "type": "get_symbols", "module": "app.use"}),
+        ],
+    );
+    assert_eq!(bytes_under(&d), before, "get_symbols wrote something");
+    let all = rpc_answer(&records, "all");
+    assert_eq!(all["command"], "get_symbols", "{all}");
+    assert_eq!(all["success"], true, "{all}");
+    let data = &all["data"];
+    assert_eq!(data["modules_indexed"], 3, "{data}");
+    let row = |module: &str, name: &str, kind: &str, lines: (u64, u64), counts: (u64, u64, u64)| {
+        serde_json::json!({
+            "module": module,
+            "path": format!("{}.py", module.replace('.', "/")),
+            "name": name,
+            "kind": kind,
+            "line": lines.0,
+            "end_line": lines.1,
+            "calls_in": counts.0,
+            "calls_in_ambiguous": counts.1,
+            "calls_out": counts.2,
+        })
+    };
+    let want = serde_json::json!([
+        row("app.shapes", "Base", "class", (1, 3), (0, 0, 0)),
+        row("app.shapes", "run", "method", (2, 3), (0, 1, 1)),
+        row("app.shapes", "Child", "class", (6, 8), (0, 0, 0)),
+        row("app.shapes", "run", "method", (7, 8), (0, 1, 0)),
+        row("app.shapes", "helper", "function", (11, 12), (3, 0, 0)),
+        row("app.shapes", "go", "function", (15, 16), (0, 0, 1)),
+        row("app.use", "use", "function", (4, 5), (0, 0, 1)),
+    ]);
+    assert_eq!(data["symbols"], want, "{data}");
+    let mut all_keys = Vec::new();
+    for s in data["symbols"].as_array().unwrap() {
+        all_keys.extend(s.as_object().unwrap().keys().cloned());
+    }
+    for k in &all_keys {
+        for banned in ["ratio", "percent", "fraction", "total", "share"] {
+            assert!(!k.contains(banned), "key `{k}`");
+        }
+    }
+
+    let one = rpc_answer(&records, "one");
+    assert_eq!(one["success"], true, "{one}");
+    assert_eq!(one["data"]["modules_indexed"], 3, "{one}");
+    assert_eq!(
+        one["data"]["symbols"],
+        serde_json::json!([want[6]]),
+        "{one}"
+    );
+
+    // Last: `index` writes the cache, which is its job. Every definition
+    // it counts is listed, and no other.
+    let o = run(&d, &["index"]);
+    assert!(o.status.success(), "{}", combined(&o));
+    let s = stdout(&o);
+    let defs: u64 = s
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("definitions:"))
+        .unwrap_or_else(|| panic!("{s}"))
+        .trim()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        data["symbols"].as_array().unwrap().len() as u64,
+        defs,
+        "{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn rpc_atlas_get_symbols_refuses_an_unknown_module_a_non_string_and_a_root_with_no_git() {
+    // The risks: a module the index never saw answered as one with no
+    // definitions, which the Atlas would draw as empty; and #559's
+    // refusal skipped by a new read, walking a home folder.
+    let d = symbols_repo("rpc-atlas-symbols-refuse");
+    let records = rpc_records(
+        &d,
+        None,
+        &[
+            serde_json::json!({"id": "u", "type": "get_symbols", "module": "app.nowhere"}),
+            serde_json::json!({"id": "n", "type": "get_symbols", "module": 3}),
+        ],
+    );
+    let u = rpc_answer(&records, "u");
+    assert_eq!(u["success"], false, "{u}");
+    assert!(
+        u["error"].as_str().unwrap().contains("`app.nowhere`"),
+        "{u}"
+    );
+    let n = rpc_answer(&records, "n");
+    assert_eq!(n["success"], false, "{n}");
+    assert!(n["error"].as_str().unwrap().contains("`module`"), "{n}");
+
+    let bare = scratch("rpc-atlas-symbols-no-git");
+    std::fs::write(bare.join("loose.py"), "def f():\n    return 1\n").unwrap();
+    let records = rpc_records(
+        &bare,
+        Some(&bare),
+        &[
+            serde_json::json!({"id": "s", "type": "get_symbols"}),
+            serde_json::json!({"id": "t", "type": "get_state"}),
+        ],
+    );
+    let at = |id: &str| {
+        records
+            .iter()
+            .position(|r| r["type"] == "response" && r["id"] == id)
+            .unwrap()
+    };
+    assert!(
+        at("s") < at("t"),
+        "refused on the reader thread: {records:?}"
+    );
+    let s = rpc_answer(&records, "s");
+    assert_eq!(s["success"], false, "{s}");
+    let e = s["error"].as_str().unwrap();
+    assert!(e.contains("get_symbols") && e.contains("no .git"), "{e}");
+    assert!(!bare.join(".trellis").exists());
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&bare);
+}
