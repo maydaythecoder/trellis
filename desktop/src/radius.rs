@@ -112,8 +112,9 @@ fn names_a_ratio(k: &str) -> bool {
     })
 }
 
-/// The first key in `v`, at any depth, that contains a ratio word.
-fn ratio_key(v: &Value) -> Option<String> {
+/// The first key in `v`, at any depth, that contains a ratio word. The
+/// Atlas refuses a radius by it too (`atlas.rs`).
+pub(crate) fn ratio_key(v: &Value) -> Option<String> {
     match v {
         Value::Object(o) => o.iter().find_map(|(k, x)| {
             if names_a_ratio(k) {

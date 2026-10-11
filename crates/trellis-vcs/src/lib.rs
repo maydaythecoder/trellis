@@ -11,6 +11,7 @@
 //! be reliable. See `docs/adr/0009-clean-worktree-requirement.md`.
 
 pub mod git_guard;
+pub mod history;
 pub mod ignored;
 
 use std::path::{Path, PathBuf};
@@ -170,8 +171,8 @@ pub struct Snapshot {
 /// Chosen deliberately: `reset --hard` and `clean -fd` have exact,
 /// well-understood semantics as commands, and the one path that must never
 /// lose a user's work is a poor place to be learning a binding's edge cases.
-fn git(root: &Path, args: &[&str]) -> Result<String, VcsError> {
-    output(command().args(args).current_dir(root), args)
+fn run_git(root: &Path, args: &[&str]) -> Result<String, VcsError> {
+    stdout_or_git_failed(command().args(args).current_dir(root), args)
 }
 
 /// Settings every `git` trellis runs sets on its own command line, where no
@@ -256,10 +257,7 @@ fn filters_off(root: &Path) -> Result<Vec<String>, VcsError> {
     let out = command().args(args).current_dir(root).output()?;
     // 1 is "no such key": no drivers.
     if !out.status.success() && out.status.code() != Some(1) {
-        return Err(VcsError::GitFailed {
-            command: format!("git {}", args.join(" ")),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        });
+        return Err(git_failed(format!("git {}", args.join(" ")), &out.stderr));
     }
     let mut names: Vec<String> = Vec::new();
     for key in String::from_utf8_lossy(&out.stdout).lines() {
@@ -289,14 +287,20 @@ fn filters_off(root: &Path) -> Result<Vec<String>, VcsError> {
     Ok(pairs)
 }
 
+/// A failed git command, its stderr kept even when it is not UTF-8: a
+/// message with replacement characters says more than none.
+fn git_failed(command: String, stderr: &[u8]) -> VcsError {
+    VcsError::GitFailed {
+        command,
+        stderr: String::from_utf8_lossy(stderr).into_owned(),
+    }
+}
+
 /// Runs `cmd`, its stdout as text, or the failure named by `args`.
-fn output(cmd: &mut Command, args: &[&str]) -> Result<String, VcsError> {
+fn stdout_or_git_failed(cmd: &mut Command, args: &[&str]) -> Result<String, VcsError> {
     let out = cmd.output()?;
     if !out.status.success() {
-        return Err(VcsError::GitFailed {
-            command: format!("git {}", args.join(" ")),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        });
+        return Err(git_failed(format!("git {}", args.join(" ")), &out.stderr));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -308,7 +312,7 @@ fn output(cmd: &mut Command, args: &[&str]) -> Result<String, VcsError> {
 /// Shelled out for the same reason as everything else here; the local work
 /// queue (ADR 0020) is what needs it.
 pub fn git_dir(root: &Path) -> Result<PathBuf, VcsError> {
-    let out = git(root, &["rev-parse", "--absolute-git-dir"])?;
+    let out = run_git(root, &["rev-parse", "--absolute-git-dir"])?;
     Ok(PathBuf::from(out.trim()))
 }
 
@@ -330,7 +334,7 @@ pub fn worktree_fingerprint(root: &Path) -> Result<String, VcsError> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
 
-    let index = PathBuf::from(git(root, &["rev-parse", "--git-path", "index"])?.trim());
+    let index = PathBuf::from(run_git(root, &["rev-parse", "--git-path", "index"])?.trim());
     let index = if index.is_absolute() {
         index
     } else {
@@ -366,7 +370,7 @@ pub fn worktree_fingerprint(root: &Path) -> Result<String, VcsError> {
             command: "git config --get-regexp filter".into(),
             stderr: e.to_string(),
         })?;
-        output(
+        stdout_or_git_failed(
             command()
                 .args(filters)
                 .args(args)
@@ -422,8 +426,9 @@ pub fn worktree_digest(root: &Path) -> Result<String, VcsError> {
         "--branch",
         "--untracked-files=all",
     ];
-    let status = output(command().args(&filters).args(args).current_dir(root), &args)?;
-    let Parsed {
+    let status =
+        stdout_or_git_failed(command().args(&filters).args(args).current_dir(root), &args)?;
+    let StatusRecords {
         head,
         in_head,
         mut worktree,
@@ -496,7 +501,7 @@ pub fn worktree_digest(root: &Path) -> Result<String, VcsError> {
 /// [`worktree_digest`] hashes. Pure, so the record grammar can be tested
 /// with crafted bytes.
 #[derive(Debug, Default, PartialEq, Eq)]
-struct Parsed {
+struct StatusRecords {
     head: String,
     /// path -> (HEAD mode, HEAD blob), for tracked paths git names.
     in_head: std::collections::BTreeMap<String, (String, String)>,
@@ -509,10 +514,10 @@ struct Parsed {
     nested: Vec<String>,
 }
 
-fn parse_status_v2(status: &str) -> Parsed {
-    let mut out = Parsed {
+fn parse_status_v2(status: &str) -> StatusRecords {
+    let mut out = StatusRecords {
         head: String::from("(unknown)"),
-        ..Parsed::default()
+        ..StatusRecords::default()
     };
     let mut fields = status.split('\0').filter(|f| !f.is_empty());
     while let Some(f) = fields.next() {
@@ -581,7 +586,7 @@ fn nested_head(dir: &Path) -> String {
     if !dir.join(".git").exists() {
         return "(not-a-repository)".into();
     }
-    git(dir, &["rev-parse", "--verify", "-q", "HEAD"])
+    run_git(dir, &["rev-parse", "--verify", "-q", "HEAD"])
         .map(|h| h.trim().to_string())
         .ok()
         .filter(|h| !h.is_empty())
@@ -656,10 +661,10 @@ fn hash_link(root: &Path, path: &str) -> Result<String, VcsError> {
     drop(stdin);
     let out = child.wait_with_output()?;
     if !out.status.success() {
-        return Err(VcsError::GitFailed {
-            command: "git hash-object --stdin".into(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        });
+        return Err(git_failed(
+            "git hash-object --stdin".to_string(),
+            &out.stderr,
+        ));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
@@ -730,10 +735,10 @@ fn hash_paths(
     let out = child.wait_with_output()?;
     let _ = writer.join();
     if !out.status.success() {
-        return Err(VcsError::GitFailed {
-            command: "git hash-object --stdin-paths".into(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        });
+        return Err(git_failed(
+            "git hash-object --stdin-paths".to_string(),
+            &out.stderr,
+        ));
     }
     let ids: Vec<String> = String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -754,7 +759,7 @@ fn hash_paths(
 /// writes them. For saying *what* changed when a guard fires, rather than
 /// only that something did.
 pub fn tree_diff(root: &Path, before: &str, after: &str) -> Result<Vec<String>, VcsError> {
-    let out = git(root, &["diff-tree", "-r", "--name-only", before, after])?;
+    let out = run_git(root, &["diff-tree", "-r", "--name-only", before, after])?;
     Ok(out.lines().map(str::to_string).collect())
 }
 
@@ -776,8 +781,9 @@ pub fn commit_paths(root: &Path, paths: &[&str], message: &str) -> Result<(), Vc
     // The one git call that keeps the user's hooks: a commit in their
     // repository runs their `pre-commit`, as any commit does. It runs after
     // the git guard has put `.git/` back, so the hooks are theirs.
-    let with_hooks =
-        |args: &[&str]| output(command_with_hooks().args(args).current_dir(root), args);
+    let with_hooks = |args: &[&str]| {
+        stdout_or_git_failed(command_with_hooks().args(args).current_dir(root), args)
+    };
     let mut add: Vec<&str> = vec!["add", "--"];
     add.extend_from_slice(paths);
     with_hooks(&add)?;
@@ -798,7 +804,7 @@ pub fn pending(root: &Path) -> Result<Vec<String>, VcsError> {
     if !root.join(".git").exists() {
         return Err(VcsError::NotARepo(root.to_path_buf()));
     }
-    Ok(git(root, &["status", "--porcelain"])?
+    Ok(run_git(root, &["status", "--porcelain"])?
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
@@ -823,7 +829,7 @@ pub fn diff(root: &Path) -> Result<String, VcsError> {
     if !root.join(".git").exists() {
         return Err(VcsError::NotARepo(root.to_path_buf()));
     }
-    git(root, &["--no-pager", "diff", "HEAD"])
+    run_git(root, &["--no-pager", "diff", "HEAD"])
 }
 
 /// Discards every uncommitted change, tracked and untracked alike.
@@ -873,7 +879,7 @@ fn recovery_steps(
     steps: &[(&str, &[&str])],
 ) -> Result<(), VcsError> {
     for (label, args) in steps {
-        if let Err(e) = git(root, args) {
+        if let Err(e) = run_git(root, args) {
             if !detail.is_empty() {
                 detail.push_str("\n  ");
             }
@@ -898,12 +904,12 @@ pub fn snapshot(root: &Path) -> Result<Snapshot, VcsError> {
 
     // `--porcelain` covers staged, unstaged, and untracked in one call, and
     // its format is stable across git versions by contract.
-    let status = git(root, &["status", "--porcelain"])?;
+    let status = run_git(root, &["status", "--porcelain"])?;
     if !status.trim().is_empty() {
         return Err(VcsError::DirtyWorktree(status));
     }
 
-    let head = git(root, &["rev-parse", "HEAD"])?.trim().to_string();
+    let head = run_git(root, &["rev-parse", "HEAD"])?.trim().to_string();
     let branch = branch_of(root)?;
     Ok(Snapshot {
         root: root.to_path_buf(),
@@ -920,7 +926,7 @@ pub fn snapshot(root: &Path) -> Result<Snapshot, VcsError> {
 /// rollback returned before restoring anything (review round 11). Exit 1
 /// with `-q` is "not a symbolic ref": detached.
 fn branch_of(root: &Path) -> Result<Option<String>, VcsError> {
-    Ok(git_opt(root, &["symbolic-ref", "-q", "HEAD"])?
+    Ok(run_git_optional(root, &["symbolic-ref", "-q", "HEAD"])?
         .map(|out| out.trim().to_string())
         .filter(|name| !name.is_empty()))
 }
@@ -930,7 +936,7 @@ fn branch_of(root: &Path) -> Result<Option<String>, VcsError> {
 /// move to report, not an error that stops the report.
 fn head_commit(root: &Path) -> Result<Option<String>, VcsError> {
     Ok(
-        git_opt(root, &["rev-parse", "-q", "--verify", "HEAD^{commit}"])?
+        run_git_optional(root, &["rev-parse", "-q", "--verify", "HEAD^{commit}"])?
             .map(|out| out.trim().to_string()),
     )
 }
@@ -940,16 +946,13 @@ fn head_commit(root: &Path) -> Result<Option<String>, VcsError> {
 /// "there is none" (detached, unborn) rather than a failure: without `-q`
 /// the same state is reported on stderr with another code, and reading
 /// every exit 1 as absent would hide a real failure.
-fn git_opt(root: &Path, args: &[&str]) -> Result<Option<String>, VcsError> {
+fn run_git_optional(root: &Path, args: &[&str]) -> Result<Option<String>, VcsError> {
     let out = command().args(args).current_dir(root).output()?;
     if out.status.code() == Some(1) {
         return Ok(None);
     }
     if !out.status.success() {
-        return Err(VcsError::GitFailed {
-            command: format!("git {}", args.join(" ")),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        });
+        return Err(git_failed(format!("git {}", args.join(" ")), &out.stderr));
     }
     Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
 }
@@ -1021,8 +1024,8 @@ impl Snapshot {
             return Ok(());
         }
         match &self.branch {
-            Some(b) => git(&self.root, &["symbolic-ref", "HEAD", b]).map(|_| ()),
-            None => git(
+            Some(b) => run_git(&self.root, &["symbolic-ref", "HEAD", b]).map(|_| ()),
+            None => run_git(
                 &self.root,
                 &["update-ref", "--no-deref", "HEAD", &self.head],
             )
@@ -1036,7 +1039,7 @@ impl Snapshot {
     /// whether the tree may be called restored.
     pub fn is_restored(&self) -> Result<bool, VcsError> {
         let head = head_commit(&self.root)?.unwrap_or_default();
-        let status = git(&self.root, &["status", "--porcelain"])?;
+        let status = run_git(&self.root, &["status", "--porcelain"])?;
         // The branch too: on another branch at the same commit, the next
         // commit lands somewhere the snapshot never was.
         Ok(head == self.head && branch_of(&self.root)? == self.branch && status.trim().is_empty())
@@ -1101,7 +1104,7 @@ impl Snapshot {
             let actual = if full.is_file() {
                 let mut args: Vec<&str> = drivers_off.iter().map(String::as_str).collect();
                 args.extend(["hash-object", "--", &path]);
-                Some(git(&self.root, &args)?.trim().to_string())
+                Some(run_git(&self.root, &args)?.trim().to_string())
             } else {
                 None
             };
@@ -1155,7 +1158,7 @@ impl Worktree {
             .join(format!("partition-{partition}"));
         let branch = format!("trellis/{run}/p{partition}");
 
-        git(
+        run_git(
             root,
             &[
                 "worktree",
@@ -1178,7 +1181,7 @@ impl Worktree {
     ///
     /// Called for a failed partition: its work never lands partially.
     pub fn discard(&self) -> Result<(), VcsError> {
-        git(
+        run_git(
             &self.parent,
             &[
                 "worktree",
@@ -1187,7 +1190,7 @@ impl Worktree {
                 &self.path.display().to_string(),
             ],
         )?;
-        git(&self.parent, &["branch", "-D", &self.branch])?;
+        run_git(&self.parent, &["branch", "-D", &self.branch])?;
         Ok(())
     }
 }
@@ -1249,16 +1252,16 @@ mod tests {
             std::env::temp_dir().join(format!("trellis-vcs-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        git(&dir, &["init", "-q"]).unwrap();
-        git(&dir, &["config", "user.email", "t@example.invalid"]).unwrap();
-        git(&dir, &["config", "user.name", "t"]).unwrap();
+        run_git(&dir, &["init", "-q"]).unwrap();
+        run_git(&dir, &["config", "user.email", "t@example.invalid"]).unwrap();
+        run_git(&dir, &["config", "user.name", "t"]).unwrap();
         // Windows git defaults to autocrlf=true, which rewrites line
         // endings on checkout and makes byte-exact assertions platform
         // dependent. Pin it so the fixture behaves identically everywhere.
-        git(&dir, &["config", "core.autocrlf", "false"]).unwrap();
+        run_git(&dir, &["config", "core.autocrlf", "false"]).unwrap();
         std::fs::write(dir.join("a.py"), "def f():\n    return 1\n").unwrap();
-        git(&dir, &["add", "-A"]).unwrap();
-        git(&dir, &["commit", "-qm", "init"]).unwrap();
+        run_git(&dir, &["add", "-A"]).unwrap();
+        run_git(&dir, &["commit", "-qm", "init"]).unwrap();
         dir
     }
 
@@ -1276,7 +1279,7 @@ mod tests {
         std::fs::write(dir.join("new.py"), "x = 2\n").unwrap();
         assert_ne!(created, worktree_fingerprint(&dir).unwrap());
         assert_eq!(
-            git(&dir, &["status", "--porcelain"]).unwrap().trim(),
+            run_git(&dir, &["status", "--porcelain"]).unwrap().trim(),
             "?? new.py",
             "the user's index was not written"
         );
@@ -1385,7 +1388,7 @@ mod tests {
     }
 
     fn loose_objects(dir: &Path) -> u64 {
-        git(dir, &["count-objects", "-v"])
+        run_git(dir, &["count-objects", "-v"])
             .unwrap()
             .lines()
             .find_map(|l| l.strip_prefix("count: "))
@@ -1427,11 +1430,11 @@ mod tests {
         // Independent of the index, as the tree form is: staging changes no
         // byte in the worktree, and neither does unstaging.
         let before = worktree_digest(&dir).unwrap();
-        git(&dir, &["add", "-A"]).unwrap();
+        run_git(&dir, &["add", "-A"]).unwrap();
         assert_eq!(before, worktree_digest(&dir).unwrap(), "staging alone");
-        git(&dir, &["rm", "-q", "--cached", "a.py"]).unwrap();
+        run_git(&dir, &["rm", "-q", "--cached", "a.py"]).unwrap();
         assert_eq!(before, worktree_digest(&dir).unwrap(), "unstaging alone");
-        git(&dir, &["reset", "-q"]).unwrap();
+        run_git(&dir, &["reset", "-q"]).unwrap();
         assert_eq!(before, worktree_digest(&dir).unwrap(), "reset alone");
 
         // Ignored files are outside it, as documented.
@@ -1454,22 +1457,22 @@ mod tests {
         let clean = worktree_digest(&dir).unwrap();
         let nested = dir.join("nested");
         std::fs::create_dir_all(&nested).unwrap();
-        git(&nested, &["init", "-q"]).unwrap();
+        run_git(&nested, &["init", "-q"]).unwrap();
         // With no commit yet, as `git init` leaves it.
         let unborn = worktree_digest(&dir).expect("a nested repository with no commit");
         assert_ne!(clean, unborn, "the nested repository is an untracked entry");
         assert_eq!(unborn, worktree_digest(&dir).unwrap(), "stable");
 
-        git(&nested, &["config", "user.email", "t@example.invalid"]).unwrap();
-        git(&nested, &["config", "user.name", "t"]).unwrap();
+        run_git(&nested, &["config", "user.email", "t@example.invalid"]).unwrap();
+        run_git(&nested, &["config", "user.name", "t"]).unwrap();
         std::fs::write(nested.join("x.py"), "x = 1\n").unwrap();
-        git(&nested, &["add", "-A"]).unwrap();
-        git(&nested, &["commit", "-qm", "one"]).unwrap();
+        run_git(&nested, &["add", "-A"]).unwrap();
+        run_git(&nested, &["commit", "-qm", "one"]).unwrap();
         let one = worktree_digest(&dir).expect("a nested repository with a commit");
         assert_ne!(unborn, one, "its HEAD is what is recorded");
         assert_eq!(one, worktree_digest(&dir).unwrap(), "stable");
         std::fs::write(nested.join("x.py"), "x = 2\n").unwrap();
-        git(&nested, &["commit", "-qam", "two"]).unwrap();
+        run_git(&nested, &["commit", "-qam", "two"]).unwrap();
         assert_ne!(one, worktree_digest(&dir).unwrap(), "a new nested commit");
         // Nothing written into the outer store either.
         let objects = loose_objects(&dir);
@@ -1480,22 +1483,11 @@ mod tests {
 
     /// A symlink, or `None` where the platform refuses to make one (Windows
     /// without developer mode), in which case the test says so.
-    fn symlink(target: &Path, link: &Path, dir: bool) -> Option<()> {
-        #[cfg(windows)]
-        let r = if dir {
-            std::os::windows::fs::symlink_dir(target, link)
-        } else {
-            std::os::windows::fs::symlink_file(target, link)
-        };
-        #[cfg(unix)]
-        let r = {
-            let _ = dir;
-            std::os::unix::fs::symlink(target, link)
-        };
-        match r {
+    fn symlink(target: &Path, link: &Path) -> Option<()> {
+        match trellis_core::paths::symlink_for_test(target, link) {
             Ok(()) => Some(()),
-            Err(e) => {
-                eprintln!("skipped: cannot create a symlink here: {e}");
+            Err(why) => {
+                eprintln!("{why}");
                 None
             }
         }
@@ -1519,7 +1511,7 @@ mod tests {
         std::fs::write(dir.join("d/f.py"), "x = 1\n").unwrap();
         std::fs::create_dir_all(dir.join("e")).unwrap();
         std::fs::write(dir.join("e/f.py"), "x = 1\n").unwrap();
-        let Some(()) = symlink(Path::new("d"), &dir.join("to-dir"), true) else {
+        let Some(()) = symlink(Path::new("d"), &dir.join("to-dir")) else {
             return;
         };
         let first = worktree_digest(&dir).expect("a link to a directory");
@@ -1529,11 +1521,11 @@ mod tests {
         // Retargeted at identical content: the link text changed, and so
         // does the digest, as a commit of it would.
         remove_link(&dir.join("to-dir"));
-        symlink(Path::new("e"), &dir.join("to-dir"), true).unwrap();
+        symlink(Path::new("e"), &dir.join("to-dir")).unwrap();
         assert_ne!(first, worktree_digest(&dir).unwrap(), "a retargeted link");
 
         // One that points nowhere is an entry, not an error.
-        symlink(Path::new("missing"), &dir.join("dangling"), false).unwrap();
+        symlink(Path::new("missing"), &dir.join("dangling")).unwrap();
         worktree_digest(&dir).expect("a dangling link");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1547,11 +1539,11 @@ mod tests {
         let dir = temp_repo("digest-links-batch");
         std::fs::create_dir_all(dir.join("d")).unwrap();
         std::fs::write(dir.join("f.py"), "x = 1\n").unwrap();
-        let Some(()) = symlink(Path::new("d"), &dir.join("to-dir"), true) else {
+        let Some(()) = symlink(Path::new("d"), &dir.join("to-dir")) else {
             return;
         };
-        symlink(Path::new("f.py"), &dir.join("to-file"), false).unwrap();
-        symlink(Path::new("missing/x"), &dir.join("dangling"), false).unwrap();
+        symlink(Path::new("f.py"), &dir.join("to-file")).unwrap();
+        symlink(Path::new("missing/x"), &dir.join("dangling")).unwrap();
         let names: Vec<String> = ["to-dir", "to-file", "dangling"]
             .iter()
             .map(|s| s.to_string())
@@ -1577,7 +1569,7 @@ mod tests {
         // size is unchanged, and ctime is not trusted (as when it too falls
         // in the same second). Git itself re-reads such a file.
         let dir = temp_repo("racy");
-        git(&dir, &["config", "core.trustctime", "false"]).unwrap();
+        run_git(&dir, &["config", "core.trustctime", "false"]).unwrap();
         let a = dir.join("a.py");
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(100);
         let touch = |p: &Path, t: std::time::SystemTime| {
@@ -1590,13 +1582,13 @@ mod tests {
         };
         touch(&a, old);
         // Record that mtime in the index, written now: not racy yet.
-        git(&dir, &["update-index", "--refresh"]).unwrap();
+        run_git(&dir, &["update-index", "--refresh"]).unwrap();
         let before = worktree_fingerprint(&dir).unwrap();
 
         std::fs::write(&a, "def f():\n    return 2\n").unwrap();
         touch(&a, old);
         let index = PathBuf::from(
-            git(&dir, &["rev-parse", "--git-path", "index"])
+            run_git(&dir, &["rev-parse", "--git-path", "index"])
                 .unwrap()
                 .trim(),
         );
@@ -1643,7 +1635,7 @@ mod tests {
 
         commit_paths(&dir, &[".trellis/runs/t.json"], "trellis: trail").unwrap();
 
-        let status = git(&dir, &["status", "--porcelain"]).unwrap();
+        let status = run_git(&dir, &["status", "--porcelain"]).unwrap();
         assert!(
             status.contains("a.py"),
             "the proposed change must still be uncommitted: {status}"
@@ -1693,7 +1685,7 @@ mod tests {
     /// the step's other half: ctime cannot be set from here, and in the
     /// incident it landed in the same second too. Returns the edited text.
     fn hide_a_same_size_edit(dir: &Path) -> &'static str {
-        git(dir, &["config", "core.trustctime", "false"]).unwrap();
+        run_git(dir, &["config", "core.trustctime", "false"]).unwrap();
         let file = dir.join("a.py");
         let mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
         let edited = "def f():\n    return 7\n";
@@ -1713,7 +1705,7 @@ mod tests {
             .set_modified(mtime + std::time::Duration::from_secs(10))
             .unwrap();
         assert_eq!(
-            git(dir, &["status", "--porcelain"]).unwrap().trim(),
+            run_git(dir, &["status", "--porcelain"]).unwrap().trim(),
             "",
             "the edit is hidden from git's stat check, as in the incident"
         );
@@ -1818,14 +1810,17 @@ mod tests {
     }
 
     fn symbolic_head(dir: &Path) -> String {
-        git(dir, &["rev-parse", "--symbolic-full-name", "HEAD"])
+        run_git(dir, &["rev-parse", "--symbolic-full-name", "HEAD"])
             .unwrap()
             .trim()
             .to_string()
     }
 
     fn sha_of(dir: &Path, rev: &str) -> String {
-        git(dir, &["rev-parse", rev]).unwrap().trim().to_string()
+        run_git(dir, &["rev-parse", rev])
+            .unwrap()
+            .trim()
+            .to_string()
     }
 
     #[test]
@@ -1840,11 +1835,11 @@ mod tests {
         assert!(original.starts_with("refs/heads/"), "{original}");
 
         std::fs::write(dir.join("a.py"), "def f():\n    return 2\n").unwrap();
-        git(&dir, &["commit", "-qam", "on the user's branch"]).unwrap();
-        git(&dir, &["checkout", "-qb", "elsewhere"]).unwrap();
+        run_git(&dir, &["commit", "-qam", "on the user's branch"]).unwrap();
+        run_git(&dir, &["checkout", "-qb", "elsewhere"]).unwrap();
         std::fs::write(dir.join("b.py"), "x = 1\n").unwrap();
-        git(&dir, &["add", "-A"]).unwrap();
-        git(&dir, &["commit", "-qm", "on the writer's branch"]).unwrap();
+        run_git(&dir, &["add", "-A"]).unwrap();
+        run_git(&dir, &["commit", "-qm", "on the writer's branch"]).unwrap();
         assert!(snap.head_moved().unwrap().is_some());
 
         snap.rollback().unwrap();
@@ -1870,7 +1865,7 @@ mod tests {
         // writer's branch, so it is not the state the snapshot recorded.
         let dir = temp_repo("branch-same-sha");
         let snap = snapshot(&dir).unwrap();
-        git(&dir, &["checkout", "-qb", "elsewhere"]).unwrap();
+        run_git(&dir, &["checkout", "-qb", "elsewhere"]).unwrap();
         assert!(!snap.is_restored().unwrap());
         assert!(snap.head_moved().unwrap().is_some());
         snap.rollback().unwrap();
@@ -1885,15 +1880,15 @@ mod tests {
         let dir = temp_repo("detached");
         let first = sha_of(&dir, "HEAD");
         std::fs::write(dir.join("a.py"), "def f():\n    return 2\n").unwrap();
-        git(&dir, &["commit", "-qam", "second"]).unwrap();
+        run_git(&dir, &["commit", "-qam", "second"]).unwrap();
         let branch = symbolic_head(&dir);
         let tip = sha_of(&dir, "HEAD");
-        git(&dir, &["checkout", "-q", "--detach", &first]).unwrap();
+        run_git(&dir, &["checkout", "-q", "--detach", &first]).unwrap();
         let snap = snapshot(&dir).unwrap();
 
-        git(&dir, &["checkout", "-q", &branch["refs/heads/".len()..]]).unwrap();
+        run_git(&dir, &["checkout", "-q", &branch["refs/heads/".len()..]]).unwrap();
         std::fs::write(dir.join("a.py"), "def f():\n    return 3\n").unwrap();
-        git(&dir, &["commit", "-qam", "third"]).unwrap();
+        run_git(&dir, &["commit", "-qam", "third"]).unwrap();
         let moved_tip = sha_of(&dir, "HEAD");
 
         snap.rollback().unwrap();
@@ -1921,7 +1916,7 @@ mod tests {
         let snap = snapshot(&dir).unwrap();
         let original = symbolic_head(&dir);
 
-        git(&dir, &["checkout", "-q", "--orphan", "elsewhere"]).unwrap();
+        run_git(&dir, &["checkout", "-q", "--orphan", "elsewhere"]).unwrap();
         std::fs::write(dir.join("a.py"), "def f():\n    return 2\n").unwrap();
         std::fs::write(dir.join("planted.py"), "x = 1\n").unwrap();
         let moved = snap.head_moved().unwrap();
@@ -2039,8 +2034,8 @@ mod tests {
         // reaches: `a.py` now calls a helper that `b.py` was going to define.
         let dir = temp_repo("inject-mid-edit");
         std::fs::write(dir.join("b.py"), "def helper():\n    return 1\n").unwrap();
-        git(&dir, &["add", "-A"]).unwrap();
-        git(&dir, &["commit", "-qm", "two files"]).unwrap();
+        run_git(&dir, &["add", "-A"]).unwrap();
+        run_git(&dir, &["commit", "-qm", "two files"]).unwrap();
         let snap = snapshot(&dir).unwrap();
 
         std::fs::write(
@@ -2218,7 +2213,7 @@ mod tests {
     #[test]
     fn a_partition_worktree_is_created_on_its_own_branch() {
         let dir = temp_repo("worktree-create");
-        let base = git(&dir, &["rev-parse", "HEAD"])
+        let base = run_git(&dir, &["rev-parse", "HEAD"])
             .unwrap()
             .trim()
             .to_string();
@@ -2262,7 +2257,7 @@ mod tests {
 ",
             "an edit in the partition's worktree reached the parent"
         );
-        let dirty = git(&dir, &["status", "--porcelain"]).unwrap();
+        let dirty = run_git(&dir, &["status", "--porcelain"]).unwrap();
         assert!(
             !dirty.contains("a.py"),
             "the parent's tracked files must be untouched: {dirty}"
@@ -2277,7 +2272,7 @@ mod tests {
         // to go too. Leaving it behind means a later run finds a branch named
         // for a partition that failed, holding commits nothing will integrate.
         let dir = temp_repo("worktree-discard");
-        let base = git(&dir, &["rev-parse", "HEAD"])
+        let base = run_git(&dir, &["rev-parse", "HEAD"])
             .unwrap()
             .trim()
             .to_string();
@@ -2285,7 +2280,7 @@ mod tests {
         let wt = Worktree::create(&dir, "20260921-run", 3, &base).expect("worktree add");
         std::fs::write(wt.path.join("a.py"), "def f():\n    return 3\n").unwrap();
 
-        let branches_before = git(&dir, &["branch", "--list"]).unwrap();
+        let branches_before = run_git(&dir, &["branch", "--list"]).unwrap();
         assert!(
             branches_before.contains("trellis/20260921-run/p3"),
             "{branches_before}"
@@ -2294,14 +2289,14 @@ mod tests {
         wt.discard().expect("worktree remove");
 
         assert!(!wt.path.exists(), "the directory must be gone");
-        let branches_after = git(&dir, &["branch", "--list"]).unwrap();
+        let branches_after = run_git(&dir, &["branch", "--list"]).unwrap();
         assert!(
             !branches_after.contains("trellis/20260921-run/p3"),
             "the branch outlived the worktree: {branches_after}"
         );
         // And the parent is untouched by any of it.
         assert!(
-            git(&dir, &["status", "--porcelain"])
+            run_git(&dir, &["status", "--porcelain"])
                 .unwrap()
                 .trim()
                 .is_empty()
@@ -2314,7 +2309,7 @@ mod tests {
         // different partitions must not see each other, which is what makes
         // "filesystem isolation for free" true rather than hopeful.
         let dir = temp_repo("worktree-two");
-        let base = git(&dir, &["rev-parse", "HEAD"])
+        let base = run_git(&dir, &["rev-parse", "HEAD"])
             .unwrap()
             .trim()
             .to_string();

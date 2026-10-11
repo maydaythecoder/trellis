@@ -39,7 +39,7 @@ struct Recent {
 
 /// `<user config dir>/recent.json`; `None` where there is no user config
 /// directory, and in this crate's unit tests (`user_config::dir`).
-pub(crate) fn file() -> Option<PathBuf> {
+pub(crate) fn recent_dirs_file() -> Option<PathBuf> {
     crate::user_config::dir().map(|d| d.join("recent.json"))
 }
 
@@ -285,10 +285,10 @@ fn init(dir: &Path) -> Result<()> {
 /// [`screen`] on the process's stdin and stderr, listing the user's file.
 /// The caller has checked they are terminals. A list that cannot be read is
 /// said once and the screen opens without it: `git init` is still on offer.
-pub(crate) fn offer() -> Result<Option<PathBuf>> {
+pub(crate) fn offer_start_screen() -> Result<Option<PathBuf>> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
     let mut err = std::io::stderr();
-    let (recent, recorded) = match file().map(|f| listed(&f)).transpose() {
+    let (recent, recorded) = match recent_dirs_file().map(|f| listed(&f)).transpose() {
         Ok(r) => r.unwrap_or_default(),
         Err(e) => {
             writeln!(err, "recent repositories not shown: {e:#}")?;
