@@ -136,6 +136,19 @@ textarea, Send and control `disabled`, and opens them only once the view's
 set; `rpc_send` refuses a `prompt` before then. Choosing the configured
 spec sends `set_model {configured: true}`, which names no model, so section
 4's guard is unchanged; a listed or typed spec is held to it as before.
+*As built 2026-10-11, owner-directed (the owner's request of 2026-10-11:
+"the current view is nice in the trellis atlas, could you add that to the
+current view without removing the other ones"):* the rail switches seven
+sections, in this order: overview, run, trails, codebase, atlas, board and
+vault. The Atlas is the one added, after codebase; every other section and
+what it does are unchanged (`page_rail_buttons_control_sections_that_exist`
+in `src/lockdown.rs`). `ui/atlas.js` draws it on a canvas from the view's
+`atlas` key, which the core (`src/atlas.rs`) computes from `get_history`,
+`get_codebase` (with `edges` and `ref`), `get_symbols` and `get_radius`
+answers, the map's layout included. The page uses no library and loads
+nothing from a network, writes text through `textContent` only, reads its
+colours from `style.css` at draw time, and takes no animated flight under
+`prefers-reduced-motion` (the `atlas_` tests in `src/lockdown.rs`).
 
 ### 6. The client contract
 
