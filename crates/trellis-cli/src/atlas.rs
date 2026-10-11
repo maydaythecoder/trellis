@@ -14,12 +14,16 @@ use trellis_vcs::history::{self, HistoryError};
 /// commit and date beside it, or, given `rev`, the graph of that commit's
 /// tree with the revision as asked, its commit and its date.
 ///
-/// HEAD's commit and date are `null` when the repository has no commit
-/// yet; the worktree's graph is still answered, and may have moved past
-/// HEAD. A commit's tree is written to a directory outside the repository
+/// HEAD's commit and date are metadata beside a graph that needs no git,
+/// so they never fail the answer: they are `null` when the repository has
+/// no commit yet, and `null` with `head_error` (git's message) when git
+/// could not read HEAD at all, as for a hand-made `.git` git refuses. The
+/// worktree's graph is answered either way, and may have moved past HEAD.
+/// A commit's tree is written to a directory outside the repository
 /// (`history::tree_copy`, `.py` files only, since those are all the index
 /// reads), indexed there exactly as a worktree is, and removed: its paths
-/// are the repository-relative ones the commit holds.
+/// are the repository-relative ones the commit holds. A `rev` needs git,
+/// so one git cannot resolve is refused.
 pub(crate) fn codebase(
     root: &Path,
     limit: usize,
@@ -27,11 +31,18 @@ pub(crate) fn codebase(
     rev: Option<&str>,
 ) -> Result<Value, String> {
     let Some(rev) = rev else {
-        let head = history::head(root)
-            .map_err(|e| format!("get_codebase failed: HEAD's commit could not be read: {e}"))?;
         let mut data = crate::doctor_cmd::codebase_json(root, limit, edges);
-        data["commit"] = json!(head.as_ref().map(|h| &h.commit));
-        data["date"] = json!(head.as_ref().map(|h| &h.date));
+        match history::head(root) {
+            Ok(head) => {
+                data["commit"] = json!(head.as_ref().map(|h| &h.commit));
+                data["date"] = json!(head.as_ref().map(|h| &h.date));
+            }
+            Err(e) => {
+                data["commit"] = Value::Null;
+                data["date"] = Value::Null;
+                data["head_error"] = json!(git_message(&e));
+            }
+        }
         return Ok(data);
     };
     let at = history::resolve(root, rev).map_err(|e| refusal("get_codebase", root, e))?;
@@ -42,6 +53,17 @@ pub(crate) fn codebase(
     data["commit"] = json!(at.commit);
     data["date"] = json!(at.date);
     Ok(data)
+}
+
+/// What git said when it failed, trimmed; the error itself when git said
+/// nothing or never started.
+fn git_message(e: &trellis_vcs::VcsError) -> String {
+    match e {
+        trellis_vcs::VcsError::GitFailed { stderr, .. } if !stderr.trim().is_empty() => {
+            stderr.trim().to_string()
+        }
+        other => other.to_string().trim().to_string(),
+    }
 }
 
 /// What `command` answers for `e`: refused when the request named
