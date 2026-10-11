@@ -104,10 +104,12 @@
           "date"
         ],
         "ref_only": ["ref"],
+        "head_unreadable_only": ["head_error"],
         "null_when": {
-          "commit": "no ref was asked for and the repository has no commit yet; the worktree's graph is still answered",
+          "commit": "no ref was asked for, and the repository has no commit yet or git could not read HEAD; the worktree's graph is answered either way",
           "date": "as commit"
         },
+        "head_error": "git's message, trimmed, when no ref was asked for and git failed reading HEAD (a hand-made .git git refuses, say); absent when the repository simply has no commit. commit and date never fail the answer.",
         "about": "{limit?, edges?, ref?} (the desktop's Atlas, owner request of 2026-10-11). edges \"all\" lists every module edge, so each calls_not_drawn is 0; absent, at most ten per module are listed, as before. ref answers the graph of that commit's tree: ref as asked, commit its full id with any tag peeled, date its committer date in strict ISO 8601 with the commit's own offset. Without ref, commit and date are HEAD's, and the graph is the worktree's, which may have moved past HEAD. A ref that is not a non-empty string, holds a control character, starts with - or names no commit is refused by name.",
         "path": "the module's file, relative to the root and /-separated",
         "refused_when": "the root has no .git entry (a directory, or the file a worktree or submodule has): success is false, the error names the command, the root and the rule, and nothing under the root is read"
