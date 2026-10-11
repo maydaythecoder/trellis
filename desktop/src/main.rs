@@ -1,7 +1,12 @@
 //! The TRELLIS desktop interface (ADR 0048): one window over one
 //! `trellis rpc` child per repository.
 //!
-//!     trellis-desktop [--root <repo>] [--trellis <path>]
+//!     trellis-desktop [--root <repo>] [--trellis <path>] [--web]
+//!
+//! With `--web` there is no window: the same page and the same four
+//! commands are served over HTTP on 127.0.0.1 behind a per-launch token
+//! (`web.rs`, ADR 0050 section 5) for `trellis --web`, which reads the URL
+//! from stdout and stops the server by closing its stdin.
 //!
 //! Once the page has loaded, the core (`commands.rs`) opens the startup
 //! repository: it starts the child (`child.rs`, the one file that spawns)
@@ -38,6 +43,7 @@ mod queue;
 mod radius;
 mod state;
 mod trails;
+mod web;
 
 use commands::Core;
 use std::path::PathBuf;
@@ -45,11 +51,12 @@ use std::sync::{Arc, Once};
 use tauri::webview::{NewWindowResponse, PageLoadEvent};
 use tauri::{Manager, WebviewWindowBuilder};
 
-const USAGE: &str = "usage: trellis-desktop [--root <repo>] [--trellis <path>]";
+const USAGE: &str = "usage: trellis-desktop [--root <repo>] [--trellis <path>] [--web]";
 
 fn main() {
     let mut root: Option<PathBuf> = None;
     let mut trellis = PathBuf::from("trellis");
+    let mut web = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -59,11 +66,21 @@ fn main() {
                     trellis = PathBuf::from(t);
                 }
             }
+            "--web" => web = true,
             other => {
                 eprintln!("unknown argument: {other}\n{USAGE}");
                 std::process::exit(2);
             }
         }
+    }
+    if web {
+        // No window and no Tauri runtime: the core's events go to the
+        // pages' event streams, and the page's commands come in over http.
+        let sink = Arc::new(web::WebSink::default());
+        let core = Core::new(child::Trellis::new(trellis), sink.clone());
+        let e = web::serve(core, sink, root);
+        eprintln!("trellis-desktop: web: {e}");
+        std::process::exit(1);
     }
     let started = Once::new();
     let app = tauri::Builder::default()

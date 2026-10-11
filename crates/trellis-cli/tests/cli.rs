@@ -3885,13 +3885,42 @@ fn trellis_out(args: &[&str]) -> std::process::Output {
 }
 
 #[test]
-fn interface_flag_web_says_it_is_not_built() {
-    // ADR 0050 section 1: the flag parses, and until its ticket lands it
-    // says so instead of appearing to start something.
-    let out = trellis_out(&["--web"]);
+fn interface_flag_web_with_no_desktop_beside_trellis_says_where_it_looked() {
+    // ADR 0050 section 5 (#375): `--web` is the desktop serving its page,
+    // so it is looked for beside the running trellis only, as `--dsk`
+    // looks, and nothing on PATH is started. Outside a repository it is
+    // not refused for the missing root (the desktop shows its overview).
+    let exe_name = format!("trellis{}", std::env::consts::EXE_SUFFIX);
+    let desktop_name = format!("trellis-desktop{}", std::env::consts::EXE_SUFFIX);
+    let bin = tempfile::tempdir().unwrap();
+    let on_path = tempfile::tempdir().unwrap();
+    let exe = bin.path().join(&exe_name);
+    std::fs::copy(env!("CARGO_BIN_EXE_trellis"), &exe).unwrap();
+    wait_until_executable(&exe);
+    std::fs::write(on_path.path().join(&desktop_name), b"").unwrap();
+    let out = Command::new(&exe)
+        .arg("--web")
+        .current_dir(bin.path())
+        .env("PATH", on_path.path())
+        .output()
+        .unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success(), "--web succeeded");
-    assert!(err.contains("the web view is not built yet"), "{err}");
+    assert!(!out.status.success(), "--web succeeded: {err}");
+    assert!(!err.contains("not built"), "{err}");
+    assert!(
+        !err.contains("cannot determine the repository root"),
+        "{err}"
+    );
+    assert!(err.contains(&desktop_name), "{err}");
+    assert!(err.contains("looked for"), "{err}");
+    assert!(
+        !err.contains(&on_path.path().display().to_string()),
+        "{err}"
+    );
+    assert!(
+        err.contains("cargo install --locked --path desktop"),
+        "{err}"
+    );
 }
 
 /// Runs the executable just written at `path` with `--version` until the
