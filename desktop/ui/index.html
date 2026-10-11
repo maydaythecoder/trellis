@@ -20,7 +20,11 @@
   vault_search and vault_graph answers; it only reads (#309). The board
   section is drawn by queue.js from the view's queue key, eight counts the
   core computes from a get_queue answer, with PR and CI state from the
-  overview's board (#311); it only reads.
+  overview's board (#311); it only reads. The atlas section is drawn by
+  atlas.js on a canvas from the view's atlas key, which the core computes
+  from get_history, get_codebase, get_symbols and get_radius answers, the
+  map's layout included (atlas.rs); the owner asked for it on 2026-10-11,
+  beside the other sections. It only reads.
 
   The rail's buttons each name, with aria-controls, the one section they
   show; the others carry the hidden attribute. The overview section is the
@@ -64,6 +68,7 @@
     <script type="module" src="trails.js"></script>
     <script type="module" src="vault.js"></script>
     <script type="module" src="queue.js"></script>
+    <script type="module" src="atlas.js"></script>
   </head>
   <body>
     <nav class="rail" aria-label="Views">
@@ -243,9 +248,81 @@
         </div>
       </section>
 
-      <section id="atlas" aria-labelledby="atlas-title" hidden>
-        <h2 id="atlas-title">Atlas</h2>
-        <p class="unbuilt">Not built yet</p>
+      <section id="atlas" class="at" aria-labelledby="atlas-title" hidden>
+        <div class="at-top">
+          <h2 id="atlas-title">Atlas</h2>
+          <span id="at-where" class="muted"></span>
+          <button type="button" class="at-btn" id="at-open-search" aria-haspopup="dialog" aria-controls="at-search">Search modules and symbols <kbd>/</kbd></button>
+        </div>
+        <p id="at-status" class="muted" role="status">Open a repository to see its atlas.</p>
+        <div class="at-toolbar" role="toolbar" aria-label="Atlas map controls">
+          <div class="at-field">
+            <span class="at-lab" id="at-lens-lab">Lens</span>
+            <div class="at-seg" role="group" aria-labelledby="at-lens-lab" id="at-lens">
+              <button type="button" data-lens="structure" aria-pressed="true">Structure</button>
+              <button type="button" data-lens="churn" aria-pressed="false">Churn</button>
+              <button type="button" data-lens="doubt" aria-pressed="false">Doubt</button>
+              <button type="button" data-lens="diff" aria-pressed="false">Diff</button>
+            </div>
+          </div>
+          <div class="at-field" id="at-win-field" hidden>
+            <span class="at-lab" id="at-win-lab">Commits in the last</span>
+            <div class="at-seg" role="group" aria-labelledby="at-win-lab" id="at-win">
+              <button type="button" data-win="0" aria-pressed="false">30 d</button>
+              <button type="button" data-win="1" aria-pressed="true">90 d</button>
+              <button type="button" data-win="2" aria-pressed="false">365 d</button>
+              <button type="button" data-win="3" aria-pressed="false" id="at-win-since">since the oldest tag</button>
+            </div>
+          </div>
+          <div class="at-field" id="at-base-field" hidden>
+            <label class="at-lab" for="at-base">Baseline</label>
+            <select id="at-base"></select>
+          </div>
+          <div class="at-field at-scrub">
+            <label class="at-lab" for="at-snap">Snapshot</label>
+            <input type="range" id="at-snap" min="0" max="0" step="1" value="0">
+            <div id="at-ticks" class="at-ticks" aria-hidden="true"></div>
+            <div id="at-readout" class="at-readout"></div>
+          </div>
+        </div>
+        <div class="at-work">
+          <div class="at-mapwrap" role="region" aria-label="Module map">
+            <div class="at-mapbar">
+              <button type="button" class="at-btn" id="at-back" disabled>Back</button>
+              <button type="button" class="at-btn" id="at-fwd" disabled>Forward</button>
+              <ol id="at-crumbs" class="at-crumbs" aria-label="Zoom path"></ol>
+              <span class="at-zoom">
+                <button type="button" class="at-btn" id="at-zout" aria-label="Zoom out">−</button>
+                <button type="button" class="at-btn" id="at-zin" aria-label="Zoom in">+</button>
+                <button type="button" class="at-btn" id="at-zfit">Fit</button>
+              </span>
+            </div>
+            <div id="at-map" class="at-map">
+              <canvas id="at-canvas" tabindex="0" role="img" aria-label="Module map" aria-describedby="at-keys"></canvas>
+            </div>
+            <div class="at-mapfoot">
+              <div id="at-legend" class="at-legend"></div>
+              <canvas id="at-minimap" class="at-minimap" width="140" height="100" aria-label="Minimap: click or drag to move the view" hidden></canvas>
+            </div>
+            <p id="at-keys" class="at-keys muted">Drag or the arrow keys pan; the wheel, + and - zoom; 0 fits; a click selects; Escape clears; / searches. The detail pane lists what the map shows.</p>
+          </div>
+          <div class="at-panel" role="region" aria-label="Atlas detail">
+            <div class="at-tabs" role="tablist" aria-label="Detail views">
+              <button type="button" role="tab" id="at-tab-sel" aria-selected="true" aria-controls="at-detail">Selection</button>
+              <button type="button" role="tab" id="at-tab-chg" aria-selected="false" aria-controls="at-detail">Changes</button>
+              <button type="button" role="tab" id="at-tab-pin" aria-selected="false" aria-controls="at-detail">Working set</button>
+            </div>
+            <div id="at-detail" class="at-detail" role="tabpanel" aria-labelledby="at-tab-sel" tabindex="-1"></div>
+          </div>
+        </div>
+        <div id="at-search" class="at-search" role="dialog" aria-label="Search modules and symbols" hidden>
+          <div class="at-sbar">
+            <input id="at-q" type="search" autocomplete="off" spellcheck="false" aria-label="Module or symbol" aria-controls="at-qres">
+            <button type="button" class="at-btn" id="at-qclose">Close</button>
+          </div>
+          <p id="at-qhint" class="at-shint muted">Fuzzy match over module and symbol names. Arrow keys move, Enter goes there.</p>
+          <ul id="at-qres" class="at-qres" role="listbox" aria-label="Results"></ul>
+        </div>
       </section>
 
       <section id="board" aria-labelledby="board-title" hidden>
