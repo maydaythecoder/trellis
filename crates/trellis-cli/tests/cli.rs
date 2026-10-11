@@ -6515,3 +6515,287 @@ fn rpc_atlas_get_radius_lists_the_symbols_reached_and_the_sites_beside_the_count
     assert_eq!(data["sites_not_listed"], 0, "{data}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// [`history_repo`]'s commits, by the names its comment gives them.
+struct History {
+    root: PathBuf,
+    c: std::collections::BTreeMap<&'static str, String>,
+}
+
+/// A repository whose first-parent line is c0 (2023-06-01, tagged `old`),
+/// c1 (2024-01-01), c2 (2024-03-01, tagged `v1`, annotated), c3
+/// (2025-01-15), c5 (2025-02-10, merging `side`'s c4, tagged `side-tag`)
+/// and c6 (2025-02-20, HEAD); `elsewhere` tags a commit HEAD cannot reach.
+/// All in UTC but c6, whose offset is +01:00.
+fn history_repo(name: &str) -> History {
+    let d = empty_repo(name);
+    let main = git(&d, &["symbolic-ref", "--short", "HEAD"])
+        .trim()
+        .to_string();
+    let mut c = std::collections::BTreeMap::new();
+    let commit = |c: &mut std::collections::BTreeMap<&'static str, String>,
+                  id: &'static str,
+                  date: &str,
+                  subject: &str,
+                  files: &[(&str, &str)]| {
+        for (p, text) in files {
+            std::fs::write(d.join(p), text).unwrap();
+        }
+        git(&d, &["add", "-A"]);
+        git_dated(&d, date, &["commit", "-qm", subject]);
+        c.insert(id, git(&d, &["rev-parse", "HEAD"]).trim().to_string());
+    };
+    commit(
+        &mut c,
+        "c0",
+        "2023-06-01T00:00:00+00:00",
+        "start",
+        &[
+            ("a.py", "A = 0\n"),
+            ("b.py", "B = 0\n"),
+            ("e.py", "E = 0\n"),
+        ],
+    );
+    git(&d, &["tag", "old"]);
+    commit(
+        &mut c,
+        "c1",
+        "2024-01-01T00:00:00+00:00",
+        "e once",
+        &[("e.py", "E = 1\n")],
+    );
+    commit(
+        &mut c,
+        "c2",
+        "2024-03-01T00:00:00+00:00",
+        "a once",
+        &[("a.py", "A = 1\n")],
+    );
+    git(&d, &["tag", "-a", "v1", "-m", "release"]);
+    commit(
+        &mut c,
+        "c3",
+        "2025-01-15T00:00:00+00:00",
+        "b and c",
+        &[("b.py", "B = 1\n"), ("c.py", "C = 0\n")],
+    );
+    git(&d, &["checkout", "-qb", "side"]);
+    commit(
+        &mut c,
+        "c4",
+        "2025-02-01T00:00:00+00:00",
+        "d on a side",
+        &[("d.py", "D = 0\n")],
+    );
+    git(&d, &["tag", "side-tag"]);
+    git(&d, &["checkout", "-q", &main]);
+    git_dated(
+        &d,
+        "2025-02-10T00:00:00+00:00",
+        &["merge", "-q", "--no-ff", "side", "-m", "merge side"],
+    );
+    c.insert("c5", git(&d, &["rev-parse", "HEAD"]).trim().to_string());
+    commit(
+        &mut c,
+        "c6",
+        "2025-02-20T01:00:00+01:00",
+        "a\tagain <b>",
+        &[("a.py", "A = 2\n")],
+    );
+    git(&d, &["checkout", "-qb", "other", &c["c0"]]);
+    commit(
+        &mut c,
+        "c7",
+        "2025-03-01T00:00:00+00:00",
+        "unmerged",
+        &[("z.py", "Z = 0\n")],
+    );
+    git(&d, &["tag", "elsewhere"]);
+    git(&d, &["checkout", "-q", &main]);
+    assert_eq!(porcelain_unlocked(&d), "");
+    History { root: d, c }
+}
+
+#[test]
+fn rpc_atlas_get_history_measures_churn_back_from_head_and_lists_commits_and_tags() {
+    // The risks: windows measured from the wall clock, so the same
+    // repository answers differently tomorrow; a merge's changes missed or
+    // a side branch's commits counted on the first-parent line; a tag HEAD
+    // cannot reach offered as a snapshot; churn dropping a path changed
+    // since the oldest tag but not in the last year; and a read that
+    // writes.
+    let h = history_repo("rpc-atlas-history");
+    let c = |id: &str| h.c[id].as_str();
+    let before = bytes_under(&h.root);
+    let records = rpc_records(
+        &h.root,
+        None,
+        &[
+            serde_json::json!({"id": "d", "type": "get_history"}),
+            serde_json::json!({"id": "n", "type": "get_history", "commits": 2, "tags": 2}),
+            serde_json::json!({"id": "z", "type": "get_history", "commits": 0, "tags": 0}),
+        ],
+    );
+    assert_eq!(bytes_under(&h.root), before, "get_history wrote something");
+    let d = rpc_answer(&records, "d");
+    assert_eq!(d["command"], "get_history", "{d}");
+    assert_eq!(d["success"], true, "{d}");
+    let data = &d["data"];
+    assert_eq!(
+        data["head"],
+        serde_json::json!({"commit": c("c6"), "date": "2025-02-20T01:00:00+01:00"}),
+        "{data}"
+    );
+    assert_eq!(data["windows_days"], serde_json::json!([30, 90, 365]));
+    assert_eq!(
+        data["tags"],
+        serde_json::json!([
+            {"name": "side-tag", "commit": c("c4"), "date": "2025-02-01T00:00:00+00:00"},
+            {"name": "v1", "commit": c("c2"), "date": "2024-03-01T00:00:00+00:00"},
+            {"name": "old", "commit": c("c0"), "date": "2023-06-01T00:00:00+00:00"},
+        ]),
+        "{data}"
+    );
+    let logged = |id: &str, date: &str, subject: &str, paths: &[&str]| serde_json::json!({"commit": c(id), "date": date, "subject": subject, "paths": paths});
+    assert_eq!(
+        data["commits"],
+        serde_json::json!([
+            logged("c6", "2025-02-20T01:00:00+01:00", "a\tagain <b>", &["a.py"]),
+            logged("c5", "2025-02-10T00:00:00+00:00", "merge side", &["d.py"]),
+            logged(
+                "c3",
+                "2025-01-15T00:00:00+00:00",
+                "b and c",
+                &["b.py", "c.py"]
+            ),
+            logged("c2", "2024-03-01T00:00:00+00:00", "a once", &["a.py"]),
+            logged("c1", "2024-01-01T00:00:00+00:00", "e once", &["e.py"]),
+            logged(
+                "c0",
+                "2023-06-01T00:00:00+00:00",
+                "start",
+                &["a.py", "b.py", "e.py"]
+            ),
+        ]),
+        "{data}"
+    );
+    let row = |path: &str, d: [u64; 3], commits: serde_json::Value, last: &str, date: &str| {
+        serde_json::json!({
+            "path": path, "d30": d[0], "d90": d[1], "d365": d[2], "commits": commits,
+            "last_commit": c(last), "last_date": date,
+        })
+    };
+    let n = |v: u64| serde_json::json!(v);
+    // 30 days back from c6 reaches c5; 90 reaches c3; 365 reaches c2; the
+    // oldest tag, `old` at c0, puts c1 in range too, so e.py is a row.
+    assert_eq!(
+        data["churn"],
+        serde_json::json!([
+            row("a.py", [1, 1, 2], n(2), "c6", "2025-02-20T01:00:00+01:00"),
+            row("b.py", [0, 1, 1], n(1), "c3", "2025-01-15T00:00:00+00:00"),
+            row("c.py", [0, 1, 1], n(1), "c3", "2025-01-15T00:00:00+00:00"),
+            row("d.py", [1, 1, 1], n(1), "c5", "2025-02-10T00:00:00+00:00"),
+            row("e.py", [0, 0, 0], n(1), "c1", "2024-01-01T00:00:00+00:00"),
+        ]),
+        "{data}"
+    );
+
+    // Two commits and two tags: the oldest returned is v1 (c2), so
+    // `commits` counts c6, c5 and c3, and e.py is out of range.
+    let s = &rpc_answer(&records, "n")["data"];
+    assert_eq!(s["commits"].as_array().unwrap().len(), 2, "{s}");
+    assert_eq!(s["commits"][1]["commit"], c("c5"), "{s}");
+    assert_eq!(s["tags"].as_array().unwrap().len(), 2, "{s}");
+    assert_eq!(
+        s["churn"],
+        serde_json::json!([
+            row("a.py", [1, 1, 2], n(1), "c6", "2025-02-20T01:00:00+01:00"),
+            row("b.py", [0, 1, 1], n(1), "c3", "2025-01-15T00:00:00+00:00"),
+            row("c.py", [0, 1, 1], n(1), "c3", "2025-01-15T00:00:00+00:00"),
+            row("d.py", [1, 1, 1], n(1), "c5", "2025-02-10T00:00:00+00:00"),
+        ]),
+        "{s}"
+    );
+
+    // No tag asked for: there is no tag to count from, so `commits` is
+    // null, never 0, and the year still sets the rows.
+    let z = &rpc_answer(&records, "z")["data"];
+    assert_eq!(z["commits"], serde_json::json!([]), "{z}");
+    assert_eq!(z["tags"], serde_json::json!([]), "{z}");
+    let null = serde_json::Value::Null;
+    assert_eq!(
+        z["churn"],
+        serde_json::json!([
+            row(
+                "a.py",
+                [1, 1, 2],
+                null.clone(),
+                "c6",
+                "2025-02-20T01:00:00+01:00"
+            ),
+            row(
+                "b.py",
+                [0, 1, 1],
+                null.clone(),
+                "c3",
+                "2025-01-15T00:00:00+00:00"
+            ),
+            row(
+                "c.py",
+                [0, 1, 1],
+                null.clone(),
+                "c3",
+                "2025-01-15T00:00:00+00:00"
+            ),
+            row("d.py", [1, 1, 1], null, "c5", "2025-02-10T00:00:00+00:00"),
+        ]),
+        "{z}"
+    );
+    let _ = std::fs::remove_dir_all(&h.root);
+}
+
+#[test]
+fn rpc_atlas_get_history_of_no_commit_is_empty_and_bad_counts_and_no_git_are_refused() {
+    // The risks: a repository with no commit answered with an error the
+    // Atlas shows as a failure, when the truth is "no history yet"; a
+    // count that is not one taken as the default; and #559's refusal
+    // skipped by a new read.
+    let d = empty_repo("rpc-atlas-history-unborn");
+    std::fs::write(d.join("a.py"), "A = 0\n").unwrap();
+    let records = rpc_records(
+        &d,
+        None,
+        &[
+            serde_json::json!({"id": "u", "type": "get_history"}),
+            serde_json::json!({"id": "a", "type": "get_history", "commits": "20"}),
+            serde_json::json!({"id": "b", "type": "get_history", "tags": -1}),
+            serde_json::json!({"id": "c", "type": "get_history", "commits": 2.5}),
+        ],
+    );
+    let u = rpc_answer(&records, "u");
+    assert_eq!(u["success"], true, "{u}");
+    assert_eq!(
+        u["data"],
+        serde_json::json!({"head": null, "windows_days": [30, 90, 365],
+                           "churn": [], "commits": [], "tags": []}),
+        "{u}"
+    );
+    for (id, field) in [("a", "`commits`"), ("b", "`tags`"), ("c", "`commits`")] {
+        let r = rpc_answer(&records, id);
+        assert_eq!(r["success"], false, "{r}");
+        assert!(r["error"].as_str().unwrap().contains(field), "{r}");
+    }
+
+    let bare = scratch("rpc-atlas-history-no-git");
+    let records = rpc_records(
+        &bare,
+        Some(&bare),
+        &[serde_json::json!({"id": "h", "type": "get_history"})],
+    );
+    let r = rpc_answer(&records, "h");
+    assert_eq!(r["success"], false, "{r}");
+    let e = r["error"].as_str().unwrap();
+    assert!(e.contains("get_history") && e.contains("no .git"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&bare);
+}

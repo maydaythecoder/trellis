@@ -91,6 +91,12 @@ const COMMANDS: &[(&str, &str)] = &[
          lines and its call sites in, ambiguously in and out as separate counts, read-only",
     ),
     (
+        "get_history",
+        "HEAD's newest first-parent commits with their paths, the tags in its history and \
+         each path's churn in the 30, 90 and 365 days before HEAD's date, from git, \
+         read-only: {commits?, tags?} (default 20 and 12, at most 200)",
+    ),
+    (
         "get_queue",
         "the tasks `trellis queue list` prints, as data, read-only; claims nothing",
     ),
@@ -924,6 +930,32 @@ impl Server {
         }));
     }
 
+    /// `get_history`: HEAD's first-parent commits, the tags in its history
+    /// and each path's churn, from git through `trellis_vcs` (the Atlas,
+    /// owner request of 2026-10-11); nothing is written. Its own thread, as
+    /// `get_codebase`'s, since a long history takes a while to walk; a
+    /// root with no `.git` is refused first, as there (#559).
+    fn get_history(&mut self, cmd: &Value, id: Option<&str>) {
+        let counts = crate::atlas::count_arg(cmd, "commits", 20)
+            .and_then(|c| Ok((c, crate::atlas::count_arg(cmd, "tags", 12)?)));
+        let (commits, tags) = match counts {
+            Ok(n) => n,
+            Err(e) => {
+                self.respond(id, "get_history", Err(e));
+                return;
+            }
+        };
+        if let Err(e) = repository_root(&self.root, "get_history") {
+            self.respond(id, "get_history", Err(e));
+            return;
+        }
+        let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
+        self.waiters.push(std::thread::spawn(move || {
+            let result = crate::atlas::history(&root, commits, tags);
+            respond_on(&sink, id.as_deref(), "get_history", result);
+        }));
+    }
+
     /// `get_queue`: every queued task as data; nothing is written, claimed
     /// or moved. The queue's writes are `trellis queue`'s and `trellis
     /// work`'s (ADR 0020 §5). Answered from another thread, as
@@ -1300,6 +1332,7 @@ impl Server {
             "get_codebase" => self.get_codebase(cmd, id),
             "get_radius" => self.get_radius(cmd, id),
             "get_symbols" => self.get_symbols(cmd, id),
+            "get_history" => self.get_history(cmd, id),
             "get_queue" => self.get_queue(id),
             "list_paths" => self.list_paths(cmd, id),
             "vault_search" => self.vault_search(cmd, id),
@@ -2739,6 +2772,8 @@ mod tests {
             json!({"id": "r", "type": "get_codebase", "ref": "HEAD"}),
             json!({"id": "o", "type": "get_codebase", "ref": "--output=x"}),
             json!({"id": "e", "type": "get_codebase", "edges": "most"}),
+            json!({"id": "h", "type": "get_history"}),
+            json!({"id": "c", "type": "get_history", "commits": "all"}),
         ];
         for cmd in &cmds {
             s.handle(cmd);
