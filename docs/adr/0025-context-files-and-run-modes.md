@@ -237,6 +237,9 @@ on stderr.
     #319; see "get_session_stats and get_last_assistant_text" below*)
   - `classify {text}` (*added 2026-10-07, #501, ADR 0052; see "classify"
     below*)
+  - `list_models`, and `set_model {model, save?}` or `{configured: true}`
+    (*added 2026-10-10, #564, ADR 0048 §5 as amended; see "list_models and
+    the model gate" below*)
 - **Why these 9 of pi's 33:** (10 since `compact`, 12 since `steer` and
   `follow_up`; `get_codebase`, the 13th, `get_radius`, the 14th,
   `get_queue`, the 15th, and `vault_search` and `vault_graph`, the 16th and
@@ -246,7 +249,7 @@ on stderr.
   of pi 1.0.2's 33 is in the table under "get_session_stats and
   get_last_assistant_text" below, built or not built, with its reason.
   `list_paths`, trellis's own, adds one more to what `get_commands` lists
-  (#502).)
+  (#502), and `list_models`, trellis's own, one more again (#564).)
   - `steer`, `follow_up` and `clear_queue` need mid-run input (ADR 0021
     1.2, deferred). *Amended 2026-09-29 (#114): `steer` and `follow_up`
     are built, on the owner's decision of 2026-09-28 recorded there; see
@@ -299,9 +302,12 @@ on stderr.
 - **`quit` and end of input differ on purpose.**
   - `quit` aborts an in-flight run, waits for its rollback, and exits.
   - End of input waits for the in-flight run to finish, then exits. So
-    `printf '{"type":"prompt",…}\n' | trellis rpc` runs one task to
-    completion. pi disposes the runtime at end of input; here that would make
-    one-shot piping useless.
+    `printf '{"type":"set_model",…}\n{"type":"prompt",…}\n' | trellis rpc`
+    runs one task to completion (*as built 2026-10-10, #564:* a `prompt` is
+    refused until a `set_model` has given the session a model, so the
+    piped example names one first; see "list_models and the model gate"). pi
+    disposes the runtime at end of input; here that would make one-shot
+    piping useless.
   - *Amended after the seventh review of PR #1:* **end of input declines
     every approval.** No `approve` can arrive once input has ended, so
     every question open then, and every one the run asks afterwards, is
@@ -786,6 +792,39 @@ on stderr.
   `.git` entry. Accepted, not built (#559 for `path`, `blockers`, `parent`
   and the refusal); built 2026-10-07 (#558 for `recent` and the `gh` state,
   as §4's as-built line says).*
+- *Added 2026-10-10 (#564), owner-directed (the owner's decision of
+  2026-10-07, given with the approval of #560 and recorded in ADR 0048 §5's
+  amendment): "allow for model selection after launch; don't allow prompt
+  input until that takes place".* **`list_models` and the model gate.**
+  - **`prompt` is refused until the session has a model**, with an error
+    that starts "choose a model first". A model is had by a `set_model`
+    that succeeded, in either form below; a configured `[model] spec` alone
+    is not one, nor is a prompt's own `model`, so a client cannot pass the
+    choice by naming a spec in the same line. Every other command is
+    answered as before. `printf … | trellis rpc` now needs a `set_model`
+    line before its `prompt`.
+  - **`set_model {model, save?}`** validates the spec as before (it parses,
+    and a script exists), and counts as the user's choice (ADR 0024 §3, as
+    before). With `save: true` the spec is also written to the user's own
+    config file by `first_run`'s writer (`user_config::set_model_spec`),
+    never to `.trellis/config.toml`; a user config file that resolves to
+    the repository's own is refused, and a write that fails sets no model.
+    **`set_model {configured: true}`** confirms the configured spec as it
+    reads then and pins it for the session; it names no model, so a
+    repository's hosted spec confirmed this way is still the repository's
+    choice and meets `hosted`'s key rule as one. `data` is `{model,
+    configured, saved_to}`, `saved_to` null without a save.
+  - **`list_models`** answers with `{configured, local, probed,
+    providers}`: the configured spec or null; the specs `first_run`'s
+    probes (Ollama on 127.0.0.1:11434, llama.cpp on :8080, vLLM on :8000)
+    find, each bounded by `first_run::BOUND` and checked as `first_run`
+    checks it; every address tried with what it answered; and the user
+    config's `[[providers]]` by `name` and `key_variable`, the variable a
+    key would be read from, never read, so no key value is in the answer.
+    It writes nothing and runs on its own thread, as `get_queue` does.
+  - `tests/client_contract.json` lists both under `rpc.responses`. Held by
+    the `rpc_model_select_` tests in `tests/modes.rs` and `rpc.rs`; every
+    earlier test that sends a `prompt` now sends `set_model` first.
 
 ### 6. Session additions
 

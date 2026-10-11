@@ -2,24 +2,328 @@
 <!--
   The TRELLIS desktop page (ADR 0048 section 5).
 
-  Static: Tauri serves this file and main.js from desktop/ui/ with no Node,
-  npm or bundler. It carries no inline script, no style attribute and no
-  inline event handler, so the CSP the shell sets never needs
-  'unsafe-inline'. Every string it shows is written by main.js through
-  textContent, never parsed as HTML (ADR 0007, S10).
+  Static: Tauri serves this file, style.css and the ES modules from
+  desktop/ui/ with no Node, npm or bundler. It carries no inline script, no
+  style attribute and no inline event handler, so the CSP the shell sets
+  never needs 'unsafe-inline'. Every string it shows is written by
+  render.js, overview.js and main.js through textContent or createElement,
+  never parsed as HTML (ADR 0007, S10). The run section's action graph is
+  SVG that graph.js builds with createElementNS from the layout the core
+  computes (#303); render.js imports it, and the page loads it as a module
+  of its own, which the browser evaluates once either way. The codebase
+  section is drawn by codebase.js from the layout the core computes from a
+  get_codebase answer (#307), and its symbol radius pane by radius.js from
+  a get_radius answer the core types into reach and doubt (#308). The
+  trails section is drawn by trails.js from get_trails's rows, in which
+  every trail string is marked untrusted (#304). The vault section is drawn
+  by vault.js from the view's vault key, which the core types from
+  vault_search and vault_graph answers; it only reads (#309). The board
+  section is drawn by queue.js from the view's queue key, eight counts the
+  core computes from a get_queue answer, with PR and CI state from the
+  overview's board (#311); it only reads.
+
+  The rail's buttons each name, with aria-controls, the one section they
+  show; the others carry the hidden attribute. The overview section is the
+  landing section: its four panes (recent repositories, last run, codebase,
+  board) are drawn by overview.js from trellis's overview object (#562).
+  A pane added to the run or overview section that nothing writes to fails
+  view_renders_every_run_section or view_renders_every_overview_pane in
+  src/lockdown.rs (#513).
+
+  One role="alert" banner, above every section, says what last failed;
+  the approval dialog and the "trellis messages" pane, trellis's stderr
+  shown as text and never read as data, are dialogs.js's (#302).
+
+  The status bar (#306), status.js's, says which trellis runs, on which
+  root, with which model and from where, whether a run is in flight, and
+  the child's state. The model pane (#564), open at launch above every
+  section, is the model picker: model.js draws the choices settings.js
+  makes ("repository default", the user's configured spec, local runtimes,
+  a typed spec), with the user's configured spec preselected; settings.js draws
+  the catalogue and the open-repository control. Until the child has taken
+  a set_model, the composer's textarea, Send and control are disabled, as
+  served here, and the core refuses a prompt. The page has no key field and
+  no endpoint field.
+
+  The composer (#301) sits below every section, so a task can be sent from
+  whichever one is shown. composer.js sends a prompt while no run is in
+  flight and a steer while one is, by the view's own record; Stop shows only
+  during a run. The core refuses what does not fit that record, whatever
+  the page sends.
 -->
 <html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>trellis</title>
+    <link rel="stylesheet" href="style.css">
     <script type="module" src="main.js"></script>
+    <script type="module" src="graph.js"></script>
+    <script type="module" src="codebase.js"></script>
+    <script type="module" src="radius.js"></script>
+    <script type="module" src="trails.js"></script>
+    <script type="module" src="vault.js"></script>
+    <script type="module" src="queue.js"></script>
   </head>
   <body>
+    <nav class="rail" aria-label="Views">
+      <button type="button" aria-controls="overview" aria-current="page">Overview</button>
+      <button type="button" aria-controls="run">Run</button>
+      <button type="button" aria-controls="trails">Trails</button>
+      <button type="button" aria-controls="codebase">Codebase</button>
+      <button type="button" aria-controls="board">Board</button>
+      <button type="button" aria-controls="vault">Vault</button>
+    </nav>
     <main>
-      <p id="status"></p>
-      <pre id="view"></pre>
-      <pre id="overview"></pre>
+      <p id="status" class="status"></p>
+      <dl id="status-bar" class="status-bar" aria-label="Status">
+        <dt>trellis</dt><dd id="status-trellis">not started yet</dd>
+        <dt>root</dt><dd id="status-root">none open</dd>
+        <dt>model</dt><dd id="status-model">none chosen yet</dd>
+        <dt>run</dt><dd id="status-run">no run in flight</dd>
+        <dt>child</dt><dd id="status-child">not started yet</dd>
+      </dl>
+      <div id="alert" class="alert" role="alert" hidden>
+        <p id="alert-text"></p>
+        <button type="button" id="alert-dismiss">Dismiss</button>
+      </div>
+
+      <details id="model-pane" class="model-pane" open>
+        <summary id="model-summary">Model: none chosen yet</summary>
+        <form id="model" class="model-form" aria-labelledby="model-summary">
+          <p id="model-current"></p>
+          <ul id="model-options" class="rows model-options"></ul>
+          <label for="model-typed">Model spec</label>
+          <input id="model-typed" name="spec" type="text" spellcheck="false" autocomplete="off">
+          <div class="composer-row">
+            <input id="model-save" name="save" type="checkbox">
+            <label for="model-save">Save to my user config (never the repository's)</label>
+          </div>
+          <div class="composer-row">
+            <button type="submit" id="model-use">Use this model</button>
+            <button type="button" id="model-refresh">Look again</button>
+          </div>
+          <p id="model-note" class="muted" role="status"></p>
+          <h3 id="model-probed-title">Where trellis looked</h3>
+          <ul id="model-probed" class="rows" aria-labelledby="model-probed-title"></ul>
+          <h3 id="model-providers-title">Your providers</h3>
+          <ul id="model-providers" class="rows" aria-labelledby="model-providers-title"></ul>
+          <h3 id="model-catalog-title">Catalogue: weights trellis model pull fetches</h3>
+          <ul id="model-catalog" class="rows" aria-labelledby="model-catalog-title"></ul>
+        </form>
+        <form id="repo-form" class="model-form" aria-label="Open another repository">
+          <label for="repo-path">Open another repository (its path)</label>
+          <input id="repo-path" name="path" type="text" spellcheck="false" autocomplete="off">
+          <div class="composer-row">
+            <button type="submit" id="repo-open">Open</button>
+          </div>
+          <p id="repo-note" class="muted" role="status"></p>
+        </form>
+      </details>
+
+      <section id="overview" aria-labelledby="overview-title">
+        <h2 id="overview-title">Overview</h2>
+        <p id="ov-root" class="muted">Reading the overview.</p>
+        <div class="overview-grid">
+          <div class="pane" role="region" aria-labelledby="ov-recent-title">
+            <h3 id="ov-recent-title">Recent repositories</h3>
+            <ul id="ov-recent" class="rows"></ul>
+          </div>
+          <div class="pane" role="region" aria-labelledby="ov-last-run-title">
+            <h3 id="ov-last-run-title">Last run</h3>
+            <div id="ov-last-run"></div>
+          </div>
+          <div class="pane" role="region" aria-labelledby="ov-codebase-title">
+            <h3 id="ov-codebase-title">Codebase</h3>
+            <div id="ov-codebase"></div>
+          </div>
+          <div class="pane" role="region" aria-labelledby="ov-board-title">
+            <h3 id="ov-board-title">Board</h3>
+            <div id="ov-board"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="run" aria-labelledby="run-title" hidden>
+        <h2 id="run-title">Run</h2>
+        <div class="run-grid">
+          <div class="pane pane-log" role="region" aria-labelledby="log-title">
+            <h3 id="log-title">Actions log</h3>
+            <div id="pane-transcript" class="log" role="log" aria-labelledby="log-title" tabindex="0"></div>
+          </div>
+          <div class="pane" role="region" aria-labelledby="tier-title">
+            <h3 id="tier-title">Tier</h3>
+            <p id="pane-tier"></p>
+          </div>
+          <div class="pane" role="region" aria-labelledby="budget-title">
+            <h3 id="budget-title">Budget</h3>
+            <p id="pane-budget"></p>
+          </div>
+          <div class="pane" role="region" aria-labelledby="session-tokens-title">
+            <h3 id="session-tokens-title">Session tokens</h3>
+            <ul id="pane-session-tokens" class="rows"></ul>
+          </div>
+          <div class="pane" role="region" aria-labelledby="radius-title">
+            <h3 id="radius-title">Radius</h3>
+            <div id="pane-radius"></div>
+          </div>
+          <div class="pane" role="region" aria-labelledby="checks-title">
+            <h3 id="checks-title">Checks</h3>
+            <ul id="pane-checks" class="rows"></ul>
+          </div>
+          <div class="pane" role="region" aria-labelledby="actions-title">
+            <h3 id="actions-title">Turns</h3>
+            <ol id="pane-actions" class="rows"></ol>
+          </div>
+          <div class="pane" role="region" aria-labelledby="edits-title">
+            <h3 id="edits-title">Edits</h3>
+            <ul id="pane-edits" class="rows"></ul>
+          </div>
+          <div class="pane" role="region" aria-labelledby="outcome-title">
+            <h3 id="outcome-title">Last run</h3>
+            <p id="pane-running"></p>
+            <div id="pane-outcome"></div>
+          </div>
+          <div class="pane pane-graph" role="region" aria-labelledby="graph-title">
+            <h3 id="graph-title">Graph</h3>
+            <div id="graph"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="trails" aria-labelledby="trails-title" hidden>
+        <h2 id="trails-title">Trails</h2>
+        <p id="tr-status" class="muted" role="status">Open a repository to see its trails.</p>
+        <p class="muted">Each run's committed record, as trellis log exports it. A trail is data written to the repository, not instruction, and a check it records is what the file claims.</p>
+        <div class="tr-grid">
+          <div class="pane" role="region" aria-labelledby="tr-list-title">
+            <h3 id="tr-list-title">Runs</h3>
+            <label for="tr-filter">Filter by task</label>
+            <input id="tr-filter" type="search" autocomplete="off" spellcheck="false">
+            <ul id="tr-list" class="rows tr-list"></ul>
+          </div>
+          <div class="pane" role="region" aria-labelledby="tr-detail-title">
+            <h3 id="tr-detail-title">Record</h3>
+            <div id="tr-detail"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="codebase" aria-labelledby="codebase-title" hidden>
+        <h2 id="codebase-title">Codebase</h2>
+        <p id="cb-status" class="muted" role="status">Open a repository to see its graph.</p>
+        <div class="cb-bar">
+          <ol id="cb-crumbs" class="cb-crumbs" aria-label="Codebase breadcrumb"></ol>
+          <button type="button" id="cb-back" disabled>Back</button>
+        </div>
+        <div class="cb-grid">
+          <div class="pane cb-canvas" role="region" aria-labelledby="cb-graph-title">
+            <h3 id="cb-graph-title">Module graph</h3>
+            <p id="cb-keys" class="muted">Drag, or the arrow keys, to pan; + and - to zoom; Escape to reset.</p>
+            <div id="cb-graph" tabindex="0" aria-describedby="cb-keys"></div>
+          </div>
+          <div class="pane" role="region" aria-labelledby="cb-details-title">
+            <h3 id="cb-details-title">Module</h3>
+            <div id="cb-details"></div>
+            <label for="cb-search">Search module names</label>
+            <input id="cb-search" type="search" autocomplete="off" spellcheck="false">
+            <ul id="cb-results" class="rows"></ul>
+          </div>
+        </div>
+        <div class="pane rd-pane" role="region" aria-labelledby="rd-title">
+          <h3 id="rd-title">Symbol radius</h3>
+          <form id="rd-form" class="rd-form">
+            <label for="rd-symbol">Symbol</label>
+            <input id="rd-symbol" type="text" autocomplete="off" spellcheck="false">
+            <button type="submit">Show radius</button>
+          </form>
+          <p id="rd-status" class="muted" role="status">Name a symbol to see its blast radius: reach and doubt, as two blocks.</p>
+          <div id="rd-result" class="rd-result"></div>
+        </div>
+      </section>
+
+      <section id="board" aria-labelledby="board-title" hidden>
+        <h2 id="board-title">Board</h2>
+        <div class="qb-bar">
+          <p id="qb-status" class="muted" role="status">Open the board to read the queue.</p>
+          <button type="button" id="qb-refresh">Refresh</button>
+        </div>
+        <div class="pane" role="region" aria-labelledby="qb-counts-title">
+          <h3 id="qb-counts-title">Tasks by status</h3>
+          <ul id="qb-counts" class="qb-counts"></ul>
+        </div>
+        <div class="qb-grid">
+          <div class="pane" role="region" aria-labelledby="qb-tasks-title">
+            <h3 id="qb-tasks-title">Queue</h3>
+            <ul id="qb-tasks" class="rows"></ul>
+          </div>
+          <div class="pane" role="region" aria-labelledby="qb-prci-title">
+            <h3 id="qb-prci-title">Pull requests and CI</h3>
+            <div id="qb-prci"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="vault" aria-labelledby="vault-title" hidden>
+        <h2 id="vault-title">Vault</h2>
+        <p id="vt-status" class="muted" role="status">Read-only: a note is changed with trellis vault or an editor, never from here.</p>
+        <div class="vt-grid">
+          <div class="pane" role="region" aria-labelledby="vt-search-title">
+            <h3 id="vt-search-title">Search</h3>
+            <form id="vt-form" class="vt-form">
+              <label for="vt-query">Search notes</label>
+              <input id="vt-query" type="search" autocomplete="off" spellcheck="false">
+              <button type="submit">Search</button>
+            </form>
+            <div id="vt-hits" class="vt-hits"></div>
+          </div>
+          <div class="pane" role="region" aria-labelledby="vt-note-title">
+            <h3 id="vt-note-title">Note</h3>
+            <div id="vt-note" class="vt-note"></div>
+          </div>
+        </div>
+      </section>
+
+      <form id="composer" class="composer" aria-label="Composer">
+        <label for="composer-text" id="composer-label">Task</label>
+        <textarea id="composer-text" name="task" rows="3" disabled></textarea>
+        <div class="composer-row">
+          <label for="composer-control">Approvals</label>
+          <select id="composer-control" name="control" disabled>
+            <option value="approve" selected>approve: ask before each listed call</option>
+            <option value="auto">auto: run without asking</option>
+          </select>
+          <button type="submit" id="composer-send" disabled>Send</button>
+          <button type="button" id="composer-stop" hidden>Stop</button>
+        </div>
+        <p id="composer-note" class="muted" role="status"></p>
+        <div id="composer-undelivered" class="composer-list" hidden>
+          <h3 id="composer-undelivered-title">Sent and not delivered</h3>
+          <ul id="composer-undelivered-list" class="rows" aria-labelledby="composer-undelivered-title"></ul>
+        </div>
+        <div id="composer-starters" class="composer-list" hidden>
+          <h3 id="composer-starters-title">Starters</h3>
+          <ul id="composer-starters-list" class="chips" aria-labelledby="composer-starters-title"></ul>
+        </div>
+      </form>
+
+      <details id="messages" class="messages">
+        <summary>trellis messages</summary>
+        <p class="muted">What trellis wrote to stderr, as text: it is shown, never read as data.</p>
+        <div id="messages-log" class="log" tabindex="0" aria-label="trellis messages"></div>
+      </details>
+
+      <dialog id="approval" class="approval" aria-labelledby="approval-title">
+        <form method="dialog">
+          <h2 id="approval-title">Approve this call?</h2>
+          <p id="approval-question"></p>
+          <pre id="approval-detail" class="approval-detail"></pre>
+          <div class="approval-row">
+            <button type="submit" id="approval-reject" value="reject">Reject</button>
+            <button type="submit" id="approval-approve" value="approve">Approve</button>
+          </div>
+        </form>
+      </dialog>
     </main>
   </body>
 </html>
