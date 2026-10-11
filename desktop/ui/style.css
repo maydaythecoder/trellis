@@ -1145,12 +1145,13 @@ article.past-run section + section {
   cursor: pointer;
 }
 
-/* What the wheel does over a map without focus, said for a moment. */
+/* What the wheel does over a map without focus, said for a moment at the
+   map's middle, which stays in view while that wheel scrolls the page. */
 .at-hint {
   position: absolute;
-  top: 8px;
+  top: 50%;
   left: 50%;
-  transform: translateX(-50%);
+  transform: translate(-50%, -50%);
   margin: 0;
   padding: 3px 10px;
   border: 1px solid var(--border);
