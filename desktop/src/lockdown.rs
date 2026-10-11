@@ -1964,6 +1964,152 @@ mod tests {
     }
 
     #[test]
+    fn atlas_shown_folds_the_model_pane_and_no_other_section_does() {
+        // The risk (the end-to-end run on poetry, 2026-10-11): on a first
+        // launch with no model chosen, the model pane, open above every
+        // section, pushed the whole Atlas below the fold at 1440x900.
+        // Showing the Atlas folds it; the user can open it again, and every
+        // other section leaves it to model.js, as before.
+        let js = code_of("atlas.js");
+        let rail = js
+            .split(r#"button[aria-controls="atlas"]"#)
+            .nth(1)
+            .and_then(|r| r.split("\n  }\n").next())
+            .expect("atlas.js listens to its rail button");
+        assert!(
+            rail.contains(r#"getElementById("model-pane")"#) && rail.contains(".open = false"),
+            "showing the Atlas leaves the model pane open: {rail}"
+        );
+        for (name, code) in ui_code() {
+            if name != "model.js" && name != "atlas.js" {
+                assert!(
+                    !code.contains("model-pane"),
+                    "{name} touches the model pane"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn atlas_wheel_scrolls_the_page_until_the_map_is_focused() {
+        // The risk (the end-to-end run at 860x600): the wheel over the map
+        // always zoomed it, so the detail pane below the map could not be
+        // scrolled to. A plain wheel scrolls the page, and zooms only once
+        // the map has focus or with Ctrl or Meta held, which a trackpad's
+        // pinch sends; a one-line hint says so when the wheel was let by.
+        let js = code_of("atlas.js");
+        let zooms = function_body(&js, "wheelZooms");
+        for want in [
+            "A.doc.activeElement === A.canvas",
+            "ev.ctrlKey",
+            "ev.metaKey",
+        ] {
+            assert!(zooms.contains(want), "wheelZooms lacks {want}");
+        }
+        let on = function_body(&js, "onWheel");
+        let gate = on
+            .find("if (!wheelZooms(A, ev))")
+            .expect("onWheel does not ask");
+        let stop = on.find("ev.preventDefault()").expect("onWheel never zooms");
+        assert!(gate < stop, "the page's scroll is stopped before asking");
+        assert!(on[gate..stop].contains("hint(A);") && on[gate..stop].contains("return;"));
+        let page = page();
+        let hint = index_of(&page, "at-hint");
+        assert!(within(&page, hint, index_of(&page, "atlas")));
+        assert!(
+            page[hint].attrs.contains_key("hidden"),
+            "the hint shows as served"
+        );
+        assert!(js.contains(r#""at-hint""#), "atlas.js never shows the hint");
+        // A click on the map gives it focus without scrolling the page.
+        assert!(js.contains("A.canvas.focus({ preventScroll: true })"));
+    }
+
+    #[test]
+    fn atlas_labels_by_kind_and_draws_a_count_only_with_its_name() {
+        // The risk (the end-to-end run): a function holding nested
+        // definitions drawn as "class execute()", since being a box was
+        // taken for being a class; and a "15 defs" line drawn where its
+        // module's name did not fit, a count with nothing to say what it
+        // counts.
+        let js = code_of("atlas.js");
+        let symbols = function_body(&js, "drawSymbols");
+        assert!(
+            !symbols.contains(r#"s.holds ? "class ""#),
+            "a box is called a class"
+        );
+        assert!(symbols.contains(r#"s.kind === "class""#));
+        let place = function_body(&js, "placeLabels");
+        assert!(place.contains("if (L.needs && !L.needs.placed) continue;"));
+        assert!(place.contains("L.placed = true;"));
+        // Each line under a name needs the name.
+        for f in ["drawModule", "drawSymbols"] {
+            assert!(
+                function_body(&js, f).contains("needs: name"),
+                "{f}'s count stands alone"
+            );
+        }
+    }
+
+    #[test]
+    fn atlas_diff_opens_against_the_oldest_snapshot_over_two_years_of_tags() {
+        // The risk (the end-to-end run): the diff opened against the
+        // snapshot before the one shown, almost empty; and the history held
+        // eight months, since get_history was asked for its default twelve
+        // tags.
+        let js = code_of("atlas.js");
+        assert!(js.contains("const HISTORY_ASKED = { commits: 20, tags: 200 };"));
+        let lens = function_body(&js, "setLens");
+        assert!(
+            !lens.contains("i - 1"),
+            "the diff takes the previous snapshot"
+        );
+        assert!(lens.contains("oldestBase(A)"), "{lens}");
+        assert!(function_body(&js, "takeView").contains("oldestBase(A)"));
+        assert!(function_body(&js, "oldestBase").contains("A.D.points[0]"));
+    }
+
+    #[test]
+    fn atlas_names_its_root_and_indexes_search_when_symbols_arrive() {
+        // The risk (the end-to-end run): a page that loaded after its child
+        // started heard no child-started, so the root crumb read
+        // "repository"; and the first search open took over a second while
+        // it built its index.
+        let js = code_of("atlas.js");
+        assert!(!js.contains(r#""repository""#), "a root with no name");
+        let frame = js
+            .split(r#"listen("rpc-frame""#)
+            .nth(1)
+            .and_then(|r| r.split("});").next())
+            .expect("atlas.js reads get_state's root");
+        assert!(frame.contains(r#"f.command === "get_state""#) && frame.contains("setRoot(A, "));
+        assert!(function_body(&js, "takeView").contains("indexSearch(A)"));
+        assert!(!function_body(&js, "openSearch").contains("indexSearch"));
+    }
+
+    #[test]
+    fn atlas_head_panel_shows_definitions_and_resolved_sites_and_the_edges_apart() {
+        // The risk (the end-to-end run): the HEAD panel showed no
+        // definitions, and listed call sites bound across modules as one of
+        // three counts beside ambiguous and unresolved, where the resolved
+        // sites belong. Each line says what it counts and where it comes
+        // from, and nothing draws them as parts of a whole or a share.
+        let js = code_of("atlas.js");
+        let head = function_body(&js, "overviewView");
+        for want in [
+            ".definitions",
+            ".resolved_call_sites",
+            "\"resolved call sites\"",
+            "\"derived\"",
+            "bound across modules",
+        ] {
+            assert!(head.contains(want), "the HEAD panel lacks {want}");
+        }
+        assert!(!head.contains("three counts"), "{head}");
+        assert!(!function_body(&js, "moduleView").contains("three counts"));
+    }
+
+    #[test]
     fn page_has_no_style_attribute() {
         // The risk: an inline style, which the CSP's `style-src 'self'`
         // refuses (so the page draws wrongly) or which a later CSP edit

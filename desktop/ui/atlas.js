@@ -32,7 +32,9 @@ const ID = "desktop-atlas-";
 // get_codebase lists this many modules: all of any repository the layout
 // draws (rpc's own default is 40).
 const MODULES_ASKED = 100000;
-const HISTORY_ASKED = { commits: 20, tags: 12 };
+// Every tag get_history gives, up to its cap: the core picks the snapshots
+// from those dated in the two years before HEAD (atlas.rs).
+const HISTORY_ASKED = { commits: 20, tags: 200 };
 // The world the core's normalised layout is drawn in: its height, and its
 // width by the layout's aspect.
 const WORLD_H = 1000;
@@ -690,6 +692,7 @@ function placeLabels(A) {
   A.drawn = [];
   ctx.textBaseline = "middle";
   for (const L of A.labels) {
+    if (L.needs && !L.needs.placed) continue;
     if (L.rx !== undefined && L.x < 4) {
       L.maxW = Math.min(L.maxW === undefined ? 1e9 : L.maxW, L.rx - 8);
       L.x = 4;
@@ -712,7 +715,8 @@ function placeLabels(A) {
     if (box[2] < 0 || box[0] > A.vw || box[3] < 0 || box[1] > A.vh) continue;
     if (taken.some((o) => box[0] < o[2] && o[0] < box[2] && box[1] < o[3] && o[1] < box[3])) continue;
     taken.push(box);
-    A.drawn.push({ text, box });
+    L.placed = true;
+    A.drawn.push({ text, box, needs: L.needs ? L.needs.text : null });
     ctx.globalAlpha = L.alpha === undefined ? 1 : L.alpha;
     ctx.font = L.font;
     if (L.pill) {
@@ -989,7 +993,7 @@ function drawModule(A, m, r, w, h, F, D, glyphs) {
   if (open) {
     const syms = A.D.symsOf.get(m.idx) || [];
     const hh = Math.min(m.y1 - m.y0, m.x1 - m.x0) * 0.1 * A.t.k;
-    A.labels.push({
+    const name = {
       pri: role & SEL ? 1 : 3,
       x: r[0] + 5,
       y: r[1] + Math.min(hh, 22) / 2 + 1,
@@ -1002,16 +1006,17 @@ function drawModule(A, m, r, w, h, F, D, glyphs) {
       alpha: a,
       rx: r[2],
       ry: r[3],
-    });
+    };
+    A.labels.push(name);
     if (syms.length === 0) {
       const why = A.view && A.view.symbols === null ? "symbols not read yet" : "no definitions";
-      A.labels.push({ pri: 6, x: r[0] + 5, y: r[1] + hh + 10, text: why, font: FONT.sub, size: 11, color: P.muted, maxW: w - 10 });
+      A.labels.push({ needs: name, pri: 6, x: r[0] + 5, y: r[1] + hh + 10, text: why, font: FONT.sub, size: 11, color: P.muted, maxW: w - 10 });
     }
     return;
   }
   if (w >= 24 && h >= 13) {
     const pri = role & SEL ? 1 : 4 + 1 / (1 + w * h);
-    A.labels.push({
+    const name = {
       pri,
       x: r[0] + 3,
       y: r[1] + Math.min(8, h / 2),
@@ -1024,11 +1029,15 @@ function drawModule(A, m, r, w, h, F, D, glyphs) {
       alpha: a,
       rx: r[2],
       ry: r[3],
-    });
+    };
+    A.labels.push(name);
     if (h >= 30 && w >= 46 && pr) {
       const t = lensLine(A, m);
       if (t) {
+        // A count is drawn only under its module's name: where the name
+        // does not fit, neither does the count.
         A.labels.push({
+          needs: name,
           pri: pri + 1,
           x: r[0] + 3,
           y: r[1] + 21,
@@ -1046,10 +1055,6 @@ function drawModule(A, m, r, w, h, F, D, glyphs) {
       }
     }
   }
-}
-
-function symLabel(s) {
-  return s.kind === "class" ? s.name : `${s.name}()`;
 }
 
 function drawSymbols(A, m, F) {
@@ -1092,19 +1097,23 @@ function drawSymbols(A, m, F) {
     if (w >= 22 && lh >= 11) {
       const fill = s.holds ? (m.test ? P["region-head-test"] : P["region-head"]) : cellFill(A, m);
       const pri = F && F.sym === i ? 1 : 5 + s.depth * 0.1 + 1 / (1 + w * h);
-      A.labels.push({
+      // Named by its kind: a function that holds nested definitions is a
+      // box on the map, and still a function.
+      const name = {
         pri,
         x: r[0] + 3,
         y: r[1] + Math.min(lh, 16) / 2 + 0.5,
-        text: `${s.holds ? "class " : ""}${symLabel(s)}`,
+        text: s.kind === "class" ? `class ${s.name}` : `${s.name}()`,
         font: s.holds || (F && F.sym === i) ? FONT.symB : FONT.sym,
         size: 11,
         color: P.fg,
         halo: fill,
         maxW: w - (hasRadius ? 14 : 6),
-      });
+      };
+      A.labels.push(name);
       if (!s.holds && h >= 28 && w >= 64) {
         A.labels.push({
+          needs: name,
           pri: pri + 1,
           x: r[0] + 3,
           y: r[1] + 22.5,
@@ -1633,6 +1642,14 @@ function overviewView(A) {
   const S = snap(A, A.si);
   if (!S) return [el(A.doc, "h3", "Atlas"), note(A, progressText(A))];
   const s = S.s;
+  // get_symbols reads HEAD: its definitions and the sites bound to them by
+  // a Resolved edge (each definition's calls_in, summed by the core). At an
+  // earlier snapshot the definitions are its modules' defines, summed.
+  const sy = isHead(A) && A.view.symbols && !str(A.view.symbols.error) ? A.view.symbols : null;
+  const defs = sy ? nv(A, sy.definitions, "trellis") : nv(A, s.definitions, "derived");
+  const resolved = sy
+    ? nv(A, sy.resolved_call_sites, "derived")
+    : el(A.doc, "span", isHead(A) ? "not read yet" : "read at HEAD only");
   const out = [
     el(A.doc, "h3", `Snapshot ${s.label}`),
     (() => {
@@ -1642,15 +1659,19 @@ function overviewView(A) {
     })(),
     dl(A, [
       ["modules indexed", nv(A, s.modules_indexed, "trellis")],
+      ["definitions", defs],
       ["module edges", nv(A, s.module_edges, "trellis")],
     ]),
-    h4(A, "First-party call sites, three counts", "trellis"),
+    h4(A, "First-party call sites"),
     dl(A, [
-      ["bound across modules (the edges)", nv(A, s.bound_call_sites)],
-      ["ambiguous", nv(A, s.ambiguous)],
-      ["unresolved", nv(A, s.unresolved)],
+      ["resolved call sites", resolved],
+      ["ambiguous", nv(A, s.ambiguous, "trellis")],
+      ["unresolved", nv(A, s.unresolved, "trellis")],
     ]),
-    note(A, "Three counts, never a share. Click a module for what calls it and what it calls, a package header for its figures, a symbol (zoom in on a module) for its radius. Press / to search."),
+    note(A, "Each line counts its own sites. The panel draws no total and no share."),
+    h4(A, "The map's edges"),
+    dl(A, [["call sites bound across modules", nv(A, s.bound_call_sites, "trellis")]]),
+    note(A, "Click a module for what calls it and what it calls, a package header for its figures, a symbol (zoom in on a module) for its radius. Press / to search."),
   ];
   if (isCount(s.modules_not_drawn) && s.modules_not_drawn > 0) {
     out.push(note(A, `${s.modules_not_drawn} modules past the limit were not listed by trellis, so they are not on the map.`));
@@ -1698,7 +1719,7 @@ function moduleView(A, m) {
         ["definitions", nv(A, r[1], "trellis")],
         ["call sites bound in, from other modules", nv(A, r[5], "derived")],
       ]),
-      h4(A, "Call sites made here, three counts"),
+      h4(A, "Call sites made here"),
       dl(A, [
         [floor ? "bound to another module, at least" : "bound to another module", nv(A, r[7], "derived")],
         ["ambiguous", nv(A, r[2], "trellis")],
@@ -2225,9 +2246,8 @@ function renderToolbar(A) {
     );
     range.setAttribute("aria-valuetext", `${s.label}, ${day(s.date)}`);
   } else readout.replaceChildren();
-  const root = A.root ? A.root.replace(/[\\/]+$/, "").split(/[\\/]/).pop() : "";
   const head = A.D ? snap(A, A.D.head) : null;
-  const parts = [root, head ? `HEAD ${short(head.s.commit)}` : "", A.version ?? ""].filter((x) => x);
+  const parts = [rootName(A), head ? `HEAD ${short(head.s.commit)}` : "", A.version].filter((x) => x);
   byId(A, "at-where").textContent = parts.join(" · ");
 }
 
@@ -2256,7 +2276,7 @@ function crumbs(A) {
   const key = path.map((p) => p.idx).join(",");
   if (key === A.lastCrumbs) return;
   A.lastCrumbs = key;
-  const root = A.root ? A.root.replace(/[\\/]+$/, "").split(/[\\/]/).pop() : "repository";
+  const root = rootName(A) ?? "root";
   ol.replaceChildren(
     ...path.map((p) => {
       const li = el(A.doc, "li");
@@ -2280,15 +2300,35 @@ function renderAll(A) {
   crumbs(A);
 }
 
+// The baseline a diff opens against, until one is chosen: the oldest
+// snapshot loaded, or the newest when the oldest is the one shown.
+function oldestBase(A) {
+  const p = A.D.points;
+  const oldest = A.D.points[0];
+  return oldest !== A.si || p.length < 2 ? oldest ?? A.si : p[p.length - 1];
+}
+
 function setLens(A, l) {
   A.lens = l;
   A.diffCache = null;
-  if (l === "diff" && A.base === A.si && A.D) {
-    const i = A.D.points.indexOf(A.si);
-    A.base = A.D.points[i > 0 ? i - 1 : Math.min(1, A.D.points.length - 1)] ?? A.si;
-  }
+  if (l === "diff" && A.D && !A.baseChosen) A.base = oldestBase(A);
   if (l === "diff" && (!A.sel || A.sel.t !== "module")) A.tab = "chg";
   A.F = focus(A);
+  renderAll(A);
+}
+
+// The open repository's directory name, or null while none is known.
+function rootName(A) {
+  return A.root ? A.root.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || A.root : null;
+}
+
+// The root, from child-started or, for a page that loaded after its child
+// started and so heard none, from the child's answer to get_state.
+function setRoot(A, root) {
+  if (typeof root !== "string" || root === "" || root === A.root) return;
+  A.root = root;
+  A.pins = loadPins(A);
+  A.lastCrumbs = "";
   renderAll(A);
 }
 
@@ -2327,8 +2367,18 @@ function togglePin(A, path) {
 
 // --- search ------------------------------------------------------------------
 
-function candidates(A) {
-  if (A.cands) return A.cands;
+// The search's candidates, built when an answer brings modules or symbols
+// and kept while they are the same, so opening the search waits on nothing.
+function indexSearch(A) {
+  if (A.D === null) {
+    A.cands = null;
+    A.candsKey = null;
+    return;
+  }
+  const L = A.view.layout;
+  const key = `${A.D.modules.length}|${A.D.fixed}|${list(L.over).join(",")}|${A.D.symbols.length}`;
+  if (A.cands && A.candsKey === key) return;
+  A.candsKey = key;
   const out = [];
   for (const m of A.D.modules) out.push({ t: "module", id: m.idx, text: m.module, low: m.module.toLowerCase(), cut: m.module.lastIndexOf(".") });
   for (const s of A.D.symbols) {
@@ -2338,7 +2388,10 @@ function candidates(A) {
     out.push({ t: "symbol", id: s.idx, text, low: text.toLowerCase(), cut: m.module.length });
   }
   A.cands = out;
-  return out;
+}
+
+function candidates(A) {
+  return A.cands ?? [];
 }
 
 const SEPS = "._/ ";
@@ -2497,6 +2550,7 @@ function pick(A, i) {
 
 function moveTo(A, si) {
   A.si = si;
+  if (A.D && !A.baseChosen) A.base = oldestBase(A);
   A.diffCache = null;
   A.F = focus(A);
 }
@@ -2511,7 +2565,7 @@ export function takeView(A, v) {
   const selPath = A.sel && A.D ? selectionKey(A) : null;
   A.view = v;
   A.D = index(v);
-  A.cands = null;
+  indexSearch(A);
   A.diffCache = null;
   settle(A);
   if (A.D !== null) {
@@ -2520,8 +2574,7 @@ export function takeView(A, v) {
       return i >= 0 && A.D.points.includes(i) ? i : fallback;
     };
     A.si = find(wasLabel, A.D.head);
-    const prev = A.D.points[Math.max(0, A.D.points.indexOf(A.si) - 1)];
-    A.base = find(baseLabel, prev ?? A.si);
+    A.base = A.baseChosen ? find(baseLabel, oldestBase(A)) : oldestBase(A);
     A.sel = selPath === null ? null : reselect(A, selPath);
     if (!A.fitted && A.vw > 1) {
       A.fitted = true;
@@ -2582,6 +2635,8 @@ export function reset(A, said) {
   A.inflight = null;
   A.fitted = false;
   A.cands = null;
+  A.candsKey = null;
+  A.baseChosen = false;
   A.diffCache = null;
   A.si = -1;
   A.base = -1;
@@ -2621,6 +2676,8 @@ function wirePointer(A) {
   };
   cv.addEventListener("pointerdown", (ev) => {
     if (ev.button !== 0) return;
+    // A click gives the map focus, and with it the wheel.
+    A.canvas.focus({ preventScroll: true });
     A.dragged = false;
     drag = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, t: { ...A.t } };
   });
@@ -2674,17 +2731,10 @@ function wirePointer(A) {
       flyTo(A, hv, true);
     }
   });
-  cv.addEventListener(
-    "wheel",
-    (ev) => {
-      if (A.D === null) return;
-      ev.preventDefault();
-      const [px, py] = at(ev);
-      const scale = ev.deltaMode === 1 ? 0.05 : ev.ctrlKey ? 0.01 : 0.002;
-      zoomAbout(A, Math.exp(-ev.deltaY * scale), px, py);
-    },
-    { passive: false },
-  );
+  cv.addEventListener("wheel", (ev) => onWheel(A, ev), { passive: false });
+  cv.addEventListener("focus", () => {
+    byId(A, "at-hint").hidden = true;
+  });
   cv.addEventListener("keydown", (ev) => {
     if (A.D === null) return;
     switch (ev.key) {
@@ -2740,6 +2790,37 @@ function wirePointer(A) {
   });
 }
 
+// Whether the wheel zooms the map: once it has focus, from a click or the
+// keyboard, or with Ctrl or Meta held, which a trackpad's pinch sends.
+// Otherwise the wheel scrolls the page, so the detail pane below a short
+// window's map can be reached.
+function wheelZooms(A, ev) {
+  return A.doc.activeElement === A.canvas || ev.ctrlKey || ev.metaKey;
+}
+
+function onWheel(A, ev) {
+  if (A.D === null) return;
+  if (!wheelZooms(A, ev)) {
+    hint(A);
+    return;
+  }
+  ev.preventDefault();
+  const r = A.canvas.getBoundingClientRect();
+  const scale = ev.deltaMode === 1 ? 0.05 : ev.ctrlKey ? 0.01 : 0.002;
+  zoomAbout(A, Math.exp(-ev.deltaY * scale), ev.clientX - r.left, ev.clientY - r.top);
+}
+
+// Says, for a moment, how to zoom with the wheel.
+function hint(A) {
+  const h = byId(A, "at-hint");
+  h.hidden = false;
+  if (A.hintTimer !== null) A.win.clearTimeout(A.hintTimer);
+  A.hintTimer = A.win.setTimeout(() => {
+    h.hidden = true;
+    A.hintTimer = null;
+  }, 2500);
+}
+
 function typing(t) {
   return t && ["INPUT", "SELECT", "TEXTAREA"].includes(t.tagName);
 }
@@ -2766,6 +2847,7 @@ function wireControls(A) {
   });
   byId(A, "at-base").addEventListener("change", (ev) => {
     A.base = Number(ev.target.value);
+    A.baseChosen = true;
     A.diffCache = null;
     renderAll(A);
   });
@@ -2856,6 +2938,9 @@ export async function wireAtlas(doc, win, tauri) {
     diffCache: null,
     pins: new Set(),
     radiusFly: null,
+    baseChosen: false,
+    candsKey: null,
+    hintTimer: null,
     reduced: win.matchMedia("(prefers-reduced-motion: reduce)"),
   };
   readPalette(A);
@@ -2882,6 +2967,10 @@ export async function wireAtlas(doc, win, tauri) {
     reset(A, "Another repository is open: its atlas is read when this section is shown.");
     pump(A);
   });
+  await tauri.event.listen("rpc-frame", (event) => {
+    const f = event.payload;
+    if (f !== null && typeof f === "object" && f.type === "response" && f.command === "get_state" && f.success === true && f.data) setRoot(A, f.data.root);
+  });
   await tauri.event.listen("rpc-exited", () => {
     A.childUp = false;
     A.inflight = null;
@@ -2893,6 +2982,11 @@ export async function wireAtlas(doc, win, tauri) {
   const button = doc.querySelector('nav.rail button[aria-controls="atlas"]');
   if (button) {
     button.addEventListener("click", () => {
+      // The model pane, open above every section until a model is chosen,
+      // would push the map below the fold; showing the Atlas folds it, and
+      // its summary opens it again.
+      const pane = doc.getElementById("model-pane");
+      if (pane && pane.open) pane.open = false;
       // After every click listener, the rail's among them, has run, so the
       // section is shown when it is measured. A page loaded after its child
       // started saw no child-started; asking is what tells whether one is
