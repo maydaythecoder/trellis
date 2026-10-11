@@ -142,7 +142,13 @@ current view without removing the other ones"):* the rail switches seven
 sections, in this order: overview, run, trails, codebase, atlas, board and
 vault. The Atlas is the one added, after codebase; every other section and
 what it does are unchanged (`page_rail_buttons_control_sections_that_exist`
-in `src/lockdown.rs`).
+in `src/lockdown.rs`). `ui/atlas.js` draws it on a canvas from the view's
+`atlas` key, which the core (`src/atlas.rs`) computes from `get_history`,
+`get_codebase` (with `edges` and `ref`), `get_symbols` and `get_radius`
+answers, the map's layout included. The page uses no library and loads
+nothing from a network, writes text through `textContent` only, reads its
+colours from `style.css` at draw time, and takes no animated flight under
+`prefers-reduced-motion` (the `atlas_` tests in `src/lockdown.rs`).
 
 ### 6. The client contract
 
