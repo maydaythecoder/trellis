@@ -18,7 +18,9 @@
 //! `radius` event). `vault_search` and `vault_graph` answers become the
 //! vault notes view (`state/vault.rs`, the `view` event's `vault` key), and
 //! `get_queue` answers the board's queue view (`queue.rs`, its `queue`
-//! key). The page has four commands: `rpc_send`, `get_trails`
+//! key); the Atlas's `get_history`, `get_codebase`, `get_symbols` and
+//! `get_radius` answers become its view (`atlas.rs`, its `atlas` key). The
+//! page has four commands: `rpc_send`, `get_trails`
 //! (the trails view's rows, `trails.rs`), `open_repository` and
 //! `get_overview`.
 //!
@@ -33,6 +35,7 @@
 // window. Tests keep the console so their output is seen.
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
+mod atlas;
 mod child;
 mod codebase;
 mod commands;
