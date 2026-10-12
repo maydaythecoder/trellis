@@ -319,6 +319,44 @@ fn colibri_context_line(budget: usize) -> String {
     )
 }
 
+/// `doctor`'s lines for the model card colibri 2.0.0 puts on `/v1/models`
+/// (#626): what the run's preflight refuses on. None for a body without
+/// the lists, which decides nothing. Every entry is the server's, cut and
+/// passed through [`plain`].
+fn colibri_card_lines(card: &trellis_model::colibri::Card) -> Vec<String> {
+    let show = |list: &[String]| -> String {
+        list.iter()
+            .take(8)
+            .map(|s| plain(&s.chars().take(40).collect::<String>()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut out = Vec::new();
+    if let Some(c) = &card.capabilities {
+        out.push(format!(
+            "card:       capabilities {}; {}; as reported by colibri",
+            show(c),
+            if card.chats() == Some(true) {
+                "a run can chat with it"
+            } else {
+                "it does not chat, so `trellis run` refuses it before the snapshot"
+            }
+        ));
+    }
+    if let Some(m) = &card.input_modalities {
+        out.push(format!(
+            "card:       input modalities {}; {}; as reported by colibri",
+            show(m),
+            if card.takes_images() == Some(true) {
+                "--image is accepted"
+            } else {
+                "--image is refused before the snapshot"
+            }
+        ));
+    }
+    out
+}
+
 /// `doctor`'s lines for what colibri's `/health` reported, each marked as
 /// colibri's own report (ADR 0047 decision 7). Every string is the
 /// server's, so each goes through [`plain`].
@@ -595,11 +633,12 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
             tier = Some(AdapterTier::Native);
             match &seen {
                 Ok(ColibriSeen {
-                    identity: Identity::Identified { id },
+                    identity: Identity::Identified { id, card },
                     health,
                 }) => {
                     runtime = colibri_runtime(&h.base, &h.model, id);
                     colibri_lines.push("version:    not reported over HTTP".to_string());
+                    colibri_lines.extend(colibri_card_lines(card));
                     colibri_lines.push(colibri_context_line(hosted::hosted_context_bytes(
                         &h, &repo_cfg, true,
                     )?));
@@ -707,7 +746,8 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
                         &format!("asking {probed} whether it is colibri"),
                         colibri::READ_TIMEOUT,
                     );
-                    if let Ok(Identity::Identified { id }) = colibri::identify(base, None).await {
+                    if let Ok(Identity::Identified { id, .. }) = colibri::identify(base, None).await
+                    {
                         tier = Some(AdapterTier::ValidateAndRetry);
                         notes.push(colibri_vllm_note(base, &id));
                         return;
