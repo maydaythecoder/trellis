@@ -2544,6 +2544,106 @@ mod tests {
         }
     }
 
+    #[test]
+    fn focus_section_every_section_heading_takes_focus_outside_the_tab_order() {
+        // The risk (#646): a rail press left focus in the rail, so Tab
+        // walked the rail, the status area and the model pane before the
+        // section chosen. Each of the seven sections' headings, the element
+        // its aria-labelledby names, takes focus with tabindex -1: focus
+        // can be moved there, and Tab does not stop on it.
+        let page = page();
+        for id in SECTIONS {
+            let section = &page[index_of(&page, id)];
+            let title = section
+                .attr("aria-labelledby")
+                .unwrap_or_else(|| panic!("#{id} names no heading"));
+            let h = index_of(&page, title);
+            assert_eq!(page[h].tag, "h2", "#{id}'s heading #{title}");
+            assert!(
+                within(&page, h, index_of(&page, id)),
+                "#{title} is outside #{id}"
+            );
+            assert_eq!(
+                page[h].attr("tabindex"),
+                Some("-1"),
+                "#{title} cannot take focus, or joins the tab order"
+            );
+        }
+    }
+
+    #[test]
+    fn focus_section_rail_press_focuses_the_shown_section_s_heading() {
+        // The risk (#646): showing a section and leaving focus on the rail
+        // button, or focusing something other than the heading the section
+        // is labelled by. No JavaScript runs under cargo test, so this holds
+        // the text; a node smoke script with a fake DOM pressed each rail
+        // button (see the commit).
+        let main = code_of("main.js");
+        let rail = function_body(&main, "wireRail");
+        let click = rail
+            .split("b.addEventListener(\"click\", () => {")
+            .nth(1)
+            .and_then(|r| r.split("});").next())
+            .expect("each rail button has a click handler");
+        let shown = click
+            .find("select(b);")
+            .expect("the press shows its section");
+        let section = click
+            .find("document.getElementById(b.getAttribute(\"aria-controls\"))")
+            .expect("the press finds its section");
+        let heading = click
+            .find("document.getElementById(section.getAttribute(\"aria-labelledby\"))")
+            .expect("the press finds the section's heading");
+        let focused = click
+            .find("heading.focus();")
+            .expect("the press focuses it");
+        assert!(
+            shown < section && section < heading && heading < focused,
+            "the heading is focused before its section is shown: {click}"
+        );
+    }
+
+    #[test]
+    fn focus_section_page_has_exactly_one_h1_a_reader_can_find() {
+        // The risk (#646): a page with no h1, so heading navigation starts
+        // at the sections with nothing naming the page; or an h1 hidden by
+        // `display` or `visibility`, which hides it from a screen reader
+        // too, or drawn above every section where it costs the first
+        // screen a line.
+        let page = page();
+        let h1s: Vec<usize> = (0..page.len()).filter(|&i| page[i].tag == "h1").collect();
+        assert_eq!(h1s.len(), 1, "one h1");
+        let h1 = &page[h1s[0]];
+        assert_eq!(h1.text.trim(), "trellis");
+        let first_section = (0..page.len())
+            .find(|&i| page[i].tag == "section")
+            .expect("a section");
+        assert!(h1s[0] < first_section, "the h1 comes after a section");
+        let class = h1.attr("class").expect("the h1 has a class");
+        let rules = css_rules();
+        let rule: Vec<String> = rules
+            .iter()
+            .filter(|(s, _)| s.split(',').any(|s| s.trim() == format!(".{class}")))
+            .map(|(_, d)| d.split_whitespace().collect())
+            .collect();
+        assert_eq!(rule.len(), 1, "one .{class} rule");
+        for bad in ["display:none", "visibility:hidden"] {
+            assert!(
+                !rule[0].contains(bad),
+                ".{class} {{ {} }} hides it from a reader",
+                rule[0]
+            );
+        }
+        for want in [
+            "position:absolute",
+            "width:1px",
+            "height:1px",
+            "overflow:hidden",
+        ] {
+            assert!(rule[0].contains(want), ".{class} lacks {want}: it is drawn");
+        }
+    }
+
     /// `style.css` with its comments removed, as `(selector, declarations)`
     /// for each innermost rule, in order; an `@media` block's own rules
     /// are listed, not the block.
