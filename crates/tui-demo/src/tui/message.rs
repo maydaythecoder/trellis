@@ -48,7 +48,8 @@ pub enum Message {
         unresolved: usize,
     },
     /// After each turn. `prompt_bytes` is the prompt's size in bytes as
-    /// the loop measured it, not a token count (#243).
+    /// the loop measured it, not a token count (#243), and `None` when the
+    /// turn did not report one (#641).
     ///
     /// The last three are that turn's model call as the `turn` event reports
     /// it (#256): output tokens, the call's wall time, and the queue wait the
@@ -56,12 +57,16 @@ pub enum Message {
     /// the view can draw nothing rather than a rate made from a guess (#257).
     BudgetUpdated {
         iteration: u32,
-        prompt_bytes: u64,
+        prompt_bytes: Option<u64>,
         elapsed_secs: u64,
         completion_tokens: Option<u64>,
         model_ms: Option<u64>,
         queue_wait_ms: Option<u64>,
     },
+    /// Seconds since the run began, from the driver's clock, every second
+    /// while a run is in flight (#641). Sent from outside so that `update`
+    /// stays free of IO and the view never reads a clock itself.
+    Elapsed(u64),
     /// At the start of a run: the iteration ceiling the loop enforces.
     BudgetKnown {
         max_iterations: u32,
