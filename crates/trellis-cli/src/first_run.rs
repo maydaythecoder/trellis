@@ -245,6 +245,18 @@ pub(crate) fn choose(
     input: &mut dyn BufRead,
     out: &mut dyn Write,
 ) -> Result<Option<String>> {
+    // Said before the probe, not after it: the probe is up to `bound` of
+    // blank terminal otherwise, with nothing to say what it waits on (#650).
+    let places: Vec<String> = runtimes
+        .iter()
+        .map(|r| format!("{} ({})", r.addr, r.name))
+        .collect();
+    writeln!(
+        out,
+        "looking for models at {} (up to {:.1} s)",
+        places.join(", "),
+        bound.as_secs_f64()
+    )?;
     let probed = probe(runtimes, bound);
     let offered = specs(&probed);
     if offered.is_empty() {
@@ -472,6 +484,29 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("--model"), "{err}");
         assert!(!file.exists(), "nothing written without a choice");
+    }
+
+    #[test]
+    fn wait_line_choose_says_where_it_looks_before_it_looks() {
+        // #650: the probe was up to 1.5 s of blank terminal before the list
+        // or the refusal. The first thing written names every address asked
+        // and the bound, even when nothing answers.
+        let dir = tempfile::tempdir().unwrap();
+        let addr = closed();
+        let mut shown = Vec::new();
+        let _ = choose(
+            &[ollama_at(addr)],
+            BOUND,
+            &dir.path().join("config.toml"),
+            &mut "q\n".as_bytes(),
+            &mut shown,
+        );
+        let shown = String::from_utf8(shown).unwrap();
+        assert_eq!(
+            shown.lines().next(),
+            Some(format!("looking for models at {addr} (Ollama) (up to 1.5 s)").as_str()),
+            "{shown}"
+        );
     }
 
     #[test]
