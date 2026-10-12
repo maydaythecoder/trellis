@@ -70,9 +70,19 @@ function trailLine(t) {
   return parts.join(" · ");
 }
 
+// Whether the open repository's trellis rpc child is running, as main.js
+// last said: from `child-started`, `no-child`, `rpc-exited`, or a late
+// page's refused `get_state`. Opening the root again starts a new child,
+// which while one runs would only restart it and after an exit is the way
+// to start it again (#638).
+let childRuns = true;
+// The overview and actions last drawn, so a change in `childRuns` redraws
+// them.
+let lastOverview = null;
+let lastActions = null;
+
 // recent: each listed repository with its newest trail, and "Open". The
-// one already open is marked and its button disabled: opening it again
-// would only restart its child.
+// one already open is marked and its button disabled while its child runs.
 function recent(doc, pane, o, actions) {
   const why = str(o.recent_error);
   if (why !== null) {
@@ -86,10 +96,11 @@ function recent(doc, pane, o, actions) {
     const head = el(doc, "div");
     head.append(el(doc, "code", path ?? "path not reported"));
     if (path !== null) {
-      const b = el(doc, "button", path === open ? "Open now" : "Open");
+      const live = path === open && childRuns;
+      const b = el(doc, "button", live ? "Open now" : "Open");
       b.type = "button";
-      b.setAttribute("aria-label", `${path === open ? "Open now" : "Open"}: ${path}`);
-      b.disabled = path === open;
+      b.setAttribute("aria-label", `${live ? "Open now" : "Open"}: ${path}`);
+      b.disabled = live;
       b.addEventListener("click", () => actions.open(path));
       head.append(" ", b);
     }
@@ -283,9 +294,24 @@ export function drawPrCi(doc, value) {
   return out;
 }
 
-// The overview's own line: which repository the panes below describe.
-function rootLine(doc, pane, o) {
-  pane.textContent = "root" in o ? `Repository: ${str(o.root) ?? "path not reported"}` : NO_ROOT;
+// The overview's own line: which repository the panes below describe, and,
+// while its trellis rpc is not running, "Start again" on it. The line
+// carries the button because the root may be missing from `recent`, which
+// lists only the repositories an interface was started in.
+function rootLine(doc, pane, o, actions) {
+  if (!("root" in o)) {
+    pane.textContent = NO_ROOT;
+    return;
+  }
+  const root = str(o.root);
+  pane.textContent = `Repository: ${root ?? "path not reported"}`;
+  if (root !== null && !childRuns) {
+    const b = el(doc, "button", "Start again");
+    b.type = "button";
+    b.setAttribute("aria-label", `Start trellis rpc again on ${root}`);
+    b.addEventListener("click", () => actions.open(root));
+    pane.append(" ", b);
+  }
 }
 
 // element id -> drawing function, each given the whole object.
@@ -301,8 +327,17 @@ const PANES = {
 // a recent repository's "Open" does.
 export function drawOverview(doc, o, actions) {
   if (o === null || typeof o !== "object") return;
+  lastOverview = o;
+  lastActions = actions;
   for (const [id, draw] of Object.entries(PANES)) {
     const pane = doc.getElementById(id);
     if (pane) draw(doc, pane, o, actions);
   }
+}
+
+// Whether the open repository's trellis rpc child runs, from main.js's
+// child events; the last overview is redrawn so its root's controls follow.
+export function drawOverviewChild(doc, runs) {
+  childRuns = runs;
+  if (lastOverview !== null) drawOverview(doc, lastOverview, lastActions);
 }

@@ -13,12 +13,12 @@
 // characters, never parsed.
 
 import { drawView } from "./render.js";
-import { drawOverview } from "./overview.js";
-import { askStarters, drawComposer, wireComposer } from "./composer.js";
+import { drawOverview, drawOverviewChild } from "./overview.js";
+import { askStarters, composerStopped, drawComposer, wireComposer } from "./composer.js";
 import { drawDialogs, wireDialogs } from "./dialogs.js";
-import { askModels, drawModelPane, wireModelPane } from "./model.js";
+import { askModels, drawModelPane, modelPaneStopped, wireModelPane } from "./model.js";
 import { drawSettings, wireRepositorySwitch } from "./settings.js";
-import { drawStatus, wireStatus } from "./status.js";
+import { drawStatus, exitText, wireStatus } from "./status.js";
 
 function show(id, text) {
   document.getElementById(id).textContent = text;
@@ -44,19 +44,37 @@ function wireRail() {
   for (const b of buttons) b.addEventListener("click", () => select(b));
 }
 
+// How many `child-started` events this page has heard, so a refusal that
+// crossed a newer child's start is not taken for that child's state.
+let childrenStarted = 0;
+
+// How the core's `rpc_send` begins a refusal for want of a child
+// (`commands.rs`); the rest is its reason.
+const NO_CHILD = "rpc_send: no trellis rpc child is running: ";
+
 // Asks the child for its state. The core answers a forwarded get_state by
 // sending every pane in the next view event, so a page that loaded late or
 // reloaded gets the run back. A refusal is the core's reason there is no
-// child: still starting, no repository found, or the child exited. Says
-// whether the line was forwarded, so a child is known to be running.
+// child: still starting, no repository found, or the child exited. A page
+// that loaded late heard no `no-child` or `rpc-exited` for that, so the
+// refusal is passed on as the not-running state (#638). Says whether the
+// line was forwarded, so a child is known to be running.
 async function askState(tauri) {
+  const heard = childrenStarted;
   try {
     await tauri.core.invoke("rpc_send", {
       line: { id: "desktop-state", type: "get_state" },
     });
     return true;
   } catch (err) {
-    show("status", String(err));
+    const said = String(err);
+    show("status", said);
+    if (said.startsWith(NO_CHILD) && childrenStarted === heard) {
+      const why = said.slice(NO_CHILD.length);
+      composerStopped(document, why);
+      modelPaneStopped(document, why);
+      drawOverviewChild(document, false);
+    }
     return false;
   }
 }
@@ -123,6 +141,8 @@ async function main() {
     }
   });
   await tauri.event.listen("child-started", (event) => {
+    childrenStarted += 1;
+    drawOverviewChild(document, true);
     const c = event.payload;
     show("status", `${c.version ?? "trellis (version unknown)"} rpc on ${c.root}`);
     askState(tauri);
@@ -138,9 +158,11 @@ async function main() {
   });
   await tauri.event.listen("no-child", (event) => {
     show("status", String(event.payload));
+    drawOverviewChild(document, false);
   });
   await tauri.event.listen("rpc-exited", (event) => {
-    show("status", `trellis rpc exited: ${json(event.payload)}`);
+    show("status", `trellis rpc ${exitText(event.payload)}`);
+    drawOverviewChild(document, false);
   });
   // With no root the core emits the overview once at startup.
   await tauri.event.listen("overview", (event) => {
