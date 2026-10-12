@@ -1689,6 +1689,162 @@ mod tests {
         }
     }
 
+    /// A `log --json` line for one scripted run that ran no check, as
+    /// trellis words it there: `outcome` is the trail's word.
+    fn trail_line_no_check(run_id: &str) -> String {
+        json!({
+            "run_id": run_id,
+            "integrity": "intact",
+            "outcome": "no check ran",
+            "trail": {
+                "schema": 1,
+                "run_id": run_id,
+                "task": "rename f to g",
+                "base_commit": "abc1234",
+                "started_at": "2026-10-10T12:00:00Z",
+                "provenance": {"trellis_version": "0.1.0", "model": "scripted:x", "tier": null},
+                "factual": {
+                    "proposed": [],
+                    "radius": {"reached_resolved": 0, "reached_ambiguous": 0,
+                               "widest_unbound_in_touched_files": 0, "radius_queries": 0},
+                    "checks": [],
+                    "check_outcomes": [],
+                    "approved_by": "Human",
+                    "mode_counts": {"verified": 0, "reviewed": 0},
+                    "actions": []
+                },
+                "factual_sha256": "00ff",
+                "judgment": {"tech_debt_projection": "none", "rationale": "none"}
+            }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn outcome_vocabulary_one_run_reads_the_same_in_all_three_panes() {
+        // The risk (#653, UX-27): after one scripted run the Run pane said
+        // `not_converged` from rpc's run_end, while the Trails list and the
+        // Overview said "no check ran" from the trail, so one run read as
+        // two. Every pane's outcome word comes through
+        // `state::outcome_words`: the reducer's view, the trail row, and
+        // the overview's newest trail all say the same thing for this run.
+        let run_id = "20261010-120000-000";
+        let mut s = DesktopState::default();
+        s.update(parse_stdout(
+            &json!({"type": "run_start", "version": 1, "trellis": "0.1.0",
+                    "task": "rename f to g", "model": "scripted:x", "root": "/w/app",
+                    "id": "p1"})
+            .to_string(),
+        ));
+        s.update(parse_stdout(
+            &json!({"type": "run_end", "outcome": "not_converged", "exit": 1,
+                    "restored": true, "run_id": run_id, "id": "p1"})
+            .to_string(),
+        ));
+        let run_pane = s.view(Changed::everything())["outcome"]["outcome"].clone();
+
+        let trail_row = crate::trails::row(&trail_line_no_check(run_id));
+        assert!(trail_row.get("bad_line").is_none(), "{trail_row}");
+        let trails_pane = trail_row["outcome"]["untrusted"].clone();
+
+        let overview = crate::state::word_overview(json!({
+            "root": "/w/app",
+            "last_run": {"run_id": run_id, "started_at": "2026-10-10T12:00:00Z",
+                         "outcome": "no check ran", "integrity": "intact",
+                         "task": "rename f to g", "turns": null, "edits": 0,
+                         "checks": [], "verified": 0, "reviewed": 0, "tier": null}
+        }));
+        let overview_pane = overview["last_run"]["outcome"].clone();
+
+        assert_eq!(run_pane, json!("not converged"), "the Run pane's word");
+        assert_eq!(
+            trails_pane, run_pane,
+            "the Trails list's word differs from the Run pane's"
+        );
+        assert_eq!(
+            overview_pane, run_pane,
+            "the Overview's word differs from the Run pane's"
+        );
+        // The trail's word stays the trail's text: mapping it does not
+        // promote it out of the untrusted wrapper (ADR 0007).
+        assert_eq!(trail_row["outcome"], json!({"untrusted": "not converged"}));
+    }
+
+    #[test]
+    fn outcome_vocabulary_maps_every_word_trellis_writes_and_invents_none() {
+        // The risk: a word one side writes that the mapping does not know,
+        // so two panes drift apart again; or the mapping rewording a word
+        // it does not know into a guess. rpc's words are output.rs's run_end
+        // arms; the trail's are query.rs's Entry::outcome arms.
+        let rpc = ["converged", "not_converged", "interrupted", "error"];
+        let trail = ["converged", "not converged", "no check ran"];
+        let shown = ["converged", "not converged", "interrupted", "error"];
+        for w in rpc.iter().chain(trail.iter()) {
+            let out = crate::state::outcome_words(w);
+            assert!(
+                shown.contains(&out),
+                "{w} maps to {out}, a word no pane lists"
+            );
+        }
+        // The trail's own words all land in rpc's vocabulary, so a trail
+        // and its run_end never disagree on one of these.
+        for w in trail {
+            assert!(
+                rpc.map(crate::state::outcome_words)
+                    .contains(&crate::state::outcome_words(w)),
+                "the trail's {w} has no rpc word"
+            );
+        }
+        // An unknown word is trellis's to word, not the desktop's.
+        assert_eq!(
+            crate::state::outcome_words("some new word"),
+            "some new word"
+        );
+    }
+
+    #[test]
+    fn outcome_vocabulary_not_measured_only_where_the_trail_has_no_figure() {
+        // The risk: "turns: not measured" beside a Run pane that counted
+        // iterations, read as a contradiction. The two are different facts:
+        // the budget's live iteration count and the trail's measured turns.
+        // The overview draws the trail's figure where it has one and says
+        // "not measured" only for a null, and the mapping never fills it in.
+        let overview = overview_code();
+        let turns = between(&overview, "[\"turns\",", "]");
+        assert!(
+            turns.contains("isCount(t.turns) ? String(t.turns) : \"not measured\""),
+            "the turns row does not read the trail's figure: {turns}"
+        );
+        assert_eq!(
+            overview.matches("\"not measured\"").count(),
+            1,
+            "\"not measured\" is said somewhere other than the turns row"
+        );
+        for file in ["render.js", "trails.js"] {
+            assert!(
+                !ui_file(file).contains("not measured"),
+                "{file} says \"not measured\" for a figure that is not the trail's turns"
+            );
+        }
+        let with = crate::state::word_overview(
+            json!({"last_run": {"outcome": "no check ran", "turns": 3}}),
+        );
+        assert_eq!(
+            with["last_run"]["turns"], 3,
+            "a measured figure must survive the mapping"
+        );
+        let without = crate::state::word_overview(
+            json!({"last_run": {"outcome": "no check ran", "turns": null}}),
+        );
+        assert_eq!(
+            without["last_run"]["turns"],
+            Value::Null,
+            "an unmeasured figure stays null, never 0"
+        );
+        let none = crate::state::word_overview(json!({"last_run": null}));
+        assert_eq!(none["last_run"], Value::Null, "no run stays no run");
+    }
+
     #[test]
     fn vault_section_holds_what_vault_js_draws() {
         // The risk (#309): vault.js drawing into an id the page lacks, so

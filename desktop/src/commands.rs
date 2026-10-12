@@ -56,7 +56,7 @@ use crate::child::{Child, Lines, Output, Trellis};
 use crate::codebase;
 use crate::frames::{self, Frame};
 use crate::radius;
-use crate::state::{Changed, Configured, DesktopState, MODELS_ID};
+use crate::state::{Changed, Configured, DesktopState, MODELS_ID, word_overview};
 use crate::trails;
 use serde_json::{Value, json};
 use std::io;
@@ -178,7 +178,7 @@ impl Core {
                 self.lock().why_none = why.clone();
                 self.sink.emit("no-child", json!(why));
                 match self.trellis.overview(None, cwd) {
-                    Ok(v) => self.sink.emit("overview", v),
+                    Ok(v) => self.sink.emit("overview", word_overview(v)),
                     Err(e) => self.sink.emit("overview-error", json!(format!("{e}"))),
                 }
             }
@@ -436,6 +436,7 @@ impl Core {
         let root = self.lock().root.clone();
         self.trellis
             .overview(root.as_deref(), cwd)
+            .map(word_overview)
             .map_err(|e| format!("get_overview: {e}"))
     }
 
