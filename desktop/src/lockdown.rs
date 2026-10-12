@@ -1619,6 +1619,77 @@ mod tests {
     }
 
     #[test]
+    fn trails_scan_rows_carry_the_start_time() {
+        // The risk (#649, UX-15): a user looking for a particular run has
+        // only the task text to go on, since the list drew no time; the
+        // trail's `started_at` is drawn per row, through `recorded` so it
+        // stays marked as untrusted text and a missing one says so.
+        let js = ui_file("trails.js");
+        let list = function_body(&js, "drawList");
+        assert!(
+            list.contains("recorded(doc, \"span\", r.started_at, \"start not recorded\")"),
+            "drawList draws no started_at per row, or draws it bare"
+        );
+        let detail = function_body(&js, "drawDetail");
+        assert!(
+            detail.contains("r.started_at"),
+            "the detail dropped the start time"
+        );
+    }
+
+    #[test]
+    fn trails_scan_altered_integrity_takes_the_failed_class() {
+        // The risk: 51 of 52 demo trails are "altered" and read as muted
+        // text identical to the intact one. Integrity is the one bare string
+        // in a row, computed by trellis from the digest (trails.rs), so it
+        // alone may take the failed colour; no `{untrusted}` text gets a
+        // class the page reads as a verdict.
+        let js = ui_file("trails.js");
+        let list = function_body(&js, "drawList");
+        assert!(
+            list.contains("if (r.integrity === \"altered\") integrity.className = \"failed\";"),
+            "an altered row's integrity element does not take the failed class"
+        );
+        for untrusted in ["r.task", "r.outcome", "r.label", "r.started_at"] {
+            let draws = between(list, &format!("recorded(doc, \"span\", {untrusted}"), ")");
+            assert!(
+                !draws.contains("failed"),
+                "{untrusted} is untrusted text and may not carry the failed class"
+            );
+        }
+        let css = css_rules();
+        assert!(
+            css.iter()
+                .any(|(s, d)| s.trim() == ".failed" && d.contains("var(--failed)")),
+            "style.css has no .failed rule in the failed colour"
+        );
+    }
+
+    #[test]
+    fn trails_scan_filter_matches_outcome_integrity_and_label_too() {
+        // The risk: the filter reads the task alone, so "altered" or
+        // "not_converged" typed into it hides every run. It reads the four
+        // fields, with the label above it saying so.
+        let js = ui_file("trails.js");
+        let body = function_body(&js, "matches");
+        for field in ["row.task", "row.outcome", "row.label", "row.integrity"] {
+            assert!(body.contains(field), "matches() does not read {field}");
+        }
+        let page = page();
+        let label = page
+            .iter()
+            .find(|e| e.tag == "label" && e.attr("for") == Some("tr-filter"))
+            .expect("the filter's label");
+        for word in ["task", "outcome", "integrity", "label"] {
+            assert!(
+                label.text.contains(word),
+                "the filter's label does not say it matches {word}: {}",
+                label.text
+            );
+        }
+    }
+
+    #[test]
     fn vault_section_holds_what_vault_js_draws() {
         // The risk (#309): vault.js drawing into an id the page lacks, so
         // a search trellis answered is never shown; a search box with no
