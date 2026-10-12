@@ -163,6 +163,23 @@ pub(crate) fn truncate_module(m: &str, width: usize) -> String {
 /// A hosted spec on this machine may be colibri (ADR 0047 decision 3), whose
 /// `/health` reports its KV slots; that count is the capability here, as in
 /// `doctor`, through [`hosted_batching`].
+/// How long each request `doctor` sends a serving runtime may take: the
+/// constraint probe and the slot read. One constant, so the line said
+/// before the wait and the wait agree.
+const RUNTIME_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Says on stderr what `doctor` is about to wait on, and for how long at
+/// most (#650).
+///
+/// Every probe runs before the report prints, so a runtime that does not
+/// answer was up to half a minute of blank terminal, at the moment a person
+/// is diagnosing it. Stderr, so stdout stays the report. Said whether or not
+/// stderr is a terminal: a captured log of a slow `doctor` should say what
+/// it waited on too.
+fn say_waiting(what: &str, bound: std::time::Duration) {
+    eprintln!("{what} (up to {} s)", bound.as_secs());
+}
+
 pub(crate) fn probe_batching(
     spec: &trellis_model::ModelSpec,
     cfg: &config::RepoConfig,
@@ -185,7 +202,7 @@ pub(crate) fn probe_batching(
         return Ok(BatchingCapability::Unknown);
     };
     let client = trellis_model::RuntimeClient::new(base, *dialect, model.clone())?
-        .with_timeout(std::time::Duration::from_secs(30));
+        .with_timeout(RUNTIME_PROBE_TIMEOUT);
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -662,8 +679,10 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
                 );
             };
             let client = trellis_model::RuntimeClient::new(base, *dialect, model.clone())?
-                .with_timeout(std::time::Duration::from_secs(30));
+                .with_timeout(RUNTIME_PROBE_TIMEOUT);
             runtime = format!("{dialect:?} at {base}");
+            // The spec can come from repository config, so it is shown plain.
+            let probed = plain(&spec.to_string());
             // True of llama.cpp, which serves what it was started with and is
             // never told. Not true once the spec names a weight — saying it
             // anyway would report ignorance the harness does not have, on the
@@ -683,13 +702,18 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
                 // unprompted would claim a tier it does not have. A `vllm:`
                 // spec carries no key (it is not hosted), and so neither
                 // does this read.
-                if *dialect == trellis_model::Dialect::VllmOpenAi
-                    && let Ok(Identity::Identified { id }) = colibri::identify(base, None).await
-                {
-                    tier = Some(AdapterTier::ValidateAndRetry);
-                    notes.push(colibri_vllm_note(base, &id));
-                    return;
+                if *dialect == trellis_model::Dialect::VllmOpenAi {
+                    say_waiting(
+                        &format!("asking {probed} whether it is colibri"),
+                        colibri::READ_TIMEOUT,
+                    );
+                    if let Ok(Identity::Identified { id }) = colibri::identify(base, None).await {
+                        tier = Some(AdapterTier::ValidateAndRetry);
+                        notes.push(colibri_vllm_note(base, &id));
+                        return;
+                    }
                 }
+                say_waiting(&format!("probing {probed}"), RUNTIME_PROBE_TIMEOUT);
                 match client.probe_constraint().await {
                     Ok(true) => {
                         tier = Some(AdapterTier::RuntimeConstrained);
@@ -742,6 +766,19 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
         // restart differently. A hosted endpoint's batching comes from the
         // read above, through the mapping `probe_batching` uses too, so the
         // endpoint is not read twice; a failed read is already a note.
+        // Only llama.cpp is asked: vLLM and SGLang report no slot count.
+        if hosted_seen.is_none()
+            && let trellis_model::ModelSpec::Runtime {
+                dialect: trellis_model::Dialect::LlamaCpp,
+                base,
+                ..
+            } = &spec
+        {
+            say_waiting(
+                &format!("reading the slot count from {}", plain(base)),
+                RUNTIME_PROBE_TIMEOUT,
+            );
+        }
         match hosted_seen {
             Some(b) => batching = b.unwrap_or(BatchingCapability::Unknown),
             None => match probe_batching(&spec, &repo_cfg, from_user) {
