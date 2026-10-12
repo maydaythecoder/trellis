@@ -367,13 +367,14 @@ impl Undelivered {
 /// transcript or the page's one alert. `get_trails` and `get_overview` are
 /// the page's own commands, not rpc lines, so their answers never come here.
 /// `get_symbols` and `get_history` are the Atlas's.
-const VIEW_READS: [&str; 9] = [
+const VIEW_READS: [&str; 10] = [
     "get_codebase",
     "get_radius",
     "get_symbols",
     "get_history",
     "vault_search",
     "vault_graph",
+    "vault_check",
     "get_queue",
     "list_models",
     "get_session_stats",
@@ -2213,6 +2214,7 @@ mod tests {
             ("get_radius", None),
             ("vault_search", Some(Pane::Vault)),
             ("vault_graph", Some(Pane::Vault)),
+            ("vault_check", Some(Pane::Vault)),
             ("get_queue", Some(Pane::Queue)),
             ("list_models", Some(Pane::Models)),
             ("get_session_stats", Some(Pane::SessionTokens)),
