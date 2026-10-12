@@ -6,6 +6,9 @@
 // The core counts the tasks: eight cells, one per queue status, in the order
 // `counts` gives them, and no sum of any (an unreadable task is in none).
 // This module computes no figure; it writes each count as the view gives it.
+// Each cell is a button: pressed, the list below shows only the tasks whose
+// `status` is the cell's, and "Show all" lifts that (#656). Presentation
+// only: the rows are the view's tasks, and nothing is counted from them.
 // Below the cells, each task with its text, priority, labels, waiting reason
 // and chain (#559). PR and CI state is drawn by overview.js's drawPrCi, so
 // the board and the overview never draw it differently.
@@ -27,6 +30,10 @@ let asked = 0;
 // comes (as trails.js drops a stale read).
 let prciReads = 0;
 let prciInFlight = false;
+// The status whose cell is pressed, or null to show every task.
+let pressed = null;
+// The view's queue as last drawn, so a press redraws it.
+let lastQueue = null;
 
 function el(doc, tag, text) {
   const e = doc.createElement(tag);
@@ -56,23 +63,47 @@ function status(doc, text) {
   doc.getElementById("qb-status").textContent = text;
 }
 
-// The eight cells, in the order the view lists them.
+// Presses the cell for `status`, or with null, or a second press of the
+// pressed cell, shows every task again.
+function press(doc, status) {
+  pressed = status === pressed ? null : status;
+  if (lastQueue !== null) {
+    drawCounts(doc, lastQueue.counts);
+    drawTasks(doc, lastQueue.tasks);
+  }
+}
+
+// The eight cells, in the order the view lists them, each a button that
+// filters the list by its status, then "Show all".
 function drawCounts(doc, counts) {
   const pane = doc.getElementById("qb-counts");
   if (!Array.isArray(counts)) {
     pane.replaceChildren(muted(doc, "li", "No counts are shown."));
     return;
   }
-  pane.replaceChildren(
-    ...counts.map((c) => {
-      const li = el(doc, "li");
-      li.className = "qb-cell";
-      const n = el(doc, "span", isCount(c && c.count) ? String(c.count) : "not reported");
-      n.className = "qb-count";
-      li.append(n, el(doc, "span", str(c && c.status) ?? "status not reported"));
-      return li;
-    }),
-  );
+  const cells = counts.map((c) => {
+    const li = el(doc, "li");
+    const s = str(c && c.status);
+    const b = el(doc, "button");
+    b.type = "button";
+    b.className = "qb-cell";
+    const n = el(doc, "span", isCount(c && c.count) ? String(c.count) : "not reported");
+    n.className = "qb-count";
+    b.append(n, el(doc, "span", s ?? "status not reported"));
+    b.setAttribute("aria-pressed", s !== null && s === pressed ? "true" : "false");
+    if (s === null) b.disabled = true;
+    else b.addEventListener("click", () => press(doc, s));
+    li.append(b);
+    return li;
+  });
+  const all = el(doc, "li");
+  const b = el(doc, "button", "Show all");
+  b.type = "button";
+  b.className = "qb-cell";
+  b.disabled = pressed === null;
+  b.addEventListener("click", () => press(doc, null));
+  all.append(b);
+  pane.replaceChildren(...cells, all);
 }
 
 function task(doc, t) {
@@ -113,9 +144,13 @@ function drawTasks(doc, tasks) {
     pane.replaceChildren();
     return;
   }
-  const items = tasks.map((t) => task(doc, t));
+  // With a cell pressed, only the tasks whose status is its; an
+  // unreadable task has none, as it is in no cell.
+  const items = tasks
+    .filter((t) => pressed === null || str(t && t.status) === pressed)
+    .map((t) => task(doc, t));
   if (items.length === 0) {
-    const li = el(doc, "li", "No tasks queued.");
+    const li = el(doc, "li", pressed === null ? "No tasks queued." : `No task is ${pressed}.`);
     li.className = "empty";
     items.push(li);
   }
@@ -124,6 +159,7 @@ function drawTasks(doc, tasks) {
 
 export function drawQueue(doc, q) {
   if (q === null || typeof q !== "object") return;
+  lastQueue = q;
   if (str(q.error) !== null) status(doc, q.error);
   else if (Array.isArray(q.tasks)) {
     const n = q.tasks.length;
@@ -189,6 +225,7 @@ export async function wireQueue(doc, tauri) {
   await tauri.event.listen("child-started", () => {
     prciReads += 1;
     prciInFlight = false;
+    pressed = null;
     if (shown()) refresh();
   });
   const button = doc.querySelector('nav.rail button[aria-controls="board"]');

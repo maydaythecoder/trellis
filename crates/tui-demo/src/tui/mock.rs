@@ -66,7 +66,10 @@ pub fn spawn_mock(tx: mpsc::Sender<Message>) {
             })
             .await;
         let _ = tx
-            .send(Message::ApprovalRequested { diff: DIFF.into() })
+            .send(Message::ApprovalRequested {
+                question: "edit src/index/resolve.rs (+1 -1)".into(),
+                diff: DIFF.into(),
+            })
             .await;
     });
 }
