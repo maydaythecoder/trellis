@@ -238,6 +238,32 @@ function sessionTokens(doc, pane, t) {
   fill(doc, pane, rows, "No run of this trellis rpc has ended yet.");
 }
 
+// colibri's self-report for this run (`runtime identified`, #628): what
+// it serves, its KV slots and its experts per tier, each as colibri sent
+// it. A count it did not report is "not reported", never 0, and the three
+// tier counts are drawn apart: nothing here adds them or takes a share
+// (ADR 0048 §8). Only a run against colibri sends the event, so before
+// one the pane says so.
+function runtime(doc, pane, r) {
+  if (r === null || typeof r !== "object") {
+    fill(doc, pane, [], "Not reported: no runtime has identified itself for this run.", "p");
+    return;
+  }
+  const dl = el(doc, "dl");
+  const count = (v) => (isCount(v) ? String(v) : "not reported");
+  for (const [label, value] of [
+    ["runtime", str(r.runtime) ?? "not reported"],
+    ["served", str(r.served) ?? "not reported"],
+    ["KV slots", count(r.kv_slots)],
+    ["experts in VRAM", count(r.tiers_vram)],
+    ["experts in RAM", count(r.tiers_ram)],
+    ["experts on disk", count(r.tiers_disk)],
+  ]) {
+    dl.append(el(doc, "dt", label), el(doc, "dd", value));
+  }
+  pane.replaceChildren(dl);
+}
+
 // The tier `get_state` last reported, as trellis labels it; a status bar
 // writes `tier ` before the label (client_contract.json). Null means no run
 // of this rpc process has decided one, and it is never guessed.
@@ -282,6 +308,7 @@ const PANES = {
   radius: ["pane-radius", radius],
   budget: ["pane-budget", (doc, pane, b) => (pane.textContent = budgetLine(b))],
   tier: ["pane-tier", tier],
+  runtime: ["pane-runtime", runtime],
   running: ["pane-running", running],
   outcome: ["pane-outcome", outcome],
   session_tokens: ["pane-session-tokens", sessionTokens],
