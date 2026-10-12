@@ -1514,6 +1514,90 @@ mod tests {
         assert_eq!(sent, ["vault_graph", "vault_search"], "{sent:?}");
     }
 
+    /// `function name(` in `code` to its closing line, with all whitespace
+    /// removed, so a check on it does not depend on how a call is wrapped.
+    fn squeezed(code: &str, name: &str) -> String {
+        let at = code
+            .find(&format!("function {name}("))
+            .unwrap_or_else(|| panic!("no function {name}"));
+        let rest = &code[at..];
+        rest[..rest.find("\n}").expect("the function closes")]
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect()
+    }
+
+    #[test]
+    fn vault_relations_with_a_path_ask_for_that_note_s_graph() {
+        // The risk (#630): a note's lineage, children and references drawn
+        // as text only, so following one meant searching for it by hand; or
+        // a relation that opens by some other line than the `vault_graph` a
+        // hit sends. No JavaScript runs under cargo test, so this holds the
+        // text; a node smoke script with a fake DOM clicked every relation
+        // (see the commit).
+        let js = code_of("vault.js");
+        let opener = squeezed(&js, "opener");
+        assert!(
+            opener.contains("elseb.addEventListener(\"click\",()=>askNote(doc,tauri,path));"),
+            "{opener}"
+        );
+        assert!(
+            squeezed(&js, "askNote").contains("type:\"vault_graph\",note:path"),
+            "a relation asks for something other than vault_graph"
+        );
+        // The lineage's paths go to the opener, and the children and both
+        // reference lists through `named`, which does.
+        let note = squeezed(&js, "drawNote");
+        assert!(
+            note.contains("li.append(opener(doc,tauri,str(p),"),
+            "the lineage is not opened: {note}"
+        );
+        for (list, each) in [
+            ("g.children", "named"),
+            ("g.refs_out", "reference"),
+            ("g.refs_in", "reference"),
+        ] {
+            assert!(
+                note.contains(&format!("list({list},{each})")),
+                "{list} is not drawn by {each}"
+            );
+        }
+        assert!(note.contains("each(doc,tauri,x)"), "{note}");
+        assert!(squeezed(&js, "reference").contains("named(doc,tauri,r)"));
+        assert!(squeezed(&js, "named").contains("li.append(opener(doc,tauri,path,"));
+    }
+
+    #[test]
+    fn vault_relations_without_a_path_cannot_be_activated() {
+        // The risk (#630): an entry trellis gave no path for drawn as a
+        // live button, sending `vault_graph` with no note, or with the
+        // "path not reported" placeholder as one. The opener is disabled
+        // and given no listener at all for a null path, and every caller
+        // passes the entry's own path, never the text drawn in its place.
+        let js = code_of("vault.js");
+        let opener = squeezed(&js, "opener");
+        let disabled = opener
+            .find("if(path===null)b.disabled=true;")
+            .expect("a path-less opener is not disabled");
+        let listens = opener
+            .find("elseb.addEventListener(")
+            .expect("the opener listens only in the else branch");
+        assert!(disabled < listens, "{opener}");
+        assert_eq!(opener.matches("addEventListener").count(), 1, "{opener}");
+        let named = squeezed(&js, "named");
+        assert!(named.contains("constpath=str(n&&n.path);"), "{named}");
+        assert!(named.contains("opener(doc,tauri,path,"), "{named}");
+        let note = squeezed(&js, "drawNote");
+        assert!(note.contains("opener(doc,tauri,str(p),"), "{note}");
+        for squeezed_code in [&named, &note] {
+            assert!(
+                !squeezed_code.contains("opener(doc,tauri,str(p)??")
+                    && !squeezed_code.contains("opener(doc,tauri,path??"),
+                "a placeholder reaches the opener as a path"
+            );
+        }
+    }
+
     /// `name` under ui/ with its `//` comments removed, so a word named
     /// only in a comment does not count. Each file read this way has no
     /// string that holds `//`.
@@ -2416,6 +2500,148 @@ mod tests {
             ),
             "main.js does not load model.js"
         );
+    }
+
+    /// The click handler `code` gives `on`, from its `addEventListener("click"`
+    /// to its closing `});`.
+    fn click_handler<'a>(code: &'a str, on: &str) -> &'a str {
+        code.split(&format!("{on}.addEventListener(\"click\""))
+            .nth(1)
+            .and_then(|r| r.split("});").next())
+            .unwrap_or_else(|| panic!("no click handler on {on}"))
+    }
+
+    /// composer.js's submit handler, to its closing `});`.
+    fn composer_submit(js: &str) -> &str {
+        js.split("addEventListener(\"submit\"")
+            .nth(1)
+            .and_then(|r| r.split("\n  });").next())
+            .expect("composer.js has a submit handler")
+    }
+
+    #[test]
+    fn composer_helper_textarea_is_described_by_what_enter_does() {
+        // The risk (#644): a 3-row textarea invites Enter for a new line,
+        // but Enter starts a run (a snapshot, model calls, checks and a
+        // trail), and that was said only in a code comment. The line is
+        // named by the textarea's aria-describedby, so a screen reader
+        // says it too, and it describes the key handler composer.js has.
+        let page = page();
+        let composer = index_of(&page, "composer");
+        let text = &page[index_of(&page, "composer-text")];
+        let ids = text
+            .attr("aria-describedby")
+            .expect("#composer-text has no aria-describedby");
+        let said: Vec<String> = ids
+            .split_whitespace()
+            .map(|id| {
+                let i = index_of(&page, id);
+                assert!(within(&page, i, composer), "#{id} is outside the composer");
+                page[i].text.clone()
+            })
+            .collect();
+        assert!(
+            said.iter()
+                .any(|t| t.contains("Enter sends") && t.contains("Shift+Enter adds a line")),
+            "nothing the textarea names says what Enter does: {said:?}"
+        );
+        let js = code_of("composer.js");
+        assert!(
+            js.contains(r#"if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {"#)
+                && js.contains("p.form.requestSubmit();"),
+            "the helper line no longer describes the key handler"
+        );
+    }
+
+    #[test]
+    fn composer_helper_prompt_success_says_sent_and_offers_run() {
+        // The risk (#644): after Send the text vanished with no word of
+        // what happened. A prompt the core forwarded says so and offers the
+        // Run section, through the rail's own Run button; a refusal or a
+        // steer leaves that offer hidden.
+        let js = code_of("composer.js");
+        let submit = composer_submit(&js);
+        let sent = submit
+            .split("if (await send(tauri, p, line)) {")
+            .nth(1)
+            .and_then(|r| r.split("\n    }").next())
+            .expect("the prompt has a success branch");
+        for want in [
+            "p.note.textContent = \"Sent to trellis; follow it in Run.\";",
+            "p.follow.hidden = false;",
+            "p.text.value = \"\";",
+        ] {
+            assert!(
+                sent.contains(want),
+                "the prompt success branch lacks {want}: {sent}"
+            );
+        }
+        assert!(
+            submit.trim_start().starts_with(
+                ", async (e) => {\n    e.preventDefault();\n    p.follow.hidden = true;"
+            ),
+            "a refused or steered submit leaves the last offer shown: {submit}"
+        );
+        assert_eq!(js.matches("p.follow.hidden = false;").count(), 1);
+        let follow = click_handler(&js, "p.follow");
+        assert!(
+            follow.contains(r#"doc.querySelector('nav.rail button[aria-controls="run"]')"#)
+                && follow.contains("run.click()"),
+            "{follow}"
+        );
+        let page = page();
+        let button = index_of(&page, "composer-follow");
+        assert!(within(&page, button, index_of(&page, "composer")));
+        assert!(page[button].attrs.contains_key("hidden"), "shown as served");
+        assert!(page[button].text.contains("Run"), "{}", page[button].text);
+        assert!(
+            page.iter().any(|e| e.tag == "button"
+                && e.attr("aria-controls") == Some("run")
+                && page[e.parent.expect("in the rail")].tag == "nav"),
+            "the rail has no Run button for it to press"
+        );
+    }
+
+    #[test]
+    fn composer_helper_starter_click_fills_the_template_and_sends_nothing() {
+        // The risk (#644): a starter ran on its click, one click from a
+        // snapshot and a model call, with its description only in a
+        // tooltip a keyboard user never sees. Its click chooses the
+        // template, shown with its description, and only Send runs it.
+        let js = code_of("composer.js");
+        let starters = function_body(&js, "drawStarters");
+        let click = click_handler(starters, "b");
+        for bad in ["send(", "invoke(", "rpc_send"] {
+            assert!(!click.contains(bad), "a starter click sends: {click}");
+        }
+        for want in ["template = { name, description };", "drawTemplate(doc);"] {
+            assert!(click.contains(want), "a starter click lacks {want}");
+        }
+        assert!(
+            !starters.contains("send("),
+            "drawStarters sends: {starters}"
+        );
+        let template = function_body(&js, "drawTemplate");
+        for want in [
+            "p.template.hidden = template === null;",
+            "`Template: ${template.name} — ${template.description}`",
+        ] {
+            assert!(template.contains(want), "drawTemplate lacks {want}");
+        }
+        let submit = composer_submit(&js);
+        assert!(
+            submit.contains("if (template !== null) line.prompt = template.name;"),
+            "Send does not run the chosen template: {submit}"
+        );
+        let page = page();
+        let line = index_of(&page, "composer-template");
+        assert!(within(&page, line, index_of(&page, "composer")));
+        assert!(page[line].attrs.contains_key("hidden"), "shown as served");
+        assert!(within(
+            &page,
+            index_of(&page, "composer-template-text"),
+            line
+        ));
     }
 
     #[test]
