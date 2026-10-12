@@ -73,6 +73,17 @@ impl Tail {
         s
     }
 
+    /// [`render`](Self::render) with the colour codes removed (#623): what
+    /// `bash` and a custom tool hand the model and the trail. A shell with
+    /// `FORCE_COLOR` exported puts them in the tail the model reads, and a
+    /// sequence split across two reads is whole here, since the strip runs
+    /// over the kept bytes and not over each read. Only these two callers:
+    /// a grounded check's output is not touched, because its environment
+    /// and what it printed stay the person's own (ADR 0021 row 1.16).
+    pub(crate) fn render_plain(&self) -> String {
+        trellis_core::text::strip_sgr(&self.render())
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.total == 0
     }
@@ -573,6 +584,25 @@ mod tests {
         let mut t = Tail::default();
         read_tail(Some(&bytes[..500]), &mut t, 1000, false, true).await;
         assert_eq!(t.kept(), &bytes[..500]);
+    }
+
+    #[tokio::test]
+    async fn sgr_sequence_split_across_two_reads_is_still_removed() {
+        // #623: a reader that stripped each 8 KiB read on its own would keep
+        // the half of a sequence that each side holds. The strip runs over
+        // the kept bytes, so a sequence straddling the read boundary goes
+        // whole, and the bytes around it are the ones the command wrote.
+        let mut bytes = vec![b'a'; 8190];
+        bytes.extend_from_slice(b"\x1b[31mred\x1b[0m\n");
+        let mut t = Tail::default();
+        read_tail(Some(&bytes[..]), &mut t, 1 << 20, false, false).await;
+        assert_eq!(t.total, bytes.len());
+        let plain = t.render_plain();
+        assert_eq!(&plain[8190..], "red\n", "{plain:?}");
+        assert_eq!(plain.len(), 8194);
+        // The capture itself is byte for byte what was written: the strip
+        // is on the way out, not in the ring.
+        assert_eq!(t.kept(), bytes);
     }
 
     #[tokio::test]

@@ -297,6 +297,38 @@ async fn bash_runs_in_a_clone_of_the_repository_with_the_run_s_identity_and_a_ti
 }
 
 #[tokio::test]
+async fn sgr_colour_codes_in_bash_output_do_not_reach_the_model() {
+    // #623: a shell with FORCE_COLOR exported colours into the pipe, and the
+    // codes landed in the tail the model reads (ADR 0019) and in the trail.
+    // The command's environment is left alone; the capture is what is
+    // cleaned, so a grounded check's own run is not touched (ADR 0021 1.16).
+    let d = git_repo();
+    let tools = with_bash(&[], true, Duration::from_secs(10));
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_tools(tools)
+        .spawn();
+    // Windows `cmd` has no escape in `echo`, so the sequence is written
+    // through PowerShell's `[char]27` there; `printf` elsewhere.
+    let command = if cfg!(windows) {
+        "powershell -NoProfile -Command \"Write-Output ([char]27 + '[31mred' + [char]27 + '[0m')\""
+    } else {
+        "printf '\\033[31mred\\033[0m\\n'"
+    };
+    let out = orch
+        .call(&ToolCall::Bash {
+            command: command.into(),
+        })
+        .await;
+    match &out.result {
+        ToolResult::Output(s) => {
+            assert!(s.contains("exit 0\nred"), "{s:?}");
+            assert!(!s.contains('\x1b'), "{s:?}");
+        }
+        other => panic!("bash did not run: {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn a_tool_outside_the_run_s_set_is_refused_by_the_orchestrator() {
     // The parser refuses it too, but the orchestrator is the one that binds:
     // a call can reach it by more than one door.
