@@ -437,12 +437,48 @@ mod tests {
             let p = dir.join("stub");
             std::fs::write(
                 &p,
-                "#!/bin/sh\nd=$(dirname \"$0\")\n\
+                "#!/bin/sh\n[ -z \"$TRELLIS_STUB_PROBE\" ] || exit 0\nd=$(dirname \"$0\")\n\
                  printf '%s\\n' \"$@\" > \"$d/args.tmp\" && mv \"$d/args.tmp\" \"$d/args.txt\"\n",
             )
             .unwrap();
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-            p
+            ready(p)
+        }
+    }
+
+    /// Runs the stub just written at `path`, told by `TRELLIS_STUB_PROBE` to
+    /// exit at once, until the kernel stops refusing it as busy, and at most
+    /// for a few seconds, as `wait_until_executable` in tests/cli.rs does
+    /// (#581).
+    ///
+    /// The risk: `ETXTBSY` failing a launch test that has nothing wrong with
+    /// it. A test thread that forks while this one holds the stub's write
+    /// handle carries that handle into its child until the child execs, and
+    /// a desktop spawn in that window failed with "Text file busy". Once one
+    /// exec has succeeded no process holds the handle and none can take it,
+    /// so the spawn under test meets no such refusal. Only
+    /// `ExecutableFileBusy` is retried; the test's own spawn reports the
+    /// rest.
+    #[cfg(unix)]
+    fn ready(path: PathBuf) -> PathBuf {
+        let start = Instant::now();
+        loop {
+            let mut probe = Command::new(&path);
+            trellis_core::secrets::scrub(&mut probe);
+            probe
+                .env("TRELLIS_STUB_PROBE", "1")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            match probe.status() {
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::ExecutableFileBusy
+                        && start.elapsed() < Duration::from_secs(5) =>
+                {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                _ => return path,
+            }
         }
     }
 
@@ -586,14 +622,14 @@ mod tests {
             let p = dir.join("stub-web");
             std::fs::write(
                 &p,
-                "#!/bin/sh\nd=$(dirname \"$0\")\n\
+                "#!/bin/sh\n[ -z \"$TRELLIS_STUB_PROBE\" ] || exit 0\nd=$(dirname \"$0\")\n\
                  printf '%s\\n' \"$@\" > \"$d/args.tmp\" && mv \"$d/args.tmp\" \"$d/args.txt\"\n\
                  printf '%s\\n' '{\"url\":\"http://127.0.0.1:7/?t=stub\"}'\n\
                  cat > /dev/null\n",
             )
             .unwrap();
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-            p
+            ready(p)
         }
     }
 
@@ -661,11 +697,12 @@ mod tests {
             // failed test does not leave it behind.
             std::fs::write(
                 &p,
-                "#!/bin/sh\nprintf '%s\\n' '{\"url\":\"http://127.0.0.1:7/?t=stub\"}'\nsleep 30\n",
+                "#!/bin/sh\n[ -z \"$TRELLIS_STUB_PROBE\" ] || exit 0\n\
+                 printf '%s\\n' '{\"url\":\"http://127.0.0.1:7/?t=stub\"}'\nsleep 30\n",
             )
             .unwrap();
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-            p
+            ready(p)
         };
         #[cfg(windows)]
         let stub = {
