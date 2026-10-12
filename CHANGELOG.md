@@ -8,6 +8,14 @@ released is in `docs/BUILD_SYSTEM.md`, under "Branches".
 
 ## [Unreleased]
 
+### Releases
+
+- Releases are Linux and Windows only, built on the self-hosted runners;
+  macOS is dropped until a macOS runner exists (owner decision 2026-10-06,
+  ADR 0052). Each release archive carries `trellis-tui`, the Go TUI, beside
+  `trellis`, and `publish` refuses unless both report the tag's version
+  (#506).
+
 ## [0.1.0]
 
 What `main` holds when the owner tags it `v0.1.0`: PR #1 (the v0.1 resolver,
