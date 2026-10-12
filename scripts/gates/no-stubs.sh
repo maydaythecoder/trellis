@@ -10,9 +10,12 @@ if [ -n "$hits" ]; then
   exit 1
 fi
 # Go branch (ADR 0052, #504): added non-test `*.go` lines under tui/, with
-# Go's forms of the same markers (`panic("not ...")`).
+# the markers above that apply to Go and Go's form of a refusing stub,
+# `panic("not ...")`. Written with `-e` on purpose: trellis-tickets reads the
+# one `grep -E '...'` line above as G4's Rust markers and refuses a second
+# (crates/trellis-tickets/src/scan.rs, markers_from).
 if go_module_present; then
-  hits=$(added_production_go_lines | grep -E 'TODO|FIXME|XXX|panic\("not |NotImplemented|mock_data|MOCK_' || true)
+  hits=$(added_production_go_lines | grep -E -e 'TODO|FIXME|XXX|panic\("not |NotImplemented|mock_data|MOCK_' || true)
   if [ -n "$hits" ]; then
     echo "FAIL: stub markers in production Go this change added:"
     printf '%s\n' "$hits"
