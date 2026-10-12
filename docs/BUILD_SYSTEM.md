@@ -363,6 +363,53 @@ https://github.com/maydaythecoder/trellis --token <token> --name trellis-win
 --labels self-hosted,Windows,X64 --unattended` as the new account, before
 running the scripts.
 
+### Go on the runners (#503)
+
+`tui/` is a Go module (ADR 0052). Each runner gets its own pinned Go from
+`scripts/runners/install-go.sh`, never the owner's install (`C:\Program
+Files\Go` on Windows is the owner's, not a pin) and never `actions/setup-go`
+(refused by `scripts/ci-local.py`).
+
+- **Pin:** Go 1.27.2. The script holds the version and the go.dev SHA-256 of
+  `go1.27.2.linux-amd64.tar.gz` and `go1.27.2.windows-amd64.zip`. It
+  refuses to unpack an archive whose hash differs, before anything is
+  written. Once they exist (#505), `tui/go.mod`'s `toolchain` line and CI's
+  `go version` check name the same pin.
+- **Where:** under the runner's own directory only. The script refuses a
+  target outside it, by path, `..` or symlink, a directory without a
+  `.runner` file, and a system path. GOROOT is
+  `<runner>/toolchains/go1.27.2/go`.
+- **Variables**, written into the runner's `.env`: `GOROOT`, `GOPATH`
+  (`<runner>/go-path`), `GOMODCACHE` (`<runner>/go-path/pkg/mod`),
+  `GOCACHE` (`<runner>/go-cache`), `GOTOOLCHAIN=local` (a `toolchain` line
+  in `go.mod` never downloads another toolchain) and `GOFLAGS=-mod=readonly`
+  (a build never rewrites `go.mod` or `go.sum`). The pinned Go's `bin` goes
+  first in `.path`. On Windows both files get Windows paths.
+- **Run** once per runner, after #219, with the runner stopped, then restart
+  it. Run again with the same pin, it changes nothing.
+
+```
+# WSL, from cmd or Git Bash (PowerShell has no `<`): as trellis-ci, which
+# owns the runner directory (mode 700). The script
+# is read from stdin because trellis-ci cannot read the owner's checkout.
+wsl.exe -d Ubuntu -u root -- sudo -u trellis-ci -H bash -s -- --runner-dir /home/trellis-ci/actions-runner --dry-run < scripts/runners/install-go.sh
+wsl.exe -d Ubuntu -u root -- sudo -u trellis-ci -H bash -s -- --runner-dir /home/trellis-ci/actions-runner < scripts/runners/install-go.sh
+# Windows: from an elevated Git Bash. trellis-ci-win is denied interactive
+# logon; the runner directory's ACL admits Administrators, and what the
+# script writes there inherits trellis-ci-win's access.
+bash scripts/runners/install-go.sh --runner-dir /c/actions-runner/win --dry-run
+bash scripts/runners/install-go.sh --runner-dir /c/actions-runner/win
+```
+
+`--runner-dir <dir>` names another runner directory; `--self-test` shows
+that a tampered archive and an outside target are refused.
+
+**Moving the pin** is one commit that changes `GO_VERSION` and both hashes
+in `install-go.sh`, copied from `https://go.dev/dl/?mode=json`, together
+with `tui/go.mod`'s `toolchain` line and CI's `go version` check. The owner
+then runs the script again on both runners; the old toolchain's `bin` is
+dropped from `.path`, and its directory can be deleted by hand.
+
 ### Mutation testing on CI (#248)
 
 `.github/workflows/mutants.yml` runs cargo-mutants with the whole workspace
