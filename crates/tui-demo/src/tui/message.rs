@@ -79,7 +79,16 @@ pub enum Message {
     /// How the run ended, one line, sent just before `RunFinished` (#244).
     /// Shown where it does not scroll, so a finished run is visible even
     /// when the transcript's last lines are not.
-    RunOutcome(String),
+    ///
+    /// `restored` is whether the run put the worktree back, when its ending
+    /// says (#636): the status bar's worktree state follows it, and reading
+    /// it back out of `line` would make display text a protocol. `None` for
+    /// an ending that does not restore (converged) or does not know
+    /// (failed).
+    RunOutcome {
+        line: String,
+        restored: Option<bool>,
+    },
     RunFinished,
     // internal
     Quit,

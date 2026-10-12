@@ -77,6 +77,9 @@ pub struct AppState {
     pub scroll_back: u16,
     /// How the last run ended, until the next one starts.
     pub outcome: Option<String>,
+    /// Whether the last run put the worktree back, as its outcome said;
+    /// `None` until one says, and again once the next task starts (#636).
+    pub restored: Option<bool>,
     pub should_quit: bool,
     /// Repository paths `@` completion may offer, supplied by the driver.
     ///
@@ -145,6 +148,21 @@ pub enum Modal {
     Approval { diff: String },
 }
 
+/// What the status bar says about the worktree (#636).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Worktree {
+    /// Nothing this task wrote is in the tree.
+    Clean,
+    /// The run in flight has written this many times.
+    Pending(usize),
+    /// The last run put the tree back.
+    Restored,
+    /// The last run left this many files changed for the person to review:
+    /// a converged run, or one whose ending did not say the tree was put
+    /// back.
+    LeftForReview(usize),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditStatus {
     Proposed,
@@ -211,9 +229,35 @@ impl AppState {
             Message::ApprovalRequested { diff } => self.modal = Some(Modal::Approval { diff }),
             Message::Quit => self.should_quit = true,
             Message::SteerDelivered { nth, turn } => self.steer_delivered(nth, turn),
-            Message::RunOutcome(line) => self.outcome = Some(line),
+            Message::RunOutcome { line, restored } => {
+                self.outcome = Some(line);
+                self.restored = restored;
+            }
             Message::RunFinished => self.run_finished(),
             Message::Tick | Message::Resize(..) => {}
+        }
+    }
+
+    /// The worktree's state, from this task's writes and how its run ended.
+    ///
+    /// The edits pane holds one entry per write (`EditProposed` is sent only
+    /// for a write that happened), so a run in flight counts writes and a
+    /// finished one counts the files they touched.
+    pub fn worktree(&self) -> Worktree {
+        if self.running {
+            return match self.edits.len() {
+                0 => Worktree::Clean,
+                n => Worktree::Pending(n),
+            };
+        }
+        if self.restored == Some(true) {
+            return Worktree::Restored;
+        }
+        let files: std::collections::BTreeSet<&str> =
+            self.edits.iter().map(|e| e.path.as_str()).collect();
+        match files.len() {
+            0 => Worktree::Clean,
+            n => Worktree::LeftForReview(n),
         }
     }
 
@@ -488,6 +532,15 @@ impl AppState {
 
         self.running = true;
         self.outcome = None;
+        self.restored = None;
+        // The panes describe this task. Kept from earlier ones, the bar read
+        // "N edit(s) pending" at the start of every later run, when a run
+        // starts only from a clean tree, and listed files a rollback had
+        // already put back (#636).
+        self.actions.clear();
+        self.edits.clear();
+        self.checks.clear();
+        self.radius = Radius::default();
         // A new run is followed from its start, wherever the view was.
         self.scroll_back = 0;
         self.push_line(format!("> {task}"));
@@ -1018,9 +1071,10 @@ mod tests {
     #[test]
     fn transcript_outcome_is_held_until_the_next_run_starts() {
         let mut s = AppState::default().with_running(true);
-        s.update(Message::RunOutcome(
-            "did not converge; worktree restored: true".into(),
-        ));
+        s.update(Message::RunOutcome {
+            line: "did not converge; worktree restored: true".into(),
+            restored: Some(true),
+        });
         s.update(Message::RunFinished);
         assert_eq!(
             s.outcome.as_deref(),
@@ -1218,6 +1272,84 @@ mod input_tests {
 
         s.update(press(KeyCode::Esc));
         assert!(s.should_quit, "Esc on an empty line leaves");
+    }
+
+    /// One run's worth of pane traffic: two writes to a.py, one to b.py.
+    fn worked(s: &mut AppState) {
+        for path in ["a.py", "a.py", "b.py"] {
+            s.update(Message::ActionTaken {
+                tool: "edit".into(),
+                target: path.into(),
+                wrote: true,
+            });
+            s.update(Message::EditProposed { path: path.into() });
+        }
+        s.update(Message::CheckFinished {
+            name: "pytest".into(),
+            passed: false,
+        });
+        s.update(Message::RadiusUpdated {
+            resolved: 4,
+            candidates: 1,
+            unresolved: 2,
+        });
+    }
+
+    #[test]
+    fn worktree_state_a_second_task_clears_the_four_panes() {
+        // #636: nothing cleared them, so the second run's panes listed the
+        // first run's edits and checks beside its own.
+        let mut s = AppState::default();
+        type_in(&mut s, "first");
+        s.update(press(KeyCode::Enter));
+        worked(&mut s);
+        s.update(Message::RunOutcome {
+            line: "did not converge; worktree restored: true".into(),
+            restored: Some(true),
+        });
+        s.update(Message::RunFinished);
+
+        type_in(&mut s, "second");
+        s.update(press(KeyCode::Enter));
+        assert!(s.actions.is_empty(), "{:?}", s.actions);
+        assert!(s.edits.is_empty());
+        assert!(s.checks.is_empty());
+        let r = s.radius;
+        assert_eq!((r.resolved, r.candidates, r.unresolved), (0, 0, 0));
+        assert_eq!(s.restored, None, "the last run's ending is not this one's");
+        assert_eq!(
+            s.worktree(),
+            Worktree::Clean,
+            "a run starts from a clean tree"
+        );
+    }
+
+    #[test]
+    fn worktree_state_follows_how_the_run_ended() {
+        let mut s = AppState::default();
+        type_in(&mut s, "change it");
+        s.update(press(KeyCode::Enter));
+        worked(&mut s);
+        assert_eq!(s.worktree(), Worktree::Pending(3), "three writes so far");
+
+        s.update(Message::RunOutcome {
+            line: "did not converge; worktree restored: true".into(),
+            restored: Some(true),
+        });
+        s.update(Message::RunFinished);
+        assert_eq!(s.worktree(), Worktree::Restored, "not 3 edit(s) pending");
+
+        // A converged run leaves its changes in the tree for review, counted
+        // as files rather than as writes.
+        type_in(&mut s, "change it again");
+        s.update(press(KeyCode::Enter));
+        worked(&mut s);
+        s.update(Message::RunOutcome {
+            line: "converged".into(),
+            restored: None,
+        });
+        s.update(Message::RunFinished);
+        assert_eq!(s.worktree(), Worktree::LeftForReview(2));
     }
 
     #[test]
