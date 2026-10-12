@@ -58,7 +58,9 @@
   The composer (#301) sits below every section, so a task can be sent from
   whichever one is shown. composer.js sends a prompt while no run is in
   flight and a steer while one is, by the view's own record; Stop shows only
-  during a run. The core refuses what does not fit that record, whatever
+  during a run, set apart from Send in the danger colour, and asks through
+  the stop-confirm dialog before an abort is sent, since the rollback it
+  causes cannot be undone (#637). The core refuses what does not fit that record, whatever
   the page sends. The line under the textarea says what Enter does, since
   Enter starts a run; a starter fills the template line and runs only on
   Send; and a sent task is acknowledged with a way to the Run section
@@ -394,7 +396,7 @@
             <option value="auto">auto: run without asking</option>
           </select>
           <button type="submit" id="composer-send" disabled>Send</button>
-          <button type="button" id="composer-stop" hidden>Stop</button>
+          <button type="button" id="composer-stop" class="danger" aria-haspopup="dialog" aria-controls="stop-confirm" hidden>Stop</button>
         </div>
         <p id="composer-note" class="muted" role="status"></p>
         <button type="button" id="composer-follow" hidden>Show Run</button>
@@ -422,6 +424,17 @@
           <div class="approval-row">
             <button type="submit" id="approval-reject" value="reject">Reject</button>
             <button type="submit" id="approval-approve" value="approve">Approve</button>
+          </div>
+        </form>
+      </dialog>
+
+      <dialog id="stop-confirm" class="approval" aria-labelledby="stop-confirm-title" aria-describedby="stop-confirm-text">
+        <form method="dialog">
+          <h2 id="stop-confirm-title">Stop the run?</h2>
+          <p id="stop-confirm-text">trellis rolls back its edits and writes a trail. The run's work cannot be brought back.</p>
+          <div class="approval-row">
+            <button type="submit" id="stop-confirm-cancel" value="cancel">Cancel</button>
+            <button type="submit" id="stop-confirm-stop" class="danger" value="stop">Stop</button>
           </div>
         </form>
       </dialog>

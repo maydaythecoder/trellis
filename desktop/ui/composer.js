@@ -33,6 +33,10 @@
 // template the next Send runs, with its description shown, never a run on
 // its own click; and a sent task is acknowledged, with a button to the Run
 // section, rather than the text simply vanishing (#644).
+//
+// Stop is one slip from Send, and what it does (abort, roll back, write a
+// trail) cannot be undone, so it is drawn apart in the danger colour and a
+// native dialog confirms it before any abort is sent (#637).
 
 import { exitText } from "./status.js";
 
@@ -82,6 +86,8 @@ function parts(doc) {
     templateText: doc.getElementById("composer-template-text"),
     templateClear: doc.getElementById("composer-template-clear"),
     follow: doc.getElementById("composer-follow"),
+    stopConfirm: doc.getElementById("stop-confirm"),
+    stopCancel: doc.getElementById("stop-confirm-cancel"),
   };
 }
 
@@ -286,7 +292,18 @@ export async function wireComposer(doc, tauri) {
     const run = doc.querySelector('nav.rail button[aria-controls="run"]');
     if (run) run.click();
   });
+  // Stop aborts the run and rolls its edits back, which cannot be undone,
+  // so a click only asks (#637). The dialog's close is the one place an
+  // abort is sent, and only when its Stop button closed it: Escape, Cancel
+  // and any other close send nothing. Cancel takes the focus, so a stray
+  // Enter stops nothing.
   p.stop.addEventListener("click", () => {
+    p.stopConfirm.returnValue = "";
+    p.stopConfirm.showModal();
+    p.stopCancel.focus();
+  });
+  p.stopConfirm.addEventListener("close", () => {
+    if (p.stopConfirm.returnValue !== "stop") return;
     send(tauri, p, { id: lineId("abort"), type: "abort" });
   });
   drawRunning(doc);
