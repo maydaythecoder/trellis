@@ -77,7 +77,7 @@ pub const LINE_CAP: usize = 65_536;
 /// write is among them: rpc has none, every vault write stays a `trellis
 /// vault` command the person runs (#70), and the queue's writes are
 /// `trellis queue` and `trellis work` (ADR 0020 section 5).
-pub const FORWARDED: [&str; 20] = [
+pub const FORWARDED: [&str; 21] = [
     "prompt",
     "abort",
     "get_state",
@@ -95,6 +95,7 @@ pub const FORWARDED: [&str; 20] = [
     "get_radius",
     "vault_search",
     "vault_graph",
+    "vault_check",
     "get_queue",
     "get_symbols",
     "get_history",
@@ -394,7 +395,7 @@ impl Core {
             // thread may feed as soon as it is written, finds it set.
             match line.get("type").and_then(Value::as_str) {
                 Some("get_state") => s.resend = true,
-                Some(t @ ("vault_search" | "vault_graph")) => {
+                Some(t @ ("vault_search" | "vault_graph" | "vault_check")) => {
                     s.view
                         .vault_asked(t, line.get("id").and_then(Value::as_str));
                 }
@@ -2243,6 +2244,62 @@ mod tests {
     }
 
     #[test]
+    fn vault_check_is_forwarded_and_answered_in_the_vault_view_without_a_write() {
+        // The risk (#632): the vault view asks for the check and the core
+        // refuses to forward it; the report reaching the page as a raw
+        // frame to type itself (ADR 0048 section 5); a read that repairs
+        // the vault (#70); or the gate answer landing in the checks pane as
+        // a verdict (ADR 0004).
+        let repo = vault_repo("vault-check-repo");
+        let before = snapshot(&repo.join("notes"));
+        let config = scratch("vault-check-config");
+        let (core, rec) = core_with(&config);
+        core.start(&repo).unwrap();
+        rec.wait_for("child-started", |_| true);
+        let ask = json!({"id": "desktop-vault-check-1", "type": "vault_check"});
+        assert_eq!(core.send(&ask), Ok(()));
+        let view = rec.wait_for("view", |v| v["vault"]["check"].is_object());
+        assert!(
+            view.get("checks").is_none(),
+            "the checks pane is untouched: {view}"
+        );
+        let c = &view["vault"]["check"];
+        assert!(
+            c["line"]
+                .as_str()
+                .is_some_and(|l| l.starts_with("notes=3 ")),
+            "{c}"
+        );
+        assert_eq!(
+            c["gate"], "run gate: refuses this vault, 1 violation(s):",
+            "{c}"
+        );
+        assert_eq!(c["violations"].as_array().unwrap().len(), 1, "{c}");
+        assert!(!c["issues"].as_array().unwrap().is_empty(), "{c}");
+        // A `fix` field never reaches trellis: the core forwards the type,
+        // and rpc refuses the field by name; either way nothing is written.
+        let ask = json!({"id": "desktop-vault-check-2", "type": "vault_check", "fix": true});
+        assert_eq!(core.send(&ask), Ok(()));
+        let view = rec.wait_for("view", |v| v["vault"]["check"]["error"].is_string());
+        assert!(
+            view["vault"]["check"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("`fix`"),
+            "{view}"
+        );
+        finish(&core).unwrap();
+        assert_eq!(
+            snapshot(&repo.join("notes")),
+            before,
+            "a check changed the vault"
+        );
+        for d in [&repo, &config] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
     fn rpc_send_forwards_no_vault_write() {
         // The risk (#70, ADR 0049): the page writes a note through the
         // desktop. Every vault write is a `trellis vault` command the
@@ -2257,7 +2314,7 @@ mod tests {
             "vault_reparent",
             "vault_retitle",
             "vault_rm",
-            "vault_check",
+            "vault_fix",
             "vault_init",
             "vault_dates",
             "VAULT_SEARCH",
@@ -2270,7 +2327,8 @@ mod tests {
         }
         for ty in FORWARDED {
             assert!(
-                !ty.starts_with("vault_") || ["vault_search", "vault_graph"].contains(&ty),
+                !ty.starts_with("vault_")
+                    || ["vault_search", "vault_graph", "vault_check"].contains(&ty),
                 "rpc_send forwards a vault type that is not a read: {ty}"
             );
         }
