@@ -882,12 +882,30 @@ article.past-run section + section {
   list-style: none;
 }
 
-.qb-cell {
+/* Each cell is a button that filters the list (#656), drawn as the cell it
+   was rather than as the pane's small buttons. */
+.qb-counts .qb-cell {
   display: flex;
   flex-direction: column;
+  width: 100%;
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.qb-counts .qb-cell[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--pane-bg);
+}
+
+.qb-counts .qb-cell:disabled {
+  color: var(--muted);
+  cursor: default;
 }
 
 .qb-count {
