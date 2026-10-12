@@ -1779,6 +1779,130 @@ mod tests {
         assert_eq!(none["last_run"], Value::Null, "no run stays no run");
     }
 
+    /// The one `type="submit"` button inside the form `form_id`, which the
+    /// module's `#<form> button[type=submit]` selector reaches.
+    fn submit_button_of(page: &[Element], form_id: &str) -> usize {
+        let form = index_of(page, form_id);
+        let found: Vec<usize> = (0..page.len())
+            .filter(|&i| {
+                page[i].tag == "button"
+                    && page[i].attr("type") == Some("submit")
+                    && within(page, i, form)
+            })
+            .collect();
+        assert_eq!(found.len(), 1, "one submit button in #{form_id}: {found:?}");
+        found[0]
+    }
+
+    #[test]
+    fn disabled_while_asked_show_radius_waits_for_its_answer() {
+        // The risk (#657, UX-19): each get_radius makes trellis index the
+        // repository, and the button took a second click while the first
+        // answer was out, so a large repository's wait doubled. The button
+        // is disabled as the question is sent, and enabled again where the
+        // answer or the refusal is drawn, and when the child that owed the
+        // answer is replaced or gone.
+        let js = ui_file("radius.js");
+        let page = page();
+        let button = submit_button_of(&page, "rd-form");
+        assert!(
+            !page[button].attrs.contains_key("disabled"),
+            "Show radius is served disabled, so nothing could ever be asked"
+        );
+        let toggle = function_body(&js, "submitting");
+        assert!(
+            toggle.contains("doc.querySelector(\"#rd-form button[type=submit]\").disabled = on;"),
+            "submitting() does not set the button's disabled: {toggle}"
+        );
+        let ask = function_body(&js, "ask");
+        let sent = ask
+            .find("invoke(\"rpc_send\"")
+            .expect("ask sends the question");
+        let off = ask
+            .find("submitting(doc, true);")
+            .expect("ask disables the button");
+        assert!(
+            off < sent,
+            "the button is disabled only after the question is sent"
+        );
+        let refused = between(ask, "catch (err)", "\n  }");
+        assert!(
+            refused.contains("submitting(doc, false);"),
+            "a refused question leaves the button disabled for good"
+        );
+        let draw = function_body(&js, "drawRadius");
+        let stale = draw
+            .find("if (payload.id !== waiting) return;")
+            .expect("stale answers are dropped");
+        let on = draw
+            .find("submitting(doc, false);")
+            .expect("drawRadius enables the button");
+        assert!(
+            stale < on,
+            "an earlier question's late answer enables the button"
+        );
+        for event in ["child-started", "rpc-exited"] {
+            assert!(
+                listener(&js, event).contains("submitting(doc, false)"),
+                "{event} leaves a button disabled for an answer that never comes"
+            );
+        }
+    }
+
+    #[test]
+    fn disabled_while_asked_vault_search_waits_for_its_answer() {
+        // The risk: the same for vault_search, whose answer comes back as
+        // the `vault` key of a view event: the button is enabled again only
+        // by a view that carries hits or an error, not by the empty view
+        // drawn at start, and by a refusal from the core.
+        let js = ui_file("vault.js");
+        let page = page();
+        let button = submit_button_of(&page, "vt-form");
+        assert!(
+            !page[button].attrs.contains_key("disabled"),
+            "Search is served disabled, so nothing could ever be asked"
+        );
+        let toggle = function_body(&js, "searching");
+        assert!(
+            toggle.contains("doc.querySelector(\"#vt-form button[type=submit]\").disabled = on;"),
+            "searching() does not set the button's disabled: {toggle}"
+        );
+        let submit = between(&js, "addEventListener(\"submit\"", "\n  });");
+        let sent = submit
+            .find("type: \"vault_search\"")
+            .expect("submit sends the search");
+        let off = submit
+            .find("searching(doc, true);")
+            .expect("submit disables the button");
+        assert!(
+            off < sent,
+            "the button is disabled only after the search is sent"
+        );
+        assert!(
+            submit.contains("if (!sent) searching(doc, false);"),
+            "a refused search leaves the button disabled for good"
+        );
+        let send = function_body(&js, "send");
+        assert!(
+            send.contains("return true;")
+                && between(send, "catch (err)", "\n  }").contains("return false;"),
+            "send() does not say whether the line went: {send}"
+        );
+        let draw = function_body(&js, "drawVault");
+        assert!(
+            draw.contains(
+                "if (str(v.error) !== null || Array.isArray(v.hits)) searching(doc, false);"
+            ),
+            "drawVault enables the button on something other than hits or an error: {draw}"
+        );
+        for event in ["child-started", "rpc-exited"] {
+            assert!(
+                listener(&js, event).contains("searching(doc, false)"),
+                "{event} leaves a button disabled for an answer that never comes"
+            );
+        }
+    }
+
     #[test]
     fn vault_section_holds_what_vault_js_draws() {
         // The risk (#309): vault.js drawing into an id the page lacks, so
