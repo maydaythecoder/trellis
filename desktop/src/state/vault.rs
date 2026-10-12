@@ -186,6 +186,11 @@ pub struct Vault {
     /// refused or bad data; empty for a search that matched nothing.
     hits: Option<Vec<Hit>>,
     reduced: Option<String>,
+    /// The hits are a browse list, not a ranking (#629): the answer to an
+    /// empty query, which Apex lists by title and `search_results` scores
+    /// 0 for every note, where a note a query matched always scores above
+    /// 0. Marked here so the page draws no score and computes nothing.
+    browse: bool,
     graph: Option<NoteGraph>,
     /// trellis's refusal, or the reason the last answer was bad data.
     error: Option<String>,
@@ -423,9 +428,11 @@ impl Vault {
             // A search starts over: the note shown was picked from the
             // last search's hits.
             Ok(Read::Search(reduced, hits)) => {
+                let browse = !hits.is_empty() && hits.iter().all(|h| h.score == "0.0000");
                 *self = Self {
                     hits: Some(hits),
                     reduced,
+                    browse,
                     asked_search: self.asked_search.take(),
                     asked_graph: self.asked_graph.take(),
                     graph_superseded: superseded,
@@ -460,6 +467,7 @@ impl Vault {
         json!({
             "error": self.error,
             "reduced": self.reduced,
+            "browse": self.browse,
             "hits": self.hits.as_ref().map(|hs| {
                 hs.iter()
                     .map(|h| json!({"path": h.path, "title": h.title, "score": h.score}))
@@ -561,6 +569,47 @@ mod tests {
         // Before any answer there are no hits at all, which is not an
         // empty answer.
         assert_eq!(view_of(&Vault::default())["hits"], Value::Null);
+    }
+
+    #[test]
+    fn vault_browse_list_is_marked_and_kept_in_trellis_s_title_order() {
+        // The risk (#629): the empty query's list, which Apex orders by
+        // title and trellis scores 0 throughout, drawn as a ranking with
+        // a score of 0.0000 beside every note, or re-sorted by the page;
+        // or a real search's hits marked as a browse, hiding their scores.
+        let mut v = Vault::default();
+        let listed = hits(
+            (true, true),
+            json!([
+                {"path": "child.md", "title": "Child", "score": 0.0},
+                {"path": "orphan.md", "title": "Orphan", "score": 0},
+                {"path": "root.md", "title": "Root", "score": 0.0},
+            ]),
+        );
+        assert!(v.answer(&response(SEARCH, "s1", listed)));
+        let j = view_of(&v);
+        assert_eq!(j["browse"], true, "{j}");
+        assert_eq!(
+            j["hits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|h| h["path"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["child.md", "orphan.md", "root.md"]
+        );
+        // A match scores above 0, so a ranking is never a browse, nor is
+        // an empty answer, which lists nothing to browse.
+        let ranked = hits(
+            (true, true),
+            json!([{"path": "a.md", "title": "A", "score": 0.0001},
+                   {"path": "b.md", "title": "B", "score": 0}]),
+        );
+        assert!(v.answer(&response(SEARCH, "s2", ranked)));
+        assert_eq!(view_of(&v)["browse"], false);
+        assert!(v.answer(&response(SEARCH, "s3", hits((true, true), json!([])))));
+        assert_eq!(view_of(&v)["browse"], false);
+        assert_eq!(view_of(&Vault::default())["browse"], false);
     }
 
     #[test]
