@@ -951,13 +951,15 @@ impl Orchestrator {
                 None => "ended without an exit code".to_string(),
             }
         };
+        // Colour codes out (#623): under a colour-forcing shell they filled
+        // the tail the model reads and the trail with nothing it can use.
         let mut s = format!("{status}\n");
         if !c.stdout.is_empty() {
-            s.push_str(&c.stdout.render());
+            s.push_str(&c.stdout.render_plain());
         }
         if !c.stderr.is_empty() {
             s.push_str("\nstderr:\n");
-            s.push_str(&c.stderr.render());
+            s.push_str(&c.stderr.render_plain());
         }
         s.push_str(&carried);
         // Not a verdict, and said where the model reads it: a command
@@ -997,17 +999,17 @@ impl Orchestrator {
             ));
         }
         if c.code == Some(0) {
-            return ToolResult::Output(format!("{}{carried}", c.stdout.render()));
+            return ToolResult::Output(format!("{}{carried}", c.stdout.render_plain()));
         }
         ToolResult::Error(format!(
             "`{name}` exited with {}: {}{}{carried}",
             c.code
                 .map_or_else(|| "no exit code".to_string(), |c| c.to_string()),
-            c.stdout.render(),
+            c.stdout.render_plain(),
             if c.stderr.is_empty() {
                 String::new()
             } else {
-                format!("\nstderr:\n{}", c.stderr.render())
+                format!("\nstderr:\n{}", c.stderr.render_plain())
             }
         ))
     }
