@@ -156,6 +156,15 @@ The event and trail fields listed in
 `crates/trellis-cli/tests/client_contract.json` (DESK-07) are what an rpc or
 `log --json` client may rely on, held by tests through the binary. Fields it
 does not list stay as unversioned as ADR 0025 §4 leaves them.
+*Added 2026-10-12 (#627):* the `runtime identified` event (ADR 0047
+decision 13) is listed: `runtime` and `served` always, and `kv_slots`,
+`tiers_vram`, `tiers_ram` and `tiers_disk` only when colibri's `/health`
+reported them, absent and never 0 otherwise, with the contract saying when
+each is left off. It is sent once per run, before the first model request,
+only for an endpoint identified as colibri, and stays out of the trail.
+Held by `rpc_runtime_identified_carries_every_field_the_contract_lists_once_per_run`
+and `rpc_runtime_identified_leaves_unreported_counts_absent_never_0` in
+`tests/modes.rs`. The desktop pane that draws it is #628.
 
 ### 7. Auditing Tauri's tree
 

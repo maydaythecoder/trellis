@@ -28,7 +28,7 @@
 mod vault;
 
 use crate::atlas;
-use crate::frames::{ApprovalRequest, Frame, RunEnd, Turn};
+use crate::frames::{ApprovalRequest, Frame, RunEnd, RuntimeIdentified, Turn};
 use crate::graph;
 use crate::queue;
 use serde_json::{Map, Value, json};
@@ -88,13 +88,16 @@ pub enum Pane {
     /// What the run is on now: a model call, or the tool or checks its
     /// last turn ran (#615).
     Phase,
+    /// colibri's self-report for this run, as `runtime identified` carried
+    /// it (#628): three separate counts, each null when unreported.
+    Runtime,
 }
 
 /// Every pane the view carries. Each is a key the page must draw:
 /// `view_renders_every_pane_key` in `lockdown.rs` drives a whole run through
 /// [`DesktopState::update`] and fails naming a key here that no module the
 /// page loads reads from the `view` event (ADR 0052 section 1, #513).
-const PANES: [Pane; 23] = [
+const PANES: [Pane; 24] = [
     Pane::Transcript,
     Pane::Actions,
     Pane::Edits,
@@ -118,6 +121,7 @@ const PANES: [Pane; 23] = [
     Pane::Queue,
     Pane::Atlas,
     Pane::Phase,
+    Pane::Runtime,
 ];
 
 /// The panes a run starts afresh: everything but the transcript, which,
@@ -128,7 +132,7 @@ const PANES: [Pane; 23] = [
 /// the last stopped run's, so a new run drops it, and so is the alert: what
 /// failed before this run started is not this run's failure. The stderr
 /// pane, as the transcript, carries on.
-const RUN_PANES: [Pane; 12] = [
+const RUN_PANES: [Pane; 13] = [
     Pane::Actions,
     Pane::Edits,
     Pane::Checks,
@@ -141,6 +145,7 @@ const RUN_PANES: [Pane; 12] = [
     Pane::Alert,
     Pane::Graph,
     Pane::Phase,
+    Pane::Runtime,
 ];
 
 impl Pane {
@@ -169,6 +174,7 @@ impl Pane {
             Pane::Queue => "queue",
             Pane::Atlas => "atlas",
             Pane::Phase => "phase",
+            Pane::Runtime => "runtime",
         }
     }
 
@@ -673,6 +679,11 @@ pub struct DesktopState {
     /// What the run is on now; `None` before a run's first `model call`
     /// and from its `run_end`.
     phase: Option<Phase>,
+    /// What colibri said of itself for this run; `None` until the run's
+    /// `runtime identified`, which only an endpoint identified as colibri
+    /// sends, and from each run's start. The event stays out of the trail
+    /// (ADR 0047 decision 13), so a run has no other source for it.
+    runtime: Option<RuntimeIdentified>,
 }
 
 impl DesktopState {
@@ -694,6 +705,10 @@ impl DesktopState {
                     None => "· steer delivered".to_string(),
                 });
                 Changed::of(&[Pane::Transcript])
+            }
+            Frame::RuntimeIdentified(r) => {
+                self.runtime = Some(r);
+                Changed::of(&[Pane::Runtime])
             }
             Frame::RunStart(s) => {
                 self.reset_run();
@@ -1048,6 +1063,19 @@ impl DesktopState {
                 Some(Phase::Checks { turn }) => json!({"phase": "checks", "turn": turn}),
                 None => Value::Null,
             },
+            // Each count as sent, or null: never 0 for one colibri did not
+            // report, and no sum or share of the three tiers (ADR 0048 §8).
+            Pane::Runtime => match &self.runtime {
+                Some(r) => json!({
+                    "runtime": r.runtime,
+                    "served": r.served,
+                    "kv_slots": r.kv_slots,
+                    "tiers_vram": r.tiers_vram,
+                    "tiers_ram": r.tiers_ram,
+                    "tiers_disk": r.tiers_disk,
+                }),
+                None => Value::Null,
+            },
             Pane::Tier => json!(self.tier),
             Pane::Starters => match &self.starters {
                 Some(list) => Value::Array(
@@ -1260,6 +1288,7 @@ impl DesktopState {
         self.undelivered.clear();
         self.alert = None;
         self.phase = None;
+        self.runtime = None;
     }
 
     fn push_line(&mut self, line: String) {
@@ -1534,6 +1563,82 @@ mod tests {
         let c = feed(&mut s, &run_start("p2"));
         assert!(c.has(Pane::Phase), "{c:?}");
         assert_eq!(all(&s)["phase"], Value::Null);
+    }
+
+    #[test]
+    fn runtime_pane_carries_every_field_colibri_reported() {
+        // The risk (#628): the self-report trellis sends for a colibri run
+        // (client_contract.json's `runtime identified`) dropped on the way
+        // to the page, or a count carried under another number.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p1"));
+        assert_eq!(all(&s)["runtime"], Value::Null, "nothing before the event");
+        let c = feed(
+            &mut s,
+            &event(
+                "runtime identified",
+                json!({"runtime": "colibri", "served": "glm-5.2", "kv_slots": 16,
+                       "tiers_vram": 120, "tiers_ram": 2400, "tiers_disk": 17000}),
+            ),
+        );
+        assert!(c.has(Pane::Runtime), "{c:?}");
+        assert_eq!(
+            all(&s)["runtime"],
+            json!({"runtime": "colibri", "served": "glm-5.2", "kv_slots": 16,
+                   "tiers_vram": 120, "tiers_ram": 2400, "tiers_disk": 17000})
+        );
+        // Three counts and nothing derived from them (ADR 0048 §8).
+        let mut ks = Vec::new();
+        keys(&all(&s)["runtime"], &mut ks);
+        assert!(
+            !ks.iter().any(|k| {
+                let k = k.to_lowercase();
+                ["ratio", "percent", "fraction", "total", "share"]
+                    .iter()
+                    .any(|w| k.contains(w))
+            }),
+            "{ks:?}"
+        );
+        // Without `served` the event names no runtime, and changes nothing.
+        let c = feed(&mut s, &event("runtime identified", json!({"kv_slots": 1})));
+        assert!(c.is_empty(), "{c:?}");
+        assert_eq!(all(&s)["runtime"]["served"], "glm-5.2");
+    }
+
+    #[test]
+    fn runtime_pane_unreported_counts_are_null_and_a_new_run_starts_without_one() {
+        // The risk: a liveness-only /health, which reports no slot and no
+        // tier, drawn as 0 slots and 0 experts (ADR 0048 §8); or the next
+        // run, against another endpoint, still showing this run's report.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p1"));
+        let c = feed(
+            &mut s,
+            &event(
+                "runtime identified",
+                json!({"runtime": "colibri", "served": "glm-5.2"}),
+            ),
+        );
+        assert!(c.has(Pane::Runtime), "{c:?}");
+        assert_eq!(
+            all(&s)["runtime"],
+            json!({"runtime": "colibri", "served": "glm-5.2", "kv_slots": null,
+                   "tiers_vram": null, "tiers_ram": null, "tiers_disk": null})
+        );
+        // A count of the wrong JSON type is unreported too, never read as 0.
+        feed(
+            &mut s,
+            &event(
+                "runtime identified",
+                json!({"runtime": "colibri", "served": "glm-5.2", "kv_slots": "16",
+                       "tiers_vram": -1}),
+            ),
+        );
+        assert_eq!(all(&s)["runtime"]["kv_slots"], Value::Null);
+        assert_eq!(all(&s)["runtime"]["tiers_vram"], Value::Null);
+        let c = feed(&mut s, &run_start("p2"));
+        assert!(c.has(Pane::Runtime), "{c:?}");
+        assert_eq!(all(&s)["runtime"], Value::Null);
     }
 
     #[test]
@@ -2615,7 +2720,7 @@ mod tests {
         match field {
             "turn" | "resolved" | "candidates" | "unresolved" | "prompt_bytes" | "model_ms"
             | "completion_tokens" | "queue_wait_ms" | "max_iterations" | "after_step"
-            | "version" | "exit" => {
+            | "version" | "exit" | "kv_slots" | "tiers_vram" | "tiers_ram" | "tiers_disk" => {
                 *n += 1;
                 json!(*n)
             }
