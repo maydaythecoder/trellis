@@ -3542,6 +3542,135 @@ fn rpc_get_state_tier_after_a_colibri_refusal_is_the_refusal_the_run_decided() {
     assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
+// ---- #627: the `runtime identified` event is in the client contract ----
+
+/// A loopback stub that answers as colibri serving `glm-5.2` and accepting
+/// tools, whose `GET /health` says `health`, and whose first chat request
+/// is a `done` call. As `tests/colibri_run.rs`'s `stub_health` does for
+/// `run --json`.
+fn colibri_health_stub(health: &'static str) -> String {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(mut s) = s else { break };
+            let (raw, body) = read_request(&mut s);
+            let first = raw.lines().next().unwrap_or_default();
+            let reply = if is_models_get(&raw) {
+                r#"{"object":"list","data":[{"id":"glm-5.2","object":"model","created":1758800000,"owned_by":"colibri"}]}"#.to_string()
+            } else if first.starts_with("GET ") && first.contains("/health ") {
+                health.to_string()
+            } else if serde_json::from_str::<Value>(&body).is_ok_and(|v| v["max_tokens"] == 1) {
+                // The tools probe (ADR 0047 decision 4): accepted.
+                r#"{"id":"chatcmpl-1","object":"chat.completion","created":1758800000,"model":"glm-5.2","choices":[{"index":0,"message":{"role":"assistant","content":"I"},"finish_reason":"length"}],"usage":{"prompt_tokens":40,"completion_tokens":1,"total_tokens":41}}"#.to_string()
+            } else {
+                openai_call(
+                    "c1",
+                    "done",
+                    serde_json::json!({"summary": "nothing to do"}),
+                )
+            };
+            let _ = s.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{reply}",
+                    reply.len()
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    format!("http://{addr}")
+}
+
+/// One rpc run against [`colibri_health_stub`] answering `health`: the
+/// stream's `runtime identified` events, and the run's records.
+fn rpc_run_on_colibri(name: &str, health: &'static str) -> (Fixture, Vec<Value>, Vec<Value>) {
+    let f = fixture(name);
+    let base = colibri_health_stub(health);
+    let key_env = user_provider(&f, "coli", &format!("{base}/v1"));
+    let mut cmd = trellis(&f);
+    cmd.env_remove(key_env);
+    let mut rpc = Rpc::start(cmd);
+    rpc.choose("provider:coli#glm-5.2");
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                                "model": "provider:coli#glm-5.2"}),
+    );
+    let end = rpc.next(|v| v["type"] == "run_end" && v["id"] == "p");
+    assert_eq!(end["outcome"], "not_converged", "{end}");
+    let records = rpc.finish();
+    let events: Vec<Value> = records
+        .iter()
+        .filter(|r| r["fields"]["message"] == "runtime identified")
+        .cloned()
+        .collect();
+    (f, events, records)
+}
+
+#[test]
+fn rpc_runtime_identified_carries_every_field_the_contract_lists_once_per_run() {
+    // The risk: the event a client reads colibri's self-report from
+    // (ADR 0048 §6) missing from rpc's stdout, doubled, or without a field
+    // tests/client_contract.json lists; or a count colibri did report read
+    // back as something else.
+    const HEALTH_FULL: &str = r#"{"status":"ok","kv_slots":16,"tiers":{"vram":120,"ram":2400,"disk":17000,"vram_gb":22.5,"ram_gb":96.0}}"#;
+    let (f, events, records) = rpc_run_on_colibri("rpc-runtime-identified", HEALTH_FULL);
+    assert_eq!(events.len(), 1, "one event per run: {records:?}");
+    let fields = &events[0]["fields"];
+    let c = contract();
+    let event = &c["rpc"]["events"]["runtime identified"];
+    let mut gaps = missing(fields, &event["always"], "runtime identified");
+    gaps.extend(missing(fields, &event["health_only"], "runtime identified"));
+    assert!(gaps.is_empty(), "{gaps:?}: {fields}");
+    assert_eq!(fields["runtime"], "colibri", "{fields}");
+    assert_eq!(fields["served"], "glm-5.2", "{fields}");
+    assert_eq!(fields["kv_slots"], 16, "{fields}");
+    assert_eq!(fields["tiers_vram"], 120, "{fields}");
+    assert_eq!(fields["tiers_ram"], 2400, "{fields}");
+    assert_eq!(fields["tiers_disk"], 17000, "{fields}");
+    // Before the run's first model request: the client may draw it as the
+    // run starts.
+    let at = |p: &dyn Fn(&Value) -> bool| records.iter().position(p).expect("present");
+    assert!(
+        at(&|r| r["fields"]["message"] == "runtime identified")
+            < at(&|r| r["fields"]["message"] == "model call"),
+        "{records:?}"
+    );
+    // Not in the trail (ADR 0047 decision 13): a record of it would look
+    // more complete than colibri's report is.
+    for t in std::fs::read_dir(f.root.join(".trellis/runs")).unwrap() {
+        let text = std::fs::read_to_string(t.unwrap().path()).unwrap();
+        assert!(
+            !text.contains("kv_slots"),
+            "the trail carries the self-report"
+        );
+    }
+}
+
+#[test]
+fn rpc_runtime_identified_leaves_unreported_counts_absent_never_0() {
+    // The risk: a liveness-only /health read back as 0 slots and 0 experts
+    // on every tier, which a client would draw as a figure (ADR 0048 §8).
+    const HEALTH_LIVENESS: &str = r#"{"status":"ok"}"#;
+    let (_f, events, records) =
+        rpc_run_on_colibri("rpc-runtime-identified-liveness", HEALTH_LIVENESS);
+    assert_eq!(events.len(), 1, "one event per run: {records:?}");
+    let fields = &events[0]["fields"];
+    let c = contract();
+    let event = &c["rpc"]["events"]["runtime identified"];
+    assert!(
+        missing(fields, &event["always"], "runtime identified").is_empty(),
+        "{fields}"
+    );
+    for k in names(&event["health_only"]) {
+        assert!(fields.get(k).is_none(), "{k} on {fields}");
+        assert!(
+            event["absent_when"].get(k).is_some(),
+            "the contract says when {k} is absent"
+        );
+    }
+}
+
 // ---- #564: a session's model is chosen before its first prompt ----
 
 /// What a `prompt` sent before the session has a model is answered with.

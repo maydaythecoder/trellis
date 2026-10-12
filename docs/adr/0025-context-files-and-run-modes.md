@@ -215,6 +215,15 @@ The adapter's prompt opens with a role sentence, then a protocol:
   `tests/client_contract.json`, with `prompt_bytes` as absent; held by
   `rpc_and_run_json_announce_each_model_call_before_its_turn` in
   `tests/modes.rs`.
+- *Added 2026-10-12 (#627).* The `runtime identified` tracing event, which
+  `--json` and `rpc` have carried since #272 for an endpoint identified as
+  colibri (ADR 0047 decision 13), is now listed in
+  `tests/client_contract.json`: `runtime` and `served` always; `kv_slots`,
+  `tiers_vram`, `tiers_ram` and `tiers_disk` only when `/health` reported
+  them, and absent, never 0, when it failed, was not colibri's shape, did
+  not answer in time, or answered liveness only. Once per run, before the
+  first model request; never in the trail. Held by the
+  `rpc_runtime_identified_*` tests in `tests/modes.rs`.
 
 ### 5. `trellis rpc`
 
