@@ -133,7 +133,8 @@ body {
 }
 
 button:focus-visible,
-.log:focus-visible {
+.log:focus-visible,
+.approval-detail:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
