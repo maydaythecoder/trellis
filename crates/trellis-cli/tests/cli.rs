@@ -4557,6 +4557,30 @@ fn doctor_unreachable_runtime_says_it_could_not_be_reached_not_pass_model() {
 }
 
 #[test]
+fn wait_line_doctor_names_the_address_it_probes_before_the_wait() {
+    // #650. The risk: every probe ran before any output, with a 30 s bound
+    // on the runtime's, so `doctor --model` against a runtime that does not
+    // answer was half a minute of blank terminal while a person diagnosed
+    // it. The line goes to stderr, and the report on stdout is unchanged.
+    let addr = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap()
+    };
+    let d = repo("doctor-wait-line");
+    let spec = format!("llamacpp:http://{addr}");
+    let out = run(&d, &["doctor", "--model", &spec]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.lines()
+            .any(|l| l == format!("probing {spec} (up to 30 s)")),
+        "{}",
+        combined(&out)
+    );
+    assert!(!stdout(&out).contains("probing "), "{}", combined(&out));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn a_repository_model_spec_with_esc_and_a_c1_control_never_reaches_the_banner() {
     // #492. The risk: a cloned repository chooses `[model] spec`, and the
     // banner's `model:` line echoed its model id raw, so ESC or a C1 CSI in
@@ -5272,6 +5296,32 @@ fn overview_lists_pull_requests_and_runs_from_a_gh_on_path() {
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&user);
     let _ = std::fs::remove_dir_all(scratch_path("overview-gh-gh"));
+}
+
+#[test]
+fn wait_line_overview_json_stdout_stays_one_json_object_while_gh_is_asked() {
+    // #650 says what bare `trellis` waits on, on stderr and only at a
+    // terminal. The risk is the desktop's `--json overview`: a line on its
+    // stdout would leave a body no client can parse.
+    let d = repo("overview-wait-line");
+    let user = scratch("overview-wait-line-user");
+    let o = overview_in(
+        "overview-wait-line",
+        &d,
+        &user,
+        GH_OK,
+        &["--json", "overview"],
+    );
+    let v = overview_json(&o);
+    assert_eq!(v["board"]["pr_ci"]["available"], true, "gh was asked: {v}");
+    assert!(
+        !String::from_utf8_lossy(&o.stderr).contains("asking gh"),
+        "stderr is a pipe here, so nothing is said: {}",
+        combined(&o)
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&user);
+    let _ = std::fs::remove_dir_all(scratch_path("overview-wait-line-gh"));
 }
 
 #[test]
