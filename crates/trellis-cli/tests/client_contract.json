@@ -296,6 +296,7 @@
       "codebase_reason",
       "board.tasks[].id",
       "board.tasks[].state",
+      "board.tasks[].status",
       "board.tasks[].task",
       "board.pr_ci.available",
       "board.pr_ci.pull_requests[].number",
