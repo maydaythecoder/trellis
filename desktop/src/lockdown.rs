@@ -1417,6 +1417,14 @@ mod tests {
             );
             written.insert(id.to_string());
         }
+        // The Open refusal's line (#659) is overview.js's too: recent()
+        // makes it with each list and drawOpenRefusal writes into it. The
+        // overview_placeholders_ tests hold both.
+        assert!(
+            function_body(js, "drawOpenRefusal").contains("getElementById(\"ov-recent-status\")"),
+            "overview.js no longer writes the Open refusal into #ov-recent-status"
+        );
+        written.insert("ov-recent-status".to_string());
         let page = page();
         let gaps = unfilled(&page, "overview", &written);
         assert!(
@@ -1970,6 +1978,113 @@ mod tests {
     }
 
     #[test]
+    fn overview_placeholders_every_pane_is_served_with_a_reading_state() {
+        // The risk (#659, UX-21): the landing view's four panes shipped
+        // empty, so during the gh-bounded overview read (up to 20 s) the
+        // page showed four blank boxes under one "Reading" line. Each pane
+        // container is served with a child that says what it is reading;
+        // drawOverview's replaceChildren takes it away with the answer.
+        let page = page();
+        let section = index_of(&page, "overview");
+        let mut panes = 0;
+        for id in ["ov-recent", "ov-last-run", "ov-codebase", "ov-board"] {
+            let pane = index_of(&page, id);
+            assert!(within(&page, pane, section), "#{id} is outside #overview");
+            let placeholder = page
+                .iter()
+                .enumerate()
+                .find(|(i, e)| {
+                    e.parent == Some(pane) && e.attr("class") == Some("empty") && *i > pane
+                })
+                .map(|(_, e)| e);
+            let Some(p) = placeholder else {
+                panic!("#{id} is served with no .empty placeholder child");
+            };
+            assert!(
+                p.text.trim().starts_with("Reading"),
+                "#{id}'s placeholder does not say it is reading: {:?}",
+                p.text
+            );
+            panes += 1;
+        }
+        assert_eq!(panes, 4);
+        // The overview line above them still says so as served.
+        assert!(
+            page[index_of(&page, "ov-root")].text.contains("Reading"),
+            "#ov-root no longer says the overview is being read"
+        );
+        // Every pane is drawn through replaceChildren, so a placeholder
+        // cannot outlive the answer; `only` and the per-pane drawers use it.
+        let js = overview_code();
+        for pane in ["recent", "lastRun", "codebase", "board"] {
+            let body = function_body(&js, pane);
+            assert!(
+                body.contains("replaceChildren(") || body.contains("only(doc, pane"),
+                "{pane}() appends beside the placeholder instead of replacing it"
+            );
+        }
+    }
+
+    #[test]
+    fn overview_placeholders_open_refusal_is_written_beside_the_button() {
+        // The risk: a refused "Open" (a run in flight, no repository at the
+        // path) was written to #status at the top of the page, far from the
+        // click and not announced. It goes into a role=status line inside
+        // #ov-recent, served with the page and made anew by each drawing of
+        // the list, so a refusal does not outlive the list it was about.
+        let page = page();
+        let recent = index_of(&page, "ov-recent");
+        let line = index_of(&page, "ov-recent-status");
+        assert_eq!(
+            page[line].parent,
+            Some(recent),
+            "#ov-recent-status is not a row of #ov-recent"
+        );
+        assert_eq!(
+            page[line].attr("role"),
+            Some("status"),
+            "the refusal line is not announced"
+        );
+        assert_eq!(
+            page[line].text.trim(),
+            "",
+            "the refusal line is served with text"
+        );
+
+        let js = overview_code();
+        let make = function_body(&js, "refusalLine");
+        for want in [
+            "line.id = \"ov-recent-status\";",
+            "line.setAttribute(\"role\", \"status\");",
+        ] {
+            assert!(make.contains(want), "refusalLine() lacks {want}");
+        }
+        let recent_fn = function_body(&js, "recent");
+        assert_eq!(
+            recent_fn.matches("pane.append(refusalLine(doc));").count(),
+            2,
+            "recent() must put the line back on both its paths (an unreadable list, and the rows)"
+        );
+        let write = function_body(&js, "drawOpenRefusal");
+        assert!(
+            write.contains("doc.getElementById(\"ov-recent-status\").textContent = text;"),
+            "drawOpenRefusal does not write through textContent: {write}"
+        );
+
+        let main = ui_file("main.js");
+        let actions = function_body(&main, "overviewActions");
+        let open = between(actions, "open_repository", "\n    }");
+        assert!(
+            open.contains("catch((err) => drawOpenRefusal(document, String(err)))"),
+            "an Open refusal is not drawn in the Recent repositories pane: {open}"
+        );
+        assert!(
+            !open.contains("show(\"status\""),
+            "an Open refusal still goes to the page's top status line"
+        );
+    }
+
+    #[test]
     fn vault_section_holds_what_vault_js_draws() {
         // The risk (#309): vault.js drawing into an id the page lacks, so
         // a search trellis answered is never shown; a search box with no
@@ -2513,7 +2628,7 @@ mod tests {
         );
         let main = ui_file("main.js");
         assert!(
-            main.contains(r#"import { drawOverview, drawOverviewChild } from "./overview.js";"#),
+            main.contains(r#"import { drawOpenRefusal, drawOverview, drawOverviewChild } from "./overview.js";"#),
             "main.js does not load overview.js"
         );
         assert!(
