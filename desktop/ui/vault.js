@@ -9,7 +9,10 @@
 //
 // A note's title, path and issues are the vault's own text, which a run
 // shows the model as data (ADR 0017), so they reach the DOM only through
-// textContent (ADR 0007, S10), and none becomes a link. Nothing here writes
+// textContent (ADR 0007, S10), and none becomes a link. A hit, and each
+// lineage, child and reference entry with a path, is a button that asks
+// for that note's graph as a hit does (#630); an entry with no path has
+// nothing to ask for, so its button is disabled. Nothing here writes
 // the vault: rpc has no vault write, and every write stays a `trellis vault`
 // command the person runs (#70, ADR 0049).
 //
@@ -48,18 +51,38 @@ function rows(doc, items, empty) {
   return ul;
 }
 
+// A button holding `content` that opens the note at `path` with a
+// `vault_graph`, as a hit does; with no path it is disabled, since there
+// is no note to ask for.
+function opener(doc, tauri, path, ...content) {
+  const b = el(doc, "button");
+  b.type = "button";
+  b.append(...content);
+  if (path === null) b.disabled = true;
+  else b.addEventListener("click", () => askNote(doc, tauri, path));
+  return b;
+}
+
 // A note as `trellis vault graph` names one: its title, then its path.
-function named(doc, n) {
+function named(doc, tauri, n) {
   const li = el(doc, "li");
-  li.append(el(doc, "span", str(n && n.title) ?? "title not reported"), " ");
-  const path = el(doc, "code", str(n && n.path) ?? "path not reported");
-  li.append(path);
+  const path = str(n && n.path);
+  li.append(
+    opener(
+      doc,
+      tauri,
+      path,
+      el(doc, "span", str(n && n.title) ?? "title not reported"),
+      " ",
+      el(doc, "code", path ?? "path not reported"),
+    ),
+  );
   return li;
 }
 
 // A reference out or in, with how many times it is made.
-function reference(doc, r) {
-  const li = named(doc, r);
+function reference(doc, tauri, r) {
+  const li = named(doc, tauri, r);
   const w = el(doc, "span", ` ×${isCount(r && r.weight) ? r.weight : "not reported"}`);
   w.className = "muted";
   li.append(w);
@@ -122,7 +145,7 @@ function section(doc, heading, body) {
   return s;
 }
 
-function drawNote(doc, g) {
+function drawNote(doc, tauri, g) {
   const pane = doc.getElementById("vt-note");
   if (g === null || typeof g !== "object") {
     const p = el(doc, "p", "Select a hit to see the note's lineage, children and links.");
@@ -139,10 +162,10 @@ function drawNote(doc, g) {
   lineage.className = "rows";
   for (const p of Array.isArray(g.lineage) ? g.lineage : []) {
     const li = el(doc, "li");
-    li.append(el(doc, "code", str(p) ?? "path not reported"));
+    li.append(opener(doc, tauri, str(p), el(doc, "code", str(p) ?? "path not reported")));
     lineage.append(li);
   }
-  const list = (xs, each) => (Array.isArray(xs) ? xs : []).map((x) => each(doc, x));
+  const list = (xs, each) => (Array.isArray(xs) ? xs : []).map((x) => each(doc, tauri, x));
   const issues = (Array.isArray(g.issues) ? g.issues : []).map((i) => el(doc, "li", str(i) ?? "issue not reported"));
 
   pane.replaceChildren(
@@ -166,7 +189,7 @@ export function drawVault(doc, tauri, v) {
     status(doc, `${n} note${n === 1 ? "" : "s"} matched, in the order trellis vault search ranks them.`);
   } else status(doc, "Read-only: a note is changed with trellis vault or an editor, never from here.");
   drawHits(doc, tauri, v);
-  drawNote(doc, v.graph);
+  drawNote(doc, tauri, v.graph);
 }
 
 export async function wireVault(doc, tauri) {
