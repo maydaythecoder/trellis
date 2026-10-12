@@ -781,7 +781,7 @@ impl Orchestrator {
             .and_then(|end| end.checked_add(human.map_or(Duration::ZERO, |h| h.waited)));
         let result = match &call {
             ToolCall::BlastRadius { symbol } => self.blast_radius(symbol),
-            ToolCall::ReadFile { path } => self.read_file(path),
+            ToolCall::ReadFile { path } => self.read_file(path).await,
             ToolCall::Edit { path, old, new } => self.apply_edit(path, old, new),
             ToolCall::RunChecks { paths, kinds } => self.run_checks(paths, kinds, deadline).await,
             ToolCall::ReadSkill { name } => match self.skills.read(&self.root, name) {
@@ -810,7 +810,7 @@ impl Orchestrator {
             }
             ToolCall::Ls { path } => match read_refusal(&self.root, path) {
                 Some(e) => ToolResult::Error(format!("ls refused: {e}")),
-                None => crate::listing::ls(&self.root, path),
+                None => crate::listing::ls(&self.root, path).await,
             },
             ToolCall::Bash { command } => self.bash(command).await,
             ToolCall::SearchNotes { query, limit } => match self.tools.notes() {
@@ -1215,13 +1215,23 @@ impl Orchestrator {
         crate::graph_tools::coverage_report(self.session.index(), &self.root, paths)
     }
 
-    fn read_file(&self, path: &str) -> ToolResult {
-        match self.resolve_in_repo(path) {
-            Err(e) => ToolResult::Error(format!("read_file refused: {e}")),
-            Ok(full) => match std::fs::read_to_string(full) {
-                Ok(s) => ToolResult::FileContent(s),
-                Err(e) => ToolResult::Error(format!("cannot read {path}: {e}")),
-            },
+    /// A path git ignores is refused before it is opened (#611). `find`,
+    /// `grep` and the throwaway clone already leave ignored files out, so
+    /// this was the one tool that put a git-ignored `.env` into an
+    /// observation, and from there into the trail and a hosted request
+    /// body. Git's own rule, not a name list: a tracked file is readable
+    /// whatever it is called, because its history is already shown.
+    async fn read_file(&self, path: &str) -> ToolResult {
+        let full = match self.resolve_in_repo(path) {
+            Err(e) => return ToolResult::Error(format!("read_file refused: {e}")),
+            Ok(full) => full,
+        };
+        if let Some(why) = read_ignored_refusal(&self.root, path).await {
+            return ToolResult::Error(format!("read_file refused: {why}"));
+        }
+        match std::fs::read_to_string(full) {
+            Ok(s) => ToolResult::FileContent(s),
+            Err(e) => ToolResult::Error(format!("cannot read {path}: {e}")),
         }
     }
 
@@ -1487,9 +1497,55 @@ impl Orchestrator {
 /// of `write_file` asks this same function, so a write the orchestrator
 /// refuses is not first put to a person.
 pub(crate) async fn ignored_refusal(root: &Path, rel: &str) -> Option<String> {
+    // `--no-index`: the file is about to be created, so whether git tracks
+    // a stale index entry at that path says nothing about the rollback.
+    match git_ignores(root, rel, true).await {
+        Ok(false) => None,
+        Ok(true) => Some(format!(
+            "`{rel}` is ignored by git, so a rollback could not remove it. Choose a path \
+             git tracks."
+        )),
+        Err(why) => Some(format!(
+            "could not ask git whether `{rel}` is ignored ({why}), and a file git \
+             ignores would survive a rollback. Nothing was written."
+        )),
+    }
+}
+
+/// Why `read_file` may not open `rel` because git ignores it, or `None`
+/// (#611). Without `--no-index`: a tracked file is never ignored, whatever
+/// its name matches, and its history is already in what the model is
+/// shown. Fail closed, as [`ignored_refusal`] does: a check that could not
+/// be made is not a "not ignored".
+pub(crate) async fn read_ignored_refusal(root: &Path, rel: &str) -> Option<String> {
+    match git_ignores(root, rel, false).await {
+        Ok(false) => None,
+        Ok(true) => Some(format!(
+            "`{rel}` is ignored by git, so it is not read: what git leaves out of the \
+             repository, `find` and `grep` leave out too, and its contents would otherwise \
+             reach the trail and the model's provider."
+        )),
+        Err(why) => Some(format!(
+            "could not ask git whether `{rel}` is ignored ({why}), and a file git ignores \
+             is not read. Nothing was read."
+        )),
+    }
+}
+
+/// Whether git ignores `rel`, by one `git check-ignore` under the root,
+/// or why that could not be asked.
+///
+/// `check-ignore` exits 0 for ignored, 1 for not ignored, and 128 on a
+/// fatal error. Only a 1 is a "no": anything else is an error, so a caller
+/// cannot read a check that was never made as permission.
+async fn git_ignores(root: &Path, rel: &str, no_index: bool) -> Result<bool, String> {
     // Overrides and key scrub come with the constructor.
     let mut git = tokio::process::Command::from(trellis_vcs::command());
-    git.args(["check-ignore", "-q", "--no-index", "--"])
+    git.args(["check-ignore", "-q"]);
+    if no_index {
+        git.arg("--no-index");
+    }
+    git.arg("--")
         .arg(rel)
         .current_dir(root)
         .stdin(std::process::Stdio::null())
@@ -1497,22 +1553,11 @@ pub(crate) async fn ignored_refusal(root: &Path, rel: &str) -> Option<String> {
         .stderr(std::process::Stdio::null());
     let status = git.status().await;
     match status.as_ref().map(|s| s.code()) {
-        Ok(Some(1)) => None,
-        Ok(Some(0)) => Some(format!(
-            "`{rel}` is ignored by git, so a rollback could not remove it. Choose a path \
-             git tracks."
-        )),
-        other => {
-            let why = match other {
-                Err(e) => format!("git could not be started: {e}"),
-                Ok(Some(c)) => format!("`git check-ignore` exited {c}"),
-                Ok(None) => "`git check-ignore` was ended by a signal".to_string(),
-            };
-            Some(format!(
-                "could not ask git whether `{rel}` is ignored ({why}), and a file git \
-                 ignores would survive a rollback. Nothing was written."
-            ))
-        }
+        Ok(Some(1)) => Ok(false),
+        Ok(Some(0)) => Ok(true),
+        Err(e) => Err(format!("git could not be started: {e}")),
+        Ok(Some(c)) => Err(format!("`git check-ignore` exited {c}")),
+        Ok(None) => Err("`git check-ignore` was ended by a signal".to_string()),
     }
 }
 
