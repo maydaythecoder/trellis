@@ -4,7 +4,9 @@
 //
 // - the trellis binary's path and version, and the repository root, from
 //   `child-started` (`version` is null when `trellis --version` could not
-//   be read, and is said so, never guessed);
+//   be read, and is said so, never guessed); each path as its last
+//   component, with the whole path as the cell's title, so the bar stays
+//   one line (#652);
 // - the session's model and where it came from (`repository`, `user` or
 //   `session`, the view's `model.source`, null when the core cannot tell);
 // - whether a run is in flight, the view's `running`;
@@ -24,6 +26,26 @@ function str(v) {
 
 function show(doc, id, text) {
   doc.getElementById(id).textContent = text;
+}
+
+// The last component of `path`, split on either separator, since trellis
+// may run on Windows; a path that is all separators is itself.
+export function baseName(path) {
+  const parts = path.split(/[\\/]/).filter((p) => p !== "");
+  return parts.length === 0 ? path : parts[parts.length - 1];
+}
+
+// Shows `path` in the cell `id` by its last component, with the whole path
+// as the cell's title; or `missing`, with no title, when there is none.
+function showPath(doc, id, path, missing, after = "") {
+  const e = doc.getElementById(id);
+  if (path === null) {
+    e.textContent = missing + after;
+    e.removeAttribute("title");
+    return;
+  }
+  e.textContent = baseName(path) + after;
+  e.setAttribute("title", path);
 }
 
 // The session's model as the status bar words it.
@@ -59,8 +81,8 @@ export async function wireStatus(doc, tauri) {
   await tauri.event.listen("child-started", (event) => {
     const c = event.payload && typeof event.payload === "object" ? event.payload : {};
     const version = str(c.version) ?? "version not reported";
-    show(doc, "status-trellis", `${str(c.trellis) ?? "path not reported"} · ${version}`);
-    show(doc, "status-root", str(c.root) ?? "not reported");
+    showPath(doc, "status-trellis", str(c.trellis), "path not reported", ` · ${version}`);
+    showPath(doc, "status-root", str(c.root), "not reported");
     show(doc, "status-child", "running");
   });
   await tauri.event.listen("rpc-exited", (event) => {
