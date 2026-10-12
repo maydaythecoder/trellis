@@ -126,21 +126,9 @@ where
         }
 
         let msg = tokio::select! {
-            Some(Ok(ev)) = term_events.next() => match ev {
-                // Ctrl-C reaches us as a key rather than a signal in raw
-                // mode, and it has to leave the terminal as it found it —
-                // the same exit path as `q`, not a process kill. Mid-run,
-                // `update` turns it into a stop first (#634).
-                Event::Key(k)
-                    if k.kind == KeyEventKind::Press
-                        && k.code == KeyCode::Char('c')
-                        && k.modifiers.contains(KeyModifiers::CONTROL) =>
-                {
-                    Message::Quit
-                }
-                Event::Key(k) if k.kind == KeyEventKind::Press => Message::Key(k),
-                Event::Resize(w, h) => Message::Resize(w, h),
-                _ => continue,
+            Some(Ok(ev)) = term_events.next() => match terminal_message(ev) {
+                Some(m) => m,
+                None => continue,
             },
             Some(m) = work_rx.recv() => m,
             _ = ticker.tick() => Message::Tick,
@@ -205,6 +193,34 @@ where
     Ok(())
 }
 
+/// The terminal events this interface acts on, as messages.
+///
+/// A function rather than arms in the `select!` so the mapping can be
+/// tested without a terminal (crossterm's stream needs one).
+fn terminal_message(ev: Event) -> Option<Message> {
+    match ev {
+        // Ctrl-C reaches us as a key rather than a signal in raw mode, and
+        // it has to leave the terminal as it found it — the same exit path
+        // as `q`, not a process kill. Mid-run, `update` turns it into a stop
+        // first (#634).
+        Event::Key(k)
+            if k.kind == KeyEventKind::Press
+                && k.code == KeyCode::Char('c')
+                && k.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
+            Some(Message::Quit)
+        }
+        Event::Key(k) if k.kind == KeyEventKind::Press => Some(Message::Key(k)),
+        Event::Resize(w, h) => Some(Message::Resize(w, h)),
+        // Whole, with its line breaks, so a pasted task is one input and not
+        // one Enter per line (#639). Needs bracketed paste on, which
+        // `terminal::init` turns on; without it the terminal types the paste
+        // key by key and this arm never fires.
+        Event::Paste(text) => Some(Message::Paste(text)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +237,17 @@ mod tests {
             answer_tx: None,
             steer_tx: None,
         }
+    }
+
+    /// #639: a paste reaches `update` whole. Before bracketed paste it
+    /// arrived as keystrokes, and each line break was an Enter.
+    #[test]
+    fn paste_event_becomes_one_paste_message() {
+        let got = terminal_message(Event::Paste("a\nb".into()));
+        assert!(
+            matches!(&got, Some(Message::Paste(t)) if t == "a\nb"),
+            "got {got:?}"
+        );
     }
 
     /// The exit path, driven through the real loop.
