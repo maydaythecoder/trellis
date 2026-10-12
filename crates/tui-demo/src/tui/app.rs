@@ -393,23 +393,20 @@ impl AppState {
         }
         // The modal is answered first: while it is up, the keys underneath
         // it are not the ones on screen.
+        //
+        // The answer touches no edit (#635). The loop asks before a call
+        // runs and reports an edit after it has written, so every row in
+        // `edits` is already in the tree when the question arrives, and the
+        // answer is to the *next* call. Marking rows applied or rejected
+        // here painted that answer onto files that were written either way;
+        // the decline itself is a transcript line the driver writes.
         if self.modal.is_some() {
             match k.code {
                 KeyCode::Char('y') => {
-                    for e in &mut self.edits {
-                        if e.status == EditStatus::Proposed {
-                            e.status = EditStatus::Applied;
-                        }
-                    }
                     self.modal = None;
                     self.answered = Some(true);
                 }
                 KeyCode::Char('n') => {
-                    for e in &mut self.edits {
-                        if e.status == EditStatus::Proposed {
-                            e.status = EditStatus::Rejected;
-                        }
-                    }
                     self.modal = None;
                     self.answered = Some(false);
                 }
@@ -966,7 +963,6 @@ mod tests {
 
         s.update(press(KeyCode::Char('y')));
         assert!(s.modal.is_none(), "y must clear the modal");
-        assert_eq!(s.edits[0].status, EditStatus::Applied);
         assert_eq!(
             s.answered,
             Some(true),
@@ -982,8 +978,43 @@ mod tests {
         });
         s.update(press(KeyCode::Char('n')));
         assert!(s.modal.is_none(), "n must clear the modal");
-        assert_eq!(s.edits[0].status, EditStatus::Rejected);
         assert_eq!(s.answered, Some(false));
+    }
+
+    #[test]
+    fn approval_answer_keeps_edits_as_reported_on_n() {
+        // #635: the bridge reports an edit after it has written and the loop
+        // asks before the next call, so `a.py` is in the tree whatever the
+        // answer. Marking it rejected told an approve-mode user a written
+        // file was not there to review.
+        let mut s = AppState::default();
+        s.update(Message::EditProposed {
+            path: "a.py".into(),
+        });
+        s.update(Message::ApprovalRequested {
+            diff: "apply the edit?".into(),
+        });
+        s.update(press(KeyCode::Char('n')));
+        assert_eq!(s.edits.len(), 1);
+        assert_eq!(s.edits[0].path, "a.py");
+        assert_eq!(s.edits[0].status, EditStatus::Proposed);
+        assert_eq!(s.answered, Some(false));
+    }
+
+    #[test]
+    fn approval_answer_keeps_edits_as_reported_on_y() {
+        // The same for `y`: an approval is an answer about the next call,
+        // not a claim that the rows already shown were applied by it.
+        let mut s = AppState::default();
+        s.update(Message::EditProposed {
+            path: "a.py".into(),
+        });
+        s.update(Message::ApprovalRequested {
+            diff: "apply the edit?".into(),
+        });
+        s.update(press(KeyCode::Char('y')));
+        assert_eq!(s.edits[0].status, EditStatus::Proposed);
+        assert_eq!(s.answered, Some(true));
     }
 
     #[test]
