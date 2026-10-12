@@ -156,6 +156,7 @@ impl AppState {
     pub fn update(&mut self, msg: Message) {
         match msg {
             Message::Key(k) => self.handle_key(k),
+            Message::Paste(text) => self.paste(&text),
             Message::AgentToken(t) => self.push_transcript(t),
             Message::EditProposed { path } => self.edits.push(Edit {
                 path,
@@ -430,6 +431,21 @@ impl AppState {
             KeyCode::Down => self.scroll_back = self.scroll_back.saturating_sub(1),
             _ => {}
         }
+    }
+
+    /// Appends a paste to the input, line breaks as spaces (#639).
+    ///
+    /// Never submits: a paste's line breaks are not Enters. Fed through the
+    /// key path a multi-line task started a run on its first line and
+    /// queued the rest as steers — a snapshot, a model call and a trail for
+    /// a task the user had not finished entering. Ignored while the modal
+    /// is up, as typing is.
+    fn paste(&mut self, text: &str) {
+        if self.modal.is_some() {
+            return;
+        }
+        let flat = text.replace("\r\n", " ").replace(['\r', '\n'], " ");
+        self.input.push_str(&flat);
     }
 
     /// Hands the typed line to whatever is driving runs.
@@ -1212,6 +1228,30 @@ mod input_tests {
         type_in(&mut s, "fix @models");
         s.update(press(KeyCode::Enter));
         assert_eq!(s.submitted.as_deref(), Some("fix @models"));
+    }
+
+    #[test]
+    fn paste_lands_in_the_input_and_submits_nothing() {
+        // #639: one paste made N submissions. The paste is one input and
+        // the run starts only on Enter.
+        let mut s = AppState::default();
+        s.update(Message::Paste("a\nb".into()));
+        assert_eq!(s.input, "a b");
+        assert_eq!(s.submitted, None);
+        assert!(!s.running);
+        assert!(s.steered.is_empty());
+        s.update(press(KeyCode::Enter));
+        assert_eq!(s.submitted.as_deref(), Some("a b"));
+    }
+
+    #[test]
+    fn paste_with_crlf_breaks_is_one_space_per_break() {
+        // Terminals send a pasted break as CR, LF or both; each is one word
+        // boundary, not two.
+        let mut s = AppState::default();
+        type_in(&mut s, "x ");
+        s.update(Message::Paste("a\r\nb\rc\n".into()));
+        assert_eq!(s.input, "x a b c ");
     }
 
     #[test]
