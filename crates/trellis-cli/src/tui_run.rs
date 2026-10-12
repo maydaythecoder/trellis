@@ -116,7 +116,7 @@ async fn tier_from_probe(
         // Nothing was sent: the refusal is the run's, before any request.
         Err(_) => return KEY_REFUSED_LABEL.to_string(),
         Ok(Some(r)) => {
-            return match crate::hosted::colibri_tier(&r).await {
+            return match crate::hosted::colibri_tier(&r, false).await {
                 Ok(t) => t.label(),
                 // What stops a run before its snapshot: nothing is known.
                 Err(_) => "unknown".to_string(),
