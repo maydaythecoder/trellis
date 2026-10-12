@@ -10,6 +10,8 @@ the trust store untouched, each held by a test.
 read.
 **Amended:** 2026-10-12 (#617): §4, each entry carries a per-file content
 digest and `--list` reports it.
+**Amended:** 2026-10-12 (#618): §1 and §11, `--upgrade <name>`; "Upgrade
+in place" leaves "Not built".
 **Amends:** ADR 0021 row 10 ("packages: deferred ... needs the trust store
 first"). Grows the CLI surface fixed by brief 4.12, as the owner directed.
 
@@ -27,10 +29,11 @@ Its paths, file modes and sizes are all chosen by whoever wrote it.
 
 ## Decision
 
-1. **The surface.** One command, three forms:
+1. **The surface.** One command, four forms:
    - `trellis install <git-url|path>@<ref>`
    - `trellis install --list`
    - `trellis install --remove <name>`
+   - `trellis install --upgrade <name>` (2026-10-12, #618; see 11)
 
    It needs no repository: packages are user state, as models are.
 
@@ -184,10 +187,28 @@ Its paths, file modes and sizes are all chosen by whoever wrote it.
       (`cargo test -p trellis-cli installed_skill_`) and
       `installed_template_is_listed_and_read_and_the_repository_wins_a_name`.
 
+11. **`--upgrade <name>`** (2026-10-12, #618). The entry's recorded source
+    and ref are re-resolved; a ref that is a tag or a commit id resolves
+    to the same commit, so a pin is implicit and only a branch ref moves
+    (2 keeps the ref required). The same commit is a no-op that says so
+    and touches nothing. Otherwise the new commit is listed, selected,
+    bounded and staged exactly as an install is (5 to 8 unchanged, and 6's
+    settings, since the manifest is a file the user can edit, are applied
+    to the recorded source and ref as to a fresh one), the old copy is
+    moved into the staging directory, the new one is renamed into place,
+    and only then are the entry's `commit` and `digest` rewritten; a swap
+    or save that fails puts the old copy back. A copy whose files differ
+    from the digest in 4 is refused with every path named, and an entry
+    with no digest is refused because nothing can say it was not edited;
+    `--remove` then install is the way past both. There is no `--force`:
+    an upgrade that overwrote the user's edits would be a removal nobody
+    asked for. An unknown name, or one outside 3's alphabet, is refused
+    before any path or git argument is built from it. Reinstalling a name
+    by `install <source>@<ref>` stays refused. Evidence:
+    `install_upgrade_*` (`cargo test -p trellis-cli install_upgrade_`).
+
 ## Not built
 
-- **Upgrade in place.** Reinstalling a name is refused; `--remove` then
-  install.
 - **The fetch itself is not bounded.** `git clone` downloads the whole
   source before the bounds in 8 apply, and a slow or huge source is waited
   on. The bounds cap what is listed and written, not what is fetched.
