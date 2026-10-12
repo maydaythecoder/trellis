@@ -536,6 +536,72 @@ mod tests {
     }
 
     #[test]
+    fn approval_dialog_keys_say_escape_rejects() {
+        // The risk (#658): Escape, often pressed to mean "later", rejects
+        // the call without the dialog saying so. dialogs.js answers every
+        // close but Approve with a no (ADR 0018), and the dialog now says
+        // that in text it is described by.
+        let page = page();
+        let dialog = index_of(&page, "approval");
+        let keys = index_of(&page, "approval-keys");
+        assert!(
+            within(&page, keys, dialog),
+            "the keys line is outside the dialog"
+        );
+        let said = page[keys].text.trim();
+        assert!(
+            said.contains("Escape") && said.contains("rejects the call"),
+            "{said}"
+        );
+        let described = page[dialog]
+            .attr("aria-describedby")
+            .expect("the dialog has no description");
+        assert!(
+            described.split_whitespace().any(|id| id == "approval-keys"),
+            "the dialog is not described by its keys: {described}"
+        );
+        assert!(
+            code_of("dialogs.js").contains(r#"const yes = dialog.returnValue === "approve";"#),
+            "dialogs.js no longer answers a close with a no, so the line is wrong"
+        );
+    }
+
+    #[test]
+    fn approval_dialog_keys_details_take_focus_and_show_it() {
+        // The risk (#658): a diff longer than its box that only a mouse can
+        // scroll, or one that takes focus with no name and no outline.
+        let page = page();
+        let detail = &page[index_of(&page, "approval-detail")];
+        assert_eq!(detail.tag, "pre");
+        assert_eq!(
+            detail.attr("tabindex"),
+            Some("0"),
+            "the details take no focus"
+        );
+        assert!(
+            detail
+                .attr("aria-label")
+                .is_some_and(|l| !l.trim().is_empty()),
+            "the details have no name"
+        );
+        let rules = css_rules();
+        let squeeze = |d: &str| d.split_whitespace().collect::<String>();
+        assert!(
+            rules.iter().any(
+                |(s, d)| s.trim() == ".approval-detail" && squeeze(d).contains("overflow:auto")
+            ),
+            "the details do not scroll"
+        );
+        assert!(
+            rules.iter().any(|(s, d)| s
+                .split(',')
+                .any(|s| s.trim() == ".approval-detail:focus-visible")
+                && squeeze(d).contains("outline:2px")),
+            "focus on the details draws no outline"
+        );
+    }
+
+    #[test]
     fn page_reload_asks_for_the_starters_too() {
         // The risk (#301 review): a page that loads after its child started
         // (a reload) sees no child-started, and main.js's fallback asked for
