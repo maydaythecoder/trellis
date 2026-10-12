@@ -27,6 +27,12 @@
 //! random source, written once on stdout inside a JSON object for `trellis
 //! --web` to read, and nowhere else.
 //!
+//! Every answer, a refusal too, ends with the write side shut and what the
+//! client sent that was not read thrown away unparsed, within a short bound
+//! (`linger`), so the close is a FIN and not a reset, which on Windows
+//! loses the answer. Throwing bytes away is not reading them for what they
+//! say: a refusal is still decided on the request line and headers alone.
+//!
 //! The page is the window's page. `ui/web.js`, loaded first and the one
 //! module that fetches, defines `window.__TAURI__` over `fetch` and
 //! `EventSource` when Tauri has not, so every other module runs unchanged
@@ -43,11 +49,11 @@
 use crate::commands::{Core, Sink};
 use serde_json::{Value, json};
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The page's files, by name, as `ui/` holds them. A file added to `ui/`
 /// is added here, or `page_is_every_file_under_ui_and_nothing_else`
@@ -83,6 +89,10 @@ const HEAD_MAX: usize = 16 * 1024;
 const BODY_MAX: usize = 1024 * 1024;
 /// How long a connection may take to send its request line and headers.
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long, in all, `linger` reads and throws away what a client sent
+/// past what its answer needed, and at most how many bytes of it.
+const LINGER: Duration = Duration::from_millis(200);
+const LINGER_MAX: usize = 64 * 1024;
 /// How often an idle event stream carries a comment, so a page that went
 /// away is noticed by the write that fails.
 const KEEPALIVE: Duration = Duration::from_secs(15);
@@ -251,17 +261,22 @@ impl Server {
         }
     }
 
-    /// One connection: its request line and headers, the two guards, then
-    /// the route.
+    /// One connection: its answer, then its close.
     fn handle(&self, stream: TcpStream) -> io::Result<()> {
         stream.set_read_timeout(Some(READ_TIMEOUT))?;
         let mut reader = BufReader::new(stream.try_clone()?);
         let mut out = stream;
-        let request = match read_head(&mut reader) {
+        self.answer(&mut reader, &mut out)?;
+        linger(&mut out)
+    }
+
+    /// The request line and headers, the two guards, then the route.
+    fn answer(&self, reader: &mut BufReader<TcpStream>, out: &mut TcpStream) -> io::Result<()> {
+        let request = match read_head(reader) {
             Ok(r) => r,
             Err(status) => {
                 return respond(
-                    &mut out,
+                    out,
                     status,
                     "text/plain",
                     status_text(status).as_bytes(),
@@ -272,7 +287,7 @@ impl Server {
         // Both guards before anything else is read or looked up, and one
         // answer for every way they fail: which one failed is not told.
         if !self.host_allowed(request.header("host")) {
-            return respond(&mut out, 403, "text/plain", b"forbidden\n", &[]);
+            return respond(out, 403, "text/plain", b"forbidden\n", &[]);
         }
         let (path, query) = request
             .target
@@ -281,7 +296,7 @@ impl Server {
         if path == "/" && query_token(query).is_some_and(|t| same(t, &self.token)) {
             let location = format!("/{}/", self.token);
             return respond(
-                &mut out,
+                out,
                 303,
                 "text/plain",
                 b"see the page\n",
@@ -294,22 +309,22 @@ impl Server {
             .filter(|(t, _)| same(t, &self.token))
             .map(|(_, rest)| rest)
         else {
-            return respond(&mut out, 403, "text/plain", b"forbidden\n", &[]);
+            return respond(out, 403, "text/plain", b"forbidden\n", &[]);
         };
         match (request.method.as_str(), rest) {
             ("GET", "events") => self.events(out),
-            ("GET", "") => page(&mut out, "index.html"),
+            ("GET", "") => page(out, "index.html"),
             ("GET", name) if name.starts_with("invoke/") => {
-                respond(&mut out, 405, "text/plain", b"a command is a POST\n", &[])
+                respond(out, 405, "text/plain", b"a command is a POST\n", &[])
             }
-            ("GET", name) => page(&mut out, name),
+            ("GET", name) => page(out, name),
             ("POST", name) if name.starts_with("invoke/") => {
                 let command = &name["invoke/".len()..];
-                let body = match read_body(&mut reader, &request) {
+                let body = match read_body(reader, &request) {
                     Ok(b) => b,
                     Err(status) => {
                         return respond(
-                            &mut out,
+                            out,
                             status,
                             "text/plain",
                             status_text(status).as_bytes(),
@@ -319,14 +334,14 @@ impl Server {
                 };
                 let (status, answer) = self.invoke(command, &body);
                 respond(
-                    &mut out,
+                    out,
                     status,
                     "application/json",
                     answer.to_string().as_bytes(),
                     &[],
                 )
             }
-            _ => respond(&mut out, 405, "text/plain", b"method not allowed\n", &[]),
+            _ => respond(out, 405, "text/plain", b"method not allowed\n", &[]),
         }
     }
 
@@ -338,9 +353,9 @@ impl Server {
 
     /// The event stream: subscribed before startup runs, so the first
     /// page hears what startup emits, then every frame until the page goes.
-    fn events(&self, mut out: TcpStream) -> io::Result<()> {
+    fn events(&self, out: &mut TcpStream) -> io::Result<()> {
         let rx = self.sink.subscribe();
-        write_head(&mut out, 200, "text/event-stream", None, &[])?;
+        write_head(out, 200, "text/event-stream", None, &[])?;
         out.write_all(b": connected\n\n")?;
         out.flush()?;
         if let Some(start) = self
@@ -643,6 +658,56 @@ fn respond(
     out.flush()
 }
 
+/// Ends a connection whose answer is written: shuts the write side, so the
+/// answer is followed by a FIN, then reads and throws away what the client
+/// sent that was never read, until it closes, `LINGER` has passed or
+/// `LINGER_MAX` bytes have come; only then is the socket dropped.
+///
+/// A socket closed with input still unread sends a reset instead of a FIN,
+/// and on Windows a reset fails the client's next read and discards the
+/// answer it had received but not yet read: a request refused once its
+/// head is read, with a body behind it, would see a dropped connection
+/// where its 403 should be. The shutdown also sends the FIN while another
+/// handle to the socket is still open, where dropping this one alone would
+/// not. Nothing drained here is parsed, kept or acted on, so a refusal
+/// still comes before anything past the head is read for what it says.
+/// Both bounds hold over the whole drain, not per read, so a client that
+/// trickles bytes holds the thread for `LINGER` at most.
+fn linger(out: &mut TcpStream) -> io::Result<()> {
+    match out.shutdown(Shutdown::Write) {
+        Ok(()) => {}
+        // The client reset first: no one is left to read a FIN.
+        Err(e) if e.kind() == io::ErrorKind::NotConnected => return Ok(()),
+        Err(e) => return Err(e),
+    }
+    let deadline = Instant::now() + LINGER;
+    let mut buf = [0u8; 8192];
+    let mut drained = 0usize;
+    while drained < LINGER_MAX {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        out.set_read_timeout(Some(left))?;
+        let room = buf.len().min(LINGER_MAX - drained);
+        match out.read(&mut buf[..room]) {
+            Ok(0) => break,
+            Ok(n) => drained += n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                break;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
 /// A request-supplied name as it is written back: ASCII printable only,
 /// cut short, so an answer cannot carry a control sequence.
 fn printable(s: &str) -> String {
@@ -657,7 +722,6 @@ mod tests {
     use super::*;
     use crate::child::Trellis;
     use std::collections::BTreeSet;
-    use std::net::Shutdown;
 
     /// A core over a trellis that is never started: no test here reaches a
     /// child, and every refusal they check comes before one would.
@@ -683,17 +747,59 @@ mod tests {
         server(Box::new(|| {}))
     }
 
-    /// One raw request; the whole response once the server closes.
-    fn request(server: &Server, raw: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
+    /// A response's status, its headers with their names lowercased, and
+    /// its body.
+    type Response = (u16, Vec<(String, String)>, Vec<u8>);
+
+    /// A connection with `raw` written on it.
+    fn send(server: &Server, raw: &[u8]) -> TcpStream {
         let mut s = TcpStream::connect(("127.0.0.1", server.port())).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
-        s.write_all(raw.as_bytes()).unwrap();
+        s.write_all(raw).unwrap();
+        s
+    }
+
+    /// One raw request; the whole response once the server closes.
+    ///
+    /// A reset is taken as the close only once the head and exactly the
+    /// body its Content-Length names are in hand, so a reset that came
+    /// where the response should be, or cut it short, fails here and is
+    /// never read as a refusal. That the close is a FIN and not a reset is
+    /// held apart, by
+    /// `web_a_refused_request_still_reads_its_403_when_the_client_sent_more`,
+    /// which takes no reset at all.
+    fn request(server: &Server, raw: &str) -> Response {
+        let mut s = send(server, raw.as_bytes());
         let mut all = Vec::new();
-        s.read_to_end(&mut all).unwrap();
-        let split = all
-            .windows(4)
-            .position(|w| w == b"\r\n\r\n")
-            .expect("a head");
+        let mut buf = [0u8; 8192];
+        loop {
+            match s.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => all.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted
+                    ) && parse(&all).is_some() =>
+                {
+                    break;
+                }
+                Err(e) => panic!(
+                    "{e} after {} bytes: {:?}",
+                    all.len(),
+                    String::from_utf8_lossy(&all)
+                ),
+            }
+        }
+        parse(&all)
+            .unwrap_or_else(|| panic!("not a whole response: {:?}", String::from_utf8_lossy(&all)))
+    }
+
+    /// A response's status, headers and body; `None` until the head and as
+    /// many body bytes as its Content-Length names, and no more, are there.
+    fn parse(all: &[u8]) -> Option<Response> {
+        let split = all.windows(4).position(|w| w == b"\r\n\r\n")?;
         let head = String::from_utf8(all[..split].to_vec()).unwrap();
         let body = all[split + 4..].to_vec();
         let mut lines = head.lines();
@@ -705,13 +811,17 @@ mod tests {
             .unwrap()
             .parse()
             .unwrap();
-        let headers = lines
+        let headers: Vec<(String, String)> = lines
             .map(|l| {
                 let (n, v) = l.split_once(':').unwrap();
                 (n.trim().to_ascii_lowercase(), v.trim().to_string())
             })
             .collect();
-        (status, headers, body)
+        let length: usize = header(&headers, "content-length")
+            .expect("every answer but the event stream names its length")
+            .parse()
+            .unwrap();
+        (body.len() == length).then_some((status, headers, body))
     }
 
     fn get(server: &Server, target: &str, host: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
@@ -842,6 +952,42 @@ mod tests {
         }
         let (status, _, _) = request(&server, &format!("GET {root} HTTP/1.1\r\n\r\n"));
         assert_eq!(status, 403, "no Host header");
+    }
+
+    #[test]
+    fn web_a_refused_request_still_reads_its_403_when_the_client_sent_more() {
+        // The risk (#666's Windows CI): a request refused once its head is
+        // read, with its body still unread, closed with a reset instead of
+        // a FIN. On Windows the reset makes the client's next read fail
+        // and throws away the 403 it had received, so the page sees a
+        // dropped connection where the refusal should be. Linux hands the
+        // 403 over and then fails the read, so any reset fails this test:
+        // the client reads to the server's close and takes no error. The
+        // body is past the server's first read of 8 KiB, so most of it is
+        // still in the socket when the refusal is written.
+        let (server, _) = quiet();
+        let body = "x".repeat(32 * 1024);
+        let root = format!("/{}/", server.token());
+        for (target, h) in [
+            (format!("{root}invoke/rpc_send"), "evil.example".to_string()),
+            ("/invoke/rpc_send".to_string(), host(&server)),
+        ] {
+            let raw = format!(
+                "POST {target} HTTP/1.1\r\nHost: {h}\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let mut s = send(&server, raw.as_bytes());
+            let mut all = Vec::new();
+            if let Err(e) = s.read_to_end(&mut all) {
+                panic!(
+                    "Host: {h}, {target}: the answer ended in {e:?}, not a close, after {:?}",
+                    String::from_utf8_lossy(&all)
+                );
+            }
+            let (status, _, got) = parse(&all).expect("a whole response");
+            assert_eq!(status, 403, "Host: {h}, {target}");
+            assert_eq!(got, b"forbidden\n", "Host: {h}, {target}");
+        }
     }
 
     #[test]
