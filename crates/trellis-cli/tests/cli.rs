@@ -2998,6 +2998,35 @@ fn the_model_listing_says_where_colibri_weights_come_from() {
 }
 
 #[test]
+fn model_pull_colibri_2_0_0_families_get_colibris_tooling_too() {
+    // #612: the list stopped at colibri 1.12.1's nine families, so
+    // `model pull "MiMo-V2.6 Flash"`, a family 2.0.0 serves, got the generic
+    // catalogue error, which reads as a typo of a GGUF entry. Matched as the
+    // registry spells it, in any case.
+    let d = repo("model-pull-colibri-2");
+    let data = scratch("model-pull-colibri-2-data");
+    std::fs::create_dir_all(models_dir_in(&data)).unwrap();
+    for name in ["MiMo-V2.6 Flash", "qwen3-coder-30b-a3b"] {
+        let out = run_with_data_dir(&d, &data, &["model", "pull", name]);
+        assert!(
+            !out.status.success(),
+            "{name}: a colibri family must not pull"
+        );
+        let err = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(
+            err.contains("is a colibri family") && err.contains("coli convert"),
+            "{name}: {err}"
+        );
+        assert!(
+            !err.contains("Known:"),
+            "{name}: not the generic error:\n{err}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&data);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn pull_a_colibri_family_names_colibris_tooling_and_other_names_keep_the_generic_error() {
     // ADR 0047 decision 11: `model pull` does not fetch colibri containers.
     // Someone who types a colibri family there should learn where its
