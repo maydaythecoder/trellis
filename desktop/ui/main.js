@@ -127,7 +127,7 @@ async function main() {
   wireRepositorySwitch(document, tauri);
   await tauri.event.listen("view", (event) => {
     drawView(document, event.payload);
-    drawComposer(document, event.payload, tauri);
+    drawComposer(document, event.payload);
     drawModelPane(document, event.payload);
     drawSettings(document, event.payload);
     drawStatus(document, event.payload);

@@ -35,7 +35,8 @@ pub struct AppState {
     pub submitted: Option<String>,
     /// Lines typed while a run is in flight, to be sent to it as steers
     /// (#115), with a [`SteerOut::TaskFollows`] wherever a task was
-    /// submitted between them. Drained by the event loop like `submitted`.
+    /// submitted between them and a [`SteerOut::Stop`] where leaving was
+    /// asked for mid-run (#634). Drained by the event loop like `submitted`.
     /// A `Vec`, in typing order, because one batch of keys can carry
     /// several Enters, and the order is what tells a driver which run a
     /// steer was typed for.
@@ -78,6 +79,9 @@ pub struct AppState {
     /// How the last run ended, until the next one starts.
     pub outcome: Option<String>,
     pub should_quit: bool,
+    /// Leaving was asked for while a run was in flight: the run has been
+    /// asked to stop, and the view leaves once it reports finished (#634).
+    leaving: bool,
     /// Repository paths `@` completion may offer, supplied by the driver.
     ///
     /// Filled from outside rather than read here: `update` does no IO, so
@@ -209,8 +213,14 @@ impl AppState {
                     ..Budget::default()
                 }
             }
-            Message::ApprovalRequested { diff } => self.modal = Some(Modal::Approval { diff }),
-            Message::Quit => self.should_quit = true,
+            // Not while stopping: the driver drops a question once the run
+            // has taken the stop path, so a modal opened now would ask
+            // something nobody is waiting to hear.
+            Message::ApprovalRequested { diff } if !self.leaving => {
+                self.modal = Some(Modal::Approval { diff })
+            }
+            Message::ApprovalRequested { .. } => {}
+            Message::Quit => self.leave(),
             Message::SteerDelivered { nth, turn } => self.steer_delivered(nth, turn),
             Message::RunOutcome(line) => self.outcome = Some(line),
             Message::RunFinished => self.run_finished(),
@@ -255,6 +265,37 @@ impl AppState {
         for text in undelivered {
             self.push_line(format!("· not delivered: {text}"));
         }
+        // The stopped run has rolled back and written its trail; the leave
+        // asked for during it happens now.
+        if std::mem::take(&mut self.leaving) {
+            self.should_quit = true;
+        }
+    }
+
+    /// Ctrl-C, or Esc on an empty line: leave, stopping a run in flight
+    /// first.
+    ///
+    /// Mid-run the view used to leave at once, and the run went on editing
+    /// the tree with nobody watching while /help said it was stopped (#634).
+    /// Now it asks the run to stop, which rolls it back, and leaves when the
+    /// run reports finished. A second press asks nothing more: one stop per
+    /// run.
+    fn leave(&mut self) {
+        if !self.running {
+            self.should_quit = true;
+            return;
+        }
+        if self.leaving {
+            return;
+        }
+        self.leaving = true;
+        // Withdrawn rather than answered: the driver drops the question once
+        // the run has taken the stop path, and a dropped reply is a no (ADR
+        // 0018). A key pressed on it now would answer what the run no longer
+        // asks.
+        self.modal = None;
+        self.push_line("· stopping: trellis rolls the run back".into());
+        self.steered.push(SteerOut::Stop);
     }
 
     /// Appends a token, keeping the transcript bounded.
@@ -419,7 +460,8 @@ impl AppState {
             // Esc on an empty line leaves; Esc with text clears it. `q` is a
             // letter now that there is somewhere to type, so it cannot also
             // be the way out — Ctrl-C does that too, handled in the loop.
-            KeyCode::Esc if self.input.is_empty() => self.should_quit = true,
+            // Both stop a run in flight before leaving (#634).
+            KeyCode::Esc if self.input.is_empty() => self.leave(),
             KeyCode::Esc => self.input.clear(),
             KeyCode::Enter => self.submit(),
             KeyCode::Tab => self.complete_at_file(),
@@ -548,7 +590,7 @@ impl AppState {
                 "  /help     this".into(),
                 "  @<text>   repository paths containing it; tab inserts the first".into(),
                 "  esc       clear the line; again to leave".into(),
-                "  ^c        leave; a run in flight is stopped".into(),
+                "  ^c        leave; a run in flight is stopped and rolled back first".into(),
                 "  enter during a run queues the line as a steer for its next turn".into(),
                 "  ↑ ↓       scroll the transcript".into(),
                 String::new(),
@@ -1289,6 +1331,82 @@ mod input_tests {
 
         s.update(press(KeyCode::Esc));
         assert!(s.should_quit, "Esc on an empty line leaves");
+    }
+
+    #[test]
+    fn ctrl_c_mid_run_asks_the_run_to_stop_and_leaves_once_it_has_finished() {
+        // #634: the view used to leave at once and the run went on editing
+        // the tree with nobody watching. Now a quit mid-run is a stop
+        // request, said on screen, and the leave waits for the run's end,
+        // which comes after its rollback.
+        let mut s = AppState::default().with_running(true);
+        s.update(Message::Quit);
+        assert!(!s.should_quit, "the run is still in flight");
+        assert_eq!(s.steered, vec![SteerOut::Stop]);
+        assert_eq!(
+            s.transcript.last().unwrap(),
+            "· stopping: trellis rolls the run back"
+        );
+
+        s.steered.clear();
+        s.update(Message::Quit);
+        assert!(s.steered.is_empty(), "a second press asks nothing more");
+        assert!(!s.should_quit);
+
+        s.update(Message::RunFinished);
+        assert!(s.should_quit, "the view leaves once the run has finished");
+    }
+
+    #[test]
+    fn ctrl_c_mid_run_no_longer_applies_after_run_finished() {
+        let mut s = AppState::default().with_running(true);
+        s.update(Message::RunFinished);
+        assert!(!s.should_quit, "a run ending by itself does not leave");
+        s.update(Message::Quit);
+        assert!(s.should_quit);
+        assert!(s.steered.is_empty(), "nothing to stop");
+    }
+
+    #[test]
+    fn ctrl_c_mid_run_esc_on_an_empty_line_stops_the_same_way() {
+        let mut s = AppState::default().with_running(true);
+        type_in(&mut s, "half a steer");
+        s.update(press(KeyCode::Esc));
+        assert!(s.input.is_empty(), "Esc with text clears the line");
+        assert!(s.steered.is_empty(), "and stops nothing");
+
+        s.update(press(KeyCode::Esc));
+        assert!(!s.should_quit);
+        assert_eq!(s.steered, vec![SteerOut::Stop]);
+
+        s.update(Message::RunFinished);
+        assert!(s.should_quit);
+
+        let mut s = AppState::default();
+        s.update(press(KeyCode::Esc));
+        assert!(s.should_quit, "with no run, Esc on an empty line leaves");
+    }
+
+    #[test]
+    fn ctrl_c_mid_run_withdraws_an_open_question_without_answering_it() {
+        // Ctrl-C reaches `update` as `Quit`, past the modal. An answer here
+        // would reach the gate before the run took the stop path and let it
+        // carry on; no answer at all, and the driver drops the question once
+        // the run has stopped, which is a no (ADR 0018).
+        let mut s = AppState::default().with_running(true);
+        s.update(Message::ApprovalRequested {
+            diff: "- a\n+ b".into(),
+        });
+        s.update(Message::Quit);
+        assert!(s.modal.is_none());
+        assert_eq!(s.answered, None);
+
+        // A question still on its way when the stop was asked for is not
+        // shown: nobody is waiting for its answer.
+        s.update(Message::ApprovalRequested {
+            diff: "- c\n+ d".into(),
+        });
+        assert!(s.modal.is_none());
     }
 
     #[test]

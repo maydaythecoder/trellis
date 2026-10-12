@@ -27,6 +27,12 @@
 // and the undelivered list is what an `abort` answer handed back. Both are
 // repository or user text, so they reach the DOM through textContent only
 // (ADR 0007, S10).
+//
+// Enter starts a run (a snapshot, model calls, checks and a trail), so the
+// page says what it does under the textarea; a starter only fills the
+// template the next Send runs, with its description shown, never a run on
+// its own click; and a sent task is acknowledged, with a button to the Run
+// section, rather than the text simply vanishing (#644).
 
 import { exitText } from "./status.js";
 
@@ -49,6 +55,8 @@ let modelChosen = false;
 // Why no trellis rpc child is running, as the core last said, or null while
 // one is (or none has been reported missing yet).
 let stopped = null;
+// The starter chosen for the next task, `{ name, description }`, or null.
+let template = null;
 let nextId = 0;
 
 function lineId(kind) {
@@ -70,6 +78,10 @@ function parts(doc) {
     undeliveredList: doc.getElementById("composer-undelivered-list"),
     starters: doc.getElementById("composer-starters"),
     startersList: doc.getElementById("composer-starters-list"),
+    template: doc.getElementById("composer-template"),
+    templateText: doc.getElementById("composer-template-text"),
+    templateClear: doc.getElementById("composer-template-clear"),
+    follow: doc.getElementById("composer-follow"),
   };
 }
 
@@ -126,10 +138,23 @@ function drawUndelivered(doc, list) {
   p.undelivered.hidden = rows.length === 0;
 }
 
+// The chosen template, shown beside the textarea with its description, or
+// nothing with none chosen.
+function drawTemplate(doc) {
+  const p = parts(doc);
+  p.template.hidden = template === null;
+  if (template === null) p.templateText.textContent = "";
+  else if (template.description === null) p.templateText.textContent = `Template: ${template.name}`;
+  else p.templateText.textContent = `Template: ${template.name} — ${template.description}`;
+}
+
 // One button per template, its name as its text and its description as
 // its title. `null` is no answer yet, or a refused one: nothing to offer.
-function drawStarters(doc, list, tauri) {
+// A click chooses the template for the next Send and sends nothing; a
+// chosen one the new list lacks (another repository's) is dropped.
+function drawStarters(doc, list) {
   const p = parts(doc);
+  const names = [];
   const rows = (Array.isArray(list) ? list : []).flatMap((t) => {
     const name = str(t && t.name);
     if (name === null) return [];
@@ -138,21 +163,28 @@ function drawStarters(doc, list, tauri) {
     b.type = "button";
     const description = str(t.description);
     if (description !== null) b.title = description;
-    b.setAttribute("aria-label", `Start with the ${name} template`);
+    b.setAttribute("aria-label", `Use the ${name} template for the next task`);
     b.disabled = running || !modelChosen;
     b.addEventListener("click", () => {
-      send(tauri, p, { id: lineId("starter"), type: "prompt", prompt: name, control: control(p) });
+      template = { name, description };
+      drawTemplate(doc);
+      p.text.focus();
     });
+    names.push(name);
     li.append(b);
     return [li];
   });
   p.startersList.replaceChildren(...rows);
   p.starters.hidden = rows.length === 0;
+  if (template !== null && !names.includes(template.name)) {
+    template = null;
+    drawTemplate(doc);
+  }
 }
 
 // Draws the composer's keys of one `view` event; any other key is
 // render.js's.
-export function drawComposer(doc, view, tauri) {
+export function drawComposer(doc, view) {
   if (view === null || typeof view !== "object") return;
   if ("running" in view || "model" in view) {
     if ("running" in view) running = view.running === true;
@@ -162,7 +194,7 @@ export function drawComposer(doc, view, tauri) {
     drawRunning(doc);
   }
   if ("undelivered" in view) drawUndelivered(doc, view.undelivered);
-  if ("starters" in view) drawStarters(doc, view.starters, tauri);
+  if ("starters" in view) drawStarters(doc, view.starters);
 }
 
 // Asks the child for its commands, whose prompt templates become the
@@ -209,6 +241,7 @@ export async function wireComposer(doc, tauri) {
   });
   p.form.addEventListener("submit", async (e) => {
     e.preventDefault();
+    p.follow.hidden = true;
     if (stopped !== null) {
       p.note.textContent = `trellis rpc is not running: ${stopped}`;
       return;
@@ -218,14 +251,40 @@ export async function wireComposer(doc, tauri) {
       return;
     }
     const text = p.text.value;
-    if (text.trim() === "") {
-      p.note.textContent = running ? "Type the text to steer the run with." : "Type a task first.";
+    if (running) {
+      if (text.trim() === "") {
+        p.note.textContent = "Type the text to steer the run with.";
+        return;
+      }
+      if (await send(tauri, p, { id: lineId("steer"), type: "steer", message: text })) p.text.value = "";
       return;
     }
-    const line = running
-      ? { id: lineId("steer"), type: "steer", message: text }
-      : { id: lineId("prompt"), type: "prompt", task: text, control: control(p) };
-    if (await send(tauri, p, line)) p.text.value = "";
+    if (text.trim() === "" && template === null) {
+      p.note.textContent = "Type a task first, or choose a starter.";
+      return;
+    }
+    // A template with no text is a whole task; with text, rpc runs the
+    // template with the text after it.
+    const line = { id: lineId("prompt"), type: "prompt", control: control(p) };
+    if (text.trim() !== "") line.task = text;
+    if (template !== null) line.prompt = template.name;
+    if (await send(tauri, p, line)) {
+      p.text.value = "";
+      template = null;
+      drawTemplate(doc);
+      p.note.textContent = "Sent to trellis; follow it in Run.";
+      p.follow.hidden = false;
+    }
+  });
+  p.templateClear.addEventListener("click", () => {
+    template = null;
+    drawTemplate(doc);
+    p.text.focus();
+  });
+  // The rail's own Run button, so showing Run here is what the rail does.
+  p.follow.addEventListener("click", () => {
+    const run = doc.querySelector('nav.rail button[aria-controls="run"]');
+    if (run) run.click();
   });
   p.stop.addEventListener("click", () => {
     send(tauri, p, { id: lineId("abort"), type: "abort" });
