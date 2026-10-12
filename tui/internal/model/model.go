@@ -20,6 +20,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/maydaythecoder/trellis/tui/internal/frames"
+	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
 // TranscriptCap is how many transcript lines are kept, as the ratatui
@@ -60,6 +61,16 @@ type Model struct {
 	Outcome string
 	// Stderr is trellis's stderr, newest last, capped at StderrCap.
 	Stderr []string
+	// Modal is the approval question on screen, if any. While it is up it
+	// takes the keys: y and n answer it, every other key but ^c is ignored.
+	Modal *Approval
+
+	// approvals waiting behind the one on screen, in the order asked.
+	approvals []Approval
+	// steers sent to the run in flight, in order (steer.go).
+	steers []steer
+	// deliveries counts this run's steer delivered events.
+	deliveries int
 
 	// Quitting is set once quit has been sent: the child is finishing (a
 	// run in flight rolls back) and the program ends when it exits.
@@ -147,18 +158,32 @@ func (m *Model) Update(msg tea.Msg) {
 }
 
 func (m *Model) key(k tea.KeyMsg) {
+	if k.Type == tea.KeyCtrlC {
+		m.ctrlC()
+		return
+	}
+	// The modal is answered first: while it is up, the keys underneath it
+	// are not the ones on screen.
+	if m.Modal != nil {
+		if k.Type == tea.KeyRunes && len(k.Runes) == 1 {
+			switch k.Runes[0] {
+			case 'y':
+				m.answer(true)
+			case 'n':
+				m.answer(false)
+			}
+		}
+		return
+	}
 	switch k.Type {
-	case tea.KeyCtrlC:
-		// A run in flight is aborted first, so it rolls back through
-		// trellis; then quit, and the program ends when the child exits.
-		if m.Quitting {
-			return
+	case tea.KeyEsc:
+		// Esc clears the line; on an empty line with no run in flight it
+		// leaves. Mid-run it does not: ^c is the way to stop a run.
+		if m.Input != "" {
+			m.Input = ""
+		} else if !m.Running {
+			m.quit()
 		}
-		if m.Running {
-			m.send("abort", nil)
-			m.pushLine("· stopping: the run rolls back before trellis exits")
-		}
-		m.quit()
 	case tea.KeyEnter:
 		m.submit()
 	case tea.KeyBackspace:
@@ -173,14 +198,32 @@ func (m *Model) key(k tea.KeyMsg) {
 	}
 }
 
-// submit hands the typed line to trellis as a task, one run at a time.
+// ctrlC aborts a run in flight first, so it rolls back through trellis,
+// then quits; the program ends when the child exits. An approval on screen
+// is closed unanswered: the run's abort answers its gate no, and nothing
+// here turns leaving into a yes.
+func (m *Model) ctrlC() {
+	if m.Quitting {
+		return
+	}
+	m.Modal = nil
+	m.approvals = nil
+	if m.Running {
+		m.send("abort", nil)
+		m.pushLine("· stopping: the run rolls back before trellis exits")
+	}
+	m.quit()
+}
+
+// submit hands the typed line to trellis: a task when no run is in
+// flight, one at a time, and a steer for the run when one is (steer.go).
 func (m *Model) submit() {
 	task := strings.TrimSpace(m.Input)
 	if task == "" || m.Quitting {
 		return
 	}
 	if m.Running {
-		m.pushLine("· a run is already in flight; wait for it to finish")
+		m.steer(task)
 		return
 	}
 	m.Input = ""
@@ -188,6 +231,7 @@ func (m *Model) submit() {
 }
 
 func (m *Model) startTask(task string) {
+	m.newRun()
 	m.Running = true
 	m.Outcome = ""
 	m.pushLine("> " + Plain(task))
@@ -199,8 +243,17 @@ func (m *Model) frame(f frames.Frame) {
 	case frames.Turn:
 		m.turn(f.TurnFields)
 	case frames.RunStart:
+		if !m.Running {
+			// A run trellis started on its own (a follow-up): steers are
+			// counted from here.
+			m.newRun()
+		}
 		m.Running = true
 		m.Outcome = ""
+	case frames.ApprovalRequest:
+		m.approvalRequested(*f.Approval)
+	case frames.SteerDelivered:
+		m.steerDeliveredEvent(f.AfterStep)
 	case frames.RunEnd:
 		m.runEnd(f.RunEndFields)
 	case frames.Response:
@@ -235,6 +288,10 @@ func (m *Model) turn(t *frames.TurnFields) {
 func (m *Model) runEnd(e *frames.RunEndFields) {
 	m.Running = false
 	m.promptID = ""
+	m.steersNotDelivered()
+	// A question its run no longer waits on cannot be answered.
+	m.Modal = nil
+	m.approvals = nil
 	m.Outcome = OutcomeLine(e)
 	if e.Outcome != nil && *e.Outcome == "error" {
 		m.errorLines(e.Error)
@@ -307,6 +364,16 @@ func (m *Model) response(r *frames.ResponseFields) {
 	if r.Command != nil {
 		cmd = *r.Command
 	}
+	switch cmd {
+	case "steer":
+		m.steerAnswered(r, ok)
+		return
+	case "abort":
+		if ok {
+			m.abortAnswered(r.Data)
+			return
+		}
+	}
 	if ok {
 		return
 	}
@@ -335,6 +402,8 @@ func (m *Model) exited(err error) {
 		}
 	}
 	m.Running = false
+	m.Modal = nil
+	m.approvals = nil
 	m.Done = true
 }
 
@@ -399,11 +468,17 @@ func (m *Model) View() string {
 	case m.Quitting:
 		status = "· waiting for trellis to exit"
 	case m.Running:
-		status = "· running (^c stops it and rolls back)"
+		status = "· running — enter queues a steer for its next turn · ^c stops it and rolls back"
 	case m.Outcome != "":
 		status = "last run: " + m.Outcome
 	}
+	if m.Modal != nil {
+		return view.Modal(m.Modal.Text, w, h)
+	}
 	input := "> " + Plain(m.Input)
+	if m.Running {
+		input = "steer> " + Plain(m.Input)
+	}
 	rows := h - 2
 	if rows < 0 {
 		rows = 0

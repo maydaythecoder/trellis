@@ -21,7 +21,7 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 
 | Rust file | Rust test | Rule | Ticket | Go test |
 | --- | --- | --- | --- | --- |
-| `app.rs` | `esc_on_an_empty_line_quits` | esc on an empty line quits | T3 (#509) |  |
+| `app.rs` | `esc_on_an_empty_line_quits` | esc on an empty line quits | T3 (#509) | `TestModelEscClearsTheLineThenQuitsWhenIdle` |
 | `app.rs` | `quit_is_still_reachable_as_a_message` | quit is still reachable as a message | T2 (#508) | `TestModelCtrlCIdleQuitsAndEndsOnExit` |
 | `app.rs` | `a_release_event_changes_nothing` | a release event changes nothing | T2 (#508) | not ported: Bubble Tea delivers key presses only; there is no release or repeat event to filter (crossterm reported both on Windows) |
 | `app.rs` | `the_transcript_is_capped` | the transcript is capped | T2 (#508) | `TestModelTranscriptCapHolds` |
@@ -38,8 +38,8 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `app.rs` | `a_second_task_also_gets_its_own_line` | a second task also gets its own line | T2 (#508) | `TestModelRunEndSetsTheOutcome` |
 | `app.rs` | `a_multi_line_failure_keeps_every_line_marked` | a multi line failure keeps every line marked | T2 (#508) | `TestModelRunEndErrorMarksEveryLine` |
 | `app.rs` | `tokens_join_into_lines_rather_than_one_line_each` | tokens join into lines rather than one line each | T2 (#508) | not ported: token streaming is excluded from parity (#281); rpc sends whole frames, never tokens |
-| `app.rs` | `y_accepts_the_modal_and_n_rejects_it` | y accepts the modal and n rejects it | T3 (#509) |  |
-| `app.rs` | `while_the_modal_is_up_q_does_not_quit` | while the modal is up q does not quit | T3 (#509) |  |
+| `app.rs` | `y_accepts_the_modal_and_n_rejects_it` | y accepts the modal and n rejects it | T3 (#509) | `TestApproveYesAndNoSendTheirAnswer` |
+| `app.rs` | `while_the_modal_is_up_q_does_not_quit` | while the modal is up q does not quit | T3 (#509) | `TestApproveModalTakesTheKeys` |
 | `app.rs` | `transcript_scrolling_back_stops_at_the_end_and_resumes_following` | transcript scrolling back stops at the end and resumes following | T4 (#510) |  |
 | `app.rs` | `transcript_outcome_is_held_until_the_next_run_starts` | transcript outcome is held until the next run starts | T2 (#508) | `TestModelRunEndSetsTheOutcome` |
 | `app.rs` | `work_events_land_where_they_belong` | work events land where they belong | T4 (#510) |  |
@@ -51,16 +51,16 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `app.rs` | `at_file_enter_submits_the_line_as_typed` | at file enter submits the line as typed | R4 (#502) / T5 (#511) |  |
 | `app.rs` | `typing_then_enter_submits_the_line` | typing then enter submits the line | T2 (#508) | `TestModelSentTaskBecomesOnePrompt` |
 | `app.rs` | `q_types_a_q_now_that_there_is_somewhere_to_type` | q types a q now that there is somewhere to type | T2 (#508) | `TestModelTypingBackspaceAndAnEmptyLine` |
-| `app.rs` | `esc_clears_a_line_and_leaves_an_empty_one` | esc clears a line and leaves an empty one | T3 (#509) |  |
+| `app.rs` | `esc_clears_a_line_and_leaves_an_empty_one` | esc clears a line and leaves an empty one | T3 (#509) | `TestModelEscClearsTheLineThenQuitsWhenIdle` |
 | `app.rs` | `backspace_deletes_and_stops_at_empty` | backspace deletes and stops at empty | T2 (#508) | `TestModelTypingBackspaceAndAnEmptyLine` |
 | `app.rs` | `an_empty_line_submits_nothing` | an empty line submits nothing | T2 (#508) | `TestModelTypingBackspaceAndAnEmptyLine` |
-| `app.rs` | `a_line_typed_mid_run_is_queued_as_a_steer_not_started_as_a_second_task` | a line typed mid run is queued as a steer not started as a second task | T3 (#509) |  |
-| `app.rs` | `a_slash_command_mid_run_is_refused_as_before_and_is_not_a_steer` | a slash command mid run is refused as before and is not a steer | T3 (#509) |  |
-| `app.rs` | `the_modal_takes_y_and_n_before_a_steer_can` | the modal takes y and n before a steer can | T3 (#509) |  |
-| `app.rs` | `a_delivered_steer_is_shown_with_its_turn_once` | a delivered steer is shown with its turn once | T3 (#509) |  |
-| `app.rs` | `a_steer_never_marks_a_check_or_an_edit_adr_0004` | a steer never marks a check or an edit (ADR 0004) | T3 (#509) |  |
-| `app.rs` | `steers_are_counted_per_run` | steers are counted per run | T3 (#509) |  |
-| `app.rs` | `the_modal_takes_the_keys_while_it_is_up` | the modal takes the keys while it is up | T3 (#509) |  |
+| `app.rs` | `a_line_typed_mid_run_is_queued_as_a_steer_not_started_as_a_second_task` | a line typed mid run is queued as a steer not started as a second task | T3 (#509) | `TestSteerMidRunLineIsASteerNotATask` |
+| `app.rs` | `a_slash_command_mid_run_is_refused_as_before_and_is_not_a_steer` | a slash command mid run is refused as before and is not a steer | T3 (#509) | `TestSteerSlashCommandMidRunIsRefused` |
+| `app.rs` | `the_modal_takes_y_and_n_before_a_steer_can` | the modal takes y and n before a steer can | T3 (#509) | `TestApproveModalTakesTheKeys` |
+| `app.rs` | `a_delivered_steer_is_shown_with_its_turn_once` | a delivered steer is shown with its turn once | T3 (#509) | `TestSteerDeliveredOnceAtItsTurn` |
+| `app.rs` | `a_steer_never_marks_a_check_or_an_edit_adr_0004` | a steer never marks a check or an edit (ADR 0004) | T3 (#509) | `TestSteerIsNeverAVerdict` |
+| `app.rs` | `steers_are_counted_per_run` | steers are counted per run | T3 (#509) | `TestSteerCountedPerRun` |
+| `app.rs` | `the_modal_takes_the_keys_while_it_is_up` | the modal takes the keys while it is up | T3 (#509) | `TestApproveModalTakesTheKeys` |
 | `view.rs` | `transcript_follows_its_end_while_new_lines_arrive` | transcript follows its end while new lines arrive | T4 (#510) |  |
 | `view.rs` | `transcript_scrolled_back_stops_following_and_says_so` | transcript scrolled back stops following and says so | T4 (#510) |  |
 | `view.rs` | `transcript_outcome_of_a_finished_run_is_on_screen_without_scrolling` | transcript outcome of a finished run is on screen without scrolling | T4 (#510) |  |
@@ -71,11 +71,11 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `view.rs` | `budget_line_with_no_model_time_left_draws_no_rate` | budget line with no model time left draws no rate | T4 (#510) |  |
 | `view.rs` | `it_lays_out_again_at_a_larger_size` | it lays out again at a larger size | T4 (#510) |  |
 | `view.rs` | `below_eighty_by_twentyfour_it_says_so_instead_of_laying_out` | below eighty by twentyfour it says so instead of laying out | T4 (#510) |  |
-| `view.rs` | `the_modal_covers_what_is_under_it` | the modal covers what is under it | T3 (#509) |  |
+| `view.rs` | `the_modal_covers_what_is_under_it` | the modal covers what is under it | T3 (#509) | `TestApproveModalCoversTheScreen` |
 | `view.rs` | `the_task_line_shows_what_is_typed_and_how_to_send_it` | the task line shows what is typed and how to send it | T4 (#510) |  |
 | `view.rs` | `at_file_candidates_are_drawn_under_the_input_line` | at file candidates are drawn under the input line | T5 (#511) |  |
 | `view.rs` | `at_file_candidates_are_not_drawn_while_a_run_holds_the_input` | at file candidates are not drawn while a run holds the input | T5 (#511) |  |
-| `view.rs` | `while_running_the_task_line_shows_the_steer_being_typed` | while running the task line shows the steer being typed | T3 (#509) |  |
+| `view.rs` | `while_running_the_task_line_shows_the_steer_being_typed` | while running the task line shows the steer being typed | T3 (#509) | `TestSteerLineIsShownWhileRunning` |
 | `view.rs` | `every_tool_is_a_node_before_any_of_them_is_called` | every tool is a node before any of them is called | T4 (#510) |  |
 | `view.rs` | `a_refused_edit_is_on_the_graph_and_is_not_counted_as_a_write` | a refused edit is on the graph and is not counted as a write | T4 (#510) |  |
 | `view.rs` | `a_run_that_only_looked_says_so_rather_than_leaving_it_blank` | a run that only looked says so rather than leaving it blank | T4 (#510) |  |
@@ -88,10 +88,10 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `view.rs` | `tier_status_bar_with_no_label_says_unknown` | tier status bar with no label says unknown | T5 (#511) |  |
 | `events.rs` | `quit_ends_the_loop_and_returns_ok` | quit ends the loop and returns ok | T2 (#508) | `TestModelCtrlCIdleQuitsAndEndsOnExit` |
 | `events.rs` | `pending_messages_are_coalesced_into_one_draw` | pending messages are coalesced into one draw | T2 (#508) | not ported: Bubble Tea's renderer coalesces updates at its own frame rate; this client has no draw loop of its own to hold to it |
-| `events.rs` | `a_modal_answer_is_sent_to_the_asker` | a modal answer is sent to the asker | T3 (#509) |  |
-| `events.rs` | `a_steer_typed_mid_run_leaves_on_the_steer_channel_and_not_as_a_task` | a steer typed mid run leaves on the steer channel and not as a task | T3 (#509) |  |
-| `events.rs` | `a_steer_is_drawn_queued_then_delivered` | a steer is drawn queued then delivered | T3 (#509) |  |
-| `events.rs` | `a_steer_before_a_task_is_ahead_of_that_tasks_boundary` | a steer before a task is ahead of that tasks boundary | T3 (#509) |  |
+| `events.rs` | `a_modal_answer_is_sent_to_the_asker` | a modal answer is sent to the asker | T3 (#509) | `TestApproveYesAndNoSendTheirAnswer` |
+| `events.rs` | `a_steer_typed_mid_run_leaves_on_the_steer_channel_and_not_as_a_task` | a steer typed mid run leaves on the steer channel and not as a task | T3 (#509) | `TestSteerMidRunLineIsASteerNotATask` |
+| `events.rs` | `a_steer_is_drawn_queued_then_delivered` | a steer is drawn queued then delivered | T3 (#509) | `TestSteerMidRunLineIsASteerNotATask`, `TestSteerDeliveredOnceAtItsTurn` |
+| `events.rs` | `a_steer_before_a_task_is_ahead_of_that_tasks_boundary` | a steer before a task is ahead of that tasks boundary | T3 (#509) | `TestSteerAfterTheRunEndedIsATask`, `TestSteerCountedPerRun` |
 | `tui_bridge.rs` | `tui_bridge_budget_carries_the_runs_ceiling_and_its_elapsed_time` | tui bridge budget carries the runs ceiling and its elapsed time | T4 (#510) |  |
 | `tui_bridge.rs` | `turn_tokens_reach_the_budget` | turn tokens reach the budget | T4 (#510) |  |
 | `tui_bridge.rs` | `a_turn_with_a_passing_check_becomes_a_line_and_a_check` | a turn with a passing check becomes a line and a check | T4 (#510) |  |
@@ -107,7 +107,7 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `tui_bridge.rs` | `a_radius_turn_carries_its_three_counts` | a radius turn carries its three counts | T4 (#510) |  |
 | `tui_bridge.rs` | `a_warning_reaches_the_transcript_even_though_it_is_not_a_turn` | a warning reaches the transcript even though it is not a turn | T4 (#510) |  |
 | `tui_bridge.rs` | `an_ordinary_debug_line_is_not_mistaken_for_a_turn` | an ordinary debug line is not mistaken for a turn | T4 (#510) |  |
-| `tui_bridge.rs` | `a_steer_delivery_is_numbered_in_order_and_names_the_turn_it_reached` | a steer delivery is numbered in order and names the turn it reached | T3 (#509) |  |
+| `tui_bridge.rs` | `a_steer_delivery_is_numbered_in_order_and_names_the_turn_it_reached` | a steer delivery is numbered in order and names the turn it reached | T3 (#509) | `TestSteerDeliveredOnceAtItsTurn` |
 | `tui_run.rs` | `a_model_spec_that_does_not_parse_is_refused_before_the_terminal` | a model spec that does not parse is refused before the terminal | T2 (#508) | `TestModelFailedSetModelIsShown` |
 | `tui_run.rs` | `a_runtime_that_cannot_be_reached_does_not_claim_a_tier` | a runtime that cannot be reached does not claim a tier | T5 (#511) |  |
 | `tui_run.rs` | `a_scripted_model_is_labelled_as_one_without_asking_anything` | a scripted model is labelled as one without asking anything | T5 (#511) | not ported: the tier label is computed by trellis and served as `get_state`'s `tier` (#269); the rule is tested in Rust where it lives |
@@ -130,14 +130,14 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `tui_run.rs` | `a_run_that_ends_reports_its_exit_code_rather_than_a_verdict` | a run that ends reports its exit code rather than a verdict | T2 (#508) | `TestModelRunEndSetsTheOutcome` |
 | `tui_run.rs` | `a_run_that_panics_reports_it_and_hands_input_back` | a run that panics reports it and hands input back | T2 (#508) | `TestModelChildExitMidRunIsReported` |
 | `tui_run.rs` | `every_ending_hands_input_back` | every ending hands input back | T2 (#508) | `TestModelEveryEndingHandsInputBack` |
-| `tui_run.rs` | `an_approval_question_becomes_the_modal_and_its_key_goes_back` | an approval question becomes the modal and its key goes back | T3 (#509) |  |
-| `tui_run.rs` | `an_interface_that_goes_away_mid_question_has_not_said_yes` | an interface that goes away mid question has not said yes | T3 (#509) |  |
+| `tui_run.rs` | `an_approval_question_becomes_the_modal_and_its_key_goes_back` | an approval question becomes the modal and its key goes back | T3 (#509) | `TestApproveYesAndNoSendTheirAnswer`, `TestApproveQuestionsAreAnsweredOneAtATimeByTheirOwnID` |
+| `tui_run.rs` | `an_interface_that_goes_away_mid_question_has_not_said_yes` | an interface that goes away mid question has not said yes | T3 (#509) | `TestApproveLeavingMidQuestionSaysNoYes` |
 | `tui_run.rs` | `a_model_the_person_chose_in_the_tui_is_not_refused_as_the_repository_s` | a model the person chose in the tui is not refused as the repository's | T2 (#508) | `TestModelStartupSetsTheModelBeforeAnyPrompt` |
-| `tui_run.rs` | `tui_steer_reaches_the_loop_and_the_trail_and_is_reported_before_the_run_ends` | tui steer reaches the loop and the trail and is reported before the run ends | T3 (#509) |  |
-| `tui_run.rs` | `tui_steer_typed_while_a_run_works_is_forwarded_to_it` | tui steer typed while a run works is forwarded to it | T3 (#509) |  |
-| `tui_run.rs` | `tui_steer_for_the_next_task_is_not_forwarded_to_the_run_ending` | tui steer for the next task is not forwarded to the run ending | T3 (#509) |  |
-| `tui_run.rs` | `tui_steer_left_from_an_ended_task_is_skipped_up_to_the_boundary` | tui steer left from an ended task is skipped up to the boundary | T3 (#509) |  |
-| `tui_run.rs` | `tui_steer_that_arrives_too_late_is_still_in_the_trail` | tui steer that arrives too late is still in the trail | T3 (#509) |  |
+| `tui_run.rs` | `tui_steer_reaches_the_loop_and_the_trail_and_is_reported_before_the_run_ends` | tui steer reaches the loop and the trail and is reported before the run ends | T3 (#509) | `TestSteerAnswersMarkItDeliveredOrNot` |
+| `tui_run.rs` | `tui_steer_typed_while_a_run_works_is_forwarded_to_it` | tui steer typed while a run works is forwarded to it | T3 (#509) | `TestSteerMidRunLineIsASteerNotATask` |
+| `tui_run.rs` | `tui_steer_for_the_next_task_is_not_forwarded_to_the_run_ending` | tui steer for the next task is not forwarded to the run ending | T3 (#509) | `TestSteerAfterTheRunEndedIsATask` |
+| `tui_run.rs` | `tui_steer_left_from_an_ended_task_is_skipped_up_to_the_boundary` | tui steer left from an ended task is skipped up to the boundary | T3 (#509) | `TestSteerCountedPerRun` |
+| `tui_run.rs` | `tui_steer_that_arrives_too_late_is_still_in_the_trail` | tui steer that arrives too late is still in the trail | T3 (#509) | not ported: the trail is trellis's to write, and rpc keeps every steer it was sent in it (rpc.rs, SteeringPort), which the client cannot read; the client's half, saying a late steer was not delivered, is TestSteerAnswersMarkItDeliveredOrNot |
 
 ## Routing
 

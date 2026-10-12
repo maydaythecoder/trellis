@@ -87,11 +87,14 @@ func TestModelSentTaskBecomesOnePrompt(t *testing.T) {
 	if !m.Running || m.Input != "" || m.Transcript[len(m.Transcript)-1] != "> fix the bug" {
 		t.Fatalf("running %v, input %q, transcript %q", m.Running, m.Input, m.Transcript)
 	}
-	// A second Enter while it runs sends nothing new.
+	// A second Enter while it runs starts no second run (it is a steer,
+	// steer_test.go).
 	typeLine(m, "again")
 	enter(m)
-	if out := m.TakeOutbox(); len(out) != 0 {
-		t.Fatalf("a second prompt was sent mid-run: %+v", out)
+	for _, o := range m.TakeOutbox() {
+		if o.Cmd["type"] == "prompt" {
+			t.Fatalf("a second prompt was sent mid-run: %+v", o)
+		}
 	}
 }
 
