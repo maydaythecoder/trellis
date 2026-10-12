@@ -274,6 +274,28 @@ pub(crate) fn offer_model_choice() -> Result<Option<String>> {
     )
 }
 
+/// Ollama's `GET /api/ps` at `base`'s origin: what it has loaded and where
+/// each model sits, for doctor's placement line (#633). The same loopback
+/// GET as the `/api/tags` probe: a base that is not this machine is not
+/// asked, and a server that does not answer the path (llama.cpp, vLLM) is
+/// an `Err` the caller prints nothing for.
+pub(crate) fn ollama_ps(base: &str, bound: Duration) -> std::result::Result<String, String> {
+    let rest = base
+        .strip_prefix("http://")
+        .ok_or_else(|| format!("{base} is not plain http on this machine"))?;
+    let authority = rest.split('/').next().unwrap_or("");
+    let (host, port) =
+        trellis_model::split_authority(base, authority, 80).map_err(|e| e.to_string())?;
+    if !trellis_model::is_loopback(&host) {
+        return Err(format!("{host} is not this machine"));
+    }
+    // `localhost` is not an address; the listing probe uses 127.0.0.1 too.
+    let ip = host
+        .parse::<std::net::IpAddr>()
+        .unwrap_or(std::net::IpAddr::from([127, 0, 0, 1]));
+    get(SocketAddr::new(ip, port), "/api/ps", bound)
+}
+
 /// A plain HTTP GET, bounded end to end.
 ///
 /// No client in the tree does a GET: `trellis_model`'s transport is
