@@ -29,7 +29,10 @@ function json(value) {
 }
 
 // The rail: each button names its section with aria-controls, and showing
-// one hides the rest through the hidden attribute, never a style.
+// one hides the rest through the hidden attribute, never a style. A press
+// moves focus to the shown section's heading, the one its aria-labelledby
+// names, so Tab goes on from inside the section rather than from the rail
+// (#646).
 function wireRail() {
   const buttons = [...document.querySelectorAll("nav.rail button[aria-controls]")];
   const select = (chosen) => {
@@ -41,7 +44,14 @@ function wireRail() {
       else b.removeAttribute("aria-current");
     }
   };
-  for (const b of buttons) b.addEventListener("click", () => select(b));
+  for (const b of buttons) {
+    b.addEventListener("click", () => {
+      select(b);
+      const section = document.getElementById(b.getAttribute("aria-controls"));
+      const heading = section && document.getElementById(section.getAttribute("aria-labelledby"));
+      if (heading) heading.focus();
+    });
+  }
 }
 
 // How many `child-started` events this page has heard, so a refusal that
