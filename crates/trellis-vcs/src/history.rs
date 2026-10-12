@@ -12,9 +12,11 @@
 //! why the copy is not a `git checkout` into another work tree, which
 //! writes the repository's index, nor a `git worktree add`, which writes
 //! `.git/worktrees`, nor `git archive`, whose tar stream trellis would need
-//! a tar reader or a `tar` child to unpack. One limit, stated rather than
-//! worked around: in a partial clone, `cat-file` fetches a blob the clone
-//! lacks into the object store, as any read of it would.
+//! a tar reader or a `tar` child to unpack. In a partial clone, a blob the
+//! clone lacks is not fetched, since the fetch runs whatever transport
+//! `.git/config` names: [`command`] sets [`crate::ENV`], and the copy is
+//! refused as [`HistoryError::Missing`] (security finding F1). On a git
+//! too old to honour that variable, the fetch still happens.
 
 use super::{VcsError, command, run_git, run_git_optional};
 use std::io::{BufRead, Read, Write};
@@ -699,6 +701,97 @@ mod tests {
         drop(copy);
         assert!(!path.exists(), "the copy outlived its TreeCopy");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_copy_directory_is_entered_by_its_owner_only() {
+        // The risk (security finding F2, AUDIT-2026-10-11): a commit's
+        // source written under the shared temporary directory where another
+        // user on the machine can list and read it. ADR 0025 §5 states
+        // `0700`; nothing held it.
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, first) = repo("mode");
+        let copy = tree_copy(&dir, &first, |p| p.ends_with(".py")).unwrap();
+        let mode = std::fs::metadata(copy.path()).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "the copy is {:o}", mode & 0o777);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_copy_that_fails_partway_leaves_no_directory_behind() {
+        // The risk (F2): a copy that fails after writing some files leaves
+        // part of a commit's source in the temporary directory, once for
+        // every snapshot the Atlas could not read. `write_blobs` is driven
+        // with a directory whose path the test holds, since a failed
+        // `tree_copy` returns none. The three failures it handles: a blob
+        // the store lacks, an answer that is not the blob asked for, and
+        // git exiting non-zero.
+        let (dir, first) = repo("fails");
+        let id = |rev: String| sh(&dir, &["rev-parse", &rev]).trim().to_string();
+        let a = id(format!("{first}:a.py"));
+        let tree = id(format!("{first}^{{tree}}"));
+        let missing = {
+            let mut c = command()
+                .args(["hash-object", "--stdin"])
+                .current_dir(&dir)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            c.stdin
+                .take()
+                .unwrap()
+                .write_all(b"never written\n")
+                .unwrap();
+            let o = c.wait_with_output().unwrap();
+            String::from_utf8(o.stdout).unwrap().trim().to_string()
+        };
+        // A `.git` file naming no directory: git exits 128 before it
+        // answers anything.
+        let broken = dir.with_file_name(format!("{}-broken", dir.file_name().unwrap().display()));
+        let _ = std::fs::remove_dir_all(&broken);
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(
+            broken.join(".git"),
+            format!("gitdir: {}\n", broken.join("nowhere").display()),
+        )
+        .unwrap();
+        let after_a = |p: &str, oid: &str| {
+            vec![
+                ("a.py".to_string(), a.clone()),
+                (p.to_string(), oid.to_string()),
+            ]
+        };
+        let cases = [
+            ("missing", &dir, after_a("b.py", &missing)),
+            ("header", &dir, after_a("t.py", &tree)),
+            ("exit status", &broken, Vec::new()),
+        ];
+        for (what, root, wanted) in cases {
+            let d = fresh_dir().unwrap();
+            let copy = TreeCopy {
+                dir: d.clone(),
+                files: 0,
+            };
+            let got = write_blobs(root, &first, copy, &wanted);
+            match (what, &got) {
+                ("missing", Err(HistoryError::Missing { path, .. })) => assert_eq!(path, "b.py"),
+                ("header", Err(HistoryError::Vcs(VcsError::GitFailed { stderr, .. }))) => {
+                    assert!(stderr.contains(&tree), "{stderr}");
+                }
+                ("exit status", Err(HistoryError::Vcs(VcsError::GitFailed { stderr, .. }))) => {
+                    assert!(stderr.contains("not a git repository"), "{stderr}");
+                }
+                _ => panic!("{what}: {got:?}"),
+            }
+            assert!(
+                !d.exists(),
+                "{what}: the failed copy's directory outlived it"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&broken);
     }
 
     /// A commit, on no branch, whose tree is `top` named `name` and holding
