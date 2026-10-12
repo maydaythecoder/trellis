@@ -137,6 +137,10 @@ pub(crate) struct Spec<'a> {
     /// `find`, which refuses a list past the cap rather than show part of
     /// one, so storing its tail was work for nothing.
     pub(crate) whole: bool,
+    /// The OS sandbox `argv` runs under, confined to `cwd` (ADR 0055):
+    /// set for a command in a throwaway clone, `None` for trellis's own
+    /// `git` listings, which run in the repository.
+    pub(crate) os: Option<&'a crate::os_sandbox::OsSandbox>,
 }
 
 /// Runs `spec`, writing stdin and reading both streams concurrently.
@@ -149,11 +153,25 @@ pub(crate) struct Spec<'a> {
 /// when the process could not be started (on Windows, that includes a Job
 /// Object that could not be created or joined).
 pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, ExecError> {
-    let Some((program, args)) = spec.argv.split_first() else {
+    let Some(program) = spec.argv.first() else {
         return Err(ExecError::Empty);
     };
-    let mut cmd = tokio::process::Command::new(program);
-    cmd.args(args)
+    // Under the sandbox the process spawned is `bwrap` or `sandbox-exec`,
+    // and the command is its argument; without one, the command itself.
+    let argv = match spec.os {
+        Some(os) => os.wrap(spec.argv, spec.cwd),
+        None => spec.argv.iter().map(std::ffi::OsString::from).collect(),
+    };
+    // What a start or wait failure names: the sandbox's binary as well,
+    // since it is the process that failed to start.
+    let program = match spec.os {
+        Some(os) if os.is_active() => {
+            format!("{} {program}", std::path::Path::new(&argv[0]).display())
+        }
+        _ => program.clone(),
+    };
+    let mut cmd = tokio::process::Command::new(&argv[0]);
+    cmd.args(&argv[1..])
         .current_dir(spec.cwd)
         .envs(spec.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(if spec.stdin.is_some() {
@@ -532,6 +550,7 @@ mod tests {
             cap,
             head: false,
             whole: false,
+            os: None,
         }
     }
 

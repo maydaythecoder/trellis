@@ -56,6 +56,7 @@ pub(crate) async fn grep(root: &Path, pattern: &str, path: Option<&str>) -> Tool
         cap: OUTPUT_CAP,
         head: false,
         whole: false,
+        os: None,
     })
     .await;
     match r {
@@ -179,6 +180,7 @@ async fn find_capped(root: &Path, glob: &str, cap: usize) -> ToolResult {
         cap,
         head: false,
         whole: true,
+        os: None,
     })
     .await;
     let c = match r {

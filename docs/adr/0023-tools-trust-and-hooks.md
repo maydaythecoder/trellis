@@ -1125,6 +1125,9 @@ absolute path, which a clone does not stop (ADR 0032, "Limits": no network
 isolation, reads and writes outside the clone still possible). The guards
 above are kept for those writers. Containers or an OS sandbox, for network
 and home-directory isolation, remain deferred (ADR 0021, 1.6 and 13.3).
+*Amended 2026-10-12 (ADR 0055, #621):* an OS sandbox (`bwrap` on Linux,
+`sandbox-exec` on macOS) now confines these writers where it is present
+and works, and a run says `sandbox: none (<reason>)` where it does not.
 `trellis trust` prints one line stating the limit when it records trust for
 any of these writers.
 

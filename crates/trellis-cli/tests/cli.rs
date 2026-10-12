@@ -2547,6 +2547,117 @@ fn a_run_under_governance_says_how_many_rules_it_is_under() {
 }
 
 #[test]
+fn sandbox_is_named_on_the_repo_line_and_by_doctor_alike() {
+    // ADR 0055 (#621). A sandbox that is missing, or present and failing,
+    // is a warning and not a refusal, so what trellis prints is the only
+    // place a person learns that `bash` ran unconfined. The risk: a run
+    // that says nothing, or names a sandbox doctor does not, or the
+    // reverse.
+    let d = repo("run-sandbox-line");
+    let script = script_that_stops(&d);
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "script"]);
+    let s = stdout(&run(&d, &["run", "--model", &script, "a task"]));
+    let label = s
+        .lines()
+        .find_map(|l| l.strip_prefix("repo:     sandbox: "))
+        .unwrap_or_else(|| panic!("no sandbox on the repo: line:\n{s}"))
+        .to_string();
+    let doctor = stdout(&run(&d, &["doctor"]));
+    let line = doctor
+        .lines()
+        .find(|l| l.starts_with("sandbox:"))
+        .unwrap_or_else(|| panic!("doctor names no sandbox:\n{doctor}"));
+    let expected = if cfg!(target_os = "linux") {
+        "bwrap"
+    } else if cfg!(target_os = "macos") {
+        "sandbox-exec"
+    } else {
+        "Windows"
+    };
+    if label.starts_with("none (") {
+        assert!(label.contains(expected), "{label}");
+        assert!(
+            line.starts_with(&format!("sandbox:    {label}")),
+            "{line}\n{label}"
+        );
+    } else {
+        assert_eq!(label, expected);
+        // The binary doctor found, by path.
+        assert!(
+            line.starts_with(&format!("sandbox:    {label} at /")),
+            "{line}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sandbox_missing_or_failing_is_a_warning_that_names_the_reason() {
+    // The owner's decision on #621: `bwrap` absent, or present and failing
+    // (Ubuntu 24.04's apparmor_restrict_unprivileged_userns refuses the
+    // user namespace), is a warning, never a refusal, and the reason is
+    // printed. A stand-in `bwrap` first on PATH fails as that one does.
+    use std::os::unix::fs::PermissionsExt;
+    let d = repo("run-sandbox-failing");
+    let script = script_that_stops(&d);
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "script"]);
+    let bin = d.with_extension("bin");
+    let _ = std::fs::remove_dir_all(&bin);
+    std::fs::create_dir_all(&bin).unwrap();
+    let fake = bin.join("bwrap");
+    std::fs::write(
+        &fake,
+        "#!/bin/sh\necho 'bwrap: setting up uid map: Permission denied' >&2\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let with_path = |args: &[&str], path: &str| {
+        Command::new(env!("CARGO_BIN_EXE_trellis"))
+            .args(args)
+            .current_dir(&d)
+            .env("NO_COLOR", "1")
+            .env(
+                "TRELLIS_CONFIG_DIR",
+                std::env::temp_dir().join("trellis-tests-no-user-config"),
+            )
+            .env("PATH", path)
+            .output()
+            .unwrap()
+    };
+    let failing = "none (bwrap failed: bwrap: setting up uid map: Permission denied)";
+    let doctor = stdout(&with_path(&["doctor"], &path));
+    assert!(
+        doctor.contains(&format!("sandbox:    {failing}")),
+        "{doctor}"
+    );
+    let out = with_path(&["run", "--model", &script, "a task"], &path);
+    let s = stdout(&out);
+    assert!(s.contains(&format!("repo:     sandbox: {failing}")), "{s}");
+    // Warned, not refused: the run went ahead to its end.
+    assert!(s.contains("NOT CONVERGED"), "{}", combined(&out));
+
+    let empty = d.with_extension("empty");
+    let _ = std::fs::remove_dir_all(&empty);
+    std::fs::create_dir_all(&empty).unwrap();
+    let doctor = stdout(&with_path(&["doctor"], &empty.display().to_string()));
+    assert!(
+        doctor.contains("sandbox:    none (bwrap not found)"),
+        "{doctor}"
+    );
+    for p in [&d, &bin, &empty] {
+        let _ = std::fs::remove_dir_all(p);
+    }
+}
+
+#[test]
 fn a_run_under_no_rules_does_not_announce_an_empty_rule_set() {
     // The other direction. "0 write rule(s)" on every ordinary run is a line
     // that teaches the reader to skip the place where the real one appears.
