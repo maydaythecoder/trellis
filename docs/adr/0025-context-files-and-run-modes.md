@@ -592,6 +592,16 @@ on stderr.
   `tests/modes.rs`, through the binary, over the same committed vault, whose
   orphan the gate refuses, and over it with the orphan adopted, which it
   accepts; the worktree is clean after each.
+- *Added 2026-10-12 (#629).* `vault_search` with `query: ""` (or only
+  whitespace) is a browse, not a search: the port keeps Apex's empty-query
+  branch (`search.rs`, `searchResults.ts:64-69`), so the answer is every
+  note, by title then path, `limit` applied, each with `score` 0, where a
+  note a query matched always scores above 0. Only a missing `query` is
+  refused, as before. The CLI's `trellis vault search` keeps its required
+  query argument. The desktop lists the vault through it before a query is
+  typed (ADR 0048 §10). Evidence:
+  `rpc_vault_search_empty_query_lists_every_note_in_title_order_and_writes_nothing`
+  in `tests/modes.rs`, through the binary, over the same committed vault.
 - *Added 2026-10-07 (#502), on ADR 0052 (its ticket plan's R4), accepted by
   the owner on #500.* **`list_paths {prefix}`** answers with the paths `@`
   completion offers, so the Go TUI and the desktop never list a

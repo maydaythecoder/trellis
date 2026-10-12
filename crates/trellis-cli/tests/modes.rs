@@ -1848,6 +1848,51 @@ fn rpc_vault_search_returns_what_vault_search_prints() {
     );
 }
 
+#[test]
+fn rpc_vault_search_empty_query_lists_every_note_in_title_order_and_writes_nothing() {
+    // The risks (#629): an empty query refused, when the port keeps Apex's
+    // empty-query branch (`search.rs`: every note, by title then path,
+    // score 0) and a client has no other way to list the vault; a list
+    // ranked or scored as if matched; or a read that writes the vault
+    // (#70). Held alone, mid-run and before a `quit`, as the other reads.
+    let f = vault_fixture("rpc-vault-search-empty");
+    let data = answered_three_ways(
+        &f,
+        &serde_json::json!({"type": "vault_search", "query": ""}),
+    );
+    let hits = data["hits"].as_array().unwrap_or_else(|| panic!("{data}"));
+    assert_eq!(
+        hits.iter()
+            .map(|h| (h["title"].as_str().unwrap(), h["path"].as_str().unwrap()))
+            .collect::<Vec<_>>(),
+        [
+            ("Child", "child.md"),
+            ("Orphan", "orphan.md"),
+            ("Root", "root.md")
+        ],
+        "every note, by title: {data}"
+    );
+    assert!(
+        hits.iter().all(|h| h["score"] == 0.0),
+        "a browse list scores nothing: {data}"
+    );
+    assert_eq!(
+        data["mode"],
+        serde_json::json!({"body": true, "trigrams": true})
+    );
+    // `limit` cuts the list as it cuts a ranking; whitespace is empty too.
+    let one = answer(
+        &f,
+        serde_json::json!({"id": "l", "type": "vault_search", "query": "  ", "limit": 1}),
+    );
+    assert_eq!(one["success"], true, "{one}");
+    assert_eq!(one["data"]["hits"][0]["path"], "child.md", "{one}");
+    assert_eq!(one["data"]["hits"].as_array().unwrap().len(), 1, "{one}");
+    // The CLI keeps its required query argument: without one it refuses.
+    let o = run(&f, &["vault", "search"]);
+    assert!(!o.status.success(), "the CLI ran with no query");
+}
+
 /// `path "title"`, as `vault graph` labels a note.
 fn printed_label(s: &str) -> Value {
     let (path, title) = s.split_once(" \"").unwrap();

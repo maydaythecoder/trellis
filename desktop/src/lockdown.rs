@@ -2153,8 +2153,50 @@ mod tests {
             .collect();
         assert_eq!(
             sent,
-            ["vault_graph", "vault_check", "vault_search"],
+            ["vault_graph", "vault_check", "vault_search", "vault_search"],
             "{sent:?}"
+        );
+    }
+
+    #[test]
+    fn vault_browse_lists_the_notes_before_a_query_and_draws_no_score() {
+        // The risk (#629): the page refusing an empty query, so the vault
+        // view is blank until a word is typed, when Apex lists the notes
+        // on focus; a browse list drawn with a 0.0000 score beside every
+        // note as if ranked; or a status line calling a browse a match.
+        let js = ui_file("vault.js");
+        let submit = between(&js, "addEventListener(\"submit\"", "\n  });");
+        assert!(
+            !submit.contains("takes at least one word"),
+            "the submit handler still refuses an empty query"
+        );
+        let browse = function_body(&js, "browse");
+        assert!(
+            browse.contains("type: \"vault_search\"") && browse.contains("query: \"\""),
+            "browse() does not send vault_search with an empty query: {browse}"
+        );
+        let started = between(&js, "listen(\"child-started\"", "\n  });");
+        assert!(
+            started.contains("browse(doc, tauri);"),
+            "the notes are not listed when a child starts"
+        );
+        let hits = function_body(&js, "drawHits");
+        assert!(
+            hits.contains("const browse = v.browse === true;") && hits.contains("if (!browse) {"),
+            "drawHits draws a score on a browse list: {hits}"
+        );
+        let draw = function_body(&js, "drawVault");
+        let (before, after) = draw
+            .split_once("v.browse === true")
+            .expect("drawVault reads the browse mark");
+        let line = after.lines().next().unwrap_or_default();
+        assert!(
+            !line.contains("matched"),
+            "the browse status line says matched: {line}"
+        );
+        assert!(
+            before.contains("Array.isArray(v.hits)"),
+            "the mark is read only with a list to draw"
         );
     }
 
