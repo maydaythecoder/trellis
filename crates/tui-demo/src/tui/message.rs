@@ -99,4 +99,9 @@ pub enum SteerOut {
     /// Sent immediately before a task: every steer ahead of this was typed
     /// for an earlier task, and every steer after it for this one or later.
     TaskFollows,
+    /// Ctrl-C, or Esc on an empty line, while a run was in flight: stop that
+    /// run, which rolls it back (#634). On this channel rather than its own
+    /// so the `TaskFollows` boundary orders it too: a stop typed for one run
+    /// cannot reach the next.
+    Stop,
 }
