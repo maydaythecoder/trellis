@@ -28,6 +28,7 @@ cargo run -p trellis-cli -- [--root <repo>] [--json] overview   # recent repos' 
 cargo run -p trellis-cli -- agents list | routines list    # profiles, routines (ADR 0026)
 cargo run -p trellis-cli -- resume [<run_id>]              # a named run's trail, as data (ADR 0038)
 cargo run -p trellis-cli -- install <source>@<ref> | --list | --remove <name>   # skills and templates only; --list ends each line with `digest ok`, `modified: <paths>` or `not recorded` (ADR 0039 §4, #617)
+cargo run -p trellis-cli -- install --upgrade <name>       # re-resolves the recorded ref over the old copy; refused over local edits with the paths named, no --force; same commit is a no-op (ADR 0039 §11, #618)
 cargo run -p trellis-cli -- run "<task>" --image <path>    # hosted tier 1 only, repeatable (ADR 0041)
 cargo build -p trellis-cli --no-default-features           # local-only binary, no TLS (ADR 0024)
 cargo test -p trellis-tickets                              # ticket label rules (docs/TICKETING.md, ADR 0040)
