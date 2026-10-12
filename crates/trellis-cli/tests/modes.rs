@@ -1971,6 +1971,136 @@ fn rpc_vault_graph_returns_what_vault_graph_prints() {
     );
 }
 
+/// What `trellis vault check` printed, in `vault_check`'s shape: the
+/// report line, the `issues:` block, the `warning:` lines and the run
+/// gate's answer, with the `--fix` hint a refusing gate adds left out.
+fn printed_check(stdout: &str) -> Value {
+    let mut lines = stdout.lines();
+    let line = lines.next().expect("the report line");
+    let mut issues = Vec::new();
+    let mut warnings = Vec::new();
+    let mut gate = Value::Null;
+    let mut in_issues = false;
+    for l in lines {
+        if l == "issues:" {
+            in_issues = true;
+        } else if let Some(w) = l.strip_prefix("warning: ") {
+            in_issues = false;
+            warnings.push(w.to_string());
+        } else if let Some(s) = l.strip_prefix("run gate: accepts this vault (") {
+            in_issues = false;
+            let stats: serde_json::Map<String, Value> = s
+                .trim_end_matches(')')
+                .split(' ')
+                .map(|kv| {
+                    let (k, v) = kv.split_once('=').expect("k=v");
+                    (k.to_string(), json_u64(v))
+                })
+                .collect();
+            gate = serde_json::json!({"accepts": true, "stats": stats});
+        } else if l.starts_with("run gate: refuses this vault, ") {
+            in_issues = false;
+            gate = serde_json::json!({"accepts": false, "violations": []});
+        } else if let Some(item) = l.strip_prefix("  ") {
+            if in_issues {
+                issues.push(item.to_string());
+            } else {
+                gate["violations"]
+                    .as_array_mut()
+                    .expect("after the gate line")
+                    .push(item.into());
+            }
+        }
+    }
+    serde_json::json!({"line": line, "issues": issues, "warnings": warnings, "gate": gate})
+}
+
+fn json_u64(v: &str) -> Value {
+    Value::from(v.parse::<u64>().expect("a count"))
+}
+
+#[test]
+fn rpc_vault_check_returns_what_vault_check_prints() {
+    // The risks: a client parsing `vault check`'s text because it has no
+    // data form (ADR 0048 §2); a read that writes the vault (every vault
+    // write is a `trellis vault` command, #70); a check blocking the
+    // reader while a run waits on an approval; a `quit` that exits before
+    // the answer; and a gate answer that drifts from what the CLI prints.
+    let f = vault_fixture("rpc-vault-check");
+    let data = answered_three_ways(&f, &serde_json::json!({"type": "vault_check"}));
+
+    // Last: what `trellis vault check` prints. The fixture's orphan makes
+    // the gate refuse, which exits 1 on the CLI and is data here.
+    let o = run(&f, &["vault", "check"]);
+    assert!(!o.status.success(), "the gate refuses this vault");
+    assert_eq!(
+        data,
+        printed_check(&String::from_utf8_lossy(&o.stdout)),
+        "what `trellis vault check` prints"
+    );
+    assert_eq!(data["gate"]["accepts"], false, "{data}");
+    assert_eq!(
+        data["gate"]["violations"].as_array().unwrap().len(),
+        1,
+        "{data}"
+    );
+    assert_eq!(data["issues"].as_array().unwrap().len(), 2, "{data}");
+
+    // A vault the gate accepts: its stats, as counts, and no violation.
+    std::fs::write(
+        f.root.join("notes/orphan.md"),
+        "---\ntitle: \"Orphan\"\nparent: \"[[root]]\"\n---\nA found note. Back to [[child]].\n",
+    )
+    .unwrap();
+    git(&f.root, &["commit", "-qam", "adopted"]);
+    let ok = answer(&f, serde_json::json!({"id": "k", "type": "vault_check"}));
+    assert_eq!(ok["success"], true, "{ok}");
+    let o = run(&f, &["vault", "check"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        ok["data"],
+        printed_check(&String::from_utf8_lossy(&o.stdout))
+    );
+    assert_eq!(ok["data"]["gate"]["accepts"], true, "{ok}");
+    assert_eq!(ok["data"]["gate"]["stats"]["notes"], 3, "{ok}");
+    assert_eq!(ok["data"]["issues"], serde_json::json!([]), "{ok}");
+
+    // No vault configured: the CLI's message.
+    let bare = fixture("rpc-vault-check-bare");
+    let got = answer(&bare, serde_json::json!({"id": "e", "type": "vault_check"}));
+    assert_eq!(got["success"], false, "{got}");
+    assert_eq!(got["error"], cli_error(&bare, &["vault", "check"]), "{got}");
+}
+
+#[test]
+fn rpc_vault_check_refuses_a_fix_field_by_name_and_writes_nothing() {
+    // The risk: a `fix` field taken as `--fix`, so an rpc read repairs the
+    // vault (#70); or ignored, so the client reads the unrepaired report as
+    // the repaired one. Either value is refused, and the vault is untouched.
+    let f = vault_fixture("rpc-vault-check-fix");
+    for (id, fix) in [("t", Value::from(true)), ("f", Value::from(false))] {
+        let got = answer(
+            &f,
+            serde_json::json!({"id": id, "type": "vault_check", "fix": fix}),
+        );
+        assert_eq!(got["command"], "vault_check", "{got}");
+        assert_eq!(got["success"], false, "{got}");
+        let err = got["error"].as_str().unwrap_or_default();
+        assert!(err.contains("`fix`"), "names the field: {got}");
+        assert!(
+            got.get("data").is_none(),
+            "no report beside the refusal: {got}"
+        );
+    }
+    let status = trellis_vcs::command()
+        .args(["status", "--porcelain"])
+        .current_dir(&f.root)
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    assert_eq!(String::from_utf8_lossy(&status.stdout), "", "worktree");
+}
+
 /// The `paths` of a successful `list_paths` answer, each a JSON string.
 fn listed(answer: &Value) -> Vec<String> {
     assert_eq!(answer["command"], "list_paths", "{answer}");
