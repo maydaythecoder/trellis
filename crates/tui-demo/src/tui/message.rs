@@ -10,6 +10,10 @@ use ratatui::crossterm::event::KeyEvent;
 pub enum Message {
     // terminal
     Key(KeyEvent),
+    /// Text pasted into the terminal, as one message (#639). Line breaks
+    /// are kept here and flattened by `update`: a paste goes into the
+    /// input and nothing is sent until Enter is pressed.
+    Paste(String),
     Resize(u16, u16),
     Tick,
     // work events, from the run driver (mock.rs in the demo)
