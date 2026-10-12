@@ -24,7 +24,7 @@ use crate::output::escape_c1;
 use crate::plain;
 use anyhow::Result;
 use serde_json::{Map, Value, json};
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -230,6 +230,16 @@ fn pr_ci(root: &Path) -> Value {
     let Some(gh) = find_gh() else {
         return unavailable("gh not found on PATH".into());
     };
+    // Bare `trellis` printed nothing until both `gh` calls had answered, up
+    // to 20 s of blank terminal (#650). Said only to a terminal: whatever
+    // reads a pipe takes the overview, and the desktop shows this stream's
+    // lines as messages.
+    if std::io::stderr().is_terminal() {
+        eprintln!(
+            "asking gh for pull requests and CI runs (up to {} s each)",
+            GH_BOUND.as_secs()
+        );
+    }
     let prs = match gh_list(&gh, root, &GH_PR_LIST) {
         Ok(v) => v,
         Err(r) => return unavailable(r),
