@@ -609,7 +609,8 @@ code {
 
 .cb-bar button,
 .cb-crumbs button,
-#cb-results button {
+#cb-results button,
+.cb-modules button {
   padding: 1px 8px;
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -685,6 +686,17 @@ code {
 
 #cb-details {
   margin-bottom: 12px;
+}
+
+/* The graph's level as a list (#648): a package of hundreds of modules
+   scrolls here rather than pushing the radius pane off the page. */
+.cb-list {
+  margin-top: 12px;
+}
+
+.cb-modules {
+  max-height: 320px;
+  overflow-y: auto;
 }
 
 #cb-details p + dl,
