@@ -145,10 +145,21 @@ where
         // Before the task, so that a driver holding the task can already see
         // its boundary on the steer channel. A steer with nowhere to go is
         // dropped here and reported not delivered when the run ends.
+        let mut stop_went_nowhere = false;
         for steer in state.steered.drain(..) {
-            if let Some(tx) = &out.steer_tx {
-                let _ = tx.send(steer);
-            }
+            let stop = steer == SteerOut::Stop;
+            let sent = out
+                .steer_tx
+                .as_ref()
+                .is_some_and(|tx| tx.send(steer).is_ok());
+            stop_went_nowhere |= stop && !sent;
+        }
+        // A stop nobody can carry out leaves at once, as Ctrl-C did before
+        // #634: the view would otherwise wait for a `RunFinished` that only
+        // a stopped run sends. The mock has no driver to stop, and a driver
+        // that has gone has no run.
+        if stop_went_nowhere {
+            state.should_quit = true;
         }
 
         // Drained after every batch: a task typed during a burst of work
@@ -190,7 +201,8 @@ fn terminal_message(ev: Event) -> Option<Message> {
     match ev {
         // Ctrl-C reaches us as a key rather than a signal in raw mode, and
         // it has to leave the terminal as it found it — the same exit path
-        // as `q`, not a process kill.
+        // as `q`, not a process kill. Mid-run, `update` turns it into a stop
+        // first (#634).
         Event::Key(k)
             if k.kind == KeyEventKind::Press
                 && k.code == KeyCode::Char('c')
@@ -375,6 +387,9 @@ mod tests {
         for m in typed("prefer the smaller diff") {
             tx.send(m).await.unwrap();
         }
+        // The run ends before the quit: a quit mid-run is a stop (#634),
+        // which is not what this test is about.
+        tx.send(Message::RunFinished).await.unwrap();
         tx.send(Message::Quit).await.unwrap();
 
         tokio::time::timeout(
@@ -417,6 +432,7 @@ mod tests {
         tx.send(Message::SteerDelivered { nth: 0, turn: 2 })
             .await
             .unwrap();
+        tx.send(Message::RunFinished).await.unwrap();
         tx.send(Message::Quit).await.unwrap();
 
         tokio::time::timeout(
@@ -474,6 +490,7 @@ mod tests {
         for m in typed("new steer") {
             tx.send(m).await.unwrap();
         }
+        tx.send(Message::RunFinished).await.unwrap();
         tx.send(Message::Quit).await.unwrap();
 
         tokio::time::timeout(
@@ -506,5 +523,134 @@ mod tests {
             ]
         );
         assert_eq!(task_rx.try_recv().ok().as_deref(), Some("next task"));
+    }
+
+    fn screen_of(terminal: &Terminal<TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    /// The driver hears one stop, and the view stays until the run ends.
+    ///
+    /// The risk (#634): Ctrl-C ended the view while the run went on editing
+    /// the tree with nobody watching, its rollback and trail unseen. A
+    /// second press must not ask again, and the loop must still end, once
+    /// the stopped run reports finished.
+    #[tokio::test]
+    async fn ctrl_c_mid_run_emits_one_stop_before_the_loop_ends() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut state = AppState::default().with_running(true);
+        let (tx, rx) = mpsc::channel(16);
+        let (task_tx, _task_rx) = mpsc::channel(8);
+        let (steer_tx, mut steer_rx) = mpsc::unbounded_channel();
+
+        tx.send(Message::Quit).await.unwrap();
+        tx.send(Message::Quit).await.unwrap();
+        tx.send(Message::RunFinished).await.unwrap();
+
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            run_with_events(
+                &mut terminal,
+                &mut state,
+                headless(),
+                rx,
+                Outlets {
+                    steer_tx: Some(steer_tx),
+                    ..outlets(task_tx)
+                },
+            ),
+        )
+        .await
+        .expect("the loop ends once the stopped run has finished")
+        .unwrap();
+
+        let mut wire = Vec::new();
+        while let Ok(m) = steer_rx.try_recv() {
+            wire.push(m);
+        }
+        assert_eq!(wire, vec![SteerOut::Stop], "exactly one stop");
+        assert!(state.should_quit);
+    }
+
+    /// With nobody to stop the run, Ctrl-C leaves at once, as it always did.
+    ///
+    /// The mock binary has no driver, and its runs never report finished;
+    /// waiting for one would leave a view that can only be killed, and a
+    /// killed view skips the restore that hands the terminal back.
+    #[tokio::test]
+    async fn ctrl_c_mid_run_with_nothing_to_stop_it_leaves_at_once() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut state = AppState::default().with_running(true);
+        let (tx, rx) = mpsc::channel(16);
+        let (task_tx, _task_rx) = mpsc::channel(8);
+
+        tx.send(Message::Quit).await.unwrap();
+
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            run_with_events(&mut terminal, &mut state, headless(), rx, outlets(task_tx)),
+        )
+        .await
+        .expect("a stop with nowhere to go must not hang the view")
+        .unwrap();
+        assert!(state.should_quit);
+    }
+
+    /// What the person sees: the stop said while the run winds down, and
+    /// /help describing the same thing.
+    #[tokio::test]
+    async fn ctrl_c_mid_run_draws_the_stopping_line_and_help_says_so() {
+        // Wide and tall enough that /help's lines are drawn whole.
+        let mut terminal = Terminal::new(TestBackend::new(200, 40)).unwrap();
+        let mut state = AppState::default();
+        for m in typed("/help") {
+            state.update(m);
+        }
+        terminal.draw(|frame| view::render(&state, frame)).unwrap();
+        let help = screen_of(&terminal);
+        assert!(
+            help.contains("^c        leave; a run in flight is stopped and rolled back first"),
+            "{help}"
+        );
+
+        let (tx, rx) = mpsc::channel(16);
+        let (task_tx, _task_rx) = mpsc::channel(8);
+        let (steer_tx, _steer_rx) = mpsc::unbounded_channel();
+        state.running = true;
+        tx.send(Message::Quit).await.unwrap();
+        // The view is still up while the run winds down: a frame is drawn
+        // after the stop, and the loop leaves only on `RunFinished`.
+        let stopped = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            tx.send(Message::RunFinished).await.unwrap();
+        });
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            run_with_events(
+                &mut terminal,
+                &mut state,
+                headless(),
+                rx,
+                Outlets {
+                    steer_tx: Some(steer_tx),
+                    ..outlets(task_tx)
+                },
+            ),
+        )
+        .await
+        .expect("the loop ends once the run has finished")
+        .unwrap();
+        stopped.await.unwrap();
+        let screen = screen_of(&terminal);
+        assert!(
+            screen.contains("stopping: trellis rolls the run back"),
+            "{screen}"
+        );
     }
 }
