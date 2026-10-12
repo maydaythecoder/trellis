@@ -85,13 +85,16 @@ pub enum Pane {
     /// The Atlas: its history, snapshots, symbols, radius and layout
     /// (`atlas.rs`).
     Atlas,
+    /// What the run is on now: a model call, or the tool or checks its
+    /// last turn ran (#615).
+    Phase,
 }
 
 /// Every pane the view carries. Each is a key the page must draw:
 /// `view_renders_every_pane_key` in `lockdown.rs` drives a whole run through
 /// [`DesktopState::update`] and fails naming a key here that no module the
 /// page loads reads from the `view` event (ADR 0052 section 1, #513).
-const PANES: [Pane; 22] = [
+const PANES: [Pane; 23] = [
     Pane::Transcript,
     Pane::Actions,
     Pane::Edits,
@@ -114,6 +117,7 @@ const PANES: [Pane; 22] = [
     Pane::Vault,
     Pane::Queue,
     Pane::Atlas,
+    Pane::Phase,
 ];
 
 /// The panes a run starts afresh: everything but the transcript, which,
@@ -124,7 +128,7 @@ const PANES: [Pane; 22] = [
 /// the last stopped run's, so a new run drops it, and so is the alert: what
 /// failed before this run started is not this run's failure. The stderr
 /// pane, as the transcript, carries on.
-const RUN_PANES: [Pane; 11] = [
+const RUN_PANES: [Pane; 12] = [
     Pane::Actions,
     Pane::Edits,
     Pane::Checks,
@@ -136,6 +140,7 @@ const RUN_PANES: [Pane; 11] = [
     Pane::Undelivered,
     Pane::Alert,
     Pane::Graph,
+    Pane::Phase,
 ];
 
 impl Pane {
@@ -163,6 +168,7 @@ impl Pane {
             Pane::Vault => "vault",
             Pane::Queue => "queue",
             Pane::Atlas => "atlas",
+            Pane::Phase => "phase",
         }
     }
 
@@ -202,6 +208,22 @@ impl Changed {
     pub fn everything() -> Self {
         Self::of(&PANES)
     }
+}
+
+/// What the run is on, from the last loop event that said (#615). Replies
+/// are not streamed, so a `model call` is the only sign of life between
+/// two turns of a slow model; a `turn` says what its call ran. Each carries
+/// the turn number trellis sent with it, and nothing the desktop measured:
+/// elapsed time would be the desktop's clock, not a trellis figure (ADR
+/// 0048 section 8), so it is left out.
+#[derive(Debug, Clone, PartialEq)]
+enum Phase {
+    /// The model is being called for this turn.
+    Model { turn: u64 },
+    /// The turn's call ran the named tool.
+    Tool { turn: u64, tool: String },
+    /// The turn's call ran checks.
+    Checks { turn: u64 },
 }
 
 /// One turn, whatever it was and however it went (tui_bridge.rs).
@@ -648,6 +670,9 @@ pub struct DesktopState {
     queue: queue::Queue,
     /// The Atlas, kept across runs as the vault view is.
     atlas: atlas::Atlas,
+    /// What the run is on now; `None` before a run's first `model call`
+    /// and from its `run_end`.
+    phase: Option<Phase>,
 }
 
 impl DesktopState {
@@ -655,6 +680,10 @@ impl DesktopState {
     pub fn update(&mut self, frame: Frame) -> Changed {
         match frame {
             Frame::Turn(t) => self.turn(t),
+            Frame::ModelCall { turn } => {
+                self.phase = Some(Phase::Model { turn });
+                Changed::of(&[Pane::Phase])
+            }
             Frame::RunBudget { max_iterations } => {
                 self.budget.max_turns = max_iterations;
                 Changed::of(&[Pane::Budget])
@@ -678,9 +707,12 @@ impl DesktopState {
             }
             Frame::RunEnd(e) => {
                 self.running = false;
+                // Nothing is on once the run has ended.
+                self.phase = None;
                 // Nobody is left to answer a question the run asked.
                 self.approvals.clear();
-                let mut c = Changed::of(&[Pane::Running, Pane::Approvals, Pane::Outcome]);
+                let mut c =
+                    Changed::of(&[Pane::Running, Pane::Approvals, Pane::Outcome, Pane::Phase]);
                 if let Some(error) = &e.error {
                     self.alert = Some(format!("The run ended in error: {error}"));
                     c = c.with(Pane::Alert);
@@ -1008,6 +1040,14 @@ impl DesktopState {
                     .collect(),
             ),
             Pane::Running => json!(self.running),
+            Pane::Phase => match &self.phase {
+                Some(Phase::Model { turn }) => json!({"phase": "model", "turn": turn}),
+                Some(Phase::Tool { turn, tool }) => {
+                    json!({"phase": "tool", "turn": turn, "tool": tool})
+                }
+                Some(Phase::Checks { turn }) => json!({"phase": "checks", "turn": turn}),
+                None => Value::Null,
+            },
             Pane::Tier => json!(self.tier),
             Pane::Starters => match &self.starters {
                 Some(list) => Value::Array(
@@ -1120,7 +1160,13 @@ impl DesktopState {
 
     /// A turn, as `tui_bridge.rs` maps it.
     fn turn(&mut self, t: Turn) -> Changed {
-        let mut c = Changed::of(&[Pane::Transcript, Pane::Actions, Pane::Budget, Pane::Graph]);
+        let mut c = Changed::of(&[
+            Pane::Transcript,
+            Pane::Actions,
+            Pane::Budget,
+            Pane::Graph,
+            Pane::Phase,
+        ]);
         // The verdict as the loop renders it; only these two mean a check
         // ran (DESK-07's contract). "None", or any other string, is no
         // check.
@@ -1150,8 +1196,20 @@ impl DesktopState {
         let wrote = (t.call.starts_with("edit ") && obs.contains("applied: true"))
             || (t.call.starts_with("write_file ") && obs.starts_with("created "));
         let mut parts = t.call.splitn(2, ' ');
+        let tool = parts.next().unwrap_or_default().to_string();
+        // The call's tool is what the turn ran; `run_checks` is the checks
+        // phase, by the call and not the verdict, so the governance audit
+        // (a `run_checks` the loop ran itself) reads as checks too.
+        self.phase = Some(if tool == "run_checks" {
+            Phase::Checks { turn: t.turn }
+        } else {
+            Phase::Tool {
+                turn: t.turn,
+                tool: tool.clone(),
+            }
+        });
         self.actions.push(Action {
-            tool: parts.next().unwrap_or_default().to_string(),
+            tool,
             target: parts.next().unwrap_or_default().to_string(),
             wrote,
             prompt_bytes: t.prompt_bytes,
@@ -1201,6 +1259,7 @@ impl DesktopState {
         self.outcome = None;
         self.undelivered.clear();
         self.alert = None;
+        self.phase = None;
     }
 
     fn push_line(&mut self, line: String) {
@@ -1393,6 +1452,88 @@ mod tests {
             Value::Array(a) => a.iter().for_each(|x| keys(x, out)),
             _ => {}
         }
+    }
+
+    #[test]
+    fn phase_is_model_with_its_turn_from_a_model_call_frame() {
+        // The risk (#615): replies are not streamed, so a `model call` is
+        // the only sign of life between two turns of a slow local model.
+        // Dropped, the page shows nothing changing for the whole call and
+        // the run reads as hung. The turn is trellis's number, carried as
+        // sent; `prompt_bytes` is never on it (client_contract.json).
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p1"));
+        assert_eq!(all(&s)["phase"], Value::Null, "nothing is on before a call");
+        let c = feed(&mut s, &event("model call", json!({"turn": 3})));
+        assert!(c.has(Pane::Phase), "{c:?}");
+        assert_eq!(all(&s)["phase"], json!({"phase": "model", "turn": 3}));
+        // Without a turn the event names nothing, and changes nothing.
+        let c = feed(&mut s, &event("model call", json!({})));
+        assert!(c.is_empty(), "{c:?}");
+        assert_eq!(all(&s)["phase"], json!({"phase": "model", "turn": 3}));
+    }
+
+    #[test]
+    fn phase_is_tool_or_checks_from_a_turn_frame_s_call() {
+        // The risk: a turn says what its call ran, and the page keeps
+        // saying "model" after the reply came; or `run_checks` reads as a
+        // tool like any other, when it is the one the user waits on.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p1"));
+        feed(&mut s, &event("model call", json!({"turn": 1})));
+        let c = feed(
+            &mut s,
+            &turn(
+                json!({"turn": 1, "call": "edit app/core.py", "verdict": "None",
+                         "check_kind": "", "observation": "applied: true (+1 -1)"}),
+            ),
+        );
+        assert!(c.has(Pane::Phase), "{c:?}");
+        assert_eq!(
+            all(&s)["phase"],
+            json!({"phase": "tool", "turn": 1, "tool": "edit"})
+        );
+        feed(&mut s, &event("model call", json!({"turn": 2})));
+        feed(
+            &mut s,
+            &turn(
+                json!({"turn": 2, "call": "run_checks app/core.py", "verdict": "Some(true)",
+                         "check_kind": "Tests", "observation": "3 passed"}),
+            ),
+        );
+        assert_eq!(all(&s)["phase"], json!({"phase": "checks", "turn": 2}));
+        // The governance audit is a run_checks the loop ran itself, under
+        // the last call's number: checks too.
+        feed(
+            &mut s,
+            &turn(
+                json!({"turn": 2, "call": "run_checks", "verdict": "Some(false)",
+                         "check_kind": "Governance", "observation": "VIOLATION"}),
+            ),
+        );
+        assert_eq!(all(&s)["phase"], json!({"phase": "checks", "turn": 2}));
+    }
+
+    #[test]
+    fn phase_is_cleared_by_run_end_and_by_a_new_run_s_start() {
+        // The risk: a run ends and the bar still says the model is being
+        // called, which is the hang it was meant to tell apart; or the next
+        // run starts under the last run's phase.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p1"));
+        feed(&mut s, &event("model call", json!({"turn": 1})));
+        let c = feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "not_converged", "exit": 1,
+                    "restored": true, "id": "p1"})
+            .to_string(),
+        );
+        assert!(c.has(Pane::Phase), "{c:?}");
+        assert_eq!(all(&s)["phase"], Value::Null);
+        feed(&mut s, &event("model call", json!({"turn": 1})));
+        let c = feed(&mut s, &run_start("p2"));
+        assert!(c.has(Pane::Phase), "{c:?}");
+        assert_eq!(all(&s)["phase"], Value::Null);
     }
 
     #[test]
