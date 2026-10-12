@@ -1,0 +1,183 @@
+package model
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/maydaythecoder/trellis/tui/internal/view"
+)
+
+func warn(msg string) string {
+	return jsonLine(map[string]any{"level": "WARN", "fields": map[string]any{"message": msg}})
+}
+
+// A turn whose verdict is Some(true) is a line and a passing check; check
+// rows come only from Some(true) or Some(false), named by check_kind ("check"
+// when empty); None and anything else make no row (ADR 0004).
+func TestPanesCheckRowsComeOnlyFromASomeVerdict(t *testing.T) {
+	m := running(t)
+	feed(m, turn(1, "run_checks", map[string]any{"verdict": "Some(true)", "check_kind": "pytest"}))
+	feed(m, turn(2, "run_checks", map[string]any{"verdict": "Some(false)", "check_kind": "mypy"}))
+	feed(m, turn(3, "run_checks", map[string]any{"verdict": "Some(false)", "check_kind": ""}))
+	feed(m, turn(4, "edit a.py", map[string]any{"verdict": "None"}))
+	feed(m, turn(5, "read_file a.py", map[string]any{"verdict": "true"}))
+	want := []view.Check{{Name: "pytest", Passed: true}, {Name: "mypy", Passed: false}, {Name: "check", Passed: false}}
+	if len(m.Checks) != len(want) {
+		t.Fatalf("checks %+v", m.Checks)
+	}
+	for i := range want {
+		if m.Checks[i] != want[i] {
+			t.Fatalf("check %d: %+v, want %+v", i, m.Checks[i], want[i])
+		}
+	}
+	m.Update(windowSize(120, 40))
+	v := m.View()
+	if !strings.Contains(v, "pytest passed") || !strings.Contains(v, "mypy failed") || strings.Contains(v, "mypy passed") {
+		t.Fatalf("%s", v)
+	}
+}
+
+// An edit whose observation has applied: true, and a write_file that
+// created its file, are writes and pending edits; a refused edit is an
+// action and not an edit, so the panes never contradict each other.
+func TestPanesOnlyAnAppliedWriteIsAPendingEdit(t *testing.T) {
+	m := running(t)
+	feed(m, turn(1, "edit app/calc.py", map[string]any{"observation": "error: old text not found"}))
+	feed(m, turn(2, "edit app/calc.py", map[string]any{"observation": "applied: false"}))
+	feed(m, turn(3, "edit app/calc.py", map[string]any{"observation": "applied: true\n1 line changed"}))
+	feed(m, turn(4, "write_file app/new.py", map[string]any{"observation": "created app/new.py"}))
+	feed(m, turn(5, "write_file app/x.py", map[string]any{"observation": "error: exists"}))
+	if len(m.Actions) != 5 {
+		t.Fatalf("%d actions, want every turn", len(m.Actions))
+	}
+	wrote := 0
+	for _, a := range m.Actions {
+		if a.Wrote {
+			wrote++
+		}
+	}
+	if wrote != 2 || len(m.Edits) != 2 || m.Edits[0].Path != "app/calc.py" || m.Edits[1].Path != "app/new.py" {
+		t.Fatalf("wrote %d, edits %+v", wrote, m.Edits)
+	}
+	m.Update(windowSize(120, 40))
+	if v := m.View(); !strings.Contains(v, "2 edit(s) pending") || !strings.Contains(v, "~ app/calc.py") {
+		t.Fatalf("%s", v)
+	}
+}
+
+// Answering an approval marks the pending edits: y applies, n rejects.
+func TestPanesAnApprovalAnswerMarksThePendingEdits(t *testing.T) {
+	for _, c := range []struct {
+		key  rune
+		want view.EditStatus
+	}{{'y', view.Applied}, {'n', view.Rejected}} {
+		m := running(t)
+		feed(m, turn(1, "edit a.py", map[string]any{"observation": "applied: true"}))
+		feed(m, approval("a1", "keep a.py", ""))
+		key(m, c.key)
+		if m.Edits[0].Status != c.want {
+			t.Fatalf("%c: %+v", c.key, m.Edits[0])
+		}
+	}
+}
+
+// A blast_radius turn carries its three counts to the radius pane, kept as
+// three numbers and never combined.
+func TestPanesRadiusTurnCarriesThreeCounts(t *testing.T) {
+	m := running(t)
+	feed(m, turn(1, "blast_radius f", map[string]any{"resolved": 47, "candidates": 3, "unresolved": 2}))
+	if m.Radius == nil || *m.Radius != (view.Radius{Resolved: 47, Candidates: 3, Unresolved: 2}) {
+		t.Fatalf("%+v", m.Radius)
+	}
+	feed(m, turn(2, "blast_radius g", map[string]any{"resolved": 1}))
+	if m.Radius.Resolved != 47 {
+		t.Fatal("a partial radius replaced a whole one")
+	}
+}
+
+// The run's ceiling comes from its run budget event; each turn brings its
+// iteration, prompt bytes, tokens, model time and queue wait, and the
+// seconds since the run started; ticks of nothing change nothing.
+func TestPanesBudgetCarriesTheCeilingTheTurnsFiguresAndElapsed(t *testing.T) {
+	m := fresh(t)
+	clock := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	m.now = func() time.Time { return clock }
+	typeLine(m, "t")
+	enter(m)
+	feed(m, jsonLine(map[string]any{"type": "run_start", "id": "tui-3"}))
+	feed(m, jsonLine(map[string]any{"level": "INFO", "fields": map[string]any{"message": "run budget", "max_iterations": 40}}))
+	clock = clock.Add(18 * time.Second)
+	feed(m, turn(2, "read_file a.py", map[string]any{"prompt_bytes": 8400, "completion_tokens": 30, "model_ms": 25000, "queue_wait_ms": 10000}))
+	b := m.Budget
+	if b.Iteration != 2 || b.MaxIterations == nil || *b.MaxIterations != 40 || *b.PromptBytes != 8400 ||
+		*b.ElapsedSecs != 18 || *b.CompletionTokens != 30 || *b.ModelMs != 25000 || *b.QueueWaitMs != 10000 {
+		t.Fatalf("%+v", b)
+	}
+	m.Update(windowSize(140, 30))
+	v := m.View()
+	if !strings.Contains(v, "iteration 2/40  ·  8400 B prompt  ·  18s elapsed  ·  30 tok, 2.0 tok/s  ·  queued 10.0 s") {
+		t.Fatalf("%s", v)
+	}
+	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
+	if m.Budget.Iteration != 2 || len(m.Actions) != 1 {
+		t.Fatal("the run's end cleared what it did")
+	}
+}
+
+// A warning is a transcript line and not a turn: no action, no budget
+// step; an INFO event that is not a turn reaches nothing.
+func TestPanesAWarningIsALineAndNotATurn(t *testing.T) {
+	m := running(t)
+	feed(m, warn("no progress; stopping"))
+	feed(m, jsonLine(map[string]any{"level": "INFO", "fields": map[string]any{"message": "resolving imports", "call": "Edit"}}))
+	if last(m) != "no progress; stopping" || len(m.Actions) != 0 || m.Budget.Iteration != 0 {
+		t.Fatalf("last %q actions %d budget %+v", last(m), len(m.Actions), m.Budget)
+	}
+}
+
+// A turn's observation is shown under its line, at most six lines, each
+// indented and plain.
+func TestPanesObservationLinesFollowTheTurn(t *testing.T) {
+	m := running(t)
+	feed(m, turn(1, "read_file a.py", map[string]any{"observation": "1\n2\n3\n4\n5\n6\n7\x1b[2J"}))
+	tail := m.Transcript[len(m.Transcript)-7:]
+	if tail[0] != "· read_file a.py" || tail[1] != "    1" || tail[6] != "    6" {
+		t.Fatalf("%q", tail)
+	}
+}
+
+// Up scrolls back, Down returns and saturates at the end, and a new run is
+// followed from its start.
+func TestPanesScrollingBackStopsAtTheEndAndResumesFollowing(t *testing.T) {
+	m := fresh(t)
+	m.Update(keyType(keyDown))
+	if m.ScrollBack != 0 {
+		t.Fatal("down at the end did not saturate")
+	}
+	m.Update(keyType(keyUp))
+	m.Update(keyType(keyUp))
+	if m.ScrollBack != 2 {
+		t.Fatalf("scroll back %d", m.ScrollBack)
+	}
+	typeLine(m, "t")
+	enter(m)
+	if m.ScrollBack != 0 {
+		t.Fatal("a new run is not followed")
+	}
+}
+
+// The next run starts with empty panes; the last run's stay until then.
+func TestPanesANewRunStartsClean(t *testing.T) {
+	m := running(t)
+	feed(m, turn(1, "edit a.py", map[string]any{"observation": "applied: true", "verdict": "Some(true)"}))
+	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
+	if len(m.Edits) != 1 || len(m.Checks) != 1 {
+		t.Fatal("the panes were cleared at the run's end")
+	}
+	typeLine(m, "next")
+	enter(m)
+	if len(m.Edits)+len(m.Checks)+len(m.Actions) != 0 || m.Radius != nil {
+		t.Fatal("the last run's panes were carried into this one")
+	}
+}

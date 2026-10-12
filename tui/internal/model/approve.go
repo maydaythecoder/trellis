@@ -46,6 +46,7 @@ func (m *Model) approvalRequested(a frames.ApprovalFields) {
 func (m *Model) answer(yes bool) {
 	a := m.Modal
 	m.send("approve", map[string]any{"id": a.ID, "yes": yes})
+	m.markEdits(yes)
 	word := "declined"
 	if yes {
 		word = "approved"

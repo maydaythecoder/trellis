@@ -169,6 +169,7 @@ func TestModelRunEndSetsTheOutcome(t *testing.T) {
 	if m.Outcome != "did not converge; worktree restored: true" {
 		t.Fatalf("outcome %q", m.Outcome)
 	}
+	m.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
 	if !strings.Contains(m.View(), "last run: did not converge; worktree restored: true") {
 		t.Fatalf("view does not show the outcome:\n%s", m.View())
 	}
@@ -381,3 +382,12 @@ func TestModelFailedSetModelIsShown(t *testing.T) {
 		t.Fatalf("transcript %q", m.Transcript)
 	}
 }
+
+func windowSize(w, h int) tea.WindowSizeMsg { return tea.WindowSizeMsg{Width: w, Height: h} }
+
+const (
+	keyUp   = tea.KeyUp
+	keyDown = tea.KeyDown
+)
+
+func keyType(k tea.KeyType) tea.KeyMsg { return tea.KeyMsg{Type: k} }

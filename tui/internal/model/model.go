@@ -15,6 +15,7 @@ package model
 import (
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -80,6 +81,26 @@ type Model struct {
 
 	Width, Height int
 
+	// The run panes (panes.go): what the agent did, the edits it made, the
+	// checks trellis ran, the last blast radius and the budget.
+	Actions []view.Action
+	Edits   []view.Edit
+	Checks  []view.Check
+	Radius  *view.Radius
+	Budget  view.Budget
+	// ScrollBack is how many rows above the transcript's end the view is
+	// scrolled; 0 follows new output.
+	ScrollBack int
+	// ModelName and Tier are what the status bar says (status.go).
+	ModelName, Tier string
+	// Offered are the @ completions on offer (complete.go).
+	Offered []string
+
+	// now is the clock the budget's elapsed time is read from; tests set
+	// it. runStart is when the run in flight started.
+	now      func() time.Time
+	runStart time.Time
+
 	outbox []Out
 	nextID int
 	// The id of the prompt in flight, to match its response and run_end.
@@ -89,7 +110,7 @@ type Model struct {
 // New is a model that, once its outbox is drained, has asked trellis for
 // its state, chosen the model and, with a task given, sent it.
 func New(o Options) *Model {
-	m := &Model{}
+	m := &Model{now: time.Now}
 	m.send("get_state", nil)
 	if o.ModelSpec != "" {
 		m.send("set_model", map[string]any{"model": o.ModelSpec})
@@ -195,6 +216,13 @@ func (m *Model) key(k tea.KeyMsg) {
 		m.Input += " "
 	case tea.KeyRunes:
 		m.Input += string(k.Runes)
+	case tea.KeyUp:
+		m.ScrollBack++
+	case tea.KeyDown:
+		// Saturating: Down at the end stays at the end, following.
+		if m.ScrollBack > 0 {
+			m.ScrollBack--
+		}
 	}
 }
 
@@ -232,8 +260,11 @@ func (m *Model) submit() {
 
 func (m *Model) startTask(task string) {
 	m.newRun()
+	m.clearPanes()
 	m.Running = true
 	m.Outcome = ""
+	// A new run is followed from its start, wherever the view was.
+	m.ScrollBack = 0
 	m.pushLine("> " + Plain(task))
 	m.promptID = m.send("prompt", map[string]any{"task": task})
 }
@@ -245,15 +276,19 @@ func (m *Model) frame(f frames.Frame) {
 	case frames.RunStart:
 		if !m.Running {
 			// A run trellis started on its own (a follow-up): steers are
-			// counted from here.
+			// counted, and the panes filled, from here.
 			m.newRun()
+			m.clearPanes()
 		}
+		m.runStart = m.now()
 		m.Running = true
 		m.Outcome = ""
 	case frames.ApprovalRequest:
 		m.approvalRequested(*f.Approval)
 	case frames.SteerDelivered:
 		m.steerDeliveredEvent(f.AfterStep)
+	case frames.RunBudget:
+		m.runBudget(f.MaxIterations)
 	case frames.RunEnd:
 		m.runEnd(f.RunEndFields)
 	case frames.Response:
@@ -281,6 +316,21 @@ func (m *Model) turn(t *frames.TurnFields) {
 		}
 	}
 	m.pushLine(line)
+	// The observation's first lines under it, as tui_bridge.rs shows them.
+	if t.Observation != nil {
+		n := 0
+		for _, l := range strings.Split(*t.Observation, "\n") {
+			if n == 6 {
+				break
+			}
+			if strings.TrimSpace(l) == "" && n == 0 {
+				continue
+			}
+			m.pushLine("    " + Plain(l))
+			n++
+		}
+	}
+	m.panesTurn(t)
 }
 
 // runEnd hands input back, whatever the ending, and says how it ended from
@@ -457,56 +507,14 @@ func Plain(s string) string {
 	}, s)
 }
 
-// View draws the transcript, the last run's outcome and the input line.
+// View draws the screen: the six regions, or the approval modal over them.
 func (m *Model) View() string {
 	w, h := m.Width, m.Height
 	if w <= 0 || h <= 0 {
-		w, h = 80, 24
-	}
-	status := ""
-	switch {
-	case m.Quitting:
-		status = "· waiting for trellis to exit"
-	case m.Running:
-		status = "· running — enter queues a steer for its next turn · ^c stops it and rolls back"
-	case m.Outcome != "":
-		status = "last run: " + m.Outcome
+		w, h = view.MinWidth, view.MinHeight
 	}
 	if m.Modal != nil {
 		return view.Modal(m.Modal.Text, w, h)
 	}
-	input := "> " + Plain(m.Input)
-	if m.Running {
-		input = "steer> " + Plain(m.Input)
-	}
-	rows := h - 2
-	if rows < 0 {
-		rows = 0
-	}
-	start := len(m.Transcript) - rows
-	if start < 0 {
-		start = 0
-	}
-	var b strings.Builder
-	shown := m.Transcript[start:]
-	for i := 0; i < rows-len(shown); i++ {
-		b.WriteString("\n")
-	}
-	for _, l := range shown {
-		b.WriteString(cut(l, w))
-		b.WriteString("\n")
-	}
-	b.WriteString(cut(status, w))
-	b.WriteString("\n")
-	b.WriteString(cut(input, w))
-	return b.String()
-}
-
-// cut keeps at most w runes, so a long line is cut rather than wrapped.
-func cut(s string, w int) string {
-	r := []rune(s)
-	if len(r) <= w {
-		return s
-	}
-	return string(r[:w])
+	return view.Render(m.viewState(), w, h)
 }

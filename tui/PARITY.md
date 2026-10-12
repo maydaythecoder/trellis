@@ -40,9 +40,9 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `app.rs` | `tokens_join_into_lines_rather_than_one_line_each` | tokens join into lines rather than one line each | T2 (#508) | not ported: token streaming is excluded from parity (#281); rpc sends whole frames, never tokens |
 | `app.rs` | `y_accepts_the_modal_and_n_rejects_it` | y accepts the modal and n rejects it | T3 (#509) | `TestApproveYesAndNoSendTheirAnswer` |
 | `app.rs` | `while_the_modal_is_up_q_does_not_quit` | while the modal is up q does not quit | T3 (#509) | `TestApproveModalTakesTheKeys` |
-| `app.rs` | `transcript_scrolling_back_stops_at_the_end_and_resumes_following` | transcript scrolling back stops at the end and resumes following | T4 (#510) |  |
+| `app.rs` | `transcript_scrolling_back_stops_at_the_end_and_resumes_following` | transcript scrolling back stops at the end and resumes following | T4 (#510) | `TestPanesScrollingBackStopsAtTheEndAndResumesFollowing` |
 | `app.rs` | `transcript_outcome_is_held_until_the_next_run_starts` | transcript outcome is held until the next run starts | T2 (#508) | `TestModelRunEndSetsTheOutcome` |
-| `app.rs` | `work_events_land_where_they_belong` | work events land where they belong | T4 (#510) |  |
+| `app.rs` | `work_events_land_where_they_belong` | work events land where they belong | T4 (#510) | `TestPanesBudgetCarriesTheCeilingTheTurnsFiguresAndElapsed`, `TestPanesRadiusTurnCarriesThreeCounts` |
 | `app.rs` | `at_file_offers_matches_case_insensitively_shortest_first` | at file offers matches case insensitively shortest first | R4 (#502) / T5 (#511) |  |
 | `app.rs` | `at_file_offers_nothing_unless_the_last_word_starts_with_at` | at file offers nothing unless the last word starts with at | R4 (#502) / T5 (#511) |  |
 | `app.rs` | `at_file_offers_at_most_ten` | at file offers at most ten | R4 (#502) / T5 (#511) |  |
@@ -61,29 +61,29 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `app.rs` | `a_steer_never_marks_a_check_or_an_edit_adr_0004` | a steer never marks a check or an edit (ADR 0004) | T3 (#509) | `TestSteerIsNeverAVerdict` |
 | `app.rs` | `steers_are_counted_per_run` | steers are counted per run | T3 (#509) | `TestSteerCountedPerRun` |
 | `app.rs` | `the_modal_takes_the_keys_while_it_is_up` | the modal takes the keys while it is up | T3 (#509) | `TestApproveModalTakesTheKeys` |
-| `view.rs` | `transcript_follows_its_end_while_new_lines_arrive` | transcript follows its end while new lines arrive | T4 (#510) |  |
-| `view.rs` | `transcript_scrolled_back_stops_following_and_says_so` | transcript scrolled back stops following and says so | T4 (#510) |  |
-| `view.rs` | `transcript_outcome_of_a_finished_run_is_on_screen_without_scrolling` | transcript outcome of a finished run is on screen without scrolling | T4 (#510) |  |
-| `view.rs` | `the_six_regions_are_on_screen_at_eighty_by_twentyfour` | the six regions are on screen at eighty by twentyfour | T4 (#510) |  |
-| `view.rs` | `budget_line_rate_excludes_queue_wait` | budget line rate excludes queue wait | T4 (#510) |  |
-| `view.rs` | `budget_line_unknown_queue_wait_counts_as_zero_and_is_not_drawn` | budget line unknown queue wait counts as zero and is not drawn | T4 (#510) |  |
-| `view.rs` | `budget_line_without_reported_tokens_draws_no_rate_and_no_wait` | budget line without reported tokens draws no rate and no wait | T4 (#510) |  |
-| `view.rs` | `budget_line_with_no_model_time_left_draws_no_rate` | budget line with no model time left draws no rate | T4 (#510) |  |
-| `view.rs` | `it_lays_out_again_at_a_larger_size` | it lays out again at a larger size | T4 (#510) |  |
-| `view.rs` | `below_eighty_by_twentyfour_it_says_so_instead_of_laying_out` | below eighty by twentyfour it says so instead of laying out | T4 (#510) |  |
+| `view.rs` | `transcript_follows_its_end_while_new_lines_arrive` | transcript follows its end while new lines arrive | T4 (#510) | `TestViewTranscriptFollowsScrollsBackAndKeepsTheOutcome` |
+| `view.rs` | `transcript_scrolled_back_stops_following_and_says_so` | transcript scrolled back stops following and says so | T4 (#510) | `TestViewTranscriptFollowsScrollsBackAndKeepsTheOutcome` |
+| `view.rs` | `transcript_outcome_of_a_finished_run_is_on_screen_without_scrolling` | transcript outcome of a finished run is on screen without scrolling | T4 (#510) | `TestViewTranscriptFollowsScrollsBackAndKeepsTheOutcome` |
+| `view.rs` | `the_six_regions_are_on_screen_at_eighty_by_twentyfour` | the six regions are on screen at eighty by twentyfour | T4 (#510) | `TestViewSixRegionsAtEightyByTwentyFour` |
+| `view.rs` | `budget_line_rate_excludes_queue_wait` | budget line rate excludes queue wait | T4 (#510) | `TestBudgetLineRateExcludesQueueWait` |
+| `view.rs` | `budget_line_unknown_queue_wait_counts_as_zero_and_is_not_drawn` | budget line unknown queue wait counts as zero and is not drawn | T4 (#510) | `TestBudgetLineUnknownQueueWaitIsZeroAndNotDrawn` |
+| `view.rs` | `budget_line_without_reported_tokens_draws_no_rate_and_no_wait` | budget line without reported tokens draws no rate and no wait | T4 (#510) | `TestBudgetLineWithoutTokensDrawsNoRateAndNoWait` |
+| `view.rs` | `budget_line_with_no_model_time_left_draws_no_rate` | budget line with no model time left draws no rate | T4 (#510) | `TestBudgetLineWithNoModelTimeLeftDrawsNoRate` |
+| `view.rs` | `it_lays_out_again_at_a_larger_size` | it lays out again at a larger size | T4 (#510) | `TestViewLaysOutAgainAtALargerSize` |
+| `view.rs` | `below_eighty_by_twentyfour_it_says_so_instead_of_laying_out` | below eighty by twentyfour it says so instead of laying out | T4 (#510) | `TestViewTooSmallSaysSoInsteadOfLayingOut` |
 | `view.rs` | `the_modal_covers_what_is_under_it` | the modal covers what is under it | T3 (#509) | `TestApproveModalCoversTheScreen` |
-| `view.rs` | `the_task_line_shows_what_is_typed_and_how_to_send_it` | the task line shows what is typed and how to send it | T4 (#510) |  |
+| `view.rs` | `the_task_line_shows_what_is_typed_and_how_to_send_it` | the task line shows what is typed and how to send it | T4 (#510) | `TestViewTaskLineShowsWhatIsTypedAndHowToSendIt` |
 | `view.rs` | `at_file_candidates_are_drawn_under_the_input_line` | at file candidates are drawn under the input line | T5 (#511) |  |
 | `view.rs` | `at_file_candidates_are_not_drawn_while_a_run_holds_the_input` | at file candidates are not drawn while a run holds the input | T5 (#511) |  |
 | `view.rs` | `while_running_the_task_line_shows_the_steer_being_typed` | while running the task line shows the steer being typed | T3 (#509) | `TestSteerLineIsShownWhileRunning` |
-| `view.rs` | `every_tool_is_a_node_before_any_of_them_is_called` | every tool is a node before any of them is called | T4 (#510) |  |
-| `view.rs` | `a_refused_edit_is_on_the_graph_and_is_not_counted_as_a_write` | a refused edit is on the graph and is not counted as a write | T4 (#510) |  |
-| `view.rs` | `a_run_that_only_looked_says_so_rather_than_leaving_it_blank` | a run that only looked says so rather than leaving it blank | T4 (#510) |  |
-| `view.rs` | `a_tool_this_view_has_never_heard_of_still_reaches_the_graph` | a tool this view has never heard of still reaches the graph | T4 (#510) |  |
-| `view.rs` | `the_edges_converge_on_one_focus` | the edges converge on one focus | T4 (#510) |  |
-| `view.rs` | `a_long_target_is_cut_rather_than_wrapped_through_the_edges` | a long target is cut rather than wrapped through the edges | T4 (#510) |  |
-| `view.rs` | `an_escape_sequence_in_a_transcript_never_reaches_the_terminal` | an escape sequence in a transcript never reaches the terminal | T4 (#510) |  |
-| `view.rs` | `the_graph_survives_a_pane_too_narrow_to_draw_it` | the graph survives a pane too narrow to draw it | T4 (#510) |  |
+| `view.rs` | `every_tool_is_a_node_before_any_of_them_is_called` | every tool is a node before any of them is called | T4 (#510) | `TestViewEveryToolIsANodeBeforeAnyIsCalled` |
+| `view.rs` | `a_refused_edit_is_on_the_graph_and_is_not_counted_as_a_write` | a refused edit is on the graph and is not counted as a write | T4 (#510) | `TestViewActionsCountWritesNotRefusals` |
+| `view.rs` | `a_run_that_only_looked_says_so_rather_than_leaving_it_blank` | a run that only looked says so rather than leaving it blank | T4 (#510) | `TestViewActionsCountWritesNotRefusals` |
+| `view.rs` | `a_tool_this_view_has_never_heard_of_still_reaches_the_graph` | a tool this view has never heard of still reaches the graph | T4 (#510) | `TestViewUnknownToolAndOneFocusPerFigure` |
+| `view.rs` | `the_edges_converge_on_one_focus` | the edges converge on one focus | T4 (#510) | `TestViewUnknownToolAndOneFocusPerFigure` |
+| `view.rs` | `a_long_target_is_cut_rather_than_wrapped_through_the_edges` | a long target is cut rather than wrapped through the edges | T4 (#510) | `TestViewLongTargetsAreCutAndANarrowPaneDrawsNothing` |
+| `view.rs` | `an_escape_sequence_in_a_transcript_never_reaches_the_terminal` | an escape sequence in a transcript never reaches the terminal | T4 (#510) | `TestViewNoEscapeSequenceReachesTheScreen` |
+| `view.rs` | `the_graph_survives_a_pane_too_narrow_to_draw_it` | the graph survives a pane too narrow to draw it | T4 (#510) | `TestViewLongTargetsAreCutAndANarrowPaneDrawsNothing` |
 | `view.rs` | `tier_status_bar_writes_the_word_once_before_the_label` | tier status bar writes the word once before the label | T5 (#511) |  |
 | `view.rs` | `tier_status_bar_with_no_label_says_unknown` | tier status bar with no label says unknown | T5 (#511) |  |
 | `events.rs` | `quit_ends_the_loop_and_returns_ok` | quit ends the loop and returns ok | T2 (#508) | `TestModelCtrlCIdleQuitsAndEndsOnExit` |
@@ -92,21 +92,21 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `events.rs` | `a_steer_typed_mid_run_leaves_on_the_steer_channel_and_not_as_a_task` | a steer typed mid run leaves on the steer channel and not as a task | T3 (#509) | `TestSteerMidRunLineIsASteerNotATask` |
 | `events.rs` | `a_steer_is_drawn_queued_then_delivered` | a steer is drawn queued then delivered | T3 (#509) | `TestSteerMidRunLineIsASteerNotATask`, `TestSteerDeliveredOnceAtItsTurn` |
 | `events.rs` | `a_steer_before_a_task_is_ahead_of_that_tasks_boundary` | a steer before a task is ahead of that tasks boundary | T3 (#509) | `TestSteerAfterTheRunEndedIsATask`, `TestSteerCountedPerRun` |
-| `tui_bridge.rs` | `tui_bridge_budget_carries_the_runs_ceiling_and_its_elapsed_time` | tui bridge budget carries the runs ceiling and its elapsed time | T4 (#510) |  |
-| `tui_bridge.rs` | `turn_tokens_reach_the_budget` | turn tokens reach the budget | T4 (#510) |  |
-| `tui_bridge.rs` | `a_turn_with_a_passing_check_becomes_a_line_and_a_check` | a turn with a passing check becomes a line and a check | T4 (#510) |  |
-| `tui_bridge.rs` | `a_check_kind_written_with_the_display_sigil_names_the_check` | a check kind written with the display sigil names the check | T4 (#510) |  |
-| `tui_bridge.rs` | `a_warning_whose_message_is_a_plain_string_field_still_reaches_the_transcript` | a warning whose message is a plain string field still reaches the transcript | T4 (#510) |  |
-| `tui_bridge.rs` | `a_failing_check_says_failed_and_is_not_recorded_as_a_pass` | a failing check says failed and is not recorded as a pass | T4 (#510) |  |
-| `tui_bridge.rs` | `an_edit_turn_proposes_the_path_it_names` | an edit turn proposes the path it names | T4 (#510) |  |
-| `tui_bridge.rs` | `a_file_write_file_created_is_a_write_and_a_pending_change` | a file write file created is a write and a pending change | T4 (#510) |  |
-| `tui_bridge.rs` | `a_refused_edit_is_not_listed_as_a_pending_change` | a refused edit is not listed as a pending change | T4 (#510) |  |
-| `tui_bridge.rs` | `a_turn_becomes_an_action_whether_or_not_it_wrote` | a turn becomes an action whether or not it wrote | T4 (#510) |  |
-| `tui_bridge.rs` | `an_observation_written_with_the_display_sigil_still_arrives` | an observation written with the display sigil still arrives | T4 (#510) |  |
-| `tui_bridge.rs` | `the_no_progress_warning_is_not_counted_as_another_turn` | the no progress warning is not counted as another turn | T4 (#510) |  |
-| `tui_bridge.rs` | `a_radius_turn_carries_its_three_counts` | a radius turn carries its three counts | T4 (#510) |  |
-| `tui_bridge.rs` | `a_warning_reaches_the_transcript_even_though_it_is_not_a_turn` | a warning reaches the transcript even though it is not a turn | T4 (#510) |  |
-| `tui_bridge.rs` | `an_ordinary_debug_line_is_not_mistaken_for_a_turn` | an ordinary debug line is not mistaken for a turn | T4 (#510) |  |
+| `tui_bridge.rs` | `tui_bridge_budget_carries_the_runs_ceiling_and_its_elapsed_time` | tui bridge budget carries the runs ceiling and its elapsed time | T4 (#510) | `TestPanesBudgetCarriesTheCeilingTheTurnsFiguresAndElapsed` |
+| `tui_bridge.rs` | `turn_tokens_reach_the_budget` | turn tokens reach the budget | T4 (#510) | `TestPanesBudgetCarriesTheCeilingTheTurnsFiguresAndElapsed` |
+| `tui_bridge.rs` | `a_turn_with_a_passing_check_becomes_a_line_and_a_check` | a turn with a passing check becomes a line and a check | T4 (#510) | `TestPanesCheckRowsComeOnlyFromASomeVerdict`, `TestModelTurnsFillTheTranscript` |
+| `tui_bridge.rs` | `a_check_kind_written_with_the_display_sigil_names_the_check` | a check kind written with the display sigil names the check | T4 (#510) | not ported: rpc writes every field as JSON before the client reads it (rpc.rs, Fields), so a check_kind arrives as a plain string whichever sigil the loop used; the name reaching the row is TestPanesCheckRowsComeOnlyFromASomeVerdict |
+| `tui_bridge.rs` | `a_warning_whose_message_is_a_plain_string_field_still_reaches_the_transcript` | a warning whose message is a plain string field still reaches the transcript | T4 (#510) | `TestPanesAWarningIsALineAndNotATurn`, `TestFramesWarningCarriesItsMessage` |
+| `tui_bridge.rs` | `a_failing_check_says_failed_and_is_not_recorded_as_a_pass` | a failing check says failed and is not recorded as a pass | T4 (#510) | `TestPanesCheckRowsComeOnlyFromASomeVerdict` |
+| `tui_bridge.rs` | `an_edit_turn_proposes_the_path_it_names` | an edit turn proposes the path it names | T4 (#510) | `TestPanesOnlyAnAppliedWriteIsAPendingEdit` |
+| `tui_bridge.rs` | `a_file_write_file_created_is_a_write_and_a_pending_change` | a file write file created is a write and a pending change | T4 (#510) | `TestPanesOnlyAnAppliedWriteIsAPendingEdit` |
+| `tui_bridge.rs` | `a_refused_edit_is_not_listed_as_a_pending_change` | a refused edit is not listed as a pending change | T4 (#510) | `TestPanesOnlyAnAppliedWriteIsAPendingEdit` |
+| `tui_bridge.rs` | `a_turn_becomes_an_action_whether_or_not_it_wrote` | a turn becomes an action whether or not it wrote | T4 (#510) | `TestPanesOnlyAnAppliedWriteIsAPendingEdit` |
+| `tui_bridge.rs` | `an_observation_written_with_the_display_sigil_still_arrives` | an observation written with the display sigil still arrives | T4 (#510) | not ported: rpc writes every field as JSON before the client reads it (rpc.rs, Fields), so there is no sigil for the client to read; the observation reaching the transcript and the edit rule is TestPanesObservationLinesFollowTheTurn |
+| `tui_bridge.rs` | `the_no_progress_warning_is_not_counted_as_another_turn` | the no progress warning is not counted as another turn | T4 (#510) | `TestPanesAWarningIsALineAndNotATurn` |
+| `tui_bridge.rs` | `a_radius_turn_carries_its_three_counts` | a radius turn carries its three counts | T4 (#510) | `TestPanesRadiusTurnCarriesThreeCounts`, `TestViewRadiusIsThreeCountsNeverARatio` |
+| `tui_bridge.rs` | `a_warning_reaches_the_transcript_even_though_it_is_not_a_turn` | a warning reaches the transcript even though it is not a turn | T4 (#510) | `TestPanesAWarningIsALineAndNotATurn` |
+| `tui_bridge.rs` | `an_ordinary_debug_line_is_not_mistaken_for_a_turn` | an ordinary debug line is not mistaken for a turn | T4 (#510) | `TestPanesAWarningIsALineAndNotATurn`, `TestFramesWrongTypesAreAbsent` |
 | `tui_bridge.rs` | `a_steer_delivery_is_numbered_in_order_and_names_the_turn_it_reached` | a steer delivery is numbered in order and names the turn it reached | T3 (#509) | `TestSteerDeliveredOnceAtItsTurn` |
 | `tui_run.rs` | `a_model_spec_that_does_not_parse_is_refused_before_the_terminal` | a model spec that does not parse is refused before the terminal | T2 (#508) | `TestModelFailedSetModelIsShown` |
 | `tui_run.rs` | `a_runtime_that_cannot_be_reached_does_not_claim_a_tier` | a runtime that cannot be reached does not claim a tier | T5 (#511) |  |
