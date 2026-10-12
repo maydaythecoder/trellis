@@ -1311,6 +1311,9 @@ mod tests {
         colibri: bool,
     ) -> (Vec<String>, Vec<Compacted>, usize) {
         let d = tempfile::tempdir().unwrap();
+        // Under git: `read_file` asks git whether a path is ignored and
+        // refuses when it cannot (#611), and this run is made of reads.
+        crate::testutil::git_init(d.path());
         std::fs::create_dir_all(d.path().join("app")).unwrap();
         for i in 0..FILES {
             let body = format!("# module {i}\n{}", "value = 1\n".repeat(300));
