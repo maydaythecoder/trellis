@@ -16,7 +16,7 @@ use crate::runtime::RuntimeError;
 use crate::secret::ApiKey;
 use crate::transport::{self, Auth, Endpoint, Proxy, SendError};
 use serde_json::{Map, Value, json};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Which wire protocol a hosted endpoint speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -529,6 +529,120 @@ fn no_tool_call_error(text: &str) -> String {
     )
 }
 
+/// An openai-chat reply put back together from its stream (#280), in the
+/// shape the same reply has sent whole, so [`parse_reply`] reads both.
+#[derive(Default)]
+struct StreamedReply {
+    /// `None` until a content delta arrives: a whole reply with only a tool
+    /// call has `content: null`, and so does this one.
+    content: Option<String>,
+    /// By the delta's `index`, in the order each first appeared.
+    calls: Vec<StreamedCall>,
+    finish_reason: Option<Value>,
+    usage: Option<Value>,
+}
+
+#[derive(Default)]
+struct StreamedCall {
+    index: u64,
+    id: Option<String>,
+    name: String,
+    arguments: String,
+}
+
+impl StreamedReply {
+    /// One event's `data`: a `chat.completion.chunk`.
+    ///
+    /// Each content delta is a DEBUG event, `model token`, carrying its
+    /// text. Below INFO on purpose: the CLI's stderr and `--json` layers are
+    /// fixed at `trellis=info`, and at INFO one reply would put a line per
+    /// token on both and a new `--json` event per token (ADR 0025).
+    fn add(&mut self, data: &str) -> Result<(), String> {
+        let v: Value = serde_json::from_str(data)
+            .map_err(|e| format!("a stream event is not JSON ({e}): {}", cut(data)))?;
+        if let Some(e) = v.get("error") {
+            return Err(format!(
+                "the server reported an error inside the stream: {}",
+                cut(&e.to_string())
+            ));
+        }
+        if let Some(u) = v.get("usage").filter(|u| !u.is_null()) {
+            self.usage = Some(u.clone());
+        }
+        let Some(choice) = v.pointer("/choices/0") else {
+            // The usage chunk `include_usage` asks for has no choices.
+            return Ok(());
+        };
+        let delta = &choice["delta"];
+        if let Some(text) = delta["content"].as_str() {
+            tracing::debug!(text = %text, "model token");
+            self.content.get_or_insert_default().push_str(text);
+        }
+        for d in delta["tool_calls"].as_array().into_iter().flatten() {
+            let index = d["index"].as_u64().unwrap_or(0);
+            let call = match self.calls.iter().position(|c| c.index == index) {
+                Some(i) => &mut self.calls[i],
+                None => {
+                    self.calls.push(StreamedCall {
+                        index,
+                        ..StreamedCall::default()
+                    });
+                    self.calls.last_mut().expect("just pushed")
+                }
+            };
+            if let Some(id) = d["id"].as_str() {
+                call.id = Some(id.to_string());
+            }
+            if let Some(n) = d.pointer("/function/name").and_then(Value::as_str) {
+                call.name.push_str(n);
+            }
+            if let Some(a) = d.pointer("/function/arguments").and_then(Value::as_str) {
+                call.arguments.push_str(a);
+            }
+        }
+        if let Some(f) = choice.get("finish_reason").filter(|f| !f.is_null()) {
+            self.finish_reason = Some(f.clone());
+        }
+        Ok(())
+    }
+
+    /// The reply as the provider would have sent it whole.
+    fn into_reply(self) -> Value {
+        let mut message = json!({
+            "role": "assistant",
+            "content": self.content.map_or(Value::Null, Value::String),
+        });
+        if !self.calls.is_empty() {
+            let calls: Vec<Value> = self
+                .calls
+                .into_iter()
+                .map(|c| {
+                    // No id when the stream sent none, so `parse_reply`
+                    // supplies the default a whole reply without one gets.
+                    let mut call = json!({
+                        "type": "function",
+                        "function": { "name": c.name, "arguments": c.arguments },
+                    });
+                    if let Some(id) = c.id {
+                        call["id"] = json!(id);
+                    }
+                    call
+                })
+                .collect();
+            message["tool_calls"] = Value::Array(calls);
+        }
+        let mut choice = json!({ "index": 0, "message": message });
+        if let Some(f) = self.finish_reason {
+            choice["finish_reason"] = f;
+        }
+        let mut reply = json!({ "choices": [choice] });
+        if let Some(u) = self.usage {
+            reply["usage"] = u;
+        }
+        reply
+    }
+}
+
 /// A malformed reply as a shape error quotes it.
 fn cut(s: &str) -> String {
     transport::excerpt(s, transport::SHAPE_QUOTE_CHARS)
@@ -674,6 +788,14 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
+/// `d` from now, or a year from now when `d` is longer: a configured budget
+/// or timeout is the user's number, and `Instant + Duration` panics past
+/// what the platform's clock can represent.
+pub fn deadline_after(d: Duration) -> Instant {
+    const YEAR: Duration = Duration::from_secs(365 * 24 * 60 * 60);
+    Instant::now() + d.min(YEAR)
+}
+
 /// A hosted endpoint, with its key.
 #[derive(Clone)]
 pub struct HostedClient {
@@ -690,6 +812,9 @@ pub struct HostedClient {
     /// ADR 0047 decision 5: the endpoint was identified as colibri, so its
     /// bodies carry `temperature: 0` and state thinking explicitly.
     colibri: bool,
+    /// Replies arrive as server-sent events (#280). Only for openai-chat on
+    /// this machine: see [`HostedClient::with_streaming`].
+    streaming: bool,
 }
 
 impl std::fmt::Debug for HostedClient {
@@ -766,6 +891,7 @@ impl HostedClient {
             thinking: Thinking::Off,
             timeout: Duration::from_secs(300),
             colibri: false,
+            streaming: false,
         })
     }
 
@@ -788,6 +914,45 @@ impl HostedClient {
     pub fn with_timeout(mut self, d: Duration) -> Self {
         self.timeout = d;
         self
+    }
+
+    /// Asks for replies as a server-sent event stream when `on` (#280).
+    ///
+    /// Refused unless the endpoint is on this machine and speaks
+    /// openai-chat. A remote provider keeps the whole-reply path ADR 0024 §1
+    /// hardened, so no event-stream parser sits on a path that carries a
+    /// remote provider's key; ADR 0047 decision 10 confines streaming to loopback
+    /// colibri only. Streamed, the client's timeout bounds the server's
+    /// silence rather than the whole request, and the caller's deadline
+    /// ([`send_within`](Self::send_within)) bounds the whole.
+    pub fn with_streaming(mut self, on: bool) -> Result<Self, RuntimeError> {
+        if on && !transport::is_loopback(&self.endpoint.host) {
+            return Err(RuntimeError::Config(format!(
+                "streaming is for a server on this machine, and {} is not one: a remote \
+                 provider's replies are read whole (ADR 0024 §1, #280)",
+                self.base
+            )));
+        }
+        if on && self.protocol != Protocol::OpenAiChat {
+            return Err(RuntimeError::Config(format!(
+                "streaming is built for {} only, not {} (#280)",
+                Protocol::OpenAiChat.describe(),
+                self.protocol.describe()
+            )));
+        }
+        self.streaming = on;
+        Ok(self)
+    }
+
+    /// Whether replies are streamed.
+    pub fn streaming(&self) -> bool {
+        self.streaming
+    }
+
+    /// `[model] timeout_s`: one whole-reply request's bound, or a streamed
+    /// request's longest silence.
+    pub fn timeout(&self) -> Duration {
+        self.timeout
     }
 
     pub fn protocol(&self) -> Protocol {
@@ -814,7 +979,7 @@ impl HostedClient {
     /// The request body for this client's protocol, model and thinking, with
     /// colibri's request profile when it is on.
     pub fn body(&self, conv: &Conversation, tools: &[NativeTool], max_tokens: u32) -> Value {
-        body_for(
+        let mut b = body_for(
             self.protocol,
             &self.model,
             conv,
@@ -822,7 +987,16 @@ impl HostedClient {
             max_tokens,
             self.thinking,
             self.colibri,
-        )
+        );
+        // Here rather than at send time, so the bytes the context budget
+        // measures are the bytes sent. `include_usage` because a stream
+        // carries no usage figure without it, and a reply with none is
+        // charged at its whole `max_tokens`.
+        if self.streaming {
+            b["stream"] = json!(true);
+            b["stream_options"] = json!({ "include_usage": true });
+        }
+        b
     }
 
     /// Sends a body and reads the reply, retrying 429 and 5xx with backoff.
@@ -831,6 +1005,25 @@ impl HostedClient {
     /// key should be near a span even by accident.
     #[tracing::instrument(skip_all, fields(protocol = ?self.protocol))]
     pub async fn send(&self, body: &Value) -> Result<Reply, RuntimeError> {
+        self.send_within(body, None).await
+    }
+
+    /// As [`send`](Self::send), and for a streaming client every request
+    /// it makes, retries included, ends by `deadline`, however recently the
+    /// server last sent something (#280). Without one a streamed call ends
+    /// by the client's timeout past its start, the bound one whole reply
+    /// has. A client that does not stream ignores it: each of its requests
+    /// is already bounded by the timeout as a whole.
+    #[tracing::instrument(skip_all, fields(protocol = ?self.protocol))]
+    pub async fn send_within(
+        &self,
+        body: &Value,
+        deadline: Option<Instant>,
+    ) -> Result<Reply, RuntimeError> {
+        if self.streaming {
+            let deadline = deadline.unwrap_or_else(|| deadline_after(self.timeout));
+            return self.send_streamed(body, deadline).await;
+        }
         let text = body.to_string();
         let (path, auth, headers): (&str, Auth, Vec<(&str, &str)>) = match self.protocol {
             Protocol::OpenAiChat => ("/chat/completions", Auth::Bearer, Vec::new()),
@@ -840,7 +1033,7 @@ impl HostedClient {
                 vec![("anthropic-version", "2023-06-01")],
             ),
         };
-        self.send_via(|| {
+        self.send_via(None, || {
             transport::post(
                 &self.endpoint,
                 self.proxy.as_ref(),
@@ -854,6 +1047,39 @@ impl HostedClient {
         .await
     }
 
+    /// One streamed call: each attempt reads the event stream into the
+    /// shape a whole reply has, so the retry policy and [`parse_reply`] are
+    /// the ones every reply goes through, and a streamed reply cannot be
+    /// read differently from the same reply sent whole.
+    async fn send_streamed(&self, body: &Value, deadline: Instant) -> Result<Reply, RuntimeError> {
+        let text = body.to_string();
+        let bounds = transport::StreamBounds {
+            idle: self.timeout,
+            deadline,
+        };
+        self.send_via(Some(deadline), || async {
+            let mut whole = StreamedReply::default();
+            let ended = transport::post_stream(
+                &self.endpoint,
+                "/chat/completions",
+                self.key.as_ref().map(|k| (Auth::Bearer, k)),
+                &text,
+                bounds,
+                |data| whole.add(data),
+            )
+            .await?;
+            Ok(match ended {
+                transport::Streamed::Done { status, headers } => transport::Response {
+                    status,
+                    headers,
+                    body: whole.into_reply().to_string(),
+                },
+                transport::Streamed::Status(r) => r,
+            })
+        })
+        .await
+    }
+
     /// The retry policy around `attempt`, which makes one request. Split
     /// from `send` so a test can make one attempt fail in a way a loopback
     /// socket cannot be made to on demand (an OS connect timeout).
@@ -861,11 +1087,22 @@ impl HostedClient {
     /// Every retry goes to the same endpoint through the same `attempt`, so
     /// where the key is sent does not change with the attempt number
     /// (ADR 0024 §3).
-    async fn send_via<F, Fut>(&self, mut attempt_once: F) -> Result<Reply, RuntimeError>
+    ///
+    /// With a `deadline` (a streamed call's), the wait before a retry ends
+    /// at it too, so the call's retries share its deadline rather than each
+    /// getting a new one.
+    async fn send_via<F, Fut>(
+        &self,
+        deadline: Option<Instant>,
+        mut attempt_once: F,
+    ) -> Result<Reply, RuntimeError>
     where
         F: FnMut() -> Fut,
         Fut: std::future::Future<Output = Result<transport::Response, SendError>>,
     {
+        let began = Instant::now();
+        // What a call cut at its deadline reports: the time it was given.
+        let at_deadline = |d: Instant| RuntimeError::Timeout(d.saturating_duration_since(began));
         let mut attempt = 1;
         loop {
             let sent = attempt_once().await;
@@ -943,8 +1180,20 @@ impl HostedClient {
                     });
                 }
                 Err(SendError::Timeout) => return Err(RuntimeError::Timeout(self.timeout)),
+                Err(SendError::Deadline) => {
+                    return Err(at_deadline(deadline.unwrap_or(began)));
+                }
+                Err(SendError::Stream(e)) => {
+                    return Err(RuntimeError::Shape(cut(&self.scrub(&e))));
+                }
                 Err(SendError::Config(e)) => return Err(RuntimeError::Config(e)),
             };
+            if let Some(d) = deadline
+                && Instant::now() + wait >= d
+            {
+                tokio::time::sleep_until(d.into()).await;
+                return Err(at_deadline(d));
+            }
             tokio::time::sleep(wait).await;
             attempt += 1;
         }
@@ -1973,7 +2222,7 @@ mod tests {
         let text = json!({}).to_string();
         let n = std::cell::Cell::new(0u32);
         let r = c
-            .send_via(|| {
+            .send_via(None, || {
                 n.set(n.get() + 1);
                 let injected = fail(n.get());
                 let text = &text;
@@ -2144,5 +2393,485 @@ mod tests {
         let c = HostedClient::with_key(Protocol::OpenAiChat, &base, "m", "K", None).unwrap();
         let e = c.send(&json!({})).await.unwrap_err();
         assert!(matches!(e, RuntimeError::ContextOverflow(_)), "{e}");
+    }
+}
+
+/// Streamed replies from a loopback colibri endpoint (#280), against stub
+/// servers that send what colibri sends: an event-stream head, keepalive
+/// comments, `chat.completion.chunk` events and `data: [DONE]`.
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// What a stub does on one connection, in order.
+    #[derive(Clone)]
+    enum Act {
+        /// Bytes as they are.
+        Raw(String),
+        Wait(Duration),
+        /// A keepalive comment every `every`, `n` times; `None` until the
+        /// client goes away.
+        Keepalives(Duration, Option<u32>),
+        /// Holds the connection open and sends nothing.
+        Silent,
+    }
+
+    const KEEPALIVE: &str = ": keepalive\n\n";
+
+    /// colibri's head for a stream: no length, ended by the close.
+    fn head() -> Act {
+        Act::Raw(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n\
+             Connection: close\r\n\r\n"
+                .to_string(),
+        )
+    }
+
+    fn event(v: &Value) -> String {
+        format!("data: {v}\n\n")
+    }
+
+    /// The events of a reply that thinks aloud for two deltas and then
+    /// calls `read_file`, its arguments split across three deltas, with
+    /// the usage chunk `include_usage` asks for.
+    fn reply_events() -> Vec<String> {
+        let chunk = |delta: Value, finish: Value| {
+            json!({"object": "chat.completion.chunk",
+                   "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]})
+        };
+        vec![
+            event(&chunk(
+                json!({"role": "assistant", "content": "Hel"}),
+                Value::Null,
+            )),
+            event(&chunk(json!({"content": "lo"}), Value::Null)),
+            event(&chunk(
+                json!({"tool_calls": [{"index": 0, "id": "call_7", "type": "function",
+                                       "function": {"name": "read_file", "arguments": ""}}]}),
+                Value::Null,
+            )),
+            event(&chunk(
+                json!({"tool_calls": [{"index": 0, "function": {"arguments": "{\"pa"}}]}),
+                Value::Null,
+            )),
+            event(&chunk(
+                json!({"tool_calls": [{"index": 0, "function": {"arguments": "th\": \"a.py\"}"}}]}),
+                Value::Null,
+            )),
+            event(&chunk(json!({}), json!("tool_calls"))),
+            event(&json!({"object": "chat.completion.chunk", "choices": [],
+                          "usage": {"prompt_tokens": 812, "completion_tokens": 23}})),
+            "data: [DONE]\n\n".to_string(),
+        ]
+    }
+
+    /// The same reply as a whole `chat.completion`.
+    fn whole_reply() -> String {
+        json!({"object": "chat.completion", "choices": [{"index": 0, "finish_reason": "tool_calls",
+            "message": {"role": "assistant", "content": "Hello", "tool_calls": [
+                {"id": "call_7", "type": "function",
+                 "function": {"name": "read_file", "arguments": "{\"path\": \"a.py\"}"}}]}}],
+            "usage": {"prompt_tokens": 812, "completion_tokens": 23}})
+        .to_string()
+    }
+
+    fn whole_stream() -> Vec<Act> {
+        let mut acts = vec![head()];
+        acts.extend(reply_events().into_iter().map(Act::Raw));
+        acts
+    }
+
+    /// Serves one connection per entry of `conns`, and returns each
+    /// request's body. Stops at the first connection not made within 10 s.
+    async fn stub(conns: Vec<Vec<Act>>) -> (String, tokio::task::JoinHandle<Vec<Value>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let h = tokio::spawn(async move {
+            let mut bodies = Vec::new();
+            for acts in conns {
+                let Ok(Ok((mut s, _))) =
+                    tokio::time::timeout(Duration::from_secs(10), listener.accept()).await
+                else {
+                    break;
+                };
+                bodies.push(read_request(&mut s).await);
+                'acts: for act in acts {
+                    match act {
+                        Act::Raw(b) => {
+                            if s.write_all(b.as_bytes()).await.is_err() {
+                                break 'acts;
+                            }
+                        }
+                        Act::Wait(d) => tokio::time::sleep(d).await,
+                        Act::Keepalives(every, n) => {
+                            let mut sent = 0;
+                            while n.is_none_or(|n| sent < n) && sent < 600 {
+                                tokio::time::sleep(every).await;
+                                if s.write_all(KEEPALIVE.as_bytes()).await.is_err() {
+                                    break 'acts;
+                                }
+                                sent += 1;
+                            }
+                        }
+                        Act::Silent => {
+                            // Until the client closes, or long past any
+                            // bound a test sets.
+                            let mut one = [0u8; 1];
+                            let _ = tokio::time::timeout(Duration::from_secs(30), s.read(&mut one))
+                                .await;
+                        }
+                    }
+                }
+                s.shutdown().await.ok();
+            }
+            bodies
+        });
+        (format!("http://{addr}/v1"), h)
+    }
+
+    async fn read_request(s: &mut tokio::net::TcpStream) -> Value {
+        let mut raw = Vec::new();
+        let mut buf = vec![0u8; 65536];
+        loop {
+            let n = s.read(&mut buf).await.unwrap();
+            raw.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&raw).to_string();
+            if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                let len: usize = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("Content-Length: "))
+                    .and_then(|v| v.trim().parse().ok())
+                    .unwrap_or(0);
+                if body.len() >= len {
+                    return serde_json::from_str(body).unwrap_or(Value::Null);
+                }
+            }
+            if n == 0 {
+                return Value::Null;
+            }
+        }
+    }
+
+    fn client(base: &str, timeout: Duration) -> HostedClient {
+        HostedClient::with_key(Protocol::OpenAiChat, base, "m", "K", None)
+            .unwrap()
+            .with_timeout(timeout)
+            .with_streaming(true)
+            .unwrap()
+    }
+
+    fn body(c: &HostedClient) -> Value {
+        c.body(&Conversation::default(), &[], 64)
+    }
+
+    #[tokio::test]
+    async fn colibri_stream_matches_the_whole_reply() {
+        // The risk: a reply read differently because it arrived in pieces,
+        // so streaming changes what the loop does or what a run is charged.
+        let (base, h) = stub(vec![whole_stream()]).await;
+        let c = client(&base, Duration::from_secs(5));
+        let streamed = c.send(&body(&c)).await.expect("a streamed reply");
+        let sent = h.await.unwrap();
+        assert_eq!(sent[0]["stream"], json!(true));
+        assert_eq!(sent[0]["stream_options"], json!({"include_usage": true}));
+
+        let whole = parse_reply(
+            Protocol::OpenAiChat,
+            &serde_json::from_str(&whole_reply()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(streamed.call, whole.call);
+        assert_eq!(
+            streamed.call.as_ref().unwrap().args,
+            json!({"path": "a.py"})
+        );
+        assert_eq!(streamed.tokens, whole.tokens);
+        assert_eq!(streamed.prompt_tokens, whole.prompt_tokens);
+        assert_eq!(streamed.tokens, Some(23));
+        assert_eq!(streamed.prompt_tokens, Some(812));
+        assert_eq!(streamed.replay, whole.replay);
+
+        // The same events in chunked transfer coding, split mid-line, as a
+        // server behind a buffering proxy sends them, read the same.
+        let text: String = reply_events().concat();
+        let (a, b) = text.split_at(text.len() / 3);
+        let mut acts = vec![Act::Raw(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+             Transfer-Encoding: chunked\r\n\r\n"
+                .to_string(),
+        )];
+        for part in [a, b] {
+            acts.push(Act::Raw(format!("{:x}\r\n{part}\r\n", part.len())));
+            acts.push(Act::Wait(Duration::from_millis(20)));
+        }
+        acts.push(Act::Raw("0\r\n\r\n".to_string()));
+        let (base, _h) = stub(vec![acts]).await;
+        let c = client(&base, Duration::from_secs(5));
+        let chunked = c.send(&body(&c)).await.expect("a chunked stream");
+        assert_eq!(chunked.call, whole.call);
+        assert_eq!(chunked.tokens, whole.tokens);
+        assert_eq!(chunked.prompt_tokens, whole.prompt_tokens);
+    }
+
+    #[test]
+    fn colibri_stream_refused_for_a_remote_base() {
+        // The risk ADR 0047 decision 10 rules out: an event-stream parser on
+        // a path that carries a remote provider's key.
+        let remote = HostedClient::with_key(
+            Protocol::OpenAiChat,
+            "https://api.example.com/v1",
+            "m",
+            "K",
+            Some(ApiKey::for_test("sk-test-key-1", "K")),
+        )
+        .unwrap();
+        let e = remote.with_streaming(true).unwrap_err().to_string();
+        assert!(e.contains("api.example.com"), "{e}");
+        let anthropic =
+            HostedClient::with_key(Protocol::Anthropic, "http://127.0.0.1:9", "m", "K", None)
+                .unwrap();
+        assert!(anthropic.with_streaming(true).is_err());
+        // Off is always allowed, and the body then asks for no stream.
+        let off =
+            HostedClient::with_key(Protocol::OpenAiChat, "http://127.0.0.1:9", "m", "K", None)
+                .unwrap()
+                .with_streaming(false)
+                .unwrap();
+        assert!(body(&off).get("stream").is_none());
+    }
+
+    #[tokio::test]
+    async fn colibri_stream_idle_timeout_ends_a_silent_stream() {
+        // The risk: a dead connection holding the call until its deadline.
+        let (base, _h) = stub(vec![vec![
+            head(),
+            Act::Keepalives(Duration::from_millis(250), Some(4)),
+            Act::Silent,
+        ]])
+        .await;
+        let c = client(&base, Duration::from_secs(2));
+        let began = Instant::now();
+        let e = c
+            .send_within(&body(&c), Some(began + Duration::from_secs(10)))
+            .await
+            .unwrap_err();
+        let took = began.elapsed();
+        assert!(
+            matches!(e, RuntimeError::Timeout(d) if d == Duration::from_secs(2)),
+            "{e}"
+        );
+        assert!(took < Duration::from_secs(4), "{took:?}");
+        assert!(took >= Duration::from_secs(2), "{took:?}");
+    }
+
+    #[tokio::test]
+    async fn colibri_stream_idle_timeout_is_reset_by_each_keepalive() {
+        // The risk the idle bound exists for: a prefill of minutes ended by
+        // a timeout that counts from the request, not from the last byte.
+        let mut acts = vec![head(), Act::Keepalives(Duration::from_secs(1), Some(5))];
+        acts.extend(reply_events().into_iter().map(Act::Raw));
+        let (base, _h) = stub(vec![acts]).await;
+        let c = client(&base, Duration::from_secs(2));
+        let began = Instant::now();
+        let r = c
+            .send_within(&body(&c), Some(began + Duration::from_secs(10)))
+            .await
+            .expect("keepalives hold the stream open past the timeout");
+        assert!(began.elapsed() >= Duration::from_secs(5));
+        assert_eq!(r.call.unwrap().name, "read_file");
+    }
+
+    #[tokio::test]
+    async fn colibri_stream_deadline_ends_a_stream_kept_alive() {
+        // The risk: a stalled engine whose keepalive pump runs on, so the
+        // idle bound never fires and the run waits forever.
+        let (base, _h) = stub(vec![vec![
+            head(),
+            Act::Keepalives(Duration::from_millis(500), None),
+        ]])
+        .await;
+        let c = client(&base, Duration::from_secs(1));
+        let began = Instant::now();
+        let e = c
+            .send_within(&body(&c), Some(began + Duration::from_secs(3)))
+            .await
+            .unwrap_err();
+        let took = began.elapsed();
+        assert!(matches!(e, RuntimeError::Timeout(_)), "{e}");
+        assert!(took >= Duration::from_secs(3), "{took:?}");
+        assert!(took < Duration::from_secs(4), "{took:?}");
+    }
+
+    #[tokio::test]
+    async fn colibri_stream_deadline_is_shared_by_transport_retries() {
+        // The risk: each retry starting a deadline of its own, so a call
+        // that retries runs past the budget by a deadline per attempt.
+        let (base, _h) = stub(vec![
+            vec![Act::Raw(
+                "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 4\r\n\r\nbusy".to_string(),
+            )],
+            vec![head(), Act::Keepalives(Duration::from_millis(500), None)],
+        ])
+        .await;
+        let c = client(&base, Duration::from_secs(1));
+        let began = Instant::now();
+        let e = c
+            .send_within(&body(&c), Some(began + Duration::from_secs(3)))
+            .await
+            .unwrap_err();
+        let took = began.elapsed();
+        assert!(matches!(e, RuntimeError::Timeout(_)), "{e}");
+        assert!(took < Duration::from_secs(4), "{took:?}");
+    }
+
+    #[tokio::test]
+    async fn colibri_stream_cut_short_is_an_error() {
+        // The risk: a reply cut mid-call read as the call it began, so a
+        // half-written edit reaches the loop.
+        let mut cut = vec![head()];
+        cut.extend(reply_events().into_iter().take(4).map(Act::Raw));
+        let (base, _h) = stub(vec![cut; MAX_ATTEMPTS as usize]).await;
+        let c = client(&base, Duration::from_secs(5));
+        // Retried as a whole reply cut short is, every attempt cut the same
+        // way; the deadline leaves room for all of them.
+        let e = c
+            .send_within(&body(&c), Some(Instant::now() + Duration::from_secs(30)))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("cut short"), "{e}");
+        assert!(e.contains("[DONE]"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn colibri_stream_past_the_cap_is_refused() {
+        // The risk the eighth review of PR #1 closed for whole replies: a
+        // server that never stops sending fills memory. Read at the
+        // transport, which a retry would only repeat.
+        let big = format!(
+            "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"{}\"}}}}]}}\n\n",
+            "x".repeat(transport::MAX_RESPONSE)
+        );
+        let (base, _h) = stub(vec![vec![head(), Act::Raw(big)]]).await;
+        let ep = Endpoint::parse(&base).unwrap();
+        let mut events = 0;
+        let e = transport::post_stream(
+            &ep,
+            "/chat/completions",
+            None,
+            "{}",
+            transport::StreamBounds {
+                idle: Duration::from_secs(10),
+                deadline: Instant::now() + Duration::from_secs(30),
+            },
+            |_| {
+                events += 1;
+                Ok(())
+            },
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("larger than 32 MiB"), "{e}");
+        assert_eq!(events, 0, "nothing past the cap reaches the handler");
+    }
+
+    /// `model token` events seen on this thread: `(level, text)`.
+    #[derive(Clone, Default)]
+    struct Tokens(Arc<Mutex<Vec<(tracing::Level, String)>>>);
+
+    thread_local! {
+        static CAPTURE: std::cell::RefCell<Option<(Tokens, tracing::Level)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// One process-wide subscriber that hands each event to the capture on
+    /// the emitting thread, as trellis-loop's `TurnEvents` does and for the
+    /// same reason: a scoped default per test lets `tracing` cache a
+    /// callsite as unwanted while another test's capture is installed.
+    struct Router;
+
+    impl tracing::Subscriber for Router {
+        fn enabled(&self, m: &tracing::Metadata<'_>) -> bool {
+            m.is_event() && *m.level() <= tracing::Level::DEBUG
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let Some((tokens, filter)) = CAPTURE.with(|c| c.borrow().clone()) else {
+                return;
+            };
+            // A subscriber filtered at `filter` receives an event only at
+            // that level or a more severe one.
+            let level = *event.metadata().level();
+            if level > filter {
+                return;
+            }
+            struct V(Option<String>, Option<String>);
+            impl tracing::field::Visit for V {
+                fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
+                    match f.name() {
+                        "message" => self.0 = Some(format!("{v:?}")),
+                        "text" => self.1 = Some(format!("{v:?}")),
+                        _ => {}
+                    }
+                }
+            }
+            let mut v = V(None, None);
+            event.record(&mut v);
+            if v.0.as_deref() == Some("model token") {
+                tokens
+                    .0
+                    .lock()
+                    .unwrap()
+                    .push((level, v.1.unwrap_or_default()));
+            }
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    /// The `model token` events one streamed reply emits, as a subscriber
+    /// filtered at `filter` receives them.
+    async fn tokens_at(filter: tracing::Level) -> Vec<(tracing::Level, String)> {
+        static GLOBAL: std::sync::Once = std::sync::Once::new();
+        GLOBAL.call_once(|| {
+            tracing::subscriber::set_global_default(Router)
+                .expect("no other global subscriber in trellis-model's tests");
+        });
+        let tokens = Tokens::default();
+        CAPTURE.with(|c| *c.borrow_mut() = Some((tokens.clone(), filter)));
+        let (base, _h) = stub(vec![whole_stream()]).await;
+        let c = client(&base, Duration::from_secs(5));
+        c.send(&body(&c)).await.expect("a streamed reply");
+        CAPTURE.with(|c| c.borrow_mut().take());
+        tokens.0.lock().unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn colibri_stream_emits_each_content_delta() {
+        // The risk: a TUI that shows nothing during a minutes-long turn,
+        // because the deltas never left the client.
+        let got = tokens_at(tracing::Level::TRACE).await;
+        let texts: Vec<&str> = got.iter().map(|(_, t)| t.as_str()).collect();
+        assert_eq!(texts, ["Hel", "lo"]);
+    }
+
+    #[tokio::test]
+    async fn colibri_stream_token_events_are_below_info() {
+        // The risk: one line per token on stderr and one `--json` event per
+        // token, both of whose layers are fixed at `trellis=info`.
+        let all = tokens_at(tracing::Level::TRACE).await;
+        assert!(!all.is_empty());
+        assert!(
+            all.iter().all(|(l, _)| *l == tracing::Level::DEBUG),
+            "{all:?}"
+        );
+        assert!(tokens_at(tracing::Level::INFO).await.is_empty());
     }
 }
