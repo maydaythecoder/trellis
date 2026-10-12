@@ -78,10 +78,19 @@ function counted(doc, list, rest, further, withExplain) {
   return ul;
 }
 
+// The Show radius button is disabled from `ask` until an answer or refusal
+// is drawn (#657): each question makes trellis index the repository, so a
+// second click on a large one doubled the wait. A child's exit answers
+// nothing, so `wireRadius` enables it again when one starts or exits.
+function submitting(doc, on) {
+  doc.querySelector("#rd-form button[type=submit]").disabled = on;
+}
+
 export function drawRadius(doc, payload) {
   const pane = doc.getElementById("rd-result");
   if (payload === null || typeof payload !== "object") return;
   if (payload.id !== waiting) return;
+  submitting(doc, false);
   if (typeof payload.error === "string") {
     status(doc, payload.error);
     pane.replaceChildren();
@@ -126,6 +135,7 @@ async function ask(doc, tauri) {
   asked += 1;
   const id = `desktop-radius-${asked}`;
   waiting = id;
+  submitting(doc, true);
   status(doc, `Reading the radius of ${symbol}: trellis indexes the repository for it.`);
   doc.getElementById("rd-result").replaceChildren();
   try {
@@ -133,6 +143,7 @@ async function ask(doc, tauri) {
   } catch (err) {
     // Still the last question: an earlier one answered now is not shown
     // in place of this refusal.
+    submitting(doc, false);
     status(doc, `Open a repository to see a radius. ${err}`);
   }
 }
@@ -143,6 +154,9 @@ export async function wireRadius(doc, tauri) {
     ask(doc, tauri);
   });
   await tauri.event.listen("radius", (event) => drawRadius(doc, event.payload));
+  // A question the last child had not answered never will be.
+  await tauri.event.listen("child-started", () => submitting(doc, false));
+  await tauri.event.listen("rpc-exited", () => submitting(doc, false));
 }
 
 function start() {
