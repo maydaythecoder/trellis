@@ -147,6 +147,97 @@ pub(crate) fn launch_desktop(root: Option<&Path>) -> Result<()> {
     spawn_desktop(&desktop, &exe, root)
 }
 
+/// The Go TUI's file name on this platform (ADR 0052).
+const TUI: &str = if cfg!(windows) {
+    "trellis-tui.exe"
+} else {
+    "trellis-tui"
+};
+
+/// `trellis-tui` beside `exe`, the running `trellis`, or the path looked
+/// at. PATH is never searched, for the reason the desktop's is not: one
+/// found there could be another build speaking another client contract,
+/// or another program with the name, and it would be handed the user's
+/// keys.
+pub(crate) fn find_tui(exe: &Path) -> Result<PathBuf, PathBuf> {
+    let beside = exe.parent().unwrap_or(Path::new("")).join(TUI);
+    if beside.is_file() {
+        Ok(beside)
+    } else {
+        Err(beside)
+    }
+}
+
+/// What `trellis tui` and `trellis --tui` say on stderr when there is no
+/// `trellis-tui` to hand off to, before the ratatui TUI runs as it did.
+pub(crate) fn tui_not_found(tried: &Path) -> String {
+    format!(
+        "the Go TUI is not installed beside this trellis (looked for {}); opening the \
+         ratatui TUI, which stays for one release after the switch (ADR 0052)",
+        tried.display()
+    )
+}
+
+/// `trellis-tui`'s arguments: the root, this `trellis` (so it starts the
+/// same build's `rpc`, never one on PATH), `--model` only when the user
+/// named one, and the task.
+///
+/// A spec from the repository's configuration is never passed: rpc takes a
+/// `--model` the client sends as the user's own choice, and a hosted
+/// endpoint the repository chose must not be given a key that way (ADR 0024
+/// section 3). `trellis-tui` confirms the configured model instead.
+pub(crate) fn tui_args(
+    root: &Path,
+    trellis: &Path,
+    user_model: Option<&str>,
+    task: Option<&str>,
+) -> Vec<std::ffi::OsString> {
+    let mut a: Vec<std::ffi::OsString> = vec![
+        "--root".into(),
+        root.into(),
+        "--trellis".into(),
+        trellis.into(),
+    ];
+    if let Some(m) = user_model {
+        a.push("--model".into());
+        a.push(m.into());
+    }
+    if let Some(t) = task {
+        // After `--`, so a task that starts with `-` is not read as a flag.
+        a.push("--".into());
+        a.push(t.into());
+    }
+    a
+}
+
+/// Hands the terminal to `tui` (ADR 0052 decision 2.2, #514). On Unix this
+/// process is replaced (`exec`); on Windows, which has no exec, it waits
+/// for `tui` and exits with its status. Returns only when `tui` could not
+/// be started.
+///
+/// The environment is passed unchanged: `trellis-tui` starts its own
+/// `trellis rpc`, which needs the user's key variables for a hosted model
+/// the user chose, and which scrubs them from every child of its own. This
+/// is one of the two launches `INTERFACE_LAUNCHES` in `tests/child_env.rs`
+/// names (ADR 0052, amendment of 2026-10-07).
+pub(crate) fn hand_off(tui: &Path, args: &[std::ffi::OsString]) -> anyhow::Error {
+    let mut cmd = Command::new(tui); // key-exempt: trellis-tui
+    cmd.args(args);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let e = cmd.exec();
+        anyhow::Error::new(e).context(format!("cannot start {}", tui.display()))
+    }
+    #[cfg(not(unix))]
+    {
+        match cmd.status() {
+            Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+            Err(e) => anyhow::Error::new(e).context(format!("cannot start {}", tui.display())),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,6 +292,58 @@ mod tests {
         assert!(
             said.contains("cargo install --locked --path desktop"),
             "{said}"
+        );
+    }
+
+    #[test]
+    fn launch_tui_found_beside_the_binary_and_only_there() {
+        // The risk: a `trellis-tui` on PATH, another build or another
+        // program, handed the terminal and the user's keys.
+        let bin = tempfile::tempdir().unwrap();
+        std::fs::write(bin.path().join(TUI), b"").unwrap();
+        let d = tempfile::tempdir().unwrap();
+        let exe = fake_exe(d.path());
+        assert_eq!(find_tui(&exe), Err(d.path().join(TUI)));
+        std::fs::write(d.path().join(TUI), b"").unwrap();
+        assert_eq!(find_tui(&exe), Ok(d.path().join(TUI)));
+    }
+
+    #[test]
+    fn launch_tui_not_found_names_where_it_looked_and_the_fallback() {
+        let d = tempfile::tempdir().unwrap();
+        let tried = d.path().join(TUI);
+        let said = tui_not_found(&tried);
+        assert!(said.contains(&tried.display().to_string()), "{said}");
+        assert!(said.contains("ratatui"), "{said}");
+    }
+
+    #[test]
+    fn launch_tui_args_name_the_root_this_trellis_and_only_a_user_model() {
+        // The risk: a repository's hosted spec passed on as `--model`,
+        // which rpc would take for the user's own choice (ADR 0024 §3).
+        let root = Path::new("/r");
+        let me = Path::new("/bin/trellis");
+        let s = |v: Vec<std::ffi::OsString>| -> Vec<String> {
+            v.into_iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(
+            s(tui_args(root, me, None, None)),
+            ["--root", "/r", "--trellis", "/bin/trellis"]
+        );
+        assert_eq!(
+            s(tui_args(root, me, Some("ollama:q"), Some("-fix it"))),
+            [
+                "--root",
+                "/r",
+                "--trellis",
+                "/bin/trellis",
+                "--model",
+                "ollama:q",
+                "--",
+                "-fix it"
+            ]
         );
     }
 
