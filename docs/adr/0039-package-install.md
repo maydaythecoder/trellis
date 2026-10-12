@@ -8,6 +8,8 @@
 the trust store untouched, each held by a test.
 **Amended:** 2026-09-30 (#200): §8, the tree listing bounded while it is
 read.
+**Amended:** 2026-10-12 (#617): §4, each entry carries a per-file content
+digest and `--list` reports it.
 **Amends:** ADR 0021 row 10 ("packages: deferred ... needs the trust store
 first"). Grows the CLI surface fixed by brief 4.12, as the owner directed.
 
@@ -54,6 +56,20 @@ Its paths, file modes and sizes are all chosen by whoever wrote it.
    refuses the command rather than reading as empty, since the next save
    would drop every entry (ADR 0025 §7's rule for config files). A source
    URL carrying a password is refused, because it would be written here.
+
+   *2026-10-12 (#617):* an entry also carries `digest`, a table of
+   `<package path> = <sha256>` over the bytes of each file as the install
+   wrote them (ADR 0044's rule: the bytes on disk are what count), one per
+   file rather than one over all of them so a change can be named by path.
+   `--list` ends each line with `digest ok`, `modified: <paths>` (an edited
+   path bare, a missing one `(missing)`, one not installed `(added)`; a
+   link or an unreadable file counts as modified) or `not recorded`. The
+   field is optional: a manifest from before this date still loads, its
+   entries read "not recorded" and never "unchanged", and a save does not
+   invent one. The digest is informational and never a trust decision; §9
+   holds and the trust store is untouched. The hashing is `sha2`, already
+   in the tree through ADR 0044. Evidence: `install_digest_*`
+   (`cargo test -p trellis-cli install_digest_`).
 
 5. **What is copied.** Exactly two shapes, and only as plain files (git
    mode `100644`):
