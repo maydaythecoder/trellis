@@ -44,8 +44,7 @@ func TestStatusShowsModelAndTierFromGetState(t *testing.T) {
 	if !strings.Contains(bar, "TRELLIS") || !strings.Contains(bar, "model ollama:qwen") || !strings.Contains(bar, "tier 1, native tool calls") {
 		t.Fatalf("bar %q", bar)
 	}
-	typeLine(m, "t")
-	enter(m)
+	submit(m, "t")
 	m.TakeOutbox()
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
 	if got := kinds(m.TakeOutbox()); strings.Join(got, ",") != "get_state" {
@@ -181,8 +180,7 @@ func TestCompleteCandidatesAreDrawnUnderTheInput(t *testing.T) {
 // Enter with an @word sends the line as typed.
 func TestCompleteEnterSubmitsTheLineAsTyped(t *testing.T) {
 	m := fresh(t)
-	typeLine(m, "fix @src/mo")
-	enter(m)
+	submit(m, "fix @src/mo")
 	out := m.TakeOutbox()
 	if len(out) != 1 || out[len(out)-1].Cmd["task"] != "fix @src/mo" {
 		t.Fatalf("%+v", out)

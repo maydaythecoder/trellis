@@ -147,4 +147,4 @@ are held to it by `crates/trellis-cli/tests/hygiene.rs`.
 
 | Rust file | Rust test | Rule | Ticket | Go test |
 | --- | --- | --- | --- | --- |
-| `hygiene.rs` | `every_conversational_surface_asks_whether_the_input_is_a_task` | every conversational surface asks whether the input is a task | T6 (#512) | |
+| `hygiene.rs` | `every_conversational_surface_asks_whether_the_input_is_a_task` | every conversational surface asks whether the input is a task | T6 (#512) | `TestRouteAQuestionSendsNoPrompt`, `TestRouteATaskSendsOnePrompt`, `TestRouteAFailedClassifyRunsNothing` |

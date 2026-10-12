@@ -75,8 +75,7 @@ func kinds(out []Out) []string {
 // and the run is in flight until trellis says it ended.
 func TestModelSentTaskBecomesOnePrompt(t *testing.T) {
 	m := fresh(t)
-	typeLine(m, "fix the bug")
-	enter(m)
+	submit(m, "fix the bug")
 	out := m.TakeOutbox()
 	if len(out) != 1 || out[0].Cmd["type"] != "prompt" || out[0].Cmd["task"] != "fix the bug" {
 		t.Fatalf("outbox %+v", out)
@@ -123,8 +122,7 @@ func TestModelTypingBackspaceAndAnEmptyLine(t *testing.T) {
 // the task echo, with the verdict trellis reported and nothing computed.
 func TestModelTurnsFillTheTranscript(t *testing.T) {
 	m := fresh(t)
-	typeLine(m, "change f")
-	enter(m)
+	submit(m, "change f")
 	feed(m, turn(1, "read_file a.py", nil))
 	feed(m, turn(2, "run_check tests", map[string]any{"verdict": "Some(true)"}))
 	feed(m, turn(3, "run_check types", map[string]any{"verdict": "Some(false)"}))
@@ -160,8 +158,7 @@ func TestModelTranscriptCapHolds(t *testing.T) {
 // back and is held until the next run starts.
 func TestModelRunEndSetsTheOutcome(t *testing.T) {
 	m := fresh(t)
-	typeLine(m, "change f")
-	enter(m)
+	submit(m, "change f")
 	feed(m, runEnd(map[string]any{"outcome": "not_converged", "exit": 2, "restored": true}))
 	if m.Running {
 		t.Fatal("still running after run_end")
@@ -180,8 +177,7 @@ func TestModelRunEndSetsTheOutcome(t *testing.T) {
 	if m.Outcome == "" {
 		t.Fatal("the outcome was dropped before the next run")
 	}
-	typeLine(m, "next")
-	enter(m)
+	submit(m, "next")
 	if last := m.Transcript[len(m.Transcript)-1]; last != "> next" {
 		t.Fatalf("the second task's echo is not a line of its own: %q", last)
 	}
@@ -204,8 +200,7 @@ func TestModelEveryEndingHandsInputBack(t *testing.T) {
 		{map[string]any{}, "ended; trellis reported no outcome"},
 	} {
 		m := fresh(t)
-		typeLine(m, "t")
-		enter(m)
+		submit(m, "t")
 		feed(m, runEnd(c.fields))
 		if m.Running || m.Outcome != c.want {
 			t.Errorf("%v: running %v, outcome %q, want %q", c.fields, m.Running, m.Outcome, c.want)
@@ -218,8 +213,7 @@ func TestModelEveryEndingHandsInputBack(t *testing.T) {
 // so rather than leaving silence.
 func TestModelRunEndErrorMarksEveryLine(t *testing.T) {
 	m := fresh(t)
-	typeLine(m, "t")
-	enter(m)
+	submit(m, "t")
 	feed(m, runEnd(map[string]any{"outcome": "error", "exit": 1, "error": "run failed\n\ncaused by: worktree dirty\n  a.py"}))
 	got := m.Transcript[1:]
 	want := []string{"! run failed", "! caused by: worktree dirty", "!   a.py"}
@@ -227,8 +221,7 @@ func TestModelRunEndErrorMarksEveryLine(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 	m = fresh(t)
-	typeLine(m, "t")
-	enter(m)
+	submit(m, "t")
 	feed(m, runEnd(map[string]any{"outcome": "error", "exit": 1, "error": "  \n"}))
 	if last := m.Transcript[len(m.Transcript)-1]; last != "! the run failed and reported no reason" {
 		t.Fatalf("an empty error was silence: %q", m.Transcript)
@@ -239,8 +232,7 @@ func TestModelRunEndErrorMarksEveryLine(t *testing.T) {
 // program ends only when the child has exited by itself.
 func TestModelCtrlCMidRunSendsAbortThenQuit(t *testing.T) {
 	m := fresh(t)
-	typeLine(m, "change f")
-	enter(m)
+	submit(m, "change f")
 	m.TakeOutbox()
 	m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if got := kinds(m.TakeOutbox()); strings.Join(got, ",") != "abort,QUIT" {
@@ -280,10 +272,11 @@ func TestModelCtrlCIdleQuitsAndEndsOnExit(t *testing.T) {
 func TestModelStartupSetsTheModelBeforeAnyPrompt(t *testing.T) {
 	m := New(Options{ModelSpec: "ollama:qwen", Task: "fix it"})
 	out := m.TakeOutbox()
-	if got := strings.Join(kinds(out), ","); got != "get_state,set_model,prompt" {
+	// The task is asked about first, as a typed line is (route.go).
+	if got := strings.Join(kinds(out), ","); got != "get_state,set_model,classify" {
 		t.Fatalf("sent %s", got)
 	}
-	if out[1].Cmd["model"] != "ollama:qwen" || out[2].Cmd["task"] != "fix it" {
+	if out[1].Cmd["model"] != "ollama:qwen" || out[2].Cmd["text"] != "fix it" {
 		t.Fatalf("%+v", out)
 	}
 	out = New(Options{}).TakeOutbox()
@@ -296,8 +289,7 @@ func TestModelStartupSetsTheModelBeforeAnyPrompt(t *testing.T) {
 // and says why; no run is shown as in flight.
 func TestModelRefusedPromptHandsInputBack(t *testing.T) {
 	m := fresh(t)
-	typeLine(m, "t")
-	enter(m)
+	submit(m, "t")
 	id := m.TakeOutbox()[0].Cmd["id"]
 	feed(m, jsonLine(map[string]any{"type": "response", "command": "prompt", "id": id, "success": false,
 		"error": "choose a model first: set_model"}))
@@ -330,8 +322,7 @@ func TestModelServedTextIsPlainAndBlankLinesAreDropped(t *testing.T) {
 // worktree's state is not claimed.
 func TestModelChildExitMidRunIsReported(t *testing.T) {
 	m := fresh(t)
-	typeLine(m, "t")
-	enter(m)
+	submit(m, "t")
 	m.Update(ExitedMsg{Err: errors.New("exit status 101")})
 	all := strings.Join(m.Transcript, "\n")
 	if !m.Done || m.Running || !strings.Contains(all, "exited unexpectedly: exit status 101") ||
@@ -362,7 +353,8 @@ func TestModelAppWritesTheOutboxInOrder(t *testing.T) {
 	a := NewApp(New(Options{Task: "t"}), f)
 	a.Init()
 	a.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-	if got := strings.Join(f.sent, ","); got != "get_state,set_model,prompt,abort,QUIT" {
+	// abort also drops the pending classify, unanswered.
+	if got := strings.Join(f.sent, ","); got != "get_state,set_model,classify,abort,QUIT" {
 		t.Fatalf("sent %s", got)
 	}
 	a.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -391,3 +383,19 @@ const (
 )
 
 func keyType(k tea.KeyType) tea.KeyMsg { return tea.KeyMsg{Type: k} }
+
+// submit types a line, sends it, and answers trellis's classify as a task,
+// so the prompt follows (route.go).
+func submit(m *Model, text string) {
+	typeLine(m, text)
+	enter(m)
+	var keep []Out
+	for _, o := range m.TakeOutbox() {
+		if o.Cmd != nil && o.Cmd["type"] == "classify" {
+			defer respond(m, o.Cmd["id"], "classify", map[string]any{"intent": "task"})
+			continue
+		}
+		keep = append(keep, o)
+	}
+	m.outbox = append(m.outbox, keep...)
+}

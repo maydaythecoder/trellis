@@ -103,8 +103,7 @@ func TestPanesBudgetCarriesTheCeilingTheTurnsFiguresAndElapsed(t *testing.T) {
 	m := fresh(t)
 	clock := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
 	m.now = func() time.Time { return clock }
-	typeLine(m, "t")
-	enter(m)
+	submit(m, "t")
 	feed(m, jsonLine(map[string]any{"type": "run_start", "id": "tui-3"}))
 	feed(m, jsonLine(map[string]any{"level": "INFO", "fields": map[string]any{"message": "run budget", "max_iterations": 40}}))
 	clock = clock.Add(18 * time.Second)
@@ -160,8 +159,7 @@ func TestPanesScrollingBackStopsAtTheEndAndResumesFollowing(t *testing.T) {
 	if m.ScrollBack != 2 {
 		t.Fatalf("scroll back %d", m.ScrollBack)
 	}
-	typeLine(m, "t")
-	enter(m)
+	submit(m, "t")
 	if m.ScrollBack != 0 {
 		t.Fatal("a new run is not followed")
 	}
@@ -175,8 +173,7 @@ func TestPanesANewRunStartsClean(t *testing.T) {
 	if len(m.Edits) != 1 || len(m.Checks) != 1 {
 		t.Fatal("the panes were cleared at the run's end")
 	}
-	typeLine(m, "next")
-	enter(m)
+	submit(m, "next")
 	if len(m.Edits)+len(m.Checks)+len(m.Actions) != 0 || m.Radius != nil {
 		t.Fatal("the last run's panes were carried into this one")
 	}

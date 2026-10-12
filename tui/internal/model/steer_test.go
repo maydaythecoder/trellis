@@ -102,8 +102,7 @@ func TestSteerCountedPerRun(t *testing.T) {
 	typeLine(m, "old")
 	enter(m)
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
-	typeLine(m, "next task")
-	enter(m)
+	submit(m, "next task")
 	typeLine(m, "new")
 	enter(m)
 	feed(m, steerDelivered(0))
@@ -118,8 +117,7 @@ func TestSteerAfterTheRunEndedIsATask(t *testing.T) {
 	m := running(t)
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
 	m.TakeOutbox() // the get_state a run's end asks
-	typeLine(m, "another")
-	enter(m)
+	submit(m, "another")
 	if got := kinds(m.TakeOutbox()); strings.Join(got, ",") != "prompt" {
 		t.Fatalf("sent %v", got)
 	}

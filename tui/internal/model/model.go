@@ -110,6 +110,10 @@ type Model struct {
 	// setModelID is the set_model whose success means the tier may now be
 	// known.
 	setModelID string
+	// classifying is set while trellis is asked whether a line is a
+	// question or a task, and classifyText is that line (route.go).
+	classifying  bool
+	classifyText string
 
 	outbox []Out
 	nextID int
@@ -128,7 +132,7 @@ func New(o Options) *Model {
 		m.setModelID = m.send("set_model", map[string]any{"configured": true})
 	}
 	if t := strings.TrimSpace(o.Task); t != "" {
-		m.startTask(t)
+		m.route(t)
 	}
 	return m
 }
@@ -254,6 +258,9 @@ func (m *Model) ctrlC() {
 	if m.Running {
 		m.send("abort", nil)
 		m.pushLine("· stopping: the run rolls back before trellis exits")
+	} else if m.classifying {
+		// abort also drops a pending classify, unanswered.
+		m.send("abort", nil)
 	}
 	m.quit()
 }
@@ -269,22 +276,27 @@ func (m *Model) submit() {
 		m.steer(task)
 		return
 	}
+	if m.classifying {
+		m.pushLine("· still asking trellis whether the last line was a question or a task; wait for its answer")
+		return
+	}
 	m.Input = ""
 	m.Offered = nil
 	if m.local(task) {
 		return
 	}
-	m.startTask(task)
+	m.route(task)
 }
 
-func (m *Model) startTask(task string) {
+// startRun sends a line trellis classified as a task as prompt, its echo
+// already in the transcript.
+func (m *Model) startRun(task string) {
 	m.newRun()
 	m.clearPanes()
 	m.Running = true
 	m.Outcome = ""
 	// A new run is followed from its start, wherever the view was.
 	m.ScrollBack = 0
-	m.pushLine("> " + Plain(task))
 	m.promptID = m.send("prompt", map[string]any{"task": task})
 }
 
@@ -451,14 +463,23 @@ func (m *Model) response(r *frames.ResponseFields) {
 		case forRadius:
 			m.radiusAnswered(r.Data)
 			return
+		case forClassify:
+			m.classified(r, true)
+			return
 		}
 		if cmd == "set_model" && r.ID != nil && *r.ID == m.setModelID {
 			// A model is chosen: its tier can now be asked for.
 			m.refreshState()
 			return
 		}
-	} else if m.answered(r) == forState {
-		return
+	} else {
+		switch m.answered(r) {
+		case forState:
+			return
+		case forClassify:
+			m.classified(r, false)
+			return
+		}
 	}
 	switch cmd {
 	case "steer":

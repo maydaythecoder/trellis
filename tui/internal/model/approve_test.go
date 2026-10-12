@@ -17,8 +17,7 @@ func key(m *Model, r rune) { m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []ru
 func running(t *testing.T) *Model {
 	t.Helper()
 	m := fresh(t)
-	typeLine(m, "change f")
-	enter(m)
+	submit(m, "change f")
 	m.TakeOutbox()
 	return m
 }
