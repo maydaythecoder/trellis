@@ -26,9 +26,60 @@ pub fn escape_controls(s: &str) -> String {
         .collect()
 }
 
+/// `s` with every SGR sequence (`ESC [ <parameters> m`, the colour and
+/// style codes) removed, and nothing else touched.
+///
+/// For the output of a command a shell with `FORCE_COLOR` or `CLICOLOR_FORCE`
+/// exported colours regardless of the pipe: the codes are not information
+/// to a model and are noise in a trail. Only SGR goes. A cursor move or an
+/// erase is left for [`escape_controls`] to show, since what a command did
+/// to the screen is worth seeing where what colour it chose is not.
+pub fn strip_sgr(s: &str) -> String {
+    if !s.contains('\x1b') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(at) = rest.find('\x1b') {
+        out.push_str(&rest[..at]);
+        let seq = &rest[at..];
+        // Parameters are digits, `;` and the `:` of the underline and colour
+        // subparameters; anything else is not SGR and stays as it was.
+        let past_sgr = seq.strip_prefix("\x1b[").and_then(|p| {
+            p.trim_start_matches(|c: char| c.is_ascii_digit() || c == ';' || c == ':')
+                .strip_prefix('m')
+        });
+        match past_sgr {
+            Some(tail) => rest = tail,
+            None => {
+                out.push('\x1b');
+                rest = &seq[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sgr_colour_codes_are_removed_and_nothing_else_is() {
+        // Done when: unchanged in bytes except for the SGR sequences. A
+        // cursor move, an erase and a bare escape all stay, and so does
+        // every non-ASCII byte around them.
+        assert_eq!(strip_sgr("\x1b[31mred\x1b[0m"), "red");
+        assert_eq!(
+            strip_sgr("\x1b[1;38;5;208mbold orange\x1b[m"),
+            "bold orange"
+        );
+        assert_eq!(strip_sgr("\x1b[4:3mcurly\x1b[0m café"), "curly café");
+        assert_eq!(strip_sgr("a\x1b[2Kb\x1b[Ac\x1b"), "a\x1b[2Kb\x1b[Ac\x1b");
+        assert_eq!(strip_sgr("\x1b[31"), "\x1b[31", "a cut sequence is kept");
+        assert_eq!(strip_sgr("plain\n"), "plain\n");
+    }
 
     #[test]
     fn a_control_character_is_escaped_not_dropped() {
