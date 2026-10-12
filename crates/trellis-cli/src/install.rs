@@ -54,6 +54,96 @@ pub(crate) struct Entry {
     pub reference: String,
     /// What the ref resolved to when the package was installed.
     pub commit: String,
+    /// The sha256 of each file as installed, by package path (#617).
+    /// Informational, never a trust decision (ADR 0039 §9). Absent from a
+    /// manifest written before it was recorded, which `--list` reports as
+    /// "not recorded" rather than as unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<Digest>,
+}
+
+/// `path -> sha256` for every file an install wrote. Per file, not one hash
+/// over all of them, so a change can be named by path.
+pub(crate) type Digest = std::collections::BTreeMap<String, String>;
+
+/// How a package's files on disk compare with the digest its entry records.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DigestCheck {
+    /// Every recorded file is there with its recorded bytes, and nothing
+    /// else is.
+    Ok,
+    /// Paths whose bytes differ, that are missing, or that were added.
+    Modified(Vec<String>),
+    /// The entry predates #617.
+    NotRecorded,
+}
+
+impl std::fmt::Display for DigestCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ok => write!(f, "digest ok"),
+            Self::Modified(paths) => write!(f, "modified: {}", paths.join(", ")),
+            Self::NotRecorded => write!(f, "not recorded"),
+        }
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Compares the files under `dir` with `entry`'s recorded digest. A file
+/// that cannot be read, or is not a plain file (a link put there since),
+/// counts as modified: "digest ok" is a claim about bytes, so anything
+/// short of reading them is not it.
+pub(crate) fn check_digest(dir: &Path, entry: &Entry) -> DigestCheck {
+    let Some(recorded) = &entry.digest else {
+        return DigestCheck::NotRecorded;
+    };
+    let mut on_disk = std::collections::BTreeSet::new();
+    walk_files(dir, dir, &mut on_disk);
+    let mut modified = Vec::new();
+    for (path, sha) in recorded {
+        let file = dir.join(path);
+        let is_plain = std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file());
+        match std::fs::read(&file) {
+            Ok(bytes) if is_plain && sha256_hex(&bytes) == *sha => {}
+            Ok(_) => modified.push(plain(path)),
+            Err(_) => modified.push(format!("{} (missing)", plain(path))),
+        }
+    }
+    for path in on_disk {
+        if !recorded.contains_key(&path) {
+            modified.push(format!("{} (added)", plain(&path)));
+        }
+    }
+    if modified.is_empty() {
+        DigestCheck::Ok
+    } else {
+        DigestCheck::Modified(modified)
+    }
+}
+
+/// Every entry under `dir` that is not a directory, as a `/`-separated path
+/// relative to `base`. Links are not followed: one is listed as an entry
+/// and read (or not) by `check_digest`. A directory that cannot be read
+/// lists nothing, which the recorded paths then report as missing.
+fn walk_files(base: &Path, dir: &Path, out: &mut std::collections::BTreeSet<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if std::fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir()) {
+            walk_files(base, &p, out);
+        } else if let Ok(rel) = p.strip_prefix(base) {
+            out.insert(rel.to_string_lossy().replace('\\', "/"));
+        }
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -177,11 +267,15 @@ pub(crate) fn install(config: &Path, spec: &str, out: &mut dyn Write) -> Result<
     check_bounds(&plan.copy)?;
 
     let tree = staging.path.join("package");
+    let mut digest = Digest::new();
     for f in &plan.copy {
         let bytes = blob(&bare, &f.blob)?;
         if bytes.len() as u64 != f.size {
             bail!("{} changed size while it was read", f.path);
         }
+        // Over the bytes written, not git's blob id: the blob id is of
+        // git's object, and what `--list` compares later is the file.
+        digest.insert(f.path.clone(), sha256_hex(&bytes));
         let dest = tree.join(&f.path);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)
@@ -211,6 +305,7 @@ pub(crate) fn install(config: &Path, spec: &str, out: &mut dyn Write) -> Result<
         source,
         reference: reference.to_string(),
         commit,
+        digest: Some(digest),
     };
     manifest.packages.push(entry.clone());
     if let Err(e) = save(&dir, &manifest) {
@@ -276,13 +371,19 @@ pub(crate) fn list_packages(config: &Path, out: &mut dyn Write) -> Result<()> {
         return Ok(());
     }
     for e in &manifest.packages {
+        // The manifest is a file the user can edit, and a name becomes a
+        // path before the digest is checked.
+        if let Some(why) = bad_name(&e.name) {
+            bail!("{}: {why}", dir.join(MANIFEST).display());
+        }
         writeln!(
             out,
-            "{}  source {}  ref {}  commit {}",
+            "{}  source {}  ref {}  commit {}  {}",
             plain(&e.name),
             plain(&e.source),
             plain(&e.reference),
-            plain(&e.commit)
+            plain(&e.commit),
+            check_digest(&dir.join(&e.name), e)
         )?;
     }
     Ok(())
@@ -1180,6 +1281,123 @@ mod tests {
         // A second install of the same name is refused, not merged.
         let e = install(&cfg, &spec(&src, "v1"), &mut Vec::new()).unwrap_err();
         assert!(format!("{e:#}").contains("already installed"), "{e:#}");
+    }
+
+    #[test]
+    fn install_digest_is_recorded_per_file_and_list_says_ok_while_the_files_match() {
+        // The risk: `--list` answers "is this what I installed" from the
+        // manifest alone, which says nothing about the bytes on disk; the
+        // digest is over the files as written (ADR 0044's rule), one per
+        // path, so a later edit can be named.
+        let d = tempfile::tempdir().unwrap();
+        let src = source(d.path());
+        let cfg = d.path().join("cfg");
+        let entry = install(&cfg, &spec(&src, "v1"), &mut Vec::new()).unwrap();
+        let digest = entry
+            .digest
+            .as_ref()
+            .expect("an install records its digest");
+        let paths: Vec<&str> = digest.keys().map(String::as_str).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "prompts/review.md",
+                "skills/alpha/SKILL.md",
+                "skills/alpha/references/notes.md",
+                "skills/beta/SKILL.md",
+            ]
+        );
+        assert_eq!(
+            digest["skills/alpha/SKILL.md"],
+            sha256_hex(b"---\nname: alpha\n---\nA\n")
+        );
+        // Round-tripped through the manifest, not only held in memory.
+        let loaded = load(&cfg.join("packages")).unwrap();
+        assert_eq!(loaded.packages[0].digest.as_ref(), Some(digest));
+        let mut out = Vec::new();
+        list_packages(&cfg, &mut out).unwrap();
+        let said = String::from_utf8(out).unwrap();
+        assert!(said.trim_end().ends_with("  digest ok"), "{said}");
+    }
+
+    #[test]
+    fn install_digest_names_every_edited_missing_and_added_path() {
+        // The risk: one hash over the whole package can say "changed" but
+        // not what, and a check that skips a file it cannot read, or reads
+        // a link put in place of one, reports it as the bytes installed.
+        let d = tempfile::tempdir().unwrap();
+        let src = source(d.path());
+        let cfg = d.path().join("cfg");
+        install(&cfg, &spec(&src, "v1"), &mut Vec::new()).unwrap();
+        let pkg = cfg.join("packages/pkg-src");
+        std::fs::write(pkg.join("skills/alpha/SKILL.md"), "edited\n").unwrap();
+        std::fs::remove_file(pkg.join("prompts/review.md")).unwrap();
+        std::fs::write(pkg.join("skills/beta/extra.md"), "added\n").unwrap();
+        let mut out = Vec::new();
+        list_packages(&cfg, &mut out).unwrap();
+        let said = String::from_utf8(out).unwrap();
+        assert!(
+            said.contains(
+                "  modified: prompts/review.md (missing), skills/alpha/SKILL.md, \
+                 skills/beta/extra.md (added)"
+            ),
+            "{said}"
+        );
+        assert!(!said.contains("digest ok"), "{said}");
+        // The whole directory gone: every recorded path is missing, and the
+        // check is still a report, not an error.
+        std::fs::remove_dir_all(&pkg).unwrap();
+        let entry = &load(&cfg.join("packages")).unwrap().packages[0];
+        match check_digest(&pkg, entry) {
+            DigestCheck::Modified(paths) => {
+                assert_eq!(paths.len(), 4, "{paths:?}");
+                assert!(paths.iter().all(|p| p.ends_with(" (missing)")), "{paths:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn install_digest_absent_from_an_older_manifest_loads_and_reads_not_recorded() {
+        // The risk: a manifest written before the digest was recorded fails
+        // to parse (and with it every run that reads installed skills), or
+        // an entry with no digest is reported as unchanged.
+        let d = tempfile::tempdir().unwrap();
+        let src = source(d.path());
+        let cfg = d.path().join("cfg");
+        install(&cfg, &spec(&src, "v1"), &mut Vec::new()).unwrap();
+        let packages = cfg.join("packages");
+        let commit = git_in(&src, &["rev-parse", "v1^{commit}"]);
+        let older = format!(
+            "[[package]]\nname = \"pkg-src\"\nsource = \"{}\"\nref = \"v1\"\ncommit = \"{commit}\"\n",
+            std::path::absolute(&src)
+                .unwrap()
+                .display()
+                .to_string()
+                .replace('\\', "/")
+        );
+        std::fs::write(packages.join(MANIFEST), older).unwrap();
+        let m = load(&packages).unwrap();
+        assert_eq!(m.packages.len(), 1);
+        assert_eq!(m.packages[0].digest, None);
+        assert_eq!(
+            installed_dirs(&cfg).unwrap(),
+            vec![packages.join("pkg-src")]
+        );
+        let mut out = Vec::new();
+        list_packages(&cfg, &mut out).unwrap();
+        let said = String::from_utf8(out).unwrap();
+        assert!(said.trim_end().ends_with("  not recorded"), "{said}");
+        assert!(!said.contains("digest ok"), "{said}");
+        // Saved again, the entry stays without one: nothing invents a digest
+        // for files it did not write.
+        save(&packages, &m).unwrap();
+        assert!(
+            !std::fs::read_to_string(packages.join(MANIFEST))
+                .unwrap()
+                .contains("digest"),
+            "{said}"
+        );
     }
 
     #[test]
