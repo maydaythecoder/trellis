@@ -1,0 +1,15 @@
+$ (cd demo) <scratch>/bin/trellis overview
+recent repositories: none recorded
+
+repository: <scratch>/demo
+last run: 20261011-194441-099-demo-task  integrity: intact
+  task: demo task
+  started: 2026-10-11T19:44:41Z
+  outcome: no check ran
+  checks: none ran
+  coverage: 0 verified by an executed check, 0 reviewed only
+  turns: not measured  edits: 1 file(s)  tier: not recorded
+codebase: 5 module(s) indexed; 4 bound call site(s), 0 ambiguous, 0 unresolved
+queue: 0 task(s)
+PR and CI state unavailable: gh not found on PATH
+[exit 0]
