@@ -98,6 +98,8 @@ TRELLIS reaches a runtime through a spec (`crates/trellis-model/src/spec.rs`) an
    - expert counts and resident GB per memory tier, and the host's cores, RAM and GPUs;
    - without authentication, a line saying colibri shows these only to an authenticated request.
 
+   **Amended 2026-10-11 (#633):** the Ollama counterpart, since the wording above is colibri's alone. For a loopback `vllm:` spec (how the picker reaches Ollama, ADR 0050 §2), doctor reads Ollama's `GET /api/ps` with the same plain GET as the `/api/tags` probe and prints a `placement:` line per reported model, or for the one the spec names: its `quantization_level`, its `size` and its `size_vram` in bytes, and whether the second covers the first ("all of it in VRAM", "split between VRAM and RAM", "none of it in VRAM"), each line ending "as reported by ollama". An empty list prints "not loaded; placement unknown until a run"; a spec naming a model Ollama has not loaded says so and names what is. A base that is not this machine is not asked, and a server that does not answer the path, or answers in another shape, adds no line. No fit score is derived: odysseus's hardware-fit heuristic (a8c147b2, `services/hwfit/fit.py`) was the source of the idea and none of its code or figures, and a score here would be a number without a method. Evidence: the `doctor_placement_` tests in crates/trellis-cli/tests/doctor_placement.rs and crates/trellis-cli/src/doctor_cmd.rs.
+
 8. **Accounting uses per-request figures.**
    - Output and prompt tokens are already read from `usage`.
    - The reply's output tokens, the model call's wall time and its `x-colibri-queue-wait-ms` header become fields on the loop's `turn` event (tracing is the one telemetry path), and the TUI shows tokens per second.
