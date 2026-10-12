@@ -117,6 +117,7 @@ func TestSteerCountedPerRun(t *testing.T) {
 func TestSteerAfterTheRunEndedIsATask(t *testing.T) {
 	m := running(t)
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
+	m.TakeOutbox() // the get_state a run's end asks
 	typeLine(m, "another")
 	enter(m)
 	if got := kinds(m.TakeOutbox()); strings.Join(got, ",") != "prompt" {
@@ -161,6 +162,7 @@ func TestModelEscClearsTheLineThenQuitsWhenIdle(t *testing.T) {
 		t.Fatal("esc on an empty line quit mid-run")
 	}
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
+	m.TakeOutbox()
 	typeLine(m, "abc")
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if m.Input != "" || m.Quitting {

@@ -25,14 +25,14 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `app.rs` | `quit_is_still_reachable_as_a_message` | quit is still reachable as a message | T2 (#508) | `TestModelCtrlCIdleQuitsAndEndsOnExit` |
 | `app.rs` | `a_release_event_changes_nothing` | a release event changes nothing | T2 (#508) | not ported: Bubble Tea delivers key presses only; there is no release or repeat event to filter (crossterm reported both on Windows) |
 | `app.rs` | `the_transcript_is_capped` | the transcript is capped | T2 (#508) | `TestModelTranscriptCapHolds` |
-| `app.rs` | `a_shell_command_typed_here_does_not_become_an_agent_run` | a shell command typed here does not become an agent run | T5 (#511) |  |
-| `app.rs` | `codebase_is_handed_to_the_driver_rather_than_answered_or_refused` | codebase is handed to the driver rather than answered or refused | T5 (#511) |  |
-| `app.rs` | `codebase_is_listed_in_help_beside_the_command_it_is_not` | codebase is listed in help beside the command it is not | T5 (#511) |  |
-| `app.rs` | `graph_is_a_command_and_reports_the_reach_without_a_run` | graph is a command and reports the reach without a run | T5 (#511) |  |
-| `app.rs` | `graph_appears_in_help` | graph appears in help | T5 (#511) |  |
-| `app.rs` | `help_and_model_are_answered_without_a_run` | help and model are answered without a run | T5 (#511) |  |
-| `app.rs` | `an_unknown_slash_command_is_refused_rather_than_run` | an unknown slash command is refused rather than run | T5 (#511) |  |
-| `app.rs` | `clear_empties_the_transcript_and_says_so` | clear empties the transcript and says so | T5 (#511) |  |
+| `app.rs` | `a_shell_command_typed_here_does_not_become_an_agent_run` | a shell command typed here does not become an agent run | T5 (#511) | `TestSlashTrellisSubcommandIsNotAShell` |
+| `app.rs` | `codebase_is_handed_to_the_driver_rather_than_answered_or_refused` | codebase is handed to the driver rather than answered or refused | T5 (#511) | `TestSlashCodebaseAsksGetCodebase` |
+| `app.rs` | `codebase_is_listed_in_help_beside_the_command_it_is_not` | codebase is listed in help beside the command it is not | T5 (#511) | `TestSlashHelpListsTheCommands` |
+| `app.rs` | `graph_is_a_command_and_reports_the_reach_without_a_run` | graph is a command and reports the reach without a run | T5 (#511) | `TestSlashGraphAndRadiusReportCountsNeverARatio` |
+| `app.rs` | `graph_appears_in_help` | graph appears in help | T5 (#511) | `TestSlashHelpListsTheCommands` |
+| `app.rs` | `help_and_model_are_answered_without_a_run` | help and model are answered without a run | T5 (#511) | `TestSlashHelpListsTheCommands`, `TestSlashModelAsksGetState` |
+| `app.rs` | `an_unknown_slash_command_is_refused_rather_than_run` | an unknown slash command is refused rather than run | T5 (#511) | `TestSlashUnknownIsRefused` |
+| `app.rs` | `clear_empties_the_transcript_and_says_so` | clear empties the transcript and says so | T5 (#511) | `TestSlashClearEmptiesTheTranscript` |
 | `app.rs` | `an_ordinary_task_is_still_a_task` | an ordinary task is still a task | T2 (#508) | `TestModelSentTaskBecomesOnePrompt` |
 | `app.rs` | `a_reply_starts_its_own_line_and_does_not_land_on_the_task_echo` | a reply starts its own line and does not land on the task echo | T2 (#508) | `TestModelTurnsFillTheTranscript` |
 | `app.rs` | `a_second_task_also_gets_its_own_line` | a second task also gets its own line | T2 (#508) | `TestModelRunEndSetsTheOutcome` |
@@ -43,12 +43,12 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `app.rs` | `transcript_scrolling_back_stops_at_the_end_and_resumes_following` | transcript scrolling back stops at the end and resumes following | T4 (#510) | `TestPanesScrollingBackStopsAtTheEndAndResumesFollowing` |
 | `app.rs` | `transcript_outcome_is_held_until_the_next_run_starts` | transcript outcome is held until the next run starts | T2 (#508) | `TestModelRunEndSetsTheOutcome` |
 | `app.rs` | `work_events_land_where_they_belong` | work events land where they belong | T4 (#510) | `TestPanesBudgetCarriesTheCeilingTheTurnsFiguresAndElapsed`, `TestPanesRadiusTurnCarriesThreeCounts` |
-| `app.rs` | `at_file_offers_matches_case_insensitively_shortest_first` | at file offers matches case insensitively shortest first | R4 (#502) / T5 (#511) |  |
-| `app.rs` | `at_file_offers_nothing_unless_the_last_word_starts_with_at` | at file offers nothing unless the last word starts with at | R4 (#502) / T5 (#511) |  |
-| `app.rs` | `at_file_offers_at_most_ten` | at file offers at most ten | R4 (#502) / T5 (#511) |  |
-| `app.rs` | `at_file_tab_inserts_the_first_candidate_and_a_space` | at file tab inserts the first candidate and a space | R4 (#502) / T5 (#511) |  |
-| `app.rs` | `at_file_tab_with_no_candidate_changes_nothing` | at file tab with no candidate changes nothing | R4 (#502) / T5 (#511) |  |
-| `app.rs` | `at_file_enter_submits_the_line_as_typed` | at file enter submits the line as typed | R4 (#502) / T5 (#511) |  |
+| `app.rs` | `at_file_offers_matches_case_insensitively_shortest_first` | at file offers matches case insensitively shortest first | R4 (#502) / T5 (#511) | not ported: which paths match is trellis's since R4 (#502): list_paths offers the paths starting with the prefix, shortest first, held by rpc.rs's list_paths tests; the client offers them in the order returned (TestCompleteOneChoiceCompletesSeveralAreListed) |
+| `app.rs` | `at_file_offers_nothing_unless_the_last_word_starts_with_at` | at file offers nothing unless the last word starts with at | R4 (#502) / T5 (#511) | `TestCompleteNothingOfferedOrStaleChangesNothing` |
+| `app.rs` | `at_file_offers_at_most_ten` | at file offers at most ten | R4 (#502) / T5 (#511) | not ported: the limit is trellis's since R4 (#502): list_paths answers at most 10 (LIST_PATHS_LIMIT in rpc.rs, held by its tests); the client draws what it is given |
+| `app.rs` | `at_file_tab_inserts_the_first_candidate_and_a_space` | at file tab inserts the first candidate and a space | R4 (#502) / T5 (#511) | `TestCompleteOneChoiceCompletesSeveralAreListed` |
+| `app.rs` | `at_file_tab_with_no_candidate_changes_nothing` | at file tab with no candidate changes nothing | R4 (#502) / T5 (#511) | `TestCompleteNothingOfferedOrStaleChangesNothing` |
+| `app.rs` | `at_file_enter_submits_the_line_as_typed` | at file enter submits the line as typed | R4 (#502) / T5 (#511) | `TestCompleteEnterSubmitsTheLineAsTyped` |
 | `app.rs` | `typing_then_enter_submits_the_line` | typing then enter submits the line | T2 (#508) | `TestModelSentTaskBecomesOnePrompt` |
 | `app.rs` | `q_types_a_q_now_that_there_is_somewhere_to_type` | q types a q now that there is somewhere to type | T2 (#508) | `TestModelTypingBackspaceAndAnEmptyLine` |
 | `app.rs` | `esc_clears_a_line_and_leaves_an_empty_one` | esc clears a line and leaves an empty one | T3 (#509) | `TestModelEscClearsTheLineThenQuitsWhenIdle` |
@@ -73,8 +73,8 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `view.rs` | `below_eighty_by_twentyfour_it_says_so_instead_of_laying_out` | below eighty by twentyfour it says so instead of laying out | T4 (#510) | `TestViewTooSmallSaysSoInsteadOfLayingOut` |
 | `view.rs` | `the_modal_covers_what_is_under_it` | the modal covers what is under it | T3 (#509) | `TestApproveModalCoversTheScreen` |
 | `view.rs` | `the_task_line_shows_what_is_typed_and_how_to_send_it` | the task line shows what is typed and how to send it | T4 (#510) | `TestViewTaskLineShowsWhatIsTypedAndHowToSendIt` |
-| `view.rs` | `at_file_candidates_are_drawn_under_the_input_line` | at file candidates are drawn under the input line | T5 (#511) |  |
-| `view.rs` | `at_file_candidates_are_not_drawn_while_a_run_holds_the_input` | at file candidates are not drawn while a run holds the input | T5 (#511) |  |
+| `view.rs` | `at_file_candidates_are_drawn_under_the_input_line` | at file candidates are drawn under the input line | T5 (#511) | `TestCompleteCandidatesAreDrawnUnderTheInput` |
+| `view.rs` | `at_file_candidates_are_not_drawn_while_a_run_holds_the_input` | at file candidates are not drawn while a run holds the input | T5 (#511) | `TestCompleteNothingOfferedOrStaleChangesNothing` |
 | `view.rs` | `while_running_the_task_line_shows_the_steer_being_typed` | while running the task line shows the steer being typed | T3 (#509) | `TestSteerLineIsShownWhileRunning` |
 | `view.rs` | `every_tool_is_a_node_before_any_of_them_is_called` | every tool is a node before any of them is called | T4 (#510) | `TestViewEveryToolIsANodeBeforeAnyIsCalled` |
 | `view.rs` | `a_refused_edit_is_on_the_graph_and_is_not_counted_as_a_write` | a refused edit is on the graph and is not counted as a write | T4 (#510) | `TestViewActionsCountWritesNotRefusals` |
@@ -84,8 +84,8 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `view.rs` | `a_long_target_is_cut_rather_than_wrapped_through_the_edges` | a long target is cut rather than wrapped through the edges | T4 (#510) | `TestViewLongTargetsAreCutAndANarrowPaneDrawsNothing` |
 | `view.rs` | `an_escape_sequence_in_a_transcript_never_reaches_the_terminal` | an escape sequence in a transcript never reaches the terminal | T4 (#510) | `TestViewNoEscapeSequenceReachesTheScreen` |
 | `view.rs` | `the_graph_survives_a_pane_too_narrow_to_draw_it` | the graph survives a pane too narrow to draw it | T4 (#510) | `TestViewLongTargetsAreCutAndANarrowPaneDrawsNothing` |
-| `view.rs` | `tier_status_bar_writes_the_word_once_before_the_label` | tier status bar writes the word once before the label | T5 (#511) |  |
-| `view.rs` | `tier_status_bar_with_no_label_says_unknown` | tier status bar with no label says unknown | T5 (#511) |  |
+| `view.rs` | `tier_status_bar_writes_the_word_once_before_the_label` | tier status bar writes the word once before the label | T5 (#511) | `TestStatusTierWordOnceAndPlain` |
+| `view.rs` | `tier_status_bar_with_no_label_says_unknown` | tier status bar with no label says unknown | T5 (#511) | `TestStatusProbingUntilATier` |
 | `events.rs` | `quit_ends_the_loop_and_returns_ok` | quit ends the loop and returns ok | T2 (#508) | `TestModelCtrlCIdleQuitsAndEndsOnExit` |
 | `events.rs` | `pending_messages_are_coalesced_into_one_draw` | pending messages are coalesced into one draw | T2 (#508) | not ported: Bubble Tea's renderer coalesces updates at its own frame rate; this client has no draw loop of its own to hold to it |
 | `events.rs` | `a_modal_answer_is_sent_to_the_asker` | a modal answer is sent to the asker | T3 (#509) | `TestApproveYesAndNoSendTheirAnswer` |
@@ -109,7 +109,7 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `tui_bridge.rs` | `an_ordinary_debug_line_is_not_mistaken_for_a_turn` | an ordinary debug line is not mistaken for a turn | T4 (#510) | `TestPanesAWarningIsALineAndNotATurn`, `TestFramesWrongTypesAreAbsent` |
 | `tui_bridge.rs` | `a_steer_delivery_is_numbered_in_order_and_names_the_turn_it_reached` | a steer delivery is numbered in order and names the turn it reached | T3 (#509) | `TestSteerDeliveredOnceAtItsTurn` |
 | `tui_run.rs` | `a_model_spec_that_does_not_parse_is_refused_before_the_terminal` | a model spec that does not parse is refused before the terminal | T2 (#508) | `TestModelFailedSetModelIsShown` |
-| `tui_run.rs` | `a_runtime_that_cannot_be_reached_does_not_claim_a_tier` | a runtime that cannot be reached does not claim a tier | T5 (#511) |  |
+| `tui_run.rs` | `a_runtime_that_cannot_be_reached_does_not_claim_a_tier` | a runtime that cannot be reached does not claim a tier | T5 (#511) | `TestStatusProbingUntilATier` |
 | `tui_run.rs` | `a_scripted_model_is_labelled_as_one_without_asking_anything` | a scripted model is labelled as one without asking anything | T5 (#511) | not ported: the tier label is computed by trellis and served as `get_state`'s `tier` (#269); the rule is tested in Rust where it lives |
 | `tui_run.rs` | `tier_label_colibri_accepted_says_tools_probed` | tier label colibri accepted says tools probed | T5 (#511) | not ported: the tier label is computed by trellis and served as `get_state`'s `tier` (#269); the rule is tested in Rust where it lives |
 | `tui_run.rs` | `tier_label_colibri_refused_says_tier_1_unavailable` | tier label colibri refused says tier 1 unavailable | T5 (#511) | not ported: the tier label is computed by trellis and served as `get_state`'s `tier` (#269); the rule is tested in Rust where it lives |
@@ -119,7 +119,7 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `tui_run.rs` | `tier_label_colibri_repository_spec_with_key_set_sends_nothing` | tier label colibri repository spec with key set sends nothing | T5 (#511) | not ported: the tier label is computed by trellis and served as `get_state`'s `tier` (#269); the rule is tested in Rust where it lives |
 | `tui_run.rs` | `tier_label_vocabulary_every_backend_s_label_has_a_documented_shape` | tier label vocabulary every backend's label has a documented shape | T5 (#511) | not ported: the tier label is computed by trellis and served as `get_state`'s `tier` (#269); the rule is tested in Rust where it lives |
 | `tui_run.rs` | `tier_label_vocabulary_shape_check_refuses_what_the_contract_does_not_list` | tier label vocabulary shape check refuses what the contract does not list | T5 (#511) | not ported: the tier label is computed by trellis and served as `get_state`'s `tier` (#269); the rule is tested in Rust where it lives |
-| `tui_run.rs` | `the_status_bar_takes_the_tier_the_probe_reports` | the status bar takes the tier the probe reports | T5 (#511) |  |
+| `tui_run.rs` | `the_status_bar_takes_the_tier_the_probe_reports` | the status bar takes the tier the probe reports | T5 (#511) | `TestStatusShowsModelAndTierFromGetState` |
 | `tui_run.rs` | `a_line_split_across_writes_arrives_as_one_message` | a line split across writes arrives as one message | T2 (#508) | `TestRPCLineSplitAcrossWritesIsOneLine` |
 | `tui_run.rs` | `several_lines_in_one_write_arrive_separately` | several lines in one write arrive separately | T2 (#508) | `TestRPCSeveralLinesAndAnUnterminatedLastOne` |
 | `tui_run.rs` | `a_final_line_without_a_newline_is_not_swallowed` | a final line without a newline is not swallowed | T2 (#508) | `TestRPCSeveralLinesAndAnUnterminatedLastOne` |

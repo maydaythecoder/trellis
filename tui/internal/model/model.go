@@ -101,6 +101,16 @@ type Model struct {
 	now      func() time.Time
 	runStart time.Time
 
+	// purposes maps a sent command's id to what its answer is read for
+	// (status.go).
+	purposes map[string]string
+	// offeredFor is the @fragment Offered was listed for, and pathsID the
+	// list_paths request in flight (complete.go).
+	offeredFor, pathsID string
+	// setModelID is the set_model whose success means the tier may now be
+	// known.
+	setModelID string
+
 	outbox []Out
 	nextID int
 	// The id of the prompt in flight, to match its response and run_end.
@@ -111,11 +121,11 @@ type Model struct {
 // its state, chosen the model and, with a task given, sent it.
 func New(o Options) *Model {
 	m := &Model{now: time.Now}
-	m.send("get_state", nil)
+	m.refreshState()
 	if o.ModelSpec != "" {
-		m.send("set_model", map[string]any{"model": o.ModelSpec})
+		m.setModelID = m.send("set_model", map[string]any{"model": o.ModelSpec})
 	} else {
-		m.send("set_model", map[string]any{"configured": true})
+		m.setModelID = m.send("set_model", map[string]any{"configured": true})
 	}
 	if t := strings.TrimSpace(o.Task); t != "" {
 		m.startTask(t)
@@ -207,15 +217,20 @@ func (m *Model) key(k tea.KeyMsg) {
 		}
 	case tea.KeyEnter:
 		m.submit()
+	case tea.KeyTab:
+		m.tab()
 	case tea.KeyBackspace:
 		r := []rune(m.Input)
 		if len(r) > 0 {
 			m.Input = string(r[:len(r)-1])
 		}
+		m.inputChanged()
 	case tea.KeySpace:
 		m.Input += " "
+		m.inputChanged()
 	case tea.KeyRunes:
 		m.Input += string(k.Runes)
+		m.inputChanged()
 	case tea.KeyUp:
 		m.ScrollBack++
 	case tea.KeyDown:
@@ -255,6 +270,10 @@ func (m *Model) submit() {
 		return
 	}
 	m.Input = ""
+	m.Offered = nil
+	if m.local(task) {
+		return
+	}
 	m.startTask(task)
 }
 
@@ -338,6 +357,7 @@ func (m *Model) turn(t *frames.TurnFields) {
 func (m *Model) runEnd(e *frames.RunEndFields) {
 	m.Running = false
 	m.promptID = ""
+	m.refreshState()
 	m.steersNotDelivered()
 	// A question its run no longer waits on cannot be answered.
 	m.Modal = nil
@@ -413,6 +433,32 @@ func (m *Model) response(r *frames.ResponseFields) {
 	cmd := ""
 	if r.Command != nil {
 		cmd = *r.Command
+	}
+	if ok {
+		switch m.answered(r) {
+		case forState:
+			m.stateAnswered(r.Data)
+			return
+		case forModel:
+			m.modelAnswered(r.Data)
+			return
+		case forPaths:
+			m.pathsAnswered(*r.ID, r.Data)
+			return
+		case forCodebase:
+			m.codebaseAnswered(r.Data)
+			return
+		case forRadius:
+			m.radiusAnswered(r.Data)
+			return
+		}
+		if cmd == "set_model" && r.ID != nil && *r.ID == m.setModelID {
+			// A model is chosen: its tier can now be asked for.
+			m.refreshState()
+			return
+		}
+	} else if m.answered(r) == forState {
+		return
 	}
 	switch cmd {
 	case "steer":
