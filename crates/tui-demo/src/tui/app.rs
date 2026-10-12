@@ -13,6 +13,10 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 /// without bound on a long one.
 const TRANSCRIPT_CAP: usize = 2000;
 
+/// How many rows PgUp and PgDn move the transcript (#660). The arrows move
+/// one, and the start of a capped run was hundreds of presses away.
+const TRANSCRIPT_PAGE: u16 = 10;
+
 /// How many `@` path candidates are offered at once.
 ///
 /// The list is drawn under the input line, and every row it takes comes out
@@ -499,6 +503,20 @@ impl AppState {
         self.cap_transcript();
     }
 
+    /// The `scroll_back` that shows the transcript's first row (#660).
+    ///
+    /// Every row the transcript takes at the narrowest pane the view draws,
+    /// where it wraps to the most, so at any size it reaches the top and the
+    /// view stops there. State holds no layout (#244), so this overshoots by
+    /// the pane's own height, and by the rows a wider pane saves; the first
+    /// PgDn after it can land on the same page.
+    fn transcript_top(&self) -> u16 {
+        crate::tui::view::wrapped_rows(
+            &self.transcript.join("\n"),
+            crate::tui::view::MIN_TRANSCRIPT_WIDTH,
+        )
+    }
+
     /// Only `Press`.
     ///
     /// Windows also reports `Release` and `Repeat`, and without this filter
@@ -560,6 +578,19 @@ impl AppState {
             KeyCode::Char(c) => self.input.push(c),
             KeyCode::Up => self.scroll_back = self.scroll_back.saturating_add(1),
             KeyCode::Down => self.scroll_back = self.scroll_back.saturating_sub(1),
+            // Held at the top, so PgDn after it moves at once rather than
+            // first spending presses on rows above the first.
+            KeyCode::PageUp => {
+                self.scroll_back = self
+                    .scroll_back
+                    .saturating_add(TRANSCRIPT_PAGE)
+                    .min(self.transcript_top())
+            }
+            KeyCode::PageDown => {
+                self.scroll_back = self.scroll_back.saturating_sub(TRANSCRIPT_PAGE)
+            }
+            KeyCode::Home => self.scroll_back = self.transcript_top(),
+            KeyCode::End => self.scroll_back = 0,
             _ => {}
         }
     }
@@ -691,6 +722,7 @@ impl AppState {
                 "  ^c        leave; a run in flight is stopped and rolled back first".into(),
                 "  enter during a run queues the line as a steer for its next turn".into(),
                 "  ↑ ↓       scroll the transcript".into(),
+                "  PgUp PgDn ten lines at a time; Home to the start, End back to following".into(),
                 String::new(),
                 "  Anything else is a task: it snapshots the worktree, drives the".into(),
                 "  model, runs the repository's own checks and rolls back if it".into(),
@@ -1244,6 +1276,94 @@ mod tests {
         s.update(press(KeyCode::Char('q')));
         assert!(!s.should_quit);
         assert!(s.modal.is_some());
+    }
+
+    /// A transcript of `n` numbered lines, following its end.
+    fn numbered(n: usize) -> AppState {
+        let mut s = AppState::default();
+        for i in 0..n {
+            s.push_line(format!("line {i:03}"));
+        }
+        s
+    }
+
+    /// The transcript as drawn at 80×24, one string.
+    fn drawn(s: &AppState) -> String {
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        t.draw(|f| crate::tui::view::render(s, f)).unwrap();
+        t.backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
+    #[test]
+    fn page_keys_page_up_moves_ten_rows_back() {
+        // #660: the arrows move one row, and the start of a long run was
+        // hundreds of presses away.
+        let mut s = numbered(200);
+        s.update(press(KeyCode::PageUp));
+        assert_eq!(s.scroll_back, 10);
+        s.update(press(KeyCode::PageUp));
+        assert_eq!(s.scroll_back, 20);
+        assert!(drawn(&s).contains("line 179"), "twenty rows above the end");
+    }
+
+    #[test]
+    fn page_keys_page_down_moves_ten_rows_forward_and_stops_at_the_end() {
+        let mut s = numbered(200);
+        s.scroll_back = 25;
+        s.update(press(KeyCode::PageDown));
+        assert_eq!(s.scroll_back, 15);
+        s.update(press(KeyCode::PageDown));
+        s.update(press(KeyCode::PageDown));
+        assert_eq!(s.scroll_back, 0, "saturating at the end: following again");
+    }
+
+    #[test]
+    fn page_keys_home_shows_the_first_line_and_page_up_stops_there() {
+        // Lines long enough to wrap in the pane, so a count of lines alone
+        // would stop short of the top.
+        let mut s = AppState::default();
+        for i in 0..120 {
+            s.push_line(format!("line {i:03} {}", "wrapped words ".repeat(5)));
+        }
+        assert!(!drawn(&s).contains("line 000"), "it starts at the end");
+        s.update(press(KeyCode::Home));
+        assert!(drawn(&s).contains("line 000"), "{}", drawn(&s));
+        let top = s.scroll_back;
+        s.update(press(KeyCode::PageUp));
+        assert_eq!(s.scroll_back, top, "nothing above the top to page to");
+    }
+
+    #[test]
+    fn page_keys_end_follows_the_end_again() {
+        let mut s = numbered(200);
+        s.update(press(KeyCode::Home));
+        assert!(s.scroll_back > 0);
+        s.update(press(KeyCode::End));
+        assert_eq!(s.scroll_back, 0);
+        // Following: a line that arrives now is in view.
+        s.push_line("THE NEWEST".into());
+        assert!(drawn(&s).contains("THE NEWEST"));
+    }
+
+    #[test]
+    fn page_keys_are_listed_in_help() {
+        let mut s = AppState {
+            input: "/help".into(),
+            ..Default::default()
+        };
+        s.update(press(KeyCode::Enter));
+        let help = s.transcript.join("\n");
+        assert!(
+            help.contains(
+                "PgUp PgDn ten lines at a time; Home to the start, End back to following"
+            ),
+            "{help}"
+        );
     }
 
     #[test]
