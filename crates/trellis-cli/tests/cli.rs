@@ -686,6 +686,81 @@ fn log_actions_lists_each_recorded_action_and_only_the_outcomes_there_are() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// A trail whose factual section holds the given check outcomes and radius
+/// counts, planted under `.trellis/runs`.
+fn plant_log_fixture(d: &Path, checks: &str, radius: &str) {
+    let runs = d.join(".trellis/runs");
+    std::fs::create_dir_all(&runs).unwrap();
+    std::fs::write(
+        runs.join("r1.json"),
+        format!(
+            r#"{{"run_id":"r1","task":"t","factual":{{"proposed":["a.py"],
+                "check_outcomes":{checks},"radius":{radius},"actions":[]}}}}"#
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn log_words_checks_are_passed_or_failed_not_a_suffix() {
+    // #651: "checks: Tests+ Typecheck-" read as marks on the checks, and the
+    // one line of terminal history a person scans for a run's result
+    // carried its verdicts in a glyph. The word is what an executed
+    // process said; nothing else here is a verdict (ADR 0004).
+    let d = repo("log-words-checks");
+    plant_log_fixture(
+        &d,
+        r#"[{"kind":"Tests","passed":true},{"kind":"Typecheck","passed":false}]"#,
+        r#"{"reached_resolved":0,"reached_ambiguous":0,"widest_unbound_in_touched_files":0,"radius_queries":0}"#,
+    );
+    let s = stdout(&run(&d, &["log"]));
+    assert!(
+        s.contains("recorded checks: tests passed, typecheck failed"),
+        "{s}"
+    );
+    assert!(!s.contains("Tests+") && !s.contains("Typecheck-"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn log_words_radius_is_three_figures_and_never_one_sum() {
+    // #651: "15 reached" added the resolved and ambiguous reach, which rule
+    // 3 forbids as much as a ratio: the two reach counts are sums over the
+    // run's queries and the unbound count is one query's, so no arithmetic
+    // across them is a figure about anything. Each is printed by itself,
+    // and the doubt figure is printed beside the reach it qualifies.
+    let d = repo("log-words-radius");
+    plant_log_fixture(
+        &d,
+        "[]",
+        r#"{"reached_resolved":12,"reached_ambiguous":3,"widest_unbound_in_touched_files":4,"radius_queries":2}"#,
+    );
+    let s = stdout(&run(&d, &["log"]));
+    assert!(
+        s.contains(
+            "radius: 12 resolved, 3 ambiguous reached; 4 unbound in touched files \
+             (widest single query, of 2)"
+        ),
+        "{s}"
+    );
+    assert!(!s.contains("15 reached"), "{s}");
+    assert!(s.contains("recorded checks: none"), "{s}");
+
+    // A run that asked no radius has no counts to show: zeros here would
+    // read as a radius that found nothing rather than one never queried.
+    let d2 = repo("log-words-radius-none");
+    plant_log_fixture(
+        &d2,
+        "[]",
+        r#"{"reached_resolved":0,"reached_ambiguous":0,"widest_unbound_in_touched_files":0,"radius_queries":0}"#,
+    );
+    let s = stdout(&run(&d2, &["log"]));
+    assert!(s.contains("radius: no query recorded"), "{s}");
+    assert!(!s.contains("0 resolved"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&d2);
+}
+
 #[test]
 fn an_inferred_root_is_named_and_an_explicit_one_is_not() {
     // The risk (#248): acting on a tree found several levels up without
