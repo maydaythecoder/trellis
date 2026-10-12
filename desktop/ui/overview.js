@@ -187,8 +187,10 @@ function codebase(doc, pane, o) {
   );
 }
 
-// One queue task: its state, id and priority, its words, and its chain:
-// the task it is part of and the ones it waits on.
+// One queue task: its status, id and priority, its words, and its chain:
+// the task it is part of and the ones it waits on. The status is the word
+// the board's cells and rows use, so a task reads the same in both views
+// (#656).
 function task(doc, t) {
   const li = el(doc, "li");
   const id = str(t && t.id) ?? "?";
@@ -197,7 +199,7 @@ function task(doc, t) {
     return li;
   }
   li.append(
-    el(doc, "span", str(t.state) ?? "?"),
+    el(doc, "span", str(t.status) ?? "?"),
     " ",
     el(doc, "code", id),
     " ",

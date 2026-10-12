@@ -170,8 +170,8 @@ pub async fn health(base: &str, key: Option<&ApiKey>) -> Result<Health, RuntimeE
 pub enum ToolsProbe {
     /// A 400 whose `param` is `tools`: the served family's template cannot
     /// render tools. `fallback_named` is true only when colibri's own
-    /// message named `COLI_TOOL_FALLBACK` (OLMoE's and Qwen3.6's do,
-    /// Inkling's does not).
+    /// message named `COLI_TOOL_FALLBACK` (OLMoE's does, Inkling's does not;
+    /// Qwen3.6's did before colibri 2.0.0, which renders its tools, #612).
     Refused { fallback_named: bool },
     /// A 200: the template accepted the tools. Not evidence the model calls
     /// them well.
