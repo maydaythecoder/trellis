@@ -142,7 +142,8 @@ input:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
 summary:focus-visible,
-.log:focus-visible {
+.log:focus-visible,
+.approval-detail:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
@@ -546,8 +547,15 @@ code {
   color: var(--muted);
 }
 
+/* One line per cell (#652): a long value ends in an ellipsis, never cut
+   off unmarked, and the binary and root cells carry their whole path as
+   their title. */
 .status-bar dd {
+  max-width: 40ch;
   margin: 0 8px 0 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* The action graph (#303): SVG graph.js builds from the core's layout. It
@@ -934,12 +942,30 @@ article.past-run section + section {
   list-style: none;
 }
 
-.qb-cell {
+/* Each cell is a button that filters the list (#656), drawn as the cell it
+   was rather than as the pane's small buttons. */
+.qb-counts .qb-cell {
   display: flex;
   flex-direction: column;
+  width: 100%;
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.qb-counts .qb-cell[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--pane-bg);
+}
+
+.qb-counts .qb-cell:disabled {
+  color: var(--muted);
+  cursor: default;
 }
 
 .qb-count {

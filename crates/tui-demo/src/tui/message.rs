@@ -71,7 +71,12 @@ pub enum Message {
     BudgetKnown {
         max_iterations: u32,
     },
+    /// A call waiting for a yes. `question` names it (`edit a.py (+1 -1)`)
+    /// and goes in the modal's title, apart from `diff`, what it would do:
+    /// sent after the diff, the question was the first thing a long diff
+    /// pushed out of the box (#640).
     ApprovalRequested {
+        question: String,
         diff: String,
     },
     /// A steer the view queued reached the model (#113, #115).

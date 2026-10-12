@@ -329,6 +329,7 @@ mod tests {
         let (answer_tx, mut answer_rx) = mpsc::channel(1);
 
         tx.send(Message::ApprovalRequested {
+            question: "edit a.py (+1 -1)".into(),
             diff: "- a\n+ b".into(),
         })
         .await
