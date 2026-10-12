@@ -806,6 +806,118 @@ fn colibri_image_over_budget_is_refused_before_the_snapshot_and_no_chat_is_sent(
     let _ = std::fs::remove_file(&img);
 }
 
+// ---- #626: colibri 2.0.0's model card ----
+
+/// bf244291 (v2.0.0), c/openai_server.py:6091-6101: a `/v1/models` entry
+/// with its `capabilities` and `input_modalities`.
+fn models_colibri_card(id: &str, capabilities: &[&str], input_modalities: &[&str]) -> String {
+    serde_json::json!({"object":"list","data":[{"id":id,"object":"model",
+        "created":1758800000,"owned_by":"colibri",
+        "capabilities":capabilities,"input_modalities":input_modalities}]})
+    .to_string()
+}
+
+/// A one-pixel-sized GIF outside the repository, for `--image`.
+fn small_gif(d: &Path) -> PathBuf {
+    let img = d.with_extension("small.gif");
+    let mut bytes = b"GIF89a".to_vec();
+    bytes.resize(64, 0);
+    std::fs::write(&img, &bytes).unwrap();
+    img
+}
+
+#[test]
+fn colibri_not_chat_a_card_without_chat_stops_before_the_snapshot_and_sends_no_chat() {
+    // The risk: a decision engine's 400 (`param: "model"`) read by the tools
+    // probe as "not verified", the run started with "tools assumed", and
+    // the first model call after the snapshot failing (#626).
+    let (base, log) = stub(
+        reply(
+            "200 OK",
+            &models_colibri_card("systemone", &["decision"], &["text"]),
+        ),
+        reply("200 OK", TOOLS_ACCEPTED),
+    );
+    let (d, r) = chat_run("not-chat", &base, "systemone");
+    refused(&d, &r);
+    assert!(r.all.contains("not `chat`"), "{}", r.all);
+    assert!(
+        r.all.contains("decision"),
+        "names what the card lists: {}",
+        r.all
+    );
+    assert_eq!(probes(&log), 0, "no probe of a model that cannot chat");
+    assert!(chat_bodies(&log).is_empty(), "no chat request: {}", r.all);
+}
+
+#[test]
+fn colibri_not_chat_an_image_against_a_text_only_card_is_refused_before_the_snapshot() {
+    let (base, log) = stub(
+        reply(
+            "200 OK",
+            &models_colibri_card("glm-5.2", &["chat", "tools"], &["text"]),
+        ),
+        reply("200 OK", TOOLS_ACCEPTED),
+    );
+    let d = repo("not-image", "", "");
+    let img = small_gif(&d);
+    let r = run_with(
+        &d,
+        Some(&format!("openai-chat:{base}/v1#glm-5.2")),
+        None,
+        &[],
+        &["--image", &img.to_string_lossy()],
+    );
+    refused(&d, &r);
+    assert!(
+        r.all.contains("--image") && r.all.contains("not `image`"),
+        "{}",
+        r.all
+    );
+    assert_eq!(probes(&log), 0, "refused before the probe: {}", r.all);
+    assert!(chat_bodies(&log).is_empty(), "no chat request: {}", r.all);
+    let _ = std::fs::remove_file(&img);
+}
+
+#[test]
+fn colibri_not_chat_a_card_that_chats_and_a_pre_2_0_body_both_go_ahead() {
+    // The risk: a missing field read as a missing capability, refusing
+    // every colibri before 2.0.0; and a card that lists `chat` refused.
+    let (base, _log) = stub(
+        reply(
+            "200 OK",
+            &models_colibri_card("glm-5.2", &["chat"], &["text", "image"]),
+        ),
+        reply("200 OK", TOOLS_ACCEPTED),
+    );
+    let (_d, r) = chat_run("chat-card", &base, "glm-5.2");
+    went_ahead(&r);
+
+    let (base, _log) = stub(
+        reply("200 OK", &models_colibri("glm-5.2")),
+        reply("200 OK", TOOLS_ACCEPTED),
+    );
+    let (_d, r) = chat_run("no-card", &base, "glm-5.2");
+    went_ahead(&r);
+}
+
+#[test]
+fn colibri_not_chat_a_card_entry_with_an_esc_byte_is_escaped_in_the_refusal() {
+    // The card's lists are the server's: an entry can carry a terminal
+    // sequence, and the refusal prints the list.
+    let (base, _log) = stub(
+        reply(
+            "200 OK",
+            &models_colibri_card("systemone", &["decision\x1b[2J"], &["text"]),
+        ),
+        reply("200 OK", TOOLS_ACCEPTED),
+    );
+    let (d, r) = chat_run("esc-card", &base, "systemone");
+    refused(&d, &r);
+    assert!(!r.all.contains('\x1b'), "{:?}", r.all);
+    assert!(r.all.contains("decision"), "{}", r.all);
+}
+
 /// What the classifier reads as an answer, so no run follows it.
 const ANSWER: &str = r#"{"choices":[{"message":{"role":"assistant","content":"helper returns 1."}}],"usage":{"completion_tokens":4}}"#;
 
