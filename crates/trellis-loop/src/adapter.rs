@@ -1266,6 +1266,9 @@ pub struct HostedModel {
     /// read; `None` until it reads one, so a step with no reply reports
     /// nothing rather than a sum of 0.
     step: Option<(Reported, Reported)>,
+    /// The run's wall-clock budget left, from [`Model::budget_left`], for
+    /// the next call's deadline; taken by it, so a figure is never reused.
+    budget_left: Option<std::time::Duration>,
 }
 
 #[derive(Debug, Clone)]
@@ -1291,6 +1294,7 @@ impl HostedModel {
             thinking_withheld: false,
             images: Vec::new(),
             step: None,
+            budget_left: None,
         }
     }
 
@@ -1524,6 +1528,21 @@ impl Model for HostedModel {
     async fn next_step(&mut self, t: &Transcript) -> Result<Step, String> {
         self.record_pending(t);
         self.step = None;
+        // One deadline for the whole call, every request in it (format,
+        // overflow and transport retries) ending by it, for a client that
+        // streams; one that does not ignores it (#280). The larger of the
+        // budget left and `[model] timeout_s`: a call that starts inside the
+        // budget then outlasts it by at most what one whole-reply request
+        // can, and the one extra turn the loop grants once the budget is
+        // spent, which starts with none left, still gets `timeout_s`. Not
+        // told the budget (a caller outside the loop), the call gets the
+        // whole-reply bound alone.
+        let span = self
+            .budget_left
+            .take()
+            .unwrap_or_default()
+            .max(self.client.timeout());
+        let deadline = trellis_model::deadline_after(span);
         let tools = native_tools(t);
         let protocol = self.client.protocol();
         let mut last = String::new();
@@ -1582,7 +1601,7 @@ impl Model for HostedModel {
             // The key is not in the body; it is added by the transport. An
             // image's bytes are, and a log is not where they go (ADR 0041).
             tracing::trace!(request = %trellis_model::redact_images(&body), "request as sent");
-            let reply = match self.client.send(&body).await {
+            let reply = match self.client.send_within(&body, Some(deadline)).await {
                 Ok(r) => r,
                 Err(RuntimeError::ContextOverflow(why)) if overflows < MAX_OVERFLOW_RETRIES => {
                     // The provider's refusal is the only measurement of its
@@ -1690,6 +1709,10 @@ impl Model for HostedModel {
 
     fn requested_compactions(&self) -> &[RequestedCompaction] {
         &self.compaction.requested
+    }
+
+    fn budget_left(&mut self, left: std::time::Duration) {
+        self.budget_left = Some(left);
     }
 
     fn step_usage(&self) -> crate::agent::StepUsage {
@@ -3610,5 +3633,155 @@ mod context_budget_tests {
         assert_eq!(got.await.unwrap(), NO_REQUEST);
         assert!(m.compactions().is_empty(), "{:?}", m.compactions());
         assert_eq!(Model::prompt_bytes(&m), None);
+    }
+}
+
+/// A streamed call's deadline in the loop (#280): the larger of the run's
+/// wall-clock budget left and `[model] timeout_s`, shared by every request
+/// the call makes.
+#[cfg(test)]
+mod stream_budget_tests {
+    use super::*;
+    use crate::agent::{NotConverged, Outcome};
+    use crate::budget::Budget;
+    use crate::orchestrator::Orchestrator;
+    use crate::testutil::{checker, repo};
+    use serde_json::json;
+    use std::time::{Duration, Instant};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Serves each connection an event-stream head and then a keepalive
+    /// comment every 500 ms; after `answer_after`, when it is `Some`, the
+    /// `events` and the end of the stream. Keepalives go on until the
+    /// client leaves when it is `None`, as a stalled colibri's pump does.
+    async fn stub(conns: Vec<(Option<Duration>, String)>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            for (answer_after, events) in conns {
+                let Ok(Ok((mut s, _))) =
+                    tokio::time::timeout(Duration::from_secs(10), listener.accept()).await
+                else {
+                    break;
+                };
+                let mut buf = vec![0u8; 65536];
+                let _ = s.read(&mut buf).await;
+                let began = Instant::now();
+                let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                            Connection: close\r\n\r\n";
+                if s.write_all(head.as_bytes()).await.is_err() {
+                    continue;
+                }
+                let mut gone = false;
+                while answer_after.is_none_or(|d| began.elapsed() < d)
+                    && began.elapsed() < Duration::from_secs(30)
+                {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    if s.write_all(b": keepalive\n\n").await.is_err() {
+                        gone = true;
+                        break;
+                    }
+                }
+                if !gone && answer_after.is_some() {
+                    let _ = s.write_all(events.as_bytes()).await;
+                }
+                s.shutdown().await.ok();
+            }
+        });
+        format!("http://{addr}/v1")
+    }
+
+    /// A reply with text and no tool call: a format failure, retried.
+    fn prose() -> String {
+        let chunk = json!({"choices": [{"index": 0, "delta": {"content": "I would read it."},
+                                        "finish_reason": "stop"}]});
+        let usage = json!({"choices": [], "usage": {"prompt_tokens": 5, "completion_tokens": 4}});
+        format!("data: {chunk}\n\ndata: {usage}\n\ndata: [DONE]\n\n")
+    }
+
+    fn model(base: &str) -> HostedModel {
+        let client = HostedClient::with_key(Protocol::OpenAiChat, base, "m", "K", None)
+            .unwrap()
+            .with_timeout(Duration::from_secs(1))
+            .with_streaming(true)
+            .unwrap();
+        HostedModel::new(client)
+    }
+
+    fn one_turn() -> Transcript {
+        Transcript {
+            task: "t".into(),
+            turns: Vec::new(),
+            final_notice: false,
+            steering: Default::default(),
+            prior: None,
+            repo: crate::agent::RepoContext::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn colibri_stream_budget_ends_a_run_within_its_wall_clock() {
+        // The risk (#280): the loop checks the budget only between steps,
+        // and keepalives keep a streamed call from ever ending, so a
+        // stalled engine holds the run forever.
+        let base = stub(vec![(None, String::new()); 4]).await;
+        let mut m = model(&base);
+        let d = repo();
+        let (orch, _j) = Orchestrator::new(d.path(), checker(0)).spawn();
+        let b = Budget {
+            max_wall_clock: Duration::from_secs(3),
+            ..Budget::default()
+        };
+        let began = Instant::now();
+        let (outcome, _) = crate::agent::run("fix it", &mut m, &orch, &b).await;
+        let took = began.elapsed();
+        let Outcome::NotConverged { reason, .. } = &outcome else {
+            panic!("converged: {outcome:?}");
+        };
+        assert!(
+            matches!(reason, NotConverged::ModelFailed(_)),
+            "{outcome:?}"
+        );
+        assert!(
+            reason.explain().starts_with("the model could not continue"),
+            "{}",
+            reason.explain()
+        );
+        assert!(took < Duration::from_secs(5), "{took:?}");
+    }
+
+    #[tokio::test]
+    async fn colibri_stream_budget_with_none_left_gets_the_timeout() {
+        // The risk: the one extra turn the loop grants once the budget is
+        // spent starting with no time left, and so ending as soon as it
+        // began, where a whole reply on that turn still gets `timeout_s`.
+        let base = stub(vec![(None, String::new())]).await;
+        let mut m = model(&base);
+        m.budget_left(Duration::ZERO);
+        let began = Instant::now();
+        let e = m.next_step(&one_turn()).await.unwrap_err();
+        let took = began.elapsed();
+        assert!(e.contains("did not respond within"), "{e}");
+        assert!(took >= Duration::from_secs(1), "{took:?}");
+        assert!(took < Duration::from_secs(2), "{took:?}");
+    }
+
+    #[tokio::test]
+    async fn colibri_stream_budget_is_shared_by_format_retries() {
+        // The risk: a format retry starting a deadline of its own, so a
+        // call that retries runs past the budget once per attempt.
+        let base = stub(vec![
+            (Some(Duration::from_secs(2)), prose()),
+            (None, String::new()),
+        ])
+        .await;
+        let mut m = model(&base);
+        m.budget_left(Duration::from_secs(3));
+        let began = Instant::now();
+        let e = m.next_step(&one_turn()).await.unwrap_err();
+        let took = began.elapsed();
+        assert!(e.contains("did not respond within"), "{e}");
+        assert!(took >= Duration::from_secs(2), "{took:?}");
+        assert!(took < Duration::from_secs(4), "{took:?}");
     }
 }

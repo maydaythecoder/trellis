@@ -120,6 +120,10 @@ impl<M: trellis_loop::Model + Send> trellis_loop::Model for SeesDone<'_, M> {
     fn step_usage(&self) -> trellis_loop::StepUsage {
         self.inner.step_usage()
     }
+
+    fn budget_left(&mut self, left: std::time::Duration) {
+        self.inner.budget_left(left);
+    }
 }
 
 impl Driver {

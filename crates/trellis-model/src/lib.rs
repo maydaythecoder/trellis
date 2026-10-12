@@ -29,8 +29,8 @@ pub use catalog::{CATALOG, CatalogEntry, DEFAULT};
 pub use grammar::{GrammarError, ToolGrammar};
 pub use hosted::{
     Conversation, Exchange, HostedClient, MAX_ATTEMPTS, MAX_RETRY_WAIT, NativeCall, NativeTool,
-    Protocol, Reply, Thinking, every_turn_replayed, is_context_overflow, parse_reply, request_body,
-    retry_delay, thinking_sent,
+    Protocol, Reply, Thinking, deadline_after, every_turn_replayed, is_context_overflow,
+    parse_reply, request_body, retry_delay, thinking_sent,
 };
 pub use image::{Image, ImageError, MAX_IMAGE_BYTES, redact_images};
 pub use pull::{PullError, Pulled};
