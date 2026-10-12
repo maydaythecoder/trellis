@@ -140,9 +140,20 @@ struct QueuedSteer {
     delivered: Option<usize>,
 }
 
+/// How far PgUp and PgDn move the approval modal. Ten of the twelve rows
+/// the box has at 80×24, so a page keeps two lines of the last one.
+const MODAL_PAGE: usize = 10;
+
 #[derive(Debug, Clone)]
 pub enum Modal {
-    Approval { diff: String },
+    /// `scroll` is the first line of `diff` in view (#640). Held below the
+    /// line count here; the view stops short of it once the rest fits, since
+    /// how much fits is layout and the state holds none (as `scroll_back`).
+    Approval {
+        question: String,
+        diff: String,
+        scroll: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,7 +219,13 @@ impl AppState {
                     ..Budget::default()
                 }
             }
-            Message::ApprovalRequested { diff } => self.modal = Some(Modal::Approval { diff }),
+            Message::ApprovalRequested { question, diff } => {
+                self.modal = Some(Modal::Approval {
+                    question,
+                    diff,
+                    scroll: 0,
+                })
+            }
             Message::Quit => self.should_quit = true,
             Message::SteerDelivered { nth, turn } => self.steer_delivered(nth, turn),
             Message::RunOutcome(line) => self.outcome = Some(line),
@@ -412,6 +429,20 @@ impl AppState {
                     }
                     self.modal = None;
                     self.answered = Some(false);
+                }
+                // Scrolling, so a long diff is read whole before it is
+                // answered (#640). Every other key is still ignored.
+                KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
+                    if let Some(Modal::Approval { diff, scroll, .. }) = &mut self.modal {
+                        let last = diff.lines().count().saturating_sub(1);
+                        *scroll = match k.code {
+                            KeyCode::Up => scroll.saturating_sub(1),
+                            KeyCode::Down => scroll.saturating_add(1),
+                            KeyCode::PageUp => scroll.saturating_sub(MODAL_PAGE),
+                            _ => scroll.saturating_add(MODAL_PAGE),
+                        }
+                        .min(last);
+                    }
                 }
                 _ => {}
             }
@@ -960,6 +991,7 @@ mod tests {
             path: "a.rs".into(),
         });
         s.update(Message::ApprovalRequested {
+            question: "edit a.py (+1 -1)".into(),
             diff: "--- a\n+++ b".into(),
         });
         assert!(s.modal.is_some());
@@ -978,6 +1010,7 @@ mod tests {
             path: "a.rs".into(),
         });
         s.update(Message::ApprovalRequested {
+            question: "edit a.py (+1 -1)".into(),
             diff: String::new(),
         });
         s.update(press(KeyCode::Char('n')));
@@ -987,11 +1020,37 @@ mod tests {
     }
 
     #[test]
+    fn approval_modal_scroll_stays_inside_the_diff_and_other_keys_do_nothing() {
+        let mut s = AppState::default();
+        s.update(Message::ApprovalRequested {
+            question: "edit a.py (+3 -0)".into(),
+            diff: "+ a\n+ b\n+ c".into(),
+        });
+        let scroll = |s: &AppState| match &s.modal {
+            Some(Modal::Approval { scroll, .. }) => *scroll,
+            None => panic!("the modal closed"),
+        };
+        s.update(press(KeyCode::Up));
+        s.update(press(KeyCode::PageUp));
+        assert_eq!(scroll(&s), 0, "nothing above the first line");
+        s.update(press(KeyCode::PageDown));
+        s.update(press(KeyCode::Down));
+        assert_eq!(scroll(&s), 2, "the last line is as far as it goes");
+        for code in [KeyCode::Char('q'), KeyCode::Esc, KeyCode::Enter] {
+            s.update(press(code));
+        }
+        assert!(!s.should_quit, "the keys on screen are the modal's");
+        assert_eq!(s.answered, None, "and only y or n answers it");
+        assert_eq!(scroll(&s), 2);
+    }
+
+    #[test]
     fn while_the_modal_is_up_q_does_not_quit() {
         // The keys on screen are the modal's. Quitting out from under a
         // pending approval would discard the decision silently.
         let mut s = AppState::default();
         s.update(Message::ApprovalRequested {
+            question: "edit a.py (+1 -1)".into(),
             diff: String::new(),
         });
         s.update(press(KeyCode::Char('q')));
@@ -1301,6 +1360,7 @@ mod input_tests {
         // an answer the person believes they gave.
         let mut s = AppState::default().with_running(true);
         s.update(Message::ApprovalRequested {
+            question: "edit a.py (+1 -1)".into(),
             diff: String::new(),
         });
         type_in(&mut s, "y");
@@ -1312,6 +1372,7 @@ mod input_tests {
         assert!(!s.transcript.iter().any(|l| l.contains("queued")));
 
         s.update(Message::ApprovalRequested {
+            question: "edit a.py (+1 -1)".into(),
             diff: String::new(),
         });
         type_in(&mut s, "n");
@@ -1390,6 +1451,7 @@ mod input_tests {
     fn the_modal_takes_the_keys_while_it_is_up() {
         let mut s = AppState::default();
         s.update(Message::ApprovalRequested {
+            question: "edit a.py (+1 -1)".into(),
             diff: String::new(),
         });
 
