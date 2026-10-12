@@ -4,7 +4,8 @@
 //
 // - the trellis binary's path and version, and the repository root, from
 //   `child-started` (`version` is null when `trellis --version` could not
-//   be read, and is said so, never guessed);
+//   be read, and is said so, never guessed); the root also names the window
+//   in `document.title` (#645);
 // - the session's model and where it came from (`repository`, `user` or
 //   `session`, the view's `model.source`, null when the core cannot tell);
 // - whether a run is in flight, the view's `running`;
@@ -62,6 +63,10 @@ export async function wireStatus(doc, tauri) {
     show(doc, "status-trellis", `${str(c.trellis) ?? "path not reported"} · ${version}`);
     show(doc, "status-root", str(c.root) ?? "not reported");
     show(doc, "status-child", "running");
+    // The window title names the open repository, so someone with several
+    // windows can tell them apart from the task bar (#645). The root is a
+    // path trellis reported, written as text: `title` is plain text.
+    doc.title = str(c.root) === null ? "trellis" : `trellis · ${c.root}`;
   });
   await tauri.event.listen("rpc-exited", (event) => {
     show(doc, "status-child", exitText(event.payload));
