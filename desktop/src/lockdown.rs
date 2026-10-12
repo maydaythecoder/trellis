@@ -2725,6 +2725,139 @@ mod tests {
     }
 
     #[test]
+    fn stop_confirm_dialog_has_named_cancel_and_stop_buttons() {
+        // The risk (#637): the confirmation is a dialog whose buttons a
+        // screen reader names only as "button", or whose text does not say
+        // what Stop does (a rollback nobody can undo), so the confirmation
+        // asks for consent to something it never named.
+        let page = page();
+        let dialog = index_of(&page, "stop-confirm");
+        assert_eq!(page[dialog].tag, "dialog");
+        let form = (0..page.len())
+            .find(|&i| page[i].tag == "form" && page[i].parent == Some(dialog))
+            .expect("the dialog holds a form");
+        assert_eq!(page[form].attr("method"), Some("dialog"));
+        for (id, text, value) in [
+            ("stop-confirm-cancel", "Cancel", "cancel"),
+            ("stop-confirm-stop", "Stop", "stop"),
+        ] {
+            let b = index_of(&page, id);
+            assert!(within(&page, b, form), "#{id} is outside the dialog's form");
+            assert_eq!(page[b].tag, "button");
+            assert_eq!(page[b].attr("type"), Some("submit"));
+            assert_eq!(page[b].text.trim(), text);
+            assert_eq!(page[b].attr("value"), Some(value));
+        }
+        let title = index_of(&page, "stop-confirm-title");
+        assert_eq!(
+            page[dialog].attr("aria-labelledby"),
+            Some("stop-confirm-title")
+        );
+        assert_eq!(page[title].text.trim(), "Stop the run?");
+        let said = &page[dialog].text;
+        assert!(
+            said.contains("rolls back its edits") && said.contains("writes a trail"),
+            "the dialog does not say what Stop does: {said}"
+        );
+        let stop = index_of(&page, "composer-stop");
+        assert_eq!(page[stop].attr("aria-controls"), Some("stop-confirm"));
+        assert_eq!(page[stop].attr("aria-haspopup"), Some("dialog"));
+    }
+
+    #[test]
+    fn stop_confirm_stop_is_set_apart_and_uses_the_danger_token() {
+        // The risk (#637): Stop drawn as Send's twin, 8 px away, so the
+        // irreversible action is one slip from the routine one. It carries
+        // the danger class, a rule for that class uses the failed token, and
+        // a rule pushes it to the far end of its row.
+        let page = page();
+        let stop = &page[index_of(&page, "composer-stop")];
+        let classes: Vec<&str> = stop
+            .attr("class")
+            .unwrap_or("")
+            .split_whitespace()
+            .collect();
+        assert!(classes.contains(&"danger"), "#composer-stop lacks .danger");
+        assert!(
+            page[index_of(&page, "stop-confirm-stop")]
+                .attr("class")
+                .is_some_and(|c| c.split_whitespace().any(|c| c == "danger")),
+            "the dialog's Stop lacks .danger"
+        );
+        let rules = css_rules();
+        let danger: Vec<&(String, String)> = rules
+            .iter()
+            .filter(|(s, _)| s.split(',').any(|s| s.trim() == ".composer button.danger"))
+            .collect();
+        assert_eq!(
+            danger.len(),
+            1,
+            "one rule for the composer's danger button: {danger:?}"
+        );
+        let decls: String = danger[0].1.split_whitespace().collect();
+        assert!(
+            decls.contains("color:var(--failed)"),
+            ".composer button.danger {{ {} }} does not use var(--failed)",
+            danger[0].1
+        );
+        let apart = rules
+            .iter()
+            .find(|(s, _)| s.trim() == "#composer-stop")
+            .expect("a rule for #composer-stop");
+        let decls: String = apart.1.split_whitespace().collect();
+        assert!(
+            decls.contains("margin-left:auto"),
+            "#composer-stop {{ {} }} does not set it apart",
+            apart.1
+        );
+    }
+
+    #[test]
+    fn stop_confirm_abort_is_sent_only_from_the_dialog_s_close() {
+        // The risk (#637): a click on Stop aborting at once, or a second
+        // path to `abort` beside the dialog, so the confirmation can be
+        // walked around. The one `type: "abort"` in composer.js is in the
+        // dialog's close handler, behind its returnValue; the click opens
+        // the dialog and focuses Cancel, so Enter stops nothing.
+        let js = code_of("composer.js");
+        assert_eq!(
+            js.matches("type: \"abort\"").count(),
+            1,
+            "composer.js sends abort from more than one place"
+        );
+        let click = click_handler(&js, "p.stop");
+        for bad in ["send(", "invoke(", "abort"] {
+            assert!(!click.contains(bad), "Stop's click sends: {click}");
+        }
+        for want in [
+            "p.stopConfirm.returnValue = \"\";",
+            "p.stopConfirm.showModal();",
+            "p.stopCancel.focus();",
+        ] {
+            assert!(click.contains(want), "Stop's click lacks {want}: {click}");
+        }
+        let close = js
+            .split("p.stopConfirm.addEventListener(\"close\"")
+            .nth(1)
+            .and_then(|r| r.split("});").next())
+            .expect("composer.js listens for the dialog's close");
+        assert!(
+            close.contains("if (p.stopConfirm.returnValue !== \"stop\") return;"),
+            "the close handler aborts on any close: {close}"
+        );
+        assert!(
+            close.contains("type: \"abort\""),
+            "the close handler sends no abort: {close}"
+        );
+        let parts = function_body(&js, "parts");
+        assert!(
+            parts.contains("stopConfirm: doc.getElementById(\"stop-confirm\")")
+                && parts.contains("stopCancel: doc.getElementById(\"stop-confirm-cancel\")"),
+            "composer.js looks up another dialog: {parts}"
+        );
+    }
+
+    #[test]
     fn model_gate_model_js_parses_no_html() {
         // The risk: a spec, an address, a runtime's error or a provider
         // name, all trellis- or configuration-supplied, written as markup,

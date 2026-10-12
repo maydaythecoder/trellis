@@ -348,6 +348,22 @@ code {
   outline-offset: 2px;
 }
 
+/* Stop (#637) aborts and rolls the run back, which cannot be undone, so it
+   must not read as Send's twin: it takes the failed colour, here and in the
+   dialog that confirms it, and sits at the far end of its row. */
+.composer button.danger,
+.approval button.danger {
+  color: var(--failed);
+}
+
+#composer-stop {
+  margin-left: auto;
+}
+
+#stop-confirm-stop {
+  font-weight: 600;
+}
+
 .composer-list {
   margin-top: 8px;
 }
