@@ -74,8 +74,13 @@ pub fn render(state: &AppState, frame: &mut Frame) {
 
     // Last, so it is over everything, and `Clear` first so what is under it
     // is wiped rather than showing through the gaps.
-    if let Some(Modal::Approval { diff }) = &state.modal {
-        render_modal(diff, area, frame);
+    if let Some(Modal::Approval {
+        question,
+        diff,
+        scroll,
+    }) = &state.modal
+    {
+        render_modal(question, diff, *scroll, area, frame);
     }
 }
 
@@ -547,17 +552,80 @@ fn render_input(state: &AppState, offered: &[&str], area: Rect, frame: &mut Fram
     frame.render_widget(p, area);
 }
 
-fn render_modal(diff: &str, area: Rect, frame: &mut Frame) {
+/// The approval box: the question on its top border, the answer keys on its
+/// bottom one, and the diff between, scrolled from line `scroll` (#640).
+///
+/// The question used to come after the diff, and a long diff clipped it
+/// along with its own tail, so a change was approved or declined unseen.
+/// On the border it is drawn whatever the diff's length; the keys and
+/// "lines a–b of n" are on rows the diff cannot push out either.
+fn render_modal(question: &str, diff: &str, scroll: usize, area: Rect, frame: &mut Frame) {
     let modal = centred(60, 60, area);
     frame.render_widget(Clear, modal);
-    let p = Paragraph::new(diff.to_string())
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" approve this change?  [y] accept  [n] reject "),
-        )
-        .wrap(Wrap { trim: false });
-    frame.render_widget(p, modal);
+    // `edit` and `write_file` change the tree; anything else the gate asks
+    // about (`bash`, `ask_human`, a custom tool) is a call.
+    let what = if question.starts_with("edit ") || question.starts_with("write_file ") {
+        "change"
+    } else {
+        "call"
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {question}? "))
+        .title_bottom(format!(" [y] accept this {what}  [n] reject "));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+
+    let lines: Vec<&str> = diff.lines().collect();
+    let rows = |l: &str| usize::from(wrapped_rows(l, inner.width));
+    let height = usize::from(inner.height);
+    let scrolls = lines.iter().map(|l| rows(l)).sum::<usize>() > height;
+    // One row for the position when there is more than fits.
+    let body_h = if scrolls {
+        height.saturating_sub(1)
+    } else {
+        height
+    };
+    // The furthest down a view can start and still fill the box, so the
+    // last page is a full one and `scroll` past it shows that page.
+    let mut last_from = lines.len();
+    let mut used = 0;
+    while last_from > 0 && used + rows(lines[last_from - 1]) <= body_h {
+        used += rows(lines[last_from - 1]);
+        last_from -= 1;
+    }
+    let from = scroll.min(last_from);
+    let mut to = from;
+    let mut used = 0;
+    while to < lines.len() && used + rows(lines[to]) <= body_h {
+        used += rows(lines[to]);
+        to += 1;
+    }
+
+    let body = Rect {
+        height: u16::try_from(body_h).unwrap_or(inner.height),
+        ..inner
+    };
+    // `from` is at most `last_from`, which is at most the line count.
+    let shown = lines[from..].join("\n");
+    frame.render_widget(Paragraph::new(shown).wrap(Wrap { trim: false }), body);
+    if scrolls {
+        let at = Rect {
+            y: inner.y + body.height,
+            height: 1,
+            ..inner
+        };
+        let position = format!(
+            "lines {}–{} of {} · ↑↓ PgUp PgDn",
+            from + 1,
+            to.max(from + 1),
+            lines.len()
+        );
+        frame.render_widget(
+            Paragraph::new(position).style(Style::default().add_modifier(Modifier::DIM)),
+            at,
+        );
+    }
 }
 
 /// A rect `pct_x` by `pct_y` percent of `area`, centred in it.
@@ -805,6 +873,66 @@ mod tests {
         );
     }
 
+    /// An approval of `question` with a diff of `n` numbered lines.
+    fn asked(question: &str, n: usize) -> AppState {
+        let mut s = populated().with_running(true);
+        let diff: Vec<String> = (1..=n).map(|i| format!("+ line {i:02}")).collect();
+        s.update(Message::ApprovalRequested {
+            question: question.into(),
+            diff: diff.join("\n"),
+        });
+        s
+    }
+
+    fn pressed(s: &mut AppState, code: ratatui::crossterm::event::KeyCode) {
+        s.update(Message::Key(ratatui::crossterm::event::KeyEvent::from(
+            code,
+        )));
+    }
+
+    #[test]
+    fn approval_modal_scroll_keeps_the_question_drawn_at_80_by_24_with_a_60_line_diff() {
+        // #640: the question came after the diff, and a long diff clipped
+        // it along with its own tail, so the change was answered unseen.
+        let s = asked("edit a.py (+60 -0)", 60);
+        let out = drawn(&s, 80, 24);
+        assert!(out.contains(" edit a.py (+60 -0)? "), "{out}");
+        assert!(out.contains("[y] accept this change  [n] reject"), "{out}");
+        assert!(out.contains("+ line 01"), "{out}");
+        assert!(out.contains("lines 1–") && out.contains(" of 60"), "{out}");
+        assert!(!out.contains("+ line 60"), "the tail is below, not drawn");
+    }
+
+    #[test]
+    fn approval_modal_scroll_page_down_reaches_the_last_line_and_y_still_answers() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut s = asked("edit a.py (+60 -0)", 60);
+        for _ in 0..10 {
+            pressed(&mut s, KeyCode::PageDown);
+        }
+        let out = drawn(&s, 80, 24);
+        assert!(out.contains("+ line 60"), "{out}");
+        assert!(out.contains("–60 of 60"), "{out}");
+        assert!(out.contains(" edit a.py (+60 -0)? "), "the question stays");
+
+        pressed(&mut s, KeyCode::Char('q'));
+        assert!(!s.should_quit && s.modal.is_some(), "q is still ignored");
+        pressed(&mut s, KeyCode::Char('y'));
+        assert!(s.modal.is_none());
+        assert_eq!(s.answered, Some(true), "y still answers");
+    }
+
+    #[test]
+    fn approval_modal_scroll_title_says_call_for_a_call_that_is_not_an_edit() {
+        let out = drawn(&asked("bash", 3), 80, 24);
+        assert!(out.contains(" bash? "), "{out}");
+        assert!(out.contains("[y] accept this call  [n] reject"), "{out}");
+        assert!(
+            !out.contains("lines 1–"),
+            "a diff that fits says no position: {out}"
+        );
+    }
+
     #[test]
     fn the_modal_covers_what_is_under_it() {
         let mut s = populated();
@@ -816,6 +944,7 @@ mod tests {
         assert!(before.contains("aaaaaaaaaaaaaaaaaaaa"));
 
         s.update(Message::ApprovalRequested {
+            question: "edit a.py (+1 -1)".into(),
             diff: "--- a/src/index/resolve.rs\n+++ b/src/index/resolve.rs".into(),
         });
         let after = drawn(&s, 80, 24);
