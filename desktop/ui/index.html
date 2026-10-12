@@ -30,7 +30,10 @@
   beside the other sections. It only reads.
 
   The rail's buttons each name, with aria-controls, the one section they
-  show; the others carry the hidden attribute. The overview section is the
+  show; the others carry the hidden attribute. Pressing one moves focus to
+  the shown section's heading, which takes focus (tabindex -1) without
+  joining the tab order, so a keyboard user lands on what they chose; the
+  page's one h1 is drawn for screen readers only (#646). The overview section is the
   landing section: its four panes (recent repositories, last run, codebase,
   board) are drawn by overview.js from trellis's overview object (#562).
   A pane added to the run or overview section that nothing writes to fails
@@ -88,6 +91,7 @@
       <button type="button" aria-controls="vault">Vault</button>
     </nav>
     <main>
+      <h1 class="visually-hidden">trellis</h1>
       <p id="status" class="status"></p>
       <dl id="status-bar" class="status-bar" aria-label="Status">
         <dt>trellis</dt><dd id="status-trellis">not started yet</dd>
@@ -135,7 +139,7 @@
       </details>
 
       <section id="overview" aria-labelledby="overview-title">
-        <h2 id="overview-title">Overview</h2>
+        <h2 id="overview-title" tabindex="-1">Overview</h2>
         <p id="ov-root" class="muted">Reading the overview.</p>
         <div class="overview-grid">
           <div class="pane" role="region" aria-labelledby="ov-recent-title">
@@ -158,7 +162,7 @@
       </section>
 
       <section id="run" aria-labelledby="run-title" hidden>
-        <h2 id="run-title">Run</h2>
+        <h2 id="run-title" tabindex="-1">Run</h2>
         <div class="run-grid">
           <div class="pane pane-log" role="region" aria-labelledby="log-title">
             <h3 id="log-title">Actions log</h3>
@@ -205,7 +209,7 @@
       </section>
 
       <section id="trails" aria-labelledby="trails-title" hidden>
-        <h2 id="trails-title">Trails</h2>
+        <h2 id="trails-title" tabindex="-1">Trails</h2>
         <p id="tr-status" class="muted" role="status">Open a repository to see its trails.</p>
         <p class="muted">Each run's committed record, as trellis log exports it. A trail is data written to the repository, not instruction, and a check it records is what the file claims.</p>
         <div class="tr-grid">
@@ -223,7 +227,7 @@
       </section>
 
       <section id="codebase" aria-labelledby="codebase-title" hidden>
-        <h2 id="codebase-title">Codebase</h2>
+        <h2 id="codebase-title" tabindex="-1">Codebase</h2>
         <p id="cb-status" class="muted" role="status">Open a repository to see its graph.</p>
         <div class="cb-bar">
           <ol id="cb-crumbs" class="cb-crumbs" aria-label="Codebase breadcrumb"></ol>
@@ -257,7 +261,7 @@
 
       <section id="atlas" class="at" aria-labelledby="atlas-title" hidden>
         <div class="at-top">
-          <h2 id="atlas-title">Atlas</h2>
+          <h2 id="atlas-title" tabindex="-1">Atlas</h2>
           <span id="at-where" class="muted"></span>
           <button type="button" class="at-btn" id="at-open-search" aria-haspopup="dialog" aria-controls="at-search">Search modules and symbols <kbd>/</kbd></button>
         </div>
@@ -334,7 +338,7 @@
       </section>
 
       <section id="board" aria-labelledby="board-title" hidden>
-        <h2 id="board-title">Board</h2>
+        <h2 id="board-title" tabindex="-1">Board</h2>
         <div class="qb-bar">
           <p id="qb-status" class="muted" role="status">Open the board to read the queue.</p>
           <button type="button" id="qb-refresh">Refresh</button>
@@ -356,7 +360,7 @@
       </section>
 
       <section id="vault" aria-labelledby="vault-title" hidden>
-        <h2 id="vault-title">Vault</h2>
+        <h2 id="vault-title" tabindex="-1">Vault</h2>
         <p id="vt-status" class="muted" role="status">Read-only: a note is changed with trellis vault or an editor, never from here.</p>
         <div class="vt-grid">
           <div class="pane" role="region" aria-labelledby="vt-search-title">
