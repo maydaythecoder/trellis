@@ -119,7 +119,9 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
-    /// Omit to enter an interactive session.
+    /// Omit to start as the Start lines above say: at a terminal, the
+    /// desktop window and the overview, or the terminal interface without a
+    /// desktop; on a pipe or redirect, the line-based session.
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -258,10 +260,11 @@ enum Command {
 
     /// Watch a run happen: actions, transcript, edits, checks, radius, budget.
     ///
-    /// The line-based session stays the default. This is the surface for
-    /// watching one run rather than issuing a sequence of commands, and it
-    /// renders the same `AppState` the standalone `tui_demo` binary does —
-    /// only the source of events differs.
+    /// `trellis --tui` opens it too, as bare `trellis` does at a terminal
+    /// with no desktop to open. This is the surface for watching one run
+    /// rather than issuing a sequence of commands, and it renders the same
+    /// `AppState` the standalone `tui_demo` binary does — only the source of
+    /// events differs.
     Tui {
         /// A task to start immediately. Omit it to open idle and type one.
         task: Option<String>,
