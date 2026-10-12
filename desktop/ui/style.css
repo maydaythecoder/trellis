@@ -533,8 +533,15 @@ code {
   color: var(--muted);
 }
 
+/* One line per cell (#652): a long value ends in an ellipsis, never cut
+   off unmarked, and the binary and root cells carry their whole path as
+   their title. */
 .status-bar dd {
+  max-width: 40ch;
   margin: 0 8px 0 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* The action graph (#303): SVG graph.js builds from the core's layout. It
