@@ -6,6 +6,9 @@ hard link, not a rename), §5 and §7. Each amendment is marked in place.
 claim, decided by the owner on 2026-09-28.
 §5 amended again on 2026-10-06 for #352: a task is blocked after its
 third stale-claim release instead of being released again.
+§1 and §5 amended on 2026-10-12 by ADR 0053 (#624): `work` runs each
+task in a worktree of its own and continues past a converged one, once
+built.
 **Date:** 2026-09-27
 **Reference design:** Paperclip (`paperclipai/paperclip`, MIT). Five of its
 ideas are borrowed as designs, and no Paperclip code or server is used:
@@ -50,6 +53,10 @@ In a linked worktree, `--absolute-git-dir` returns
 has its own queue**, and `git worktree remove` deletes that worktree's queue
 along with it. Execution is serial and one run per worktree (§4), so this is
 the intended behaviour.
+
+*Amended 2026-10-12 by ADR 0053 (#624):* a task worktree `work` creates
+under `.trellis/work/task/` is the exception. It has no queue of its own;
+the queue is the git directory of the worktree `work` was started from.
 
 ### 2. One task, one file
 
@@ -163,6 +170,13 @@ task file to `done/` or `failed/` with the run id and exit reason appended.
   task.
 - `--max-tasks` bounds how many tasks one invocation runs. The per-run budget
   (ADR 0008) bounds each run. Nothing multiplies.
+
+*Amended 2026-10-12 by ADR 0053 (#624), not yet built:* each claimed task
+runs in its own linked worktree on `trellis/task/<id>`, a converged task's
+worktree is kept with its change for a person, and `work` continues to the
+next task instead of stopping. Until the build lands, the rule above holds.
+ADR 0053 decision 4 replaces the outcome table below; `--max-tasks` keeps
+its meaning.
 
 *Settled in implementation. This ADR left these open:*
 
@@ -387,4 +401,4 @@ telemetry path holds. This covers what pi's `--mode json` offers.
 - Three new subcommands grow the CLI beyond brief §4.12. That was owner-directed
   and is recorded here, following the precedent of `session`, `log` and `why`.
 - A long unattended session stops at its first converged change. That
-  behaviour is intended.
+  behaviour is intended. *Amended 2026-10-12:* until ADR 0053 is built.
