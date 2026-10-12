@@ -254,6 +254,7 @@ on stderr.
     "list_paths" below*)
   - `vault_search {query, limit?}` and `vault_graph {note}` (*added
     2026-10-06, #295; see "vault_search and vault_graph" below*)
+  - `vault_check` (*added 2026-10-12, #631; see "vault_check" below*)
   - `get_session_stats` and `get_last_assistant_text` (*added 2026-10-06,
     #319; see "get_session_stats and get_last_assistant_text" below*)
   - `classify {text}` (*added 2026-10-07, #501, ADR 0052; see "classify"
@@ -572,6 +573,25 @@ on stderr.
     what `trellis vault search retry` or `trellis vault graph child` prints,
     scores to the four decimals printed. Each also checks the no-vault
     message, and `vault_graph` the missing-note message, against the CLI's.
+- *Added 2026-10-12 (#631).* **`vault_check`** answers with what `trellis
+  vault check` prints, without `--fix`, as data: `{line, issues, warnings,
+  gate}`, `line` the report line, `issues` and `warnings` the lines the CLI
+  prints under `issues:` and as `warning:`, and `gate` the run gate's answer,
+  `{accepts: true, stats: {notes, parentless, connected, manifest_missing,
+  manifest_extra}}` or `{accepts: false, violations}`. The gate answer is
+  vault validation (ADR 0022), not a `Verdict` (ADR 0004), and a client
+  never draws it as a check. It reads through `edit::check(dir, false)`,
+  which writes and touches nothing; the CLI's own path exits the process on
+  a refusing gate and is not reused. `--fix` has no rpc form: a `fix` field
+  of any value is refused by name, since ignored it would hand the client
+  the unrepaired report as the repaired one, and every vault write stays a
+  `trellis vault` command (#70). No vault configured answers `success`
+  false with the CLI's message. Evidence:
+  `rpc_vault_check_returns_what_vault_check_prints` and
+  `rpc_vault_check_refuses_a_fix_field_by_name_and_writes_nothing` in
+  `tests/modes.rs`, through the binary, over the same committed vault, whose
+  orphan the gate refuses, and over it with the orphan adopted, which it
+  accepts; the worktree is clean after each.
 - *Added 2026-10-07 (#502), on ADR 0052 (its ticket plan's R4), accepted by
   the owner on #500.* **`list_paths {prefix}`** answers with the paths `@`
   completion offers, so the Go TUI and the desktop never list a
