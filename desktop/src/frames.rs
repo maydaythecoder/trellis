@@ -35,6 +35,10 @@ pub enum Frame {
     SteerDelivered {
         after_step: Option<u64>,
     },
+    /// The `runtime identified` event: colibri's self-report, once per run
+    /// (#627). Without `served` it names no runtime, so one that lacks it
+    /// is [`Frame::Ignored`].
+    RuntimeIdentified(RuntimeIdentified),
     RunStart(RunStart),
     RunEnd(RunEnd),
     Response(Response),
@@ -74,6 +78,21 @@ pub struct Turn {
     /// colibri's queue waits summed; absent unless every reply carried the
     /// `x-colibri-queue-wait-ms` header.
     pub queue_wait_ms: Option<u64>,
+}
+
+/// colibri's self-report (client_contract.json's `runtime identified`).
+/// Each count is colibri's own and `None` when it did not report it: a
+/// liveness-only `/health`, or one that failed, reports no slot and no
+/// tier, and the page says so rather than drawing 0 (ADR 0048 §8). The
+/// three tier counts stay three; nothing here adds them or takes a share.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuntimeIdentified {
+    pub runtime: Option<String>,
+    pub served: String,
+    pub kv_slots: Option<u64>,
+    pub tiers_vram: Option<u64>,
+    pub tiers_ram: Option<u64>,
+    pub tiers_disk: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -191,6 +210,17 @@ pub fn parse_stdout(line: &str) -> Frame {
         },
         Some("steer delivered") => Frame::SteerDelivered {
             after_step: u(f, "after_step"),
+        },
+        Some("runtime identified") => match s(f, "served") {
+            Some(served) => Frame::RuntimeIdentified(RuntimeIdentified {
+                runtime: s(f, "runtime"),
+                served,
+                kv_slots: u(f, "kv_slots"),
+                tiers_vram: u(f, "tiers_vram"),
+                tiers_ram: u(f, "tiers_ram"),
+                tiers_disk: u(f, "tiers_disk"),
+            }),
+            None => Frame::Ignored,
         },
         _ => Frame::Ignored,
     }
