@@ -273,9 +273,15 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
         }
     };
 
+    // Under the OS sandbox when this machine has one that works (ADR 0055):
+    // no network, the home directory hidden, writes only to the clone and
+    // the temporary directory. Said either way, never assumed.
+    let os = trellis_loop::OsSandbox::detected();
+    let _ = writeln!(out, "sandbox:  {}", os.label());
+    let spawned = os.wrap(&argv, clone.path());
     let started = Instant::now();
-    let mut cmd = Command::new(&argv[0]);
-    cmd.args(&argv[1..])
+    let mut cmd = Command::new(&spawned[0]);
+    cmd.args(&spawned[1..])
         .stdin(Stdio::piped())
         .env("TRELLIS_TASK", text)
         .env("TRELLIS_TASK_ID", task_id)
@@ -312,7 +318,11 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             // Nothing ran, so nothing changed; the snapshot needs no rollback.
             return RunEnd::Error {
                 run_id: None,
-                error: format!("could not start `{}`: {e}", argv[0]),
+                // The sandbox's binary when there is one: it is what failed.
+                error: format!(
+                    "could not start `{}`: {e}",
+                    std::path::Path::new(&spawned[0]).display()
+                ),
             };
         }
     };

@@ -21,6 +21,7 @@ mod isolate;
 mod listing;
 mod notes;
 mod orchestrator;
+mod os_sandbox;
 pub mod partition;
 mod path_rules;
 mod registry;
@@ -58,6 +59,7 @@ pub use hooks::{
 };
 pub use integrate::{Integrated, Integration, SuspectedRecallGap};
 pub use orchestrator::{Dispatched, GateDenial, Handle, HumanDecision, Orchestrator, Request};
+pub use os_sandbox::{OsSandbox, OsSandboxKind};
 pub use partition::{FailurePolicy, Partition, WorkUnit, plan};
 pub use path_rules::names_trellis_dir;
 pub use registry::{
