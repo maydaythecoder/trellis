@@ -1801,6 +1801,81 @@ mod tests {
     }
 
     #[test]
+    fn board_filter_cells_press_one_status_and_show_all_lifts_it() {
+        // The risk (#656): eight counts that look clickable and are not; or
+        // a filter that counts what it shows, so the board draws a figure
+        // the core did not send. Each cell is a button with aria-pressed,
+        // the list shows the view's tasks whose status is the pressed
+        // cell's, and nothing is counted from them (the queue_js_ guards
+        // still hold). No JavaScript runs under cargo test, so this holds
+        // the text; a node smoke script with a fake DOM pressed the cells
+        // (see the commit).
+        let js = code_of("queue.js");
+        let counts = function_body(&js, "drawCounts");
+        for want in [
+            r#"const b = el(doc, "button");"#,
+            r#"b.setAttribute("aria-pressed", s !== null && s === pressed ? "true" : "false");"#,
+            r#"else b.addEventListener("click", () => press(doc, s));"#,
+            r#"el(doc, "button", "Show all")"#,
+            "b.disabled = pressed === null;",
+            r#"b.addEventListener("click", () => press(doc, null));"#,
+        ] {
+            assert!(counts.contains(want), "drawCounts lacks {want}");
+        }
+        let press = function_body(&js, "press");
+        for want in [
+            "pressed = status === pressed ? null : status;",
+            "drawCounts(doc, lastQueue.counts);",
+            "drawTasks(doc, lastQueue.tasks);",
+        ] {
+            assert!(press.contains(want), "press lacks {want}");
+        }
+        let tasks = function_body(&js, "drawTasks");
+        assert!(
+            tasks.contains(".filter((t) => pressed === null || str(t && t.status) === pressed)"),
+            "drawTasks does not honour the pressed status: {tasks}"
+        );
+        // The filtered rows are drawn, never counted.
+        assert_eq!(tasks.matches(".length").count(), 1, "{tasks}");
+        assert!(tasks.contains("if (items.length === 0) {"), "{tasks}");
+        assert!(
+            js.split(r#"listen("child-started""#)
+                .nth(1)
+                .and_then(|r| r.split("});").next())
+                .is_some_and(|s| s.contains("pressed = null;")),
+            "another repository's queue keeps the last one's filter"
+        );
+    }
+
+    #[test]
+    fn board_filter_overview_and_board_say_the_same_status_word() {
+        // The risk (#656): the same task read "pending" in the overview
+        // (the queue directory, `state`) and "todo" on the board (`status`).
+        // Both now draw `status`, which the overview's contract entry lists,
+        // so a rename fails trellis's own contract test rather than
+        // blanking the word.
+        let overview_js = code_of("overview.js");
+        let overview = function_body(&overview_js, "task");
+        assert!(
+            overview.contains(r#"el(doc, "span", str(t.status) ?? "?")"#),
+            "{overview}"
+        );
+        assert!(!overview.contains("t.state"), "{overview}");
+        assert!(code_of("queue.js").contains(r#"str(t.status) ?? "status not reported""#));
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../crates/trellis-cli/tests/client_contract.json"
+        ))
+        .expect("the contract is JSON");
+        assert!(
+            contract["overview"]["always"]
+                .as_array()
+                .expect("overview.always is a list")
+                .contains(&json!("board.tasks[].status")),
+            "the overview's contract does not list the status the desktop reads"
+        );
+    }
+
+    #[test]
     fn board_reads_pr_ci_once_at_a_time_and_only_the_newest() {
         // The risk (#311 review): each board click ran `trellis overview`
         // and two `gh` calls with no guard, so clicks stacked them, and a
@@ -2042,11 +2117,12 @@ mod tests {
         let mut keys = vec!["tasks".to_string(), "pr_ci".to_string()];
         keys_of(&o["board"]["pr_ci"], &mut keys);
         keys_of(&unavailable, &mut keys);
-        // A task's chain and how it reads; its labels, assignee and status
-        // are the queue view's, not the board's.
+        // A task's chain and how it reads; its labels and assignee are the
+        // queue view's, not the board's. Its status is the word the queue
+        // view uses too, so a task reads the same in both (#656).
         keys.extend(
             [
-                "id", "state", "priority", "task", "waiting", "blockers", "parent",
+                "id", "status", "priority", "task", "waiting", "blockers", "parent",
             ]
             .map(String::from),
         );
