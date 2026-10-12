@@ -153,7 +153,10 @@ fn report_outcome(tx: &Sender<Message>, outcome: Result<crate::RunExit>) {
     // One line for the border that does not scroll (#244), sent before the
     // detail so a view that draws on every message has it as soon as it
     // can.
-    let _ = tx.blocking_send(Message::RunOutcome(outcome_line(&outcome)));
+    let _ = tx.blocking_send(Message::RunOutcome {
+        line: outcome_line(&outcome),
+        restored: outcome_restored(&outcome),
+    });
     match outcome {
         Err(e) => {
             // `{:#}` so the causes travel with the error; a bare `{}` would
@@ -206,6 +209,20 @@ fn outcome_line(outcome: &Result<crate::RunExit>) -> String {
                 .to_string();
             format!("failed: {}", crate::plain(&first))
         }
+    }
+}
+
+/// Whether the run put the worktree back, from the same exit `outcome_line`
+/// reads, so the status bar and the border cannot disagree (#636). `None`
+/// where the exit does not say: a converged run leaves its changes for
+/// review, and a failure does not report the tree.
+fn outcome_restored(outcome: &Result<crate::RunExit>) -> Option<bool> {
+    match outcome {
+        Ok(
+            crate::RunExit::NotConverged { restored } | crate::RunExit::Interrupted { restored },
+        ) => Some(*restored),
+        Ok(crate::RunExit::Asked { .. }) => Some(true),
+        Ok(crate::RunExit::Converged) | Err(_) => None,
     }
 }
 
@@ -1105,6 +1122,47 @@ mod tests {
         }
     }
 
+    #[test]
+    fn worktree_state_follows_the_exit_the_run_returned() {
+        // #636: the bar's worktree state comes from the exit, as the
+        // border's line does; a run that rolled back must not read as
+        // having left anything, and one that could not must not read as
+        // restored.
+        use tui_demo::tui::app::Worktree;
+        for (outcome, restored) in [
+            (
+                Ok(crate::RunExit::NotConverged { restored: true }),
+                Some(true),
+            ),
+            (
+                Ok(crate::RunExit::NotConverged { restored: false }),
+                Some(false),
+            ),
+            (
+                Ok(crate::RunExit::Interrupted { restored: true }),
+                Some(true),
+            ),
+            (
+                Ok(crate::RunExit::Asked {
+                    question: "which file?".into(),
+                    options: Vec::new(),
+                }),
+                Some(true),
+            ),
+            (Ok(crate::RunExit::Converged), None),
+            (Err(anyhow::anyhow!("boom")), None),
+        ] {
+            let state = screen(outcome);
+            assert_eq!(state.restored, restored);
+            let expected = if restored == Some(true) {
+                Worktree::Restored
+            } else {
+                Worktree::Clean
+            };
+            assert_eq!(state.worktree(), expected, "no edits were reported");
+        }
+    }
+
     #[tokio::test]
     async fn an_approval_question_becomes_the_modal_and_its_key_goes_back() {
         // ADR 0018: the modal used to be driven only by the mock. Here the
@@ -1208,7 +1266,7 @@ mod tests {
         drop(tx);
         let mut outcome = None;
         while let Ok(m) = rx.try_recv() {
-            if let Message::RunOutcome(line) = m {
+            if let Message::RunOutcome { line, .. } = m {
                 outcome = Some(line);
             }
         }
