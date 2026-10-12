@@ -396,16 +396,27 @@ enum Command {
         /// `<git-url|path>@<ref>`.
         #[arg(
             value_name = "SOURCE@REF",
-            required_unless_present_any = ["list", "remove"],
-            conflicts_with_all = ["list", "remove"]
+            required_unless_present_any = ["list", "remove", "upgrade"],
+            conflicts_with_all = ["list", "remove", "upgrade"]
         )]
         source: Option<String>,
-        /// Print each installed package's source, ref and commit.
-        #[arg(long, conflicts_with = "remove")]
+        /// Print each installed package's source, ref, commit and whether
+        /// its files still match the digest recorded at install.
+        #[arg(long, conflicts_with_all = ["remove", "upgrade"])]
         list: bool,
         /// Delete one installed package and its manifest entry.
-        #[arg(long, value_name = "NAME")]
+        #[arg(long, value_name = "NAME", conflicts_with = "upgrade")]
         remove: Option<String>,
+        /// Re-resolve one installed package's ref and install its current
+        /// commit over the old copy. Refused when the copy was edited since
+        /// it was installed (the paths are named); there is no flag to
+        /// overwrite them.
+        #[arg(long, value_name = "NAME")]
+        upgrade: Option<String>,
+        /// With a source: fetch and list what would be copied and what
+        /// skipped, and write nothing.
+        #[arg(long, requires = "source")]
+        dry_run: bool,
     },
 
     /// Agent profiles in .trellis/agents/: list, show, pause, resume
@@ -886,7 +897,9 @@ fn main() -> Result<()> {
             source,
             list,
             remove,
-        } => install::run(source, list, remove),
+            upgrade,
+            dry_run,
+        } => install::run(source, list, remove, upgrade, dry_run),
         Command::Rpc => rpc::serve(
             &root,
             std::io::stdin().lock(),
