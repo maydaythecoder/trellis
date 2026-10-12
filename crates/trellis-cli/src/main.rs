@@ -413,6 +413,10 @@ enum Command {
         /// overwrite them.
         #[arg(long, value_name = "NAME")]
         upgrade: Option<String>,
+        /// With a source: fetch and list what would be copied and what
+        /// skipped, and write nothing.
+        #[arg(long, requires = "source")]
+        dry_run: bool,
     },
 
     /// Agent profiles in .trellis/agents/: list, show, pause, resume
@@ -894,7 +898,8 @@ fn main() -> Result<()> {
             list,
             remove,
             upgrade,
-        } => install::run(source, list, remove, upgrade),
+            dry_run,
+        } => install::run(source, list, remove, upgrade, dry_run),
         Command::Rpc => rpc::serve(
             &root,
             std::io::stdin().lock(),

@@ -12,6 +12,7 @@ read.
 digest and `--list` reports it.
 **Amended:** 2026-10-12 (#618): §1 and §11, `--upgrade <name>`; "Upgrade
 in place" leaves "Not built".
+**Amended:** 2026-10-12 (#619): §1 and §12, `--dry-run`.
 **Amends:** ADR 0021 row 10 ("packages: deferred ... needs the trust store
 first"). Grows the CLI surface fixed by brief 4.12, as the owner directed.
 
@@ -29,11 +30,13 @@ Its paths, file modes and sizes are all chosen by whoever wrote it.
 
 ## Decision
 
-1. **The surface.** One command, four forms:
+1. **The surface.** One command, four forms and one flag:
    - `trellis install <git-url|path>@<ref>`
    - `trellis install --list`
    - `trellis install --remove <name>`
    - `trellis install --upgrade <name>` (2026-10-12, #618; see 11)
+   - `trellis install <git-url|path>@<ref> --dry-run` (2026-10-12, #619;
+     see 12)
 
    It needs no repository: packages are user state, as models are.
 
@@ -206,6 +209,20 @@ Its paths, file modes and sizes are all chosen by whoever wrote it.
     before any path or git argument is built from it. Reinstalling a name
     by `install <source>@<ref>` stays refused. Evidence:
     `install_upgrade_*` (`cargo test -p trellis-cli install_upgrade_`).
+
+12. **`--dry-run`** (2026-10-12, #619). Every check an install makes,
+    the clone under 6's hardening and the listing under 8's bounds, then
+    the commit the ref resolved to, each path that would be copied on its
+    own line, the skipped block of 5 word for word, and "would install N
+    skill(s), M prompt(s); nothing was written". Nothing is read by blob
+    and nothing written: the staging directory, bare clone included, goes
+    under the system temporary directory rather than `packages/`, since
+    there is no rename into place to keep on one filesystem, so
+    `packages/` and `packages.toml` are byte-identical before and after,
+    down to a `packages/` that did not exist. A refusal (a name already
+    installed, a tree or package over 8's bounds, nothing to install) is
+    the install's, word for word. Evidence: `install_dry_run_*`
+    (`cargo test -p trellis-cli install_dry_run_`).
 
 ## Not built
 
