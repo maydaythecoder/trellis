@@ -14,6 +14,10 @@ use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, 
 const MIN_WIDTH: u16 = 80;
 const MIN_HEIGHT: u16 = 24;
 // Status 1 + budget 3 + input 3 + a body worth looking at.
+/// The right column's floor: two borders and the widest row it draws, the
+/// actions pane's `  edit         N ●─┤──◆ NN actions` at 36 columns, with
+/// the radius caption "a floor on reach, not a boundary" at 34 under it.
+const RIGHT_MIN_WIDTH: u16 = 38;
 
 /// The transcript pane's inner width at the narrowest layout drawn: its 60%
 /// of `MIN_WIDTH`, less two borders. The transcript wraps to the most rows
@@ -48,9 +52,17 @@ pub fn render(state: &AppState, frame: &mut Frame) {
         ])
         .split(area);
 
+    // The right column takes two fifths of the width, and never less than
+    // RIGHT_MIN_WIDTH: at 80 columns the two fifths were 32, and the panes
+    // read "0 ac", "reac" and "not a boun" where their labels were (#655).
+    // Below 100 columns the transcript gives the difference up, since a
+    // cut figure is worse than a narrower transcript that wraps.
+    let right_w = u16::try_from(u32::from(area.width) * 2 / 5)
+        .unwrap_or(u16::MAX)
+        .max(RIGHT_MIN_WIDTH);
     let body = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(60), Constraint::Fill(1)])
+        .constraints([Constraint::Fill(1), Constraint::Length(right_w)])
         .split(rows[1]);
 
     let right = Layout::default()
@@ -492,23 +504,66 @@ fn render_budget(state: &AppState, area: Rect, frame: &mut Frame) {
     } else {
         iteration
     };
+    let prompt = match b.prompt_bytes {
+        Some(bytes) => format!("{bytes} B prompt"),
+        None => "prompt not reported".to_string(),
+    };
+    let elapsed = match b.elapsed_secs {
+        Some(secs) => format!("{} elapsed", clock(secs)),
+        None => "not started".to_string(),
+    };
+    let (rate, queued) = turn_rate(&b);
+    let block = Block::default().borders(Borders::ALL).title(" budget ");
+    let label = budget_label(
+        &iteration,
+        &prompt,
+        &elapsed,
+        rate.as_deref(),
+        queued.as_deref(),
+        usize::from(block.inner(area).width),
+    );
     let gauge = Gauge::default()
-        .block(Block::default().borders(Borders::ALL).title(" budget "))
+        .block(block)
         .gauge_style(Style::default().fg(Color::Cyan))
         .ratio(ratio)
-        .label(format!(
-            "{iteration}  ·  {}  ·  {}{}",
-            match b.prompt_bytes {
-                Some(bytes) => format!("{bytes} B prompt"),
-                None => "prompt not reported".to_string(),
-            },
-            match b.elapsed_secs {
-                Some(secs) => format!("{} elapsed", clock(secs)),
-                None => "not started".to_string(),
-            },
-            turn_rate(&b)
-        ));
+        .label(label);
     frame.render_widget(gauge, area);
+}
+
+/// The budget line's segments joined with `  ·  `, dropping whole segments
+/// from the tail until the line fits `width` (#655).
+///
+/// The gauge clips a long label mid-word ("· queu" at 80 columns), so a
+/// segment that does not fit is left out rather than cut, in this order: the
+/// token rate first, since it is the one figure derived from the others; then
+/// the queue wait; then the prompt size. The iteration and the elapsed time
+/// are never dropped, because they are what says the run is moving.
+fn budget_label(
+    iteration: &str,
+    prompt: &str,
+    elapsed: &str,
+    rate: Option<&str>,
+    queued: Option<&str>,
+    width: usize,
+) -> String {
+    let mut keep = [true, true, true, true, true];
+    let segments = [Some(iteration), Some(prompt), Some(elapsed), rate, queued];
+    let join = |keep: &[bool; 5]| -> String {
+        segments
+            .iter()
+            .zip(keep)
+            .filter_map(|(s, k)| if *k { *s } else { None })
+            .collect::<Vec<_>>()
+            .join("  ·  ")
+    };
+    // Indices into `segments`, in the order they give way.
+    for drop in [3, 4, 1] {
+        if Span::raw(join(&keep)).width() <= width {
+            break;
+        }
+        keep[drop] = false;
+    }
+    join(&keep)
 }
 
 /// Seconds as `m:ss`, so a minutes-long model call reads as time passing
@@ -524,23 +579,23 @@ fn clock(secs: u64) -> String {
 /// runtime reported separately (0 when it did not). The wall time still
 /// includes prompt processing, so this reads below the decode rate. Nothing
 /// is estimated: with no reported tokens the tail is empty, and with no model
-/// time left after the wait there is no rate to draw.
-fn turn_rate(b: &Budget) -> String {
+/// time left after the wait there is no rate to draw. Two segments, so the
+/// label can drop one without the other.
+fn turn_rate(b: &Budget) -> (Option<String>, Option<String>) {
     let Some(tokens) = b.completion_tokens else {
-        return String::new();
+        return (None, None);
     };
-    let mut tail = String::new();
-    if let Some(model_ms) = b.model_ms {
+    let rate = b.model_ms.and_then(|model_ms| {
         let decoding_ms = model_ms.saturating_sub(b.queue_wait_ms.unwrap_or(0));
-        if decoding_ms > 0 {
+        (decoding_ms > 0).then(|| {
             let rate = tokens as f64 * 1000.0 / decoding_ms as f64;
-            tail.push_str(&format!("  ·  {tokens} tok, {rate:.1} tok/s"));
-        }
-    }
-    if let Some(queue_ms) = b.queue_wait_ms {
-        tail.push_str(&format!("  ·  queued {:.1} s", queue_ms as f64 / 1000.0));
-    }
-    tail
+            format!("{tokens} tok, {rate:.1} tok/s")
+        })
+    });
+    let queued = b
+        .queue_wait_ms
+        .map(|queue_ms| format!("queued {:.1} s", queue_ms as f64 / 1000.0));
+    (rate, queued)
 }
 
 fn render_input(state: &AppState, offered: &[&str], area: Rect, frame: &mut Frame) {
@@ -1330,6 +1385,114 @@ mod tests {
             (0..w).any(|x| buf[(x, 0)].symbol() == "a"),
             "the border and title are still drawn"
         );
+    }
+
+    // ---- #655: whole words at the default 80 columns ----
+
+    /// The rows of the pane titled `title`, between its borders, at 80x24.
+    fn pane_rows(s: &AppState, title: &str) -> Vec<String> {
+        let rows = drawn_rows(s, 80, 24);
+        // The title sits on the top border, just after its corner; the text
+        // of a pane can say the same word, so the corner is what is matched.
+        let title: Vec<char> = format!("┌ {title} ").chars().collect();
+        let (top, left) = rows
+            .iter()
+            .enumerate()
+            .find_map(|(y, r)| {
+                let row: Vec<char> = r.chars().collect();
+                row.windows(title.len())
+                    .position(|w| w == title.as_slice())
+                    .map(|x| (y, x))
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "no `{}` pane:\n{}",
+                    title[2..].iter().collect::<String>(),
+                    rows.join("\n")
+                )
+            });
+        let row: Vec<char> = rows[top].chars().collect();
+        let right = left + row[left..].iter().position(|c| *c == '┐').unwrap();
+        rows[top + 1..]
+            .iter()
+            .take_while(|r| r.chars().nth(left) != Some('└'))
+            .map(|r| r.chars().take(right).skip(left + 1).collect::<String>())
+            .collect()
+    }
+
+    #[test]
+    fn fits_80_columns_actions_and_radius_labels_are_whole() {
+        // #655: at 80 columns the right column was 32 wide and read "0 ac",
+        // "reac" and "a floor on reach, not a boun" where the figures are.
+        let s = acted(&[
+            ("read_file", "app/calc.py", false),
+            ("edit", "app/calc.py", true),
+        ]);
+        let actions = pane_rows(&s, "actions").join("\n");
+        assert!(actions.contains("2 actions"), "{actions}");
+        let radius = pane_rows(&s, "radius").join("\n");
+        assert!(radius.contains("◆ reach "), "{radius}");
+        assert!(
+            radius.contains("a floor on reach, not a boundary"),
+            "{radius}"
+        );
+        // And the same with nothing called: the row the audit captured.
+        let actions = pane_rows(&populated(), "actions").join("\n");
+        assert!(actions.contains("0 actions"), "{actions}");
+    }
+
+    #[test]
+    fn fits_80_columns_budget_line_ends_with_a_whole_segment() {
+        // #655: one string, centred and clipped by the gauge, ended "· queu"
+        // once a turn had reported a rate and a wait. The rate goes first.
+        let mut s = populated();
+        s.update(Message::BudgetUpdated {
+            iteration: 4,
+            prompt_bytes: Some(16800),
+            elapsed_secs: 36,
+            completion_tokens: Some(85),
+            model_ms: Some(9_600),
+            queue_wait_ms: Some(2_100),
+        });
+        let budget = pane_rows(&s, "budget").join("\n");
+        assert!(budget.contains("iteration 4/40"), "{budget}");
+        assert!(budget.contains("16800 B prompt"), "{budget}");
+        assert!(budget.contains("0:36 elapsed"), "{budget}");
+        assert!(budget.contains("queued 2.1 s"), "{budget}");
+        assert!(!budget.contains("tok"), "the rate gave way first: {budget}");
+        assert!(!budget.contains("queu "), "{budget}");
+
+        // Wider, the same state draws the rate: nothing was dropped for good.
+        let wide = drawn(&s, 140, 24);
+        assert!(wide.contains("85 tok, 11.3 tok/s"), "{wide}");
+        assert!(wide.contains("queued 2.1 s"), "{wide}");
+    }
+
+    #[test]
+    fn fits_80_columns_help_has_no_row_ending_mid_word() {
+        // #655: a row cut inside a word reads as a different word. Every
+        // token on screen must be a token of the help text, so "stopp" or
+        // "boun" fails here where a substring check would not.
+        let mut s = AppState::default();
+        s.input = "/help".into();
+        pressed(&mut s, ratatui::crossterm::event::KeyCode::Enter);
+        let help = s.transcript.join("\n");
+        let words: std::collections::HashSet<&str> = help.split_whitespace().collect();
+        let rows = pane_rows(&s, "transcript");
+        assert!(
+            rows.iter().any(|r| r.contains("scroll the transcript")),
+            "{}",
+            rows.join("\n")
+        );
+        for row in &rows {
+            for token in row.split_whitespace() {
+                assert!(
+                    words.contains(token),
+                    "`{token}` is not a word of the help text, in row `{row}`:\n{}",
+                    rows.join("\n")
+                );
+            }
+        }
     }
 
     // ---- #519: the status bar's tier, one `tier` word, one vocabulary ----
