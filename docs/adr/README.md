@@ -61,6 +61,7 @@ stays where it is.
 | [0050](0050-starting-trellis.md) | Starting trellis: plain `trellis`, or `--tui`, `--dsk`, `--web` | Accepted (owner-directed). Not built (story S19, #377). | Bare `trellis` and three interface flags are the whole start-up surface. Parts are wired in `main.rs` since; check `docs/STATUS.md` before relying on the status line. |
 | [0051](0051-branching-main-dev-audit.md) | Branches: main, dev, audit, and ticket branches cut from dev | Accepted (owner-directed). | `main`, `dev`, `audit` are the only permanent branches; work is cut from `dev`, merged into `audit`, promoted to `dev`; `main` moves only by the owner's pull request. |
 | [0052](0052-two-rpc-clients-and-go-for-the-tui.md) | Two `trellis rpc` clients: a rendering Tauri desktop, and a Go TUI that replaces ratatui | Accepted (owner-directed). | Two clients, one engine. The desktop's views are built in `desktop/` (story S15); the Go TUI is not built (#514). |
+| [0054](0054-conflicting-non-negotiable-rules-are-escalated-not-arbitrated.md) | Conflicting non-negotiable rules are escalated verbatim, not arbitrated | Proposed. | A failed audit whose summary names another non-negotiable rule shows both rules, attributed and verbatim, and changes no outcome (#11). |
 
 ## Writing a new one
 

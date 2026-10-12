@@ -1695,6 +1695,18 @@ capable of saying so, and no measured configuration passes at a constrained
 tier (one repairs 5 of 20 at tier 4, #144). Left
 open rather than built against nothing and tested with a fixture that agrees.
 
+*2026-10-12 (#11, ADR 0054, proposed):* the owner lifted the block on the
+model floor, and that shape is built. When the convergence audit fails a
+non-negotiable rule and the model's `done` summary contains the exact name of
+another loaded non-negotiable rule the audit did not find broken, the failure
+is followed by `conflicting non-negotiable rules; trellis does not arbitrate
+between them` and every such rule's name, source file and description,
+verbatim. The outcome and rollback are unchanged. The four
+`conflict_escalation_` tests drive it with a scripted model; no measured
+model has yet been shown to produce such a summary, so how often a real run
+escalates is pending, and no ticket measures it yet. What remains open is the half no mechanism can
+do: whether the conflict the summary claims is real.
+
 ### What running the wedge found
 
 `trellis why` could not answer its own question. It reported "no file matching
