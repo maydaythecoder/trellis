@@ -540,6 +540,37 @@ struct SessionTokens {
     runs_not_counted: Option<u64>,
 }
 
+/// How a run ended, in one vocabulary for every pane (#653).
+///
+/// trellis words the same run two ways: rpc's `run_end` says `converged`,
+/// `not_converged`, `interrupted` or `error` (`output.rs`), while a trail,
+/// read by `log` and `overview`, says `converged`, `not converged` or `no
+/// check ran` (`trellis_trail::query::Entry::outcome`, which counts a run
+/// that never ran a check as not converged). Drawn side by side those read
+/// as two runs, so the Run, Trails and Overview panes all pass the word
+/// through here. A word this does not know is trellis's and stays as is:
+/// nothing here guesses a new one, and the trail's word is still untrusted
+/// text after it is mapped (`trails.rs` wraps it).
+pub(crate) fn outcome_words(word: &str) -> &str {
+    match word {
+        "not_converged" | "no check ran" => "not converged",
+        other => other,
+    }
+}
+
+/// An overview as trellis printed it, with its newest trail's `outcome`
+/// put through [`outcome_words`]. Every other field is untouched: a figure
+/// the trail did not measure (`turns: null`) stays null, never a number.
+pub(crate) fn word_overview(mut overview: Value) -> Value {
+    if let Some(Value::String(word)) = overview
+        .get_mut("last_run")
+        .and_then(|r| r.get_mut("outcome"))
+    {
+        *word = outcome_words(word).to_string();
+    }
+    overview
+}
+
 impl SessionTokens {
     /// The answer's `data`, or `None` when it carries no `models` list. A
     /// row with no string `model` cannot be named, so it is not drawn; a
@@ -1050,7 +1081,7 @@ impl DesktopState {
             Pane::Atlas => self.atlas.to_json(),
             Pane::Outcome => match &self.outcome {
                 Some(e) => json!({
-                    "outcome": e.outcome,
+                    "outcome": e.outcome.as_deref().map(outcome_words),
                     "exit": e.exit,
                     "run_id": e.run_id,
                     "restored": e.restored,
@@ -1633,7 +1664,7 @@ mod tests {
         assert_eq!(v["running"], false);
         assert_eq!(
             v["outcome"],
-            json!({"outcome": "not_converged", "exit": 2, "run_id": "20261006-abc",
+            json!({"outcome": "not converged", "exit": 2, "run_id": "20261006-abc",
                    "restored": true, "error": null, "id": "p1"})
         );
 
