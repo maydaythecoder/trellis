@@ -175,15 +175,21 @@ one server-sent event stream at `/<token>/events`, whose first connection
 runs startup as the window's page load does. A request whose path lacks
 the token or whose Host is not `127.0.0.1:<port>` or `localhost:<port>` is
 refused with 403 before its body is read, with one answer for both. Every
-response carries a Content-Security-Policy as strict as the window's
-(`connect-src 'self'`, nothing inline, `frame-ancestors 'none'`). The
-server stops when its stdin ends: trellis closes it on the first Ctrl-C,
-says so, and waits for the desktop, which sends its rpc child `quit` and
-waits (ADR 0048 section 9); a second Ctrl-C stops waiting. Tests whose
-names start with `web_` in `desktop/src/web.rs` hold the bind address, the
-token, the Host guard, the policy, the file set, the commands and the
-stream; `launch_web_` tests in `crates/trellis-cli/src/launch.rs` hold the
-launch.
+answer, a refusal too, then shuts the write side and reads and throws away
+what the client sent that was not read, until the client closes, 200 ms
+have passed or 64 KiB have come, before the socket is dropped: a socket
+closed with input unread sends a reset, and on Windows the reset discards
+the 403 the browser had already received (#666's Windows CI, 2026-10-12).
+The discarded bytes are not parsed, so a refusal is still decided on the
+request line and headers alone. Every response carries a
+Content-Security-Policy as strict as the window's (`connect-src 'self'`,
+nothing inline, `frame-ancestors 'none'`). The server stops when its stdin
+ends: trellis closes it on the first Ctrl-C, says so, and waits for the
+desktop, which sends its rpc child `quit` and waits (ADR 0048 section 9);
+a second Ctrl-C stops waiting. Tests whose names start with `web_` in
+`desktop/src/web.rs` hold the bind address, the token, the Host guard, the
+close, the policy, the file set, the commands and the stream; `launch_web_`
+tests in `crates/trellis-cli/src/launch.rs` hold the launch.
 
 ## Alternatives rejected
 
