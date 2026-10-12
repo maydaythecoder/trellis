@@ -556,7 +556,7 @@ mod tests {
         );
         assert!(
             main.contains(
-                r#"import { askStarters, drawComposer, wireComposer } from "./composer.js";"#
+                r#"import { askStarters, composerStopped, drawComposer, wireComposer } from "./composer.js";"#
             ),
             "main.js does not take askStarters from composer.js"
         );
@@ -564,6 +564,214 @@ mod tests {
             code_of("composer.js").contains("export function askStarters(doc, tauri)"),
             "composer.js does not export askStarters"
         );
+    }
+
+    /// The text of `code` from `start` to the first `end` after it.
+    fn between<'a>(code: &'a str, start: &str, end: &str) -> &'a str {
+        code.split(start)
+            .nth(1)
+            .and_then(|r| r.split(end).next())
+            .unwrap_or_else(|| panic!("no `{start}`"))
+    }
+
+    /// The listener `code` registers for `event`, up to its closing `});`.
+    fn listener<'a>(code: &'a str, event: &str) -> &'a str {
+        between(code, &format!("listen(\"{event}\""), "});")
+    }
+
+    #[test]
+    fn no_child_wording_composer_names_the_missing_child_before_the_model() {
+        // The risk (#638): with no trellis rpc child (launched outside a
+        // repository, or after the child exited) the composer said "choose
+        // a model first", blaming the model for a session that does not
+        // exist, and kept saying it after a new child started. No
+        // JavaScript runs under cargo test, so this holds the text; a node
+        // smoke script with a fake DOM ran the module (see the commit).
+        let js = code_of("composer.js");
+        for event in ["no-child", "rpc-exited"] {
+            assert!(
+                listener(&js, event).contains("composerStopped(doc, "),
+                "composer.js does not take {event} as not running"
+            );
+        }
+        assert!(
+            listener(&js, "rpc-exited").contains("exitText(event.payload)"),
+            "the exit is not worded through status.js's exitText"
+        );
+        assert!(js.contains(r#"import { exitText } from "./status.js";"#));
+        assert!(
+            listener(&js, "child-started").contains("stopped = null;"),
+            "a new child leaves the composer saying none runs"
+        );
+        let stopped = function_body(&js, "composerStopped");
+        assert!(
+            stopped.contains("trellis rpc is not running: ${why}"),
+            "{stopped}"
+        );
+        // The label says the child is missing before it says anything about
+        // a model, and Enter in a control a page bug left open is refused
+        // for the same reason first.
+        let draw = function_body(&js, "drawRunning");
+        let not_running = draw
+            .find("\"Task (trellis rpc is not running)\"")
+            .expect("drawRunning has a not-running label");
+        let gate = draw
+            .find("\"Task (choose a model first)\"")
+            .expect("drawRunning keeps the model gate's label");
+        assert!(
+            not_running < gate,
+            "the model gate is checked first: {draw}"
+        );
+        assert!(draw.contains("stopped !== null"), "{draw}");
+        let submit = between(&js, "addEventListener(\"submit\"", "});");
+        let refused = submit
+            .find("if (stopped !== null)")
+            .expect("submit checks the child");
+        let model = submit
+            .find("if (!modelChosen)")
+            .expect("submit checks the model");
+        assert!(refused < model, "submit blames the model first: {submit}");
+    }
+
+    #[test]
+    fn no_child_wording_model_pane_stops_asking_once_no_child_runs() {
+        // The risk (#638): the model pane said "Asking trellis which models
+        // there are." for ever when no child existed to answer, and opened
+        // itself after an exit to ask for a choice nobody could take.
+        let js = code_of("model.js");
+        for event in ["no-child", "rpc-exited"] {
+            assert!(
+                listener(&js, event).contains("modelPaneStopped(doc, "),
+                "model.js does not take {event} as not running"
+            );
+        }
+        assert!(listener(&js, "rpc-exited").contains("exitText(event.payload)"));
+        assert!(js.contains(r#"import { exitText } from "./status.js";"#));
+        let started = listener(&js, "child-started");
+        for want in ["stopped = null;", "askModels(doc, tauri)"] {
+            assert!(started.contains(want), "child-started lacks {want}");
+        }
+        let found = function_body(&js, "drawFound");
+        let not_running = found
+            .find("trellis rpc is not running")
+            .expect("drawFound has a not-running line");
+        let asking = found
+            .find("Asking trellis which models there are.")
+            .expect("drawFound keeps its asking line");
+        assert!(
+            not_running < asking,
+            "the pane says it is asking first: {found}"
+        );
+        let draw = function_body(&js, "drawModel");
+        let branch = between(draw, "if (!chosen && stopped !== null) {", "\n  }");
+        assert!(
+            branch.contains("trellis rpc is not running: ${stopped}"),
+            "{branch}"
+        );
+        assert!(branch.contains("return;"), "{branch}");
+        assert!(
+            !branch.contains("pane.open"),
+            "the pane opens with no child: {branch}"
+        );
+        assert!(
+            draw.find("if (!chosen && stopped !== null)") < draw.find("p.pane.open = true"),
+            "the pane opens before the child is checked: {draw}"
+        );
+    }
+
+    #[test]
+    fn no_child_wording_main_js_words_the_exit_and_writes_no_raw_json() {
+        // The risk (#638): `#status` read `trellis rpc exited:
+        // {"code":null,"success":false}`, the core's record shown as JSON
+        // rather than said.
+        let main = code_of("main.js");
+        assert!(
+            !main.contains("json(event.payload)"),
+            "main.js writes an event's payload as JSON"
+        );
+        for line in main.lines().filter(|l| l.contains("show(")) {
+            assert!(!line.contains("json("), "main.js shows JSON: {line}");
+        }
+        let exited = listener(&main, "rpc-exited");
+        assert!(
+            exited.contains("show(\"status\", `trellis rpc ${exitText(event.payload)}`)"),
+            "{exited}"
+        );
+        assert!(
+            main.contains(r#"import { drawStatus, exitText, wireStatus } from "./status.js";"#)
+        );
+    }
+
+    #[test]
+    fn no_child_wording_overview_keeps_open_for_the_root_after_an_exit() {
+        // The risk (#638): the obvious restart, Open on the repository whose
+        // child exited, stayed disabled as "Open now", and a root missing
+        // from the recent list had no way to start again but typing its
+        // path.
+        let js = code_of("overview.js");
+        let recent = function_body(&js, "recent");
+        assert!(
+            recent.contains("const live = path === open && childRuns;"),
+            "{recent}"
+        );
+        assert!(recent.contains("b.disabled = live;"), "{recent}");
+        assert!(!recent.contains("b.disabled = path === open"), "{recent}");
+        let root = function_body(&js, "rootLine");
+        let again = between(root, "if (root !== null && !childRuns) {", "\n  }");
+        for want in ["\"Start again\"", "actions.open(root)"] {
+            assert!(again.contains(want), "rootLine lacks {want}: {again}");
+        }
+        let child = function_body(&js, "drawOverviewChild");
+        for want in [
+            "childRuns = runs;",
+            "drawOverview(doc, lastOverview, lastActions)",
+        ] {
+            assert!(child.contains(want), "drawOverviewChild lacks {want}");
+        }
+        let main = code_of("main.js");
+        for (event, runs) in [
+            ("child-started", "true"),
+            ("no-child", "false"),
+            ("rpc-exited", "false"),
+        ] {
+            let want = format!("drawOverviewChild(document, {runs});");
+            assert!(
+                listener(&main, event).contains(&want),
+                "{event} lacks {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_child_wording_late_page_takes_the_core_s_refusal_as_not_running() {
+        // The risk (#638): the core emits `no-child` and `rpc-exited` once,
+        // so a page that loaded after them (a reload, or listeners still
+        // registering when startup ran) heard neither and kept asking for a
+        // model. Its `get_state` refusal is the same fact, taken only when
+        // it is the core's no-child refusal and no child started since it
+        // was asked, so a refusal that crossed a new child's start does not
+        // mark that child stopped.
+        let main = code_of("main.js");
+        let prefix = between(&main, "const NO_CHILD = \"", "\";");
+        assert!(
+            include_str!("commands.rs").contains(&format!("\"{prefix}{{}}\"")),
+            "main.js's NO_CHILD is not how rpc_send's no-child refusal begins: {prefix}"
+        );
+        let ask = function_body(&main, "askState");
+        assert!(ask.contains("const heard = childrenStarted;"), "{ask}");
+        let taken = between(
+            ask,
+            "if (said.startsWith(NO_CHILD) && childrenStarted === heard) {",
+            "\n    }",
+        );
+        for want in [
+            "composerStopped(document, why);",
+            "modelPaneStopped(document, why);",
+            "drawOverviewChild(document, false);",
+        ] {
+            assert!(taken.contains(want), "the refusal path lacks {want}");
+        }
+        assert!(listener(&main, "child-started").contains("childrenStarted += 1;"));
     }
 
     #[test]
@@ -1628,7 +1836,7 @@ mod tests {
         );
         let main = ui_file("main.js");
         assert!(
-            main.contains(r#"import { drawOverview } from "./overview.js";"#),
+            main.contains(r#"import { drawOverview, drawOverviewChild } from "./overview.js";"#),
             "main.js does not load overview.js"
         );
         assert!(
@@ -2204,7 +2412,7 @@ mod tests {
         }
         assert!(
             ui_file("main.js").contains(
-                r#"import { askModels, drawModelPane, wireModelPane } from "./model.js";"#
+                r#"import { askModels, drawModelPane, modelPaneStopped, wireModelPane } from "./model.js";"#
             ),
             "main.js does not load model.js"
         );
