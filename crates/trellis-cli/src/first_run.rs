@@ -22,7 +22,13 @@ use trellis_model::ModelSpec;
 /// How long each runtime gets, connect to last byte. They are on loopback:
 /// one that has not answered in this long is not one to start a session on,
 /// and the person is waiting at a blank terminal for the list.
-pub(crate) const BOUND: Duration = Duration::from_millis(1500);
+///
+/// Longer than Windows takes to refuse. Its TCP stack answers a RST to a
+/// SYN by sending the SYN again (twice by default), so a port with nothing
+/// listening is reported refused only after about 2 s, where Linux says so
+/// at once. At 1.5 s a machine with no runtime started read "connection
+/// timed out" for every runtime instead of "nothing is listening" (#663).
+pub(crate) const BOUND: Duration = Duration::from_secs(3);
 
 /// The one thing every command says when it needs a model and has none
 /// (#376). `trellis run`, the line session bare `trellis` opens on a pipe,
@@ -570,7 +576,7 @@ mod tests {
         let shown = String::from_utf8(shown).unwrap();
         assert_eq!(
             shown.lines().next(),
-            Some(format!("looking for models at {addr} (Ollama) (up to 1.5 s)").as_str()),
+            Some(format!("looking for models at {addr} (Ollama) (up to 3.0 s)").as_str()),
             "{shown}"
         );
     }
@@ -674,7 +680,9 @@ mod tests {
     fn picker_names_runtime_refused_probe_says_nothing_is_listening_before_the_os_text() {
         // #663: the desktop's model pane and the picker's refusal both showed
         // "Connection refused (os error 111)" bare, three times, to someone
-        // who had not started a runtime.
+        // who had not started a runtime. Probed with the product's BOUND, so
+        // on Windows, which reports the refusal only after retrying the SYN,
+        // this also fails if BOUND is too short to see it.
         let addr = closed();
         let probed = probe(&[ollama_at(addr)], BOUND);
         let err = probed[0].answer.clone().unwrap_err();
