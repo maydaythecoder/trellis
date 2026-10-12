@@ -710,6 +710,79 @@ mod tests {
         assert!(c.stdout.head().is_empty(), "{:?}", c.stdout.head());
     }
 
+    /// Whether `pid` is still running. `kill -0` alone also succeeds on a
+    /// zombie: a process that has died but that its parent has not reaped.
+    /// A killed background child is reparented when its shell dies, and a
+    /// container's PID 1 or a loaded host can reap it after the test's
+    /// polling window closes (#667), so on Linux `/proc/<pid>/stat` decides:
+    /// state `Z` is dead, any other state alive. Where `/proc` is absent
+    /// (macOS), `kill -0` stays the check.
+    #[cfg(unix)]
+    fn liveness_probe(pid: &str) -> bool {
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            // The comm field is parenthesised and may contain spaces, so the
+            // state is the first field after the last `)`.
+            return match stat.rsplit_once(')') {
+                Some((_, rest)) => rest.split_whitespace().next() != Some("Z"),
+                // A stat line without a comm is not one Linux writes; say
+                // alive rather than let a parse gap hide a survivor.
+                None => true,
+            };
+        }
+        if std::path::Path::new("/proc").is_dir() {
+            // /proc is present and the entry is gone: the pid was reaped.
+            return false;
+        }
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|st| st.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn liveness_probe_calls_a_running_process_alive() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id().to_string();
+        let alive = liveness_probe(&pid);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(alive, "a running sleep read as dead");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn liveness_probe_calls_an_exited_but_unreaped_child_dead() {
+        // The risk: the probe counts a zombie as a survivor, which is the
+        // flake #667 saw. The child is ours and never waited on until the
+        // end, so it stays a zombie for as long as the probe looks.
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id().to_string();
+        let mut dead = false;
+        for _ in 0..50 {
+            if !liveness_probe(&pid) {
+                dead = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // `kill -0` on the same pid still succeeds: the test defends the
+        // difference between the two checks, not only the probe's answer.
+        let kill_0 = std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .status()
+            .unwrap()
+            .success();
+        child.wait().unwrap();
+        assert!(dead, "an exited, unreaped child read as alive");
+        assert!(kill_0, "the child was reaped before the probe ran");
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn a_timeout_kills_what_the_command_started_not_only_the_shell() {
@@ -723,12 +796,7 @@ mod tests {
         // Give the kill a moment to land, then ask whether it is still there.
         let mut alive = true;
         for _ in 0..20 {
-            let st = std::process::Command::new("kill")
-                .args(["-0", pid.trim()])
-                .stderr(std::process::Stdio::null())
-                .status()
-                .unwrap();
-            if !st.success() {
+            if !liveness_probe(pid.trim()) {
                 alive = false;
                 break;
             }
