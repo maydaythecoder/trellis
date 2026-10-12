@@ -203,6 +203,66 @@ fn rpc_runs_a_prompt_to_completion_when_input_ends() {
     );
 }
 
+/// Stderr of `trellis rpc` after one scripted run, read with `NO_COLOR`
+/// removed: the colour decision under test must come from the pipe, not from
+/// the variable the other tests set.
+fn rpc_stderr_without_no_color(f: &Fixture) -> String {
+    let mut child = trellis(f)
+        .env_remove("NO_COLOR")
+        .arg("rpc")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({"id": "m", "type": "set_model", "model": f.spec})
+    )
+    .unwrap();
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({"id": "1", "type": "prompt", "task": "change f", "model": f.spec})
+    )
+    .unwrap();
+    drop(stdin);
+    let o = child.wait_with_output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8_lossy(&o.stderr).into_owned()
+}
+
+#[test]
+fn rpc_stderr_has_no_ansi_on_a_pipe() {
+    // The desktop pipes `trellis rpc`'s stderr into a text pane (ADR 0048
+    // §2). With colour on regardless of the stream, every tracing line there
+    // read `[2m...[0m [32m INFO[0m` with the escapes drawn as glyphs (#642).
+    let f = fixture("rpc-no-ansi");
+    let err = rpc_stderr_without_no_color(&f);
+    // Not vacuous: the run's tracing lines did reach stderr.
+    assert!(err.contains("INFO"), "no tracing line on stderr:\n{err}");
+    assert!(!err.contains("\x1b["), "colour codes on a pipe:\n{err:?}");
+}
+
+#[test]
+fn run_human_output_has_no_ansi_on_a_pipe() {
+    // Outside JSON mode the human stream, tracing included, is stdout; a
+    // `trellis run | tee` or a CI log must not carry escape bytes either.
+    let f = fixture("run-no-ansi");
+    let o = trellis(&f)
+        .env_remove("NO_COLOR")
+        .args(["run", "change f", "--model", &f.spec])
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(out.contains("INFO"), "no tracing line on stdout:\n{out}");
+    assert!(!out.contains("\x1b["), "colour codes on a pipe:\n{out:?}");
+    assert!(!err.contains("\x1b["), "colour codes on a pipe:\n{err:?}");
+}
+
 #[test]
 fn rpc_a_backward_clock_step_still_reports_the_run_id_of_the_run() {
     // A trail's name is `<wall-clock stamp>-<slug>`, so after the clock
