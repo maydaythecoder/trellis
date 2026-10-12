@@ -1164,6 +1164,8 @@ mod tests {
             "cb-details",
             "cb-search",
             "cb-results",
+            "cb-modules",
+            "cb-modules-title",
         ] {
             assert!(
                 js.contains(&format!("\"{id}\"")),
@@ -1191,6 +1193,84 @@ mod tests {
             "the graph takes keys"
         );
         assert!(!page[section].text.contains("Not built yet"));
+    }
+
+    #[test]
+    fn codebase_list_regions_and_circles_leave_the_tab_order() {
+        // The risk (#648): every module circle and every region a tab
+        // stop, so a package of hundreds of modules is hundreds of stops
+        // between the graph and the rest of the page, each named only by a
+        // tooltip. The graph itself stays one stop, for pan and zoom.
+        let js = code_of("codebase.js");
+        assert!(
+            !js.contains("tabindex: 0"),
+            "codebase.js puts a drawn element in the tab order"
+        );
+        assert!(
+            function_body(&js, "drawRegions").contains(
+                r#"make(doc, "g", { class: "cb-region", tabindex: -1, role: "button" })"#
+            ),
+            "a region is in the tab order"
+        );
+        let package = function_body(&js, "drawPackage");
+        let circle = package
+            .split(r#"make(doc, "circle", {"#)
+            .nth(1)
+            .and_then(|r| r.split("});").next())
+            .expect("drawPackage makes a circle per module");
+        assert!(
+            circle.contains("tabindex: -1,"),
+            "a module circle is in the tab order: {circle}"
+        );
+        let page = page();
+        assert_eq!(
+            page[index_of(&page, "cb-graph")].attr("tabindex"),
+            Some("0")
+        );
+    }
+
+    #[test]
+    fn codebase_list_does_what_the_graph_does_and_marks_the_same_selection() {
+        // The risk (#648): a list that opens or selects something other
+        // than what its region or circle does, a selection marked in the
+        // graph but not the list (or the other way), figures joined into
+        // one number, or a list left over from the last repository.
+        let js = code_of("codebase.js");
+        let list = function_body(&js, "drawList");
+        for want in [
+            "() => enter(doc, ctx, i, null)",
+            "() => select(doc, ctx, ctx.pkg, k)",
+            "ctx.items[k] = b;",
+            "markSelected(ctx);",
+            r#"`Modules in ${str(p.package) ?? "this package"}`"#,
+            "`edges in ${edgesIn(ctx, m)} · edges out ${figure(m && m.edges_out)} · `",
+            "`doubt ${figure(m && m.doubt)}`",
+        ] {
+            assert!(list.contains(want), "drawList lacks {want}");
+        }
+        assert!(
+            function_body(&js, "drawRegions")
+                .contains("activate(g, ctx, () => enter(doc, ctx, i, null));"),
+            "a region opens something else than its list entry"
+        );
+        assert!(
+            function_body(&js, "drawPackage")
+                .contains("activate(c, ctx, () => select(doc, ctx, ctx.pkg, k));"),
+            "a circle selects something else than its list entry"
+        );
+        let mark = function_body(&js, "markSelected");
+        assert!(
+            mark.contains(r#"if (b) b.setAttribute("aria-pressed", on(k) ? "true" : "false");"#),
+            "the list does not follow the selection: {mark}"
+        );
+        // The details and the list say edges in the same way.
+        assert!(function_body(&js, "drawDetails").contains(r#"row("edges in", edgesIn(ctx, m));"#));
+        for f in ["draw", "clear"] {
+            assert!(
+                function_body(&js, f).contains("drawList(doc, ctx);"),
+                "{f} leaves the list as it was"
+            );
+        }
     }
 
     #[test]
