@@ -12,7 +12,7 @@
 // through textContent (ADR 0007, S10): text that carries markup is shown as
 // characters, never parsed.
 
-import { drawView } from "./render.js";
+import { drawView, wireLog } from "./render.js";
 import { drawOverview, drawOverviewChild } from "./overview.js";
 import { askStarters, composerStopped, drawComposer, wireComposer } from "./composer.js";
 import { drawDialogs, wireDialogs } from "./dialogs.js";
@@ -126,6 +126,7 @@ function askSessionTokens(tauri) {
 
 async function main() {
   wireRail();
+  wireLog(document);
   const tauri = window.__TAURI__;
 
   // Every listener is registered, and awaited, before anything is asked

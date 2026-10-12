@@ -1250,7 +1250,15 @@ mod tests {
                 "drawView does not draw through PANES: {want}"
             );
         }
-        let written = render_writes(render);
+        let mut written = render_writes(render);
+        // The actions log's jump button (#643) is no pane: render.js's
+        // `transcript` shows and hides it, which the log_scroll_ tests hold,
+        // so it counts as written here rather than as a box nothing fills.
+        assert!(
+            function_body(render, "transcript").contains(r#"getElementById("log-jump")"#),
+            "transcript no longer writes the jump button"
+        );
+        written.insert("log-jump".to_string());
         let page = page();
         let gaps = unfilled(&page, "run", &written);
         assert!(
@@ -2854,6 +2862,185 @@ mod tests {
             parts.contains("stopConfirm: doc.getElementById(\"stop-confirm\")")
                 && parts.contains("stopCancel: doc.getElementById(\"stop-confirm-cancel\")"),
             "composer.js looks up another dialog: {parts}"
+        );
+    }
+
+    #[test]
+    fn log_scroll_transcript_follows_only_when_already_at_the_end() {
+        // The risk (#643): every view event set the log's scrollTop to its
+        // end, so a reader who scrolled back to read was pulled down at each
+        // turn. The end is followed only when the pane was already there,
+        // measured before it is redrawn; the one other scroll to the end in
+        // render.js is the jump button's own click.
+        let js = code_of("render.js");
+        let at_end = function_body(&js, "atEnd");
+        assert!(
+            at_end
+                .contains("pane.scrollHeight - pane.clientHeight - pane.scrollTop <= AT_END_SLACK"),
+            "atEnd measures something else: {at_end}"
+        );
+        let transcript = function_body(&js, "transcript");
+        let measured = transcript
+            .find("const follow = atEnd(pane);")
+            .expect("transcript reads the end before drawing");
+        let drawn = transcript.find("pane.append(").expect("transcript appends");
+        assert!(
+            measured < drawn,
+            "the end is read after the redraw moved it"
+        );
+        assert_eq!(
+            transcript
+                .matches("pane.scrollTop = pane.scrollHeight;")
+                .count(),
+            1,
+            "transcript scrolls to the end in more than one place"
+        );
+        assert!(
+            transcript.contains("if (follow) {\n    pane.scrollTop = pane.scrollHeight;"),
+            "the scroll to the end is not under the at-end check: {transcript}"
+        );
+        let scrolls: Vec<&str> = js
+            .lines()
+            .filter(|l| l.contains("scrollTop = "))
+            .map(str::trim)
+            .collect();
+        assert_eq!(
+            scrolls,
+            [
+                "pane.scrollTop = pane.scrollHeight;",
+                "pane.scrollTop = pane.scrollHeight;"
+            ],
+            "render.js scrolls somewhere else too"
+        );
+        assert!(
+            click_handler(function_body(&js, "wireLog"), "jump")
+                .contains("pane.scrollTop = pane.scrollHeight;"),
+            "the second scroll is not the jump button's"
+        );
+    }
+
+    #[test]
+    fn log_scroll_transcript_appends_new_lines_rather_than_replacing() {
+        // The risk (#643): the view resends the whole transcript each turn,
+        // and replacing every child of a role="log" region may have a screen
+        // reader read the whole log again. Lines beyond those drawn are
+        // appended; only a list that does not extend the drawn one (the cap
+        // dropped lines, or the transcript was cleared) is drawn afresh.
+        let js = code_of("render.js");
+        let transcript = function_body(&js, "transcript");
+        for want in [
+            "drawn.every((c, i) => c.textContent === list[i])",
+            "list.slice(drawn.length)",
+            "if (grows && drawn.length > 0) pane.append(...rows);",
+            "else fill(doc, pane, rows, \"Nothing has run yet.\", \"div\");",
+        ] {
+            assert!(
+                transcript.contains(want),
+                "transcript lacks {want}: {transcript}"
+            );
+        }
+        let page = page();
+        let log = &page[index_of(&page, "pane-transcript")];
+        assert_eq!(
+            log.attr("role"),
+            Some("log"),
+            "the appended pane is the log"
+        );
+    }
+
+    #[test]
+    fn log_scroll_jump_button_is_in_run_hidden_as_served_and_written_by_render_js() {
+        // The risk (#643): the offer to catch up missing, shown while
+        // nothing is below, or shown by a module other than the one that
+        // knows what was drawn. It sits under the log in #run, hidden as
+        // served; transcript shows it only when lines were added below a
+        // reader who is not at the end, and hides it when the end is
+        // followed; its click and a scroll to the end by hand hide it too.
+        let page = page();
+        let jump = index_of(&page, "log-jump");
+        assert_eq!(page[jump].tag, "button");
+        assert!(page[jump].attrs.contains_key("hidden"), "shown as served");
+        assert!(
+            within(&page, jump, index_of(&page, "run")),
+            "#log-jump is outside #run"
+        );
+        assert_eq!(
+            page[jump].parent,
+            page[index_of(&page, "pane-transcript")].parent,
+            "#log-jump is not beside the log"
+        );
+        let text = page[jump].text.trim();
+        assert!(
+            text.contains("New lines below") && text.contains("Jump to the end"),
+            "{text}"
+        );
+        let js = code_of("render.js");
+        let transcript = function_body(&js, "transcript");
+        assert!(transcript.contains(r#"const jump = doc.getElementById("log-jump");"#));
+        assert!(
+            transcript.contains("if (follow) {\n    pane.scrollTop = pane.scrollHeight;\n    jump.hidden = true;\n  } else if (rows.length > 0) {\n    jump.hidden = false;\n  }"),
+            "the jump button is shown or hidden on something else: {transcript}"
+        );
+        let wire = function_body(&js, "wireLog");
+        let click = click_handler(wire, "jump");
+        assert!(click.contains("jump.hidden = true;"), "{click}");
+        assert!(
+            wire.contains("pane.addEventListener(\"scroll\"")
+                && wire.contains("if (atEnd(pane)) jump.hidden = true;"),
+            "a scroll to the end by hand leaves the offer up: {wire}"
+        );
+        let main = code_of("main.js");
+        assert!(
+            main.contains(r#"import { drawView, wireLog } from "./render.js";"#)
+                && main.contains("wireLog(document);"),
+            "main.js does not wire the log"
+        );
+        for name in [
+            "composer.js",
+            "dialogs.js",
+            "main.js",
+            "overview.js",
+            "status.js",
+        ] {
+            assert!(
+                !code_of(name).contains("log-jump"),
+                "{name} writes the jump button too"
+            );
+        }
+    }
+
+    #[test]
+    fn log_scroll_messages_pane_uses_the_same_check() {
+        // The risk (#643): the messages pane keeping the old rule, so a
+        // reader of trellis's stderr is pulled to the end at each view while
+        // the actions log is not; or a second, differently measured notion
+        // of "at the end". dialogs.js imports render.js's atEnd and scrolls
+        // only under it.
+        let js = code_of("dialogs.js");
+        assert!(
+            js.contains(r#"import { atEnd } from "./render.js";"#),
+            "dialogs.js measures the end its own way"
+        );
+        let stderr = function_body(&js, "drawStderr");
+        let measured = stderr
+            .find("const follow = atEnd(log);")
+            .expect("drawStderr reads the end before drawing");
+        let drawn = stderr
+            .find("log.replaceChildren(")
+            .expect("drawStderr redraws the pane");
+        assert!(
+            measured < drawn,
+            "the end is read after the redraw moved it"
+        );
+        let scrolls: Vec<&str> = js
+            .lines()
+            .filter(|l| l.contains("scrollTop"))
+            .map(str::trim)
+            .collect();
+        assert_eq!(
+            scrolls,
+            ["if (follow) log.scrollTop = log.scrollHeight;"],
+            "dialogs.js scrolls somewhere unguarded"
         );
     }
 
