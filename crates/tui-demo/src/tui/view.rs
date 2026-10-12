@@ -19,6 +19,12 @@ const MIN_HEIGHT: u16 = 24;
 /// the radius caption "a floor on reach, not a boundary" at 34 under it.
 const RIGHT_MIN_WIDTH: u16 = 38;
 
+/// The transcript pane's inner width at the narrowest layout drawn: its 60%
+/// of `MIN_WIDTH`, less two borders. The transcript wraps to the most rows
+/// here, so a scroll back by its row count at this width reaches the top at
+/// any size the view lays out (`Home`, #660).
+pub(crate) const MIN_TRANSCRIPT_WIDTH: u16 = MIN_WIDTH * 60 / 100 - 2;
+
 pub fn render(state: &AppState, frame: &mut Frame) {
     let area = frame.area();
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
@@ -168,7 +174,7 @@ fn render_status(state: &AppState, area: Rect, frame: &mut Frame) {
 /// the paragraph does, a word longer than the width breaking across rows.
 /// Close enough to place the end of the transcript in view; it is a count
 /// for scrolling, never a figure shown to anyone.
-fn wrapped_rows(text: &str, width: u16) -> u16 {
+pub(crate) fn wrapped_rows(text: &str, width: u16) -> u16 {
     let width = usize::from(width.max(1));
     let mut rows: usize = 0;
     for line in text.split('\n') {
