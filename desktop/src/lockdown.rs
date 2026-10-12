@@ -1337,7 +1337,20 @@ mod tests {
                 "drawOverview does not draw through PANES: {want}"
             );
         }
-        let written: BTreeSet<String> = table(js, "PANES").into_iter().map(|(id, _)| id).collect();
+        let mut written: BTreeSet<String> =
+            table(js, "PANES").into_iter().map(|(id, _)| id).collect();
+        // The open-repository form sits beside Recent repositories (#645);
+        // it is settings.js's, which looks up each of its ids, so they are
+        // written here rather than boxes nothing fills. The repo_switch_
+        // tests hold where the form sits and that nothing else is in it.
+        let switch = function_body(&ui["settings.js"], "wireRepositorySwitch");
+        for id in ["repo-form", "repo-path", "repo-note"] {
+            assert!(
+                switch.contains(&format!("getElementById(\"{id}\")")),
+                "settings.js no longer wires #{id}"
+            );
+            written.insert(id.to_string());
+        }
         let page = page();
         let gaps = unfilled(&page, "overview", &written);
         assert!(
@@ -2965,6 +2978,154 @@ mod tests {
     }
 
     #[test]
+    fn repo_switch_form_sits_beside_recent_repositories_in_the_overview() {
+        // The risk (#645): the switch to another repository hidden under
+        // "Model: <spec>", a pane that folds after the first choice, so a
+        // user with several repositories hunts for it. It sits in the
+        // overview's Recent repositories pane, settings.js wires it there by
+        // the same ids, and nothing else with an id is in it (an element in
+        // the overview that no module writes fails
+        // view_renders_every_overview_pane).
+        let page = page();
+        let form = index_of(&page, "repo-form");
+        assert_eq!(page[form].tag, "form");
+        let overview = index_of(&page, "overview");
+        assert!(
+            within(&page, form, overview),
+            "#repo-form is outside #overview"
+        );
+        assert!(
+            !within(&page, form, index_of(&page, "model-pane")),
+            "#repo-form is still in the model pane"
+        );
+        let recent = (0..page.len())
+            .find(|&i| page[i].attr("aria-labelledby") == Some("ov-recent-title"))
+            .expect("the Recent repositories pane");
+        assert!(
+            within(&page, form, recent),
+            "#repo-form is not beside Recent repositories"
+        );
+        let ids: Vec<&str> = (0..page.len())
+            .filter(|&i| i == form || within(&page, i, form))
+            .filter_map(|i| page[i].attr("id"))
+            .collect();
+        assert_eq!(
+            ids,
+            ["repo-form", "repo-path", "repo-note"],
+            "the form's ids"
+        );
+        let settings = code_of("settings.js");
+        let switch = function_body(&settings, "wireRepositorySwitch");
+        for id in ids {
+            assert!(
+                switch.contains(&format!("getElementById(\"{id}\")")),
+                "settings.js does not wire #{id}"
+            );
+        }
+        assert!(
+            switch.contains(r#"invoke("open_repository", { path: p })"#),
+            "the form no longer opens through the core"
+        );
+        assert!(
+            page[form].text.contains("Open another repository"),
+            "the form does not say what it does: {}",
+            page[form].text
+        );
+    }
+
+    #[test]
+    fn repo_switch_window_title_names_the_open_repository() {
+        // The risk (#645): every window titled "trellis", so someone with
+        // two repositories open works in the wrong one. status.js writes
+        // `document.title` from the root `child-started` carried, as text
+        // (the title is plain text, never markup), and nothing else writes
+        // it; with no root reported it says "trellis", never a guess.
+        let status = code_of("status.js");
+        let started = status
+            .split(r#"listen("child-started""#)
+            .nth(1)
+            .and_then(|r| r.split("});").next())
+            .expect("status.js listens for child-started");
+        assert!(
+            started.contains(
+                "doc.title = str(c.root) === null ? \"trellis\" : `trellis · ${c.root}`;"
+            ),
+            "child-started does not title the window from the root: {started}"
+        );
+        assert_eq!(
+            status.matches(".title").count(),
+            1,
+            "status.js titles twice"
+        );
+        for (name, code) in ui_code() {
+            if name == "status.js" {
+                continue;
+            }
+            for bad in ["doc.title", "document.title", "win.document.title"] {
+                assert!(!code.contains(bad), "{name} writes the window title too");
+            }
+        }
+        let page = page();
+        let title = page
+            .iter()
+            .find(|e| e.tag == "title")
+            .expect("the page has a <title>");
+        assert_eq!(
+            title.text.trim(),
+            "trellis",
+            "the served title is the bare name"
+        );
+    }
+
+    #[test]
+    fn repo_switch_catalogue_folds_under_a_closed_details() {
+        // The risk (#645): at 1280x820 the model pane filled the first
+        // screen and the Overview heading started at about 740 px, with the
+        // catalogue the longest part. It folds under its own details, served
+        // closed, which no module opens; its summary is the heading the list
+        // is labelled by, so the words saying what the catalogue is stay.
+        let page = page();
+        let fold = index_of(&page, "model-catalog-pane");
+        assert_eq!(page[fold].tag, "details");
+        assert!(
+            !page[fold].attrs.contains_key("open"),
+            "the catalogue is served open"
+        );
+        assert!(
+            within(&page, fold, index_of(&page, "model-pane")),
+            "the catalogue left the model pane"
+        );
+        let summary = index_of(&page, "model-catalog-title");
+        assert_eq!(page[summary].tag, "summary");
+        assert_eq!(
+            page[summary].parent,
+            Some(fold),
+            "the summary is not the fold's"
+        );
+        let list = index_of(&page, "model-catalog");
+        assert!(
+            within(&page, list, fold),
+            "#model-catalog is outside the fold"
+        );
+        assert_eq!(
+            page[list].attr("aria-labelledby"),
+            Some("model-catalog-title")
+        );
+        for (name, code) in ui_code() {
+            assert!(
+                !code.contains("model-catalog-pane"),
+                "{name} reaches the fold, and may open it"
+            );
+        }
+        // The fold leaves the catalogue drawn as before: settings.js still
+        // writes the list.
+        assert!(
+            function_body(&code_of("settings.js"), "drawCatalog")
+                .contains(r#"getElementById("model-catalog")"#)
+        );
+    }
+
+    #[test]
     fn model_gate_model_js_parses_no_html() {
         // The risk: a spec, an address, a runtime's error or a provider
         // name, all trellis- or configuration-supplied, written as markup,
@@ -3171,9 +3332,21 @@ mod tests {
             !settings.contains("configured.repository"),
             "settings.js reads the repository's spec as a choice"
         );
+        // The catalogue stays in the model pane; the repository switch
+        // moved to the overview, beside Recent repositories (#645), where
+        // the repo_switch_ tests hold it.
         let pane = index_of(&page, "model-pane");
-        for id in ["model-catalog", "repo-form", "repo-path", "repo-note"] {
-            assert!(within(&page, index_of(&page, id), pane), "#{id}");
+        assert!(
+            within(&page, index_of(&page, "model-catalog"), pane),
+            "#model-catalog"
+        );
+        let overview = index_of(&page, "overview");
+        for id in ["repo-form", "repo-path", "repo-note"] {
+            assert!(within(&page, index_of(&page, id), overview), "#{id}");
+            assert!(
+                !within(&page, index_of(&page, id), pane),
+                "#{id} is still in the model pane"
+            );
         }
         assert!(
             page[index_of(&page, "model-catalog-title")]
