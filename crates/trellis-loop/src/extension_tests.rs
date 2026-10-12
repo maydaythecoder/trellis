@@ -308,9 +308,13 @@ async fn sgr_colour_codes_in_bash_output_do_not_reach_the_model() {
         .with_tools(tools)
         .spawn();
     // Windows `cmd` has no escape in `echo`, so the sequence is written
-    // through PowerShell's `[char]27` there; `printf` elsewhere.
+    // through PowerShell's `[char]27` there; `printf` elsewhere. No double
+    // quote is in it: std quotes the script for a program that reads its
+    // command line the C runtime's way, `cmd /C` does not, and PowerShell
+    // was handed `"Write-Output (...)"` as a string and printed it unrun
+    // (#666's Windows CI). Unquoted, `-Command` joins what follows it.
     let command = if cfg!(windows) {
-        "powershell -NoProfile -Command \"Write-Output ([char]27 + '[31mred' + [char]27 + '[0m')\""
+        "powershell -NoProfile -Command Write-Output ([char]27 + '[31mred' + [char]27 + '[0m')"
     } else {
         "printf '\\033[31mred\\033[0m\\n'"
     };
