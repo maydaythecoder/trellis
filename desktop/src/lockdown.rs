@@ -536,6 +536,72 @@ mod tests {
     }
 
     #[test]
+    fn approval_dialog_keys_say_escape_rejects() {
+        // The risk (#658): Escape, often pressed to mean "later", rejects
+        // the call without the dialog saying so. dialogs.js answers every
+        // close but Approve with a no (ADR 0018), and the dialog now says
+        // that in text it is described by.
+        let page = page();
+        let dialog = index_of(&page, "approval");
+        let keys = index_of(&page, "approval-keys");
+        assert!(
+            within(&page, keys, dialog),
+            "the keys line is outside the dialog"
+        );
+        let said = page[keys].text.trim();
+        assert!(
+            said.contains("Escape") && said.contains("rejects the call"),
+            "{said}"
+        );
+        let described = page[dialog]
+            .attr("aria-describedby")
+            .expect("the dialog has no description");
+        assert!(
+            described.split_whitespace().any(|id| id == "approval-keys"),
+            "the dialog is not described by its keys: {described}"
+        );
+        assert!(
+            code_of("dialogs.js").contains(r#"const yes = dialog.returnValue === "approve";"#),
+            "dialogs.js no longer answers a close with a no, so the line is wrong"
+        );
+    }
+
+    #[test]
+    fn approval_dialog_keys_details_take_focus_and_show_it() {
+        // The risk (#658): a diff longer than its box that only a mouse can
+        // scroll, or one that takes focus with no name and no outline.
+        let page = page();
+        let detail = &page[index_of(&page, "approval-detail")];
+        assert_eq!(detail.tag, "pre");
+        assert_eq!(
+            detail.attr("tabindex"),
+            Some("0"),
+            "the details take no focus"
+        );
+        assert!(
+            detail
+                .attr("aria-label")
+                .is_some_and(|l| !l.trim().is_empty()),
+            "the details have no name"
+        );
+        let rules = css_rules();
+        let squeeze = |d: &str| d.split_whitespace().collect::<String>();
+        assert!(
+            rules.iter().any(
+                |(s, d)| s.trim() == ".approval-detail" && squeeze(d).contains("overflow:auto")
+            ),
+            "the details do not scroll"
+        );
+        assert!(
+            rules.iter().any(|(s, d)| s
+                .split(',')
+                .any(|s| s.trim() == ".approval-detail:focus-visible")
+                && squeeze(d).contains("outline:2px")),
+            "focus on the details draws no outline"
+        );
+    }
+
+    #[test]
     fn page_reload_asks_for_the_starters_too() {
         // The risk (#301 review): a page that loads after its child started
         // (a reload) sees no child-started, and main.js's fallback asked for
@@ -2152,6 +2218,81 @@ mod tests {
     }
 
     #[test]
+    fn board_filter_cells_press_one_status_and_show_all_lifts_it() {
+        // The risk (#656): eight counts that look clickable and are not; or
+        // a filter that counts what it shows, so the board draws a figure
+        // the core did not send. Each cell is a button with aria-pressed,
+        // the list shows the view's tasks whose status is the pressed
+        // cell's, and nothing is counted from them (the queue_js_ guards
+        // still hold). No JavaScript runs under cargo test, so this holds
+        // the text; a node smoke script with a fake DOM pressed the cells
+        // (see the commit).
+        let js = code_of("queue.js");
+        let counts = function_body(&js, "drawCounts");
+        for want in [
+            r#"const b = el(doc, "button");"#,
+            r#"b.setAttribute("aria-pressed", s !== null && s === pressed ? "true" : "false");"#,
+            r#"else b.addEventListener("click", () => press(doc, s));"#,
+            r#"el(doc, "button", "Show all")"#,
+            "b.disabled = pressed === null;",
+            r#"b.addEventListener("click", () => press(doc, null));"#,
+        ] {
+            assert!(counts.contains(want), "drawCounts lacks {want}");
+        }
+        let press = function_body(&js, "press");
+        for want in [
+            "pressed = status === pressed ? null : status;",
+            "drawCounts(doc, lastQueue.counts);",
+            "drawTasks(doc, lastQueue.tasks);",
+        ] {
+            assert!(press.contains(want), "press lacks {want}");
+        }
+        let tasks = function_body(&js, "drawTasks");
+        assert!(
+            tasks.contains(".filter((t) => pressed === null || str(t && t.status) === pressed)"),
+            "drawTasks does not honour the pressed status: {tasks}"
+        );
+        // The filtered rows are drawn, never counted.
+        assert_eq!(tasks.matches(".length").count(), 1, "{tasks}");
+        assert!(tasks.contains("if (items.length === 0) {"), "{tasks}");
+        assert!(
+            js.split(r#"listen("child-started""#)
+                .nth(1)
+                .and_then(|r| r.split("});").next())
+                .is_some_and(|s| s.contains("pressed = null;")),
+            "another repository's queue keeps the last one's filter"
+        );
+    }
+
+    #[test]
+    fn board_filter_overview_and_board_say_the_same_status_word() {
+        // The risk (#656): the same task read "pending" in the overview
+        // (the queue directory, `state`) and "todo" on the board (`status`).
+        // Both now draw `status`, which the overview's contract entry lists,
+        // so a rename fails trellis's own contract test rather than
+        // blanking the word.
+        let overview_js = code_of("overview.js");
+        let overview = function_body(&overview_js, "task");
+        assert!(
+            overview.contains(r#"el(doc, "span", str(t.status) ?? "?")"#),
+            "{overview}"
+        );
+        assert!(!overview.contains("t.state"), "{overview}");
+        assert!(code_of("queue.js").contains(r#"str(t.status) ?? "status not reported""#));
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../crates/trellis-cli/tests/client_contract.json"
+        ))
+        .expect("the contract is JSON");
+        assert!(
+            contract["overview"]["always"]
+                .as_array()
+                .expect("overview.always is a list")
+                .contains(&json!("board.tasks[].status")),
+            "the overview's contract does not list the status the desktop reads"
+        );
+    }
+
+    #[test]
     fn board_reads_pr_ci_once_at_a_time_and_only_the_newest() {
         // The risk (#311 review): each board click ran `trellis overview`
         // and two `gh` calls with no guard, so clicks stacked them, and a
@@ -2393,11 +2534,12 @@ mod tests {
         let mut keys = vec!["tasks".to_string(), "pr_ci".to_string()];
         keys_of(&o["board"]["pr_ci"], &mut keys);
         keys_of(&unavailable, &mut keys);
-        // A task's chain and how it reads; its labels, assignee and status
-        // are the queue view's, not the board's.
+        // A task's chain and how it reads; its labels and assignee are the
+        // queue view's, not the board's. Its status is the word the queue
+        // view uses too, so a task reads the same in both (#656).
         keys.extend(
             [
-                "id", "state", "priority", "task", "waiting", "blockers", "parent",
+                "id", "status", "priority", "task", "waiting", "blockers", "parent",
             ]
             .map(String::from),
         );
@@ -3800,6 +3942,66 @@ mod tests {
             ui_file("model.js").contains(r#"import { modelChoices } from "./settings.js";"#),
             "the picker's choices are not settings.js's"
         );
+    }
+
+    #[test]
+    fn status_bar_paths_show_a_name_with_the_whole_path_as_title() {
+        // The risk (#652): two absolute paths in a one-row bar, wrapping it
+        // over two or three lines on every screen; or a name with no way to
+        // read the path it stands for. No JavaScript runs under cargo test,
+        // so this holds the text; a node smoke script with a fake DOM ran
+        // status.js with POSIX and Windows paths (see the commit).
+        let js = code_of("status.js");
+        let started = js
+            .split(r#"listen("child-started""#)
+            .nth(1)
+            .and_then(|r| r.split("});").next())
+            .expect("status.js listens for child-started");
+        for want in [
+            r#"showPath(doc, "status-trellis", str(c.trellis), "path not reported", ` · ${version}`);"#,
+            r#"showPath(doc, "status-root", str(c.root), "not reported");"#,
+        ] {
+            assert!(started.contains(want), "child-started lacks {want}");
+        }
+        let show = function_body(&js, "showPath");
+        for want in [
+            "e.textContent = baseName(path) + after;",
+            r#"e.setAttribute("title", path);"#,
+            r#"e.removeAttribute("title");"#,
+        ] {
+            assert!(show.contains(want), "showPath lacks {want}");
+        }
+        // Either separator, so a Windows path is named by its file too.
+        assert!(
+            function_body(&js, "baseName").contains(r"path.split(/[\\/]/)"),
+            "baseName splits on one separator only"
+        );
+    }
+
+    #[test]
+    fn status_bar_paths_cells_end_in_an_ellipsis_rather_than_wrap() {
+        // The risk (#652): a long value wrapping the bar, or cut off with
+        // nothing to say it was. Each cell keeps to one line and ends in an
+        // ellipsis when it does not fit.
+        let rules = css_rules();
+        let cell: Vec<String> = rules
+            .iter()
+            .filter(|(s, _)| s.split(',').any(|s| s.trim() == ".status-bar dd"))
+            .map(|(_, d)| d.split_whitespace().collect())
+            .collect();
+        assert_eq!(cell.len(), 1, "one .status-bar dd rule");
+        for want in [
+            "text-overflow:ellipsis",
+            "white-space:nowrap",
+            "overflow:hidden",
+            "max-width:",
+        ] {
+            assert!(
+                cell[0].contains(want),
+                ".status-bar dd lacks {want}: {}",
+                cell[0]
+            );
+        }
     }
 
     /// One of `settings.js`'s choices, from `value: <value>,` to its close.
