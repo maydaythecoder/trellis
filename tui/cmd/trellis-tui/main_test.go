@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -9,23 +10,34 @@ import (
 func TestMainVersionPrintsTheBuildVersion(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := run([]string{"--version"}, &out, &errb); code != 0 {
-		t.Fatalf("exit %d", code)
+		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 	if got := out.String(); got != "trellis-tui dev\n" {
 		t.Fatalf("got %q", got)
 	}
 }
 
-// Anything else starts no screen and says the TUI is not built yet,
-// exiting non-zero, so nothing appears to work that does not.
-func TestMainAnythingElseSaysNotBuilt(t *testing.T) {
-	for _, args := range [][]string{nil, {"--root", "."}, {"do something"}} {
-		var out, errb bytes.Buffer
-		if code := run(args, &out, &errb); code == 0 {
-			t.Fatalf("%q exited 0", args)
-		}
-		if out.Len() != 0 || !bytes.Contains(errb.Bytes(), []byte("not built yet")) {
-			t.Fatalf("%q: stdout %q stderr %q", args, out.String(), errb.String())
-		}
+// Without --root nothing starts: there is no repository to run against.
+func TestMainRootIsRequired(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := run(nil, &out, &errb); code != 2 || !strings.Contains(errb.String(), "--root") {
+		t.Fatalf("exit %d, stderr %q", code, errb.String())
+	}
+}
+
+// A trellis that does not exist is refused before any screen starts.
+func TestMainMissingTrellisIsRefused(t *testing.T) {
+	var out, errb bytes.Buffer
+	code := run([]string{"--root", t.TempDir(), "--trellis", "/nonexistent/trellis"}, &out, &errb)
+	if code == 0 || !strings.Contains(errb.String(), "no trellis at") {
+		t.Fatalf("exit %d, stderr %q", code, errb.String())
+	}
+}
+
+// The words after the flags are the task.
+func TestMainTaskIsTheRemainingWords(t *testing.T) {
+	a, err := parseArgs([]string{"--root", "r", "--model", "m", "fix", "the", "bug"}, &bytes.Buffer{})
+	if err != nil || a.task != "fix the bug" || a.model != "m" || a.root != "r" {
+		t.Fatalf("%+v %v", a, err)
 	}
 }

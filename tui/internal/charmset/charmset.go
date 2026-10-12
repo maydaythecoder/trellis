@@ -4,7 +4,7 @@
 // against Bubble Tea v1.3.10 and Lip Gloss v1.1.0, the versions go.mod
 // requires.
 //
-// Until a screen imports them (#508), these blank imports are what keep
+// Until the screen imports all three (#510), these blank imports keep
 // `go mod tidy` from dropping the set from go.mod and go.sum, so the
 // supply-chain checks (go mod verify, govulncheck, go-licenses) read the
 // tree the TUI will be built from.

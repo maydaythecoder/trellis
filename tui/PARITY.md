@@ -1,0 +1,150 @@
+# Go TUI parity with the ratatui TUI
+
+ADR 0052 section 7: the Go TUI (`tui/`) replaces the ratatui TUI once every
+rule the ratatui TUI's tests hold maps to a Go test that passes in
+`scripts/checks/go-test.sh` on both runners. This file has one row per test
+in the five files the ADR names: `app.rs` (40), `view.rs` (25), `events.rs`
+(6), `tui_bridge.rs` (16) and `tui_run.rs` (30), 117 rows. (The ADR counted
+23 in `view.rs` and 23 in `tui_run.rs` when it was written; the files have
+since grown.) The routing rule is listed after them.
+
+Each row gives the Rust test, the rule it holds (its name, which in this
+repository is written as the rule), the ticket that ports it, and the Go
+test once ported, or "not ported" with the reason. A Go test may hold more
+than one row.
+
+`scripts/checks/go-parity.sh` fails when a row names a Go test that does
+not exist under `tui/`, or when a test in those five files has no row. With
+`--complete` it also fails for a row with neither a Go test nor "not
+ported" (#514 runs it so). The tickets: T2 #508, T3 #509, T4 #510, T5 #511,
+T6 #512, R4 #502 (`list_paths`, whose client side is T5).
+
+| Rust file | Rust test | Rule | Ticket | Go test |
+| --- | --- | --- | --- | --- |
+| `app.rs` | `esc_on_an_empty_line_quits` | esc on an empty line quits | T3 (#509) |  |
+| `app.rs` | `quit_is_still_reachable_as_a_message` | quit is still reachable as a message | T2 (#508) | `TestModelCtrlCIdleQuitsAndEndsOnExit` |
+| `app.rs` | `a_release_event_changes_nothing` | a release event changes nothing | T2 (#508) | not ported: Bubble Tea delivers key presses only; there is no release or repeat event to filter (crossterm reported both on Windows) |
+| `app.rs` | `the_transcript_is_capped` | the transcript is capped | T2 (#508) | `TestModelTranscriptCapHolds` |
+| `app.rs` | `a_shell_command_typed_here_does_not_become_an_agent_run` | a shell command typed here does not become an agent run | T5 (#511) |  |
+| `app.rs` | `codebase_is_handed_to_the_driver_rather_than_answered_or_refused` | codebase is handed to the driver rather than answered or refused | T5 (#511) |  |
+| `app.rs` | `codebase_is_listed_in_help_beside_the_command_it_is_not` | codebase is listed in help beside the command it is not | T5 (#511) |  |
+| `app.rs` | `graph_is_a_command_and_reports_the_reach_without_a_run` | graph is a command and reports the reach without a run | T5 (#511) |  |
+| `app.rs` | `graph_appears_in_help` | graph appears in help | T5 (#511) |  |
+| `app.rs` | `help_and_model_are_answered_without_a_run` | help and model are answered without a run | T5 (#511) |  |
+| `app.rs` | `an_unknown_slash_command_is_refused_rather_than_run` | an unknown slash command is refused rather than run | T5 (#511) |  |
+| `app.rs` | `clear_empties_the_transcript_and_says_so` | clear empties the transcript and says so | T5 (#511) |  |
+| `app.rs` | `an_ordinary_task_is_still_a_task` | an ordinary task is still a task | T2 (#508) | `TestModelSentTaskBecomesOnePrompt` |
+| `app.rs` | `a_reply_starts_its_own_line_and_does_not_land_on_the_task_echo` | a reply starts its own line and does not land on the task echo | T2 (#508) | `TestModelTurnsFillTheTranscript` |
+| `app.rs` | `a_second_task_also_gets_its_own_line` | a second task also gets its own line | T2 (#508) | `TestModelRunEndSetsTheOutcome` |
+| `app.rs` | `a_multi_line_failure_keeps_every_line_marked` | a multi line failure keeps every line marked | T2 (#508) | `TestModelRunEndErrorMarksEveryLine` |
+| `app.rs` | `tokens_join_into_lines_rather_than_one_line_each` | tokens join into lines rather than one line each | T2 (#508) | not ported: token streaming is excluded from parity (#281); rpc sends whole frames, never tokens |
+| `app.rs` | `y_accepts_the_modal_and_n_rejects_it` | y accepts the modal and n rejects it | T3 (#509) |  |
+| `app.rs` | `while_the_modal_is_up_q_does_not_quit` | while the modal is up q does not quit | T3 (#509) |  |
+| `app.rs` | `transcript_scrolling_back_stops_at_the_end_and_resumes_following` | transcript scrolling back stops at the end and resumes following | T4 (#510) |  |
+| `app.rs` | `transcript_outcome_is_held_until_the_next_run_starts` | transcript outcome is held until the next run starts | T2 (#508) | `TestModelRunEndSetsTheOutcome` |
+| `app.rs` | `work_events_land_where_they_belong` | work events land where they belong | T4 (#510) |  |
+| `app.rs` | `at_file_offers_matches_case_insensitively_shortest_first` | at file offers matches case insensitively shortest first | R4 (#502) / T5 (#511) |  |
+| `app.rs` | `at_file_offers_nothing_unless_the_last_word_starts_with_at` | at file offers nothing unless the last word starts with at | R4 (#502) / T5 (#511) |  |
+| `app.rs` | `at_file_offers_at_most_ten` | at file offers at most ten | R4 (#502) / T5 (#511) |  |
+| `app.rs` | `at_file_tab_inserts_the_first_candidate_and_a_space` | at file tab inserts the first candidate and a space | R4 (#502) / T5 (#511) |  |
+| `app.rs` | `at_file_tab_with_no_candidate_changes_nothing` | at file tab with no candidate changes nothing | R4 (#502) / T5 (#511) |  |
+| `app.rs` | `at_file_enter_submits_the_line_as_typed` | at file enter submits the line as typed | R4 (#502) / T5 (#511) |  |
+| `app.rs` | `typing_then_enter_submits_the_line` | typing then enter submits the line | T2 (#508) | `TestModelSentTaskBecomesOnePrompt` |
+| `app.rs` | `q_types_a_q_now_that_there_is_somewhere_to_type` | q types a q now that there is somewhere to type | T2 (#508) | `TestModelTypingBackspaceAndAnEmptyLine` |
+| `app.rs` | `esc_clears_a_line_and_leaves_an_empty_one` | esc clears a line and leaves an empty one | T3 (#509) |  |
+| `app.rs` | `backspace_deletes_and_stops_at_empty` | backspace deletes and stops at empty | T2 (#508) | `TestModelTypingBackspaceAndAnEmptyLine` |
+| `app.rs` | `an_empty_line_submits_nothing` | an empty line submits nothing | T2 (#508) | `TestModelTypingBackspaceAndAnEmptyLine` |
+| `app.rs` | `a_line_typed_mid_run_is_queued_as_a_steer_not_started_as_a_second_task` | a line typed mid run is queued as a steer not started as a second task | T3 (#509) |  |
+| `app.rs` | `a_slash_command_mid_run_is_refused_as_before_and_is_not_a_steer` | a slash command mid run is refused as before and is not a steer | T3 (#509) |  |
+| `app.rs` | `the_modal_takes_y_and_n_before_a_steer_can` | the modal takes y and n before a steer can | T3 (#509) |  |
+| `app.rs` | `a_delivered_steer_is_shown_with_its_turn_once` | a delivered steer is shown with its turn once | T3 (#509) |  |
+| `app.rs` | `a_steer_never_marks_a_check_or_an_edit_adr_0004` | a steer never marks a check or an edit (ADR 0004) | T3 (#509) |  |
+| `app.rs` | `steers_are_counted_per_run` | steers are counted per run | T3 (#509) |  |
+| `app.rs` | `the_modal_takes_the_keys_while_it_is_up` | the modal takes the keys while it is up | T3 (#509) |  |
+| `view.rs` | `transcript_follows_its_end_while_new_lines_arrive` | transcript follows its end while new lines arrive | T4 (#510) |  |
+| `view.rs` | `transcript_scrolled_back_stops_following_and_says_so` | transcript scrolled back stops following and says so | T4 (#510) |  |
+| `view.rs` | `transcript_outcome_of_a_finished_run_is_on_screen_without_scrolling` | transcript outcome of a finished run is on screen without scrolling | T4 (#510) |  |
+| `view.rs` | `the_six_regions_are_on_screen_at_eighty_by_twentyfour` | the six regions are on screen at eighty by twentyfour | T4 (#510) |  |
+| `view.rs` | `budget_line_rate_excludes_queue_wait` | budget line rate excludes queue wait | T4 (#510) |  |
+| `view.rs` | `budget_line_unknown_queue_wait_counts_as_zero_and_is_not_drawn` | budget line unknown queue wait counts as zero and is not drawn | T4 (#510) |  |
+| `view.rs` | `budget_line_without_reported_tokens_draws_no_rate_and_no_wait` | budget line without reported tokens draws no rate and no wait | T4 (#510) |  |
+| `view.rs` | `budget_line_with_no_model_time_left_draws_no_rate` | budget line with no model time left draws no rate | T4 (#510) |  |
+| `view.rs` | `it_lays_out_again_at_a_larger_size` | it lays out again at a larger size | T4 (#510) |  |
+| `view.rs` | `below_eighty_by_twentyfour_it_says_so_instead_of_laying_out` | below eighty by twentyfour it says so instead of laying out | T4 (#510) |  |
+| `view.rs` | `the_modal_covers_what_is_under_it` | the modal covers what is under it | T3 (#509) |  |
+| `view.rs` | `the_task_line_shows_what_is_typed_and_how_to_send_it` | the task line shows what is typed and how to send it | T4 (#510) |  |
+| `view.rs` | `at_file_candidates_are_drawn_under_the_input_line` | at file candidates are drawn under the input line | T5 (#511) |  |
+| `view.rs` | `at_file_candidates_are_not_drawn_while_a_run_holds_the_input` | at file candidates are not drawn while a run holds the input | T5 (#511) |  |
+| `view.rs` | `while_running_the_task_line_shows_the_steer_being_typed` | while running the task line shows the steer being typed | T3 (#509) |  |
+| `view.rs` | `every_tool_is_a_node_before_any_of_them_is_called` | every tool is a node before any of them is called | T4 (#510) |  |
+| `view.rs` | `a_refused_edit_is_on_the_graph_and_is_not_counted_as_a_write` | a refused edit is on the graph and is not counted as a write | T4 (#510) |  |
+| `view.rs` | `a_run_that_only_looked_says_so_rather_than_leaving_it_blank` | a run that only looked says so rather than leaving it blank | T4 (#510) |  |
+| `view.rs` | `a_tool_this_view_has_never_heard_of_still_reaches_the_graph` | a tool this view has never heard of still reaches the graph | T4 (#510) |  |
+| `view.rs` | `the_edges_converge_on_one_focus` | the edges converge on one focus | T4 (#510) |  |
+| `view.rs` | `a_long_target_is_cut_rather_than_wrapped_through_the_edges` | a long target is cut rather than wrapped through the edges | T4 (#510) |  |
+| `view.rs` | `an_escape_sequence_in_a_transcript_never_reaches_the_terminal` | an escape sequence in a transcript never reaches the terminal | T4 (#510) |  |
+| `view.rs` | `the_graph_survives_a_pane_too_narrow_to_draw_it` | the graph survives a pane too narrow to draw it | T4 (#510) |  |
+| `view.rs` | `tier_status_bar_writes_the_word_once_before_the_label` | tier status bar writes the word once before the label | T5 (#511) |  |
+| `view.rs` | `tier_status_bar_with_no_label_says_unknown` | tier status bar with no label says unknown | T5 (#511) |  |
+| `events.rs` | `quit_ends_the_loop_and_returns_ok` | quit ends the loop and returns ok | T2 (#508) | `TestModelCtrlCIdleQuitsAndEndsOnExit` |
+| `events.rs` | `pending_messages_are_coalesced_into_one_draw` | pending messages are coalesced into one draw | T2 (#508) | not ported: Bubble Tea's renderer coalesces updates at its own frame rate; this client has no draw loop of its own to hold to it |
+| `events.rs` | `a_modal_answer_is_sent_to_the_asker` | a modal answer is sent to the asker | T3 (#509) |  |
+| `events.rs` | `a_steer_typed_mid_run_leaves_on_the_steer_channel_and_not_as_a_task` | a steer typed mid run leaves on the steer channel and not as a task | T3 (#509) |  |
+| `events.rs` | `a_steer_is_drawn_queued_then_delivered` | a steer is drawn queued then delivered | T3 (#509) |  |
+| `events.rs` | `a_steer_before_a_task_is_ahead_of_that_tasks_boundary` | a steer before a task is ahead of that tasks boundary | T3 (#509) |  |
+| `tui_bridge.rs` | `tui_bridge_budget_carries_the_runs_ceiling_and_its_elapsed_time` | tui bridge budget carries the runs ceiling and its elapsed time | T4 (#510) |  |
+| `tui_bridge.rs` | `turn_tokens_reach_the_budget` | turn tokens reach the budget | T4 (#510) |  |
+| `tui_bridge.rs` | `a_turn_with_a_passing_check_becomes_a_line_and_a_check` | a turn with a passing check becomes a line and a check | T4 (#510) |  |
+| `tui_bridge.rs` | `a_check_kind_written_with_the_display_sigil_names_the_check` | a check kind written with the display sigil names the check | T4 (#510) |  |
+| `tui_bridge.rs` | `a_warning_whose_message_is_a_plain_string_field_still_reaches_the_transcript` | a warning whose message is a plain string field still reaches the transcript | T4 (#510) |  |
+| `tui_bridge.rs` | `a_failing_check_says_failed_and_is_not_recorded_as_a_pass` | a failing check says failed and is not recorded as a pass | T4 (#510) |  |
+| `tui_bridge.rs` | `an_edit_turn_proposes_the_path_it_names` | an edit turn proposes the path it names | T4 (#510) |  |
+| `tui_bridge.rs` | `a_file_write_file_created_is_a_write_and_a_pending_change` | a file write file created is a write and a pending change | T4 (#510) |  |
+| `tui_bridge.rs` | `a_refused_edit_is_not_listed_as_a_pending_change` | a refused edit is not listed as a pending change | T4 (#510) |  |
+| `tui_bridge.rs` | `a_turn_becomes_an_action_whether_or_not_it_wrote` | a turn becomes an action whether or not it wrote | T4 (#510) |  |
+| `tui_bridge.rs` | `an_observation_written_with_the_display_sigil_still_arrives` | an observation written with the display sigil still arrives | T4 (#510) |  |
+| `tui_bridge.rs` | `the_no_progress_warning_is_not_counted_as_another_turn` | the no progress warning is not counted as another turn | T4 (#510) |  |
+| `tui_bridge.rs` | `a_radius_turn_carries_its_three_counts` | a radius turn carries its three counts | T4 (#510) |  |
+| `tui_bridge.rs` | `a_warning_reaches_the_transcript_even_though_it_is_not_a_turn` | a warning reaches the transcript even though it is not a turn | T4 (#510) |  |
+| `tui_bridge.rs` | `an_ordinary_debug_line_is_not_mistaken_for_a_turn` | an ordinary debug line is not mistaken for a turn | T4 (#510) |  |
+| `tui_bridge.rs` | `a_steer_delivery_is_numbered_in_order_and_names_the_turn_it_reached` | a steer delivery is numbered in order and names the turn it reached | T3 (#509) |  |
+| `tui_run.rs` | `a_model_spec_that_does_not_parse_is_refused_before_the_terminal` | a model spec that does not parse is refused before the terminal | T2 (#508) | `TestModelFailedSetModelIsShown` |
+| `tui_run.rs` | `a_runtime_that_cannot_be_reached_does_not_claim_a_tier` | a runtime that cannot be reached does not claim a tier | T5 (#511) |  |
+| `tui_run.rs` | `a_scripted_model_is_labelled_as_one_without_asking_anything` | a scripted model is labelled as one without asking anything | T5 (#511) | not ported: the tier label is computed by trellis and served as `get_state`'s `tier` (#269); the rule is tested in Rust where it lives |
+| `tui_run.rs` | `tier_label_colibri_accepted_says_tools_probed` | tier label colibri accepted says tools probed | T5 (#511) | not ported: the tier label is computed by trellis and served as `get_state`'s `tier` (#269); the rule is tested in Rust where it lives |
+| `tui_run.rs` | `tier_label_colibri_refused_says_tier_1_unavailable` | tier label colibri refused says tier 1 unavailable | T5 (#511) | not ported: the tier label is computed by trellis and served as `get_state`'s `tier` (#269); the rule is tested in Rust where it lives |
+| `tui_run.rs` | `tier_label_colibri_not_verified_says_tools_assumed` | tier label colibri not verified says tools assumed | T5 (#511) | not ported: the tier label is computed by trellis and served as `get_state`'s `tier` (#269); the rule is tested in Rust where it lives |
+| `tui_run.rs` | `tier_label_colibri_not_identified_keeps_native_tool_calls` | tier label colibri not identified keeps native tool calls | T5 (#511) | not ported: the tier label is computed by trellis and served as `get_state`'s `tier` (#269); the rule is tested in Rust where it lives |
+| `tui_run.rs` | `tier_label_colibri_escapes_an_esc_byte_in_the_served_id` | tier label colibri escapes an esc byte in the served id | T5 (#511) | not ported: the tier label is computed by trellis and served as `get_state`'s `tier` (#269); the rule is tested in Rust where it lives |
+| `tui_run.rs` | `tier_label_colibri_repository_spec_with_key_set_sends_nothing` | tier label colibri repository spec with key set sends nothing | T5 (#511) | not ported: the tier label is computed by trellis and served as `get_state`'s `tier` (#269); the rule is tested in Rust where it lives |
+| `tui_run.rs` | `tier_label_vocabulary_every_backend_s_label_has_a_documented_shape` | tier label vocabulary every backend's label has a documented shape | T5 (#511) | not ported: the tier label is computed by trellis and served as `get_state`'s `tier` (#269); the rule is tested in Rust where it lives |
+| `tui_run.rs` | `tier_label_vocabulary_shape_check_refuses_what_the_contract_does_not_list` | tier label vocabulary shape check refuses what the contract does not list | T5 (#511) | not ported: the tier label is computed by trellis and served as `get_state`'s `tier` (#269); the rule is tested in Rust where it lives |
+| `tui_run.rs` | `the_status_bar_takes_the_tier_the_probe_reports` | the status bar takes the tier the probe reports | T5 (#511) |  |
+| `tui_run.rs` | `a_line_split_across_writes_arrives_as_one_message` | a line split across writes arrives as one message | T2 (#508) | `TestRPCLineSplitAcrossWritesIsOneLine` |
+| `tui_run.rs` | `several_lines_in_one_write_arrive_separately` | several lines in one write arrive separately | T2 (#508) | `TestRPCSeveralLinesAndAnUnterminatedLastOne` |
+| `tui_run.rs` | `a_final_line_without_a_newline_is_not_swallowed` | a final line without a newline is not swallowed | T2 (#508) | `TestRPCSeveralLinesAndAnUnterminatedLastOne` |
+| `tui_run.rs` | `blank_spacing_lines_do_not_reach_the_pane` | blank spacing lines do not reach the pane | T2 (#508) | `TestModelServedTextIsPlainAndBlankLinesAreDropped` |
+| `tui_run.rs` | `a_run_that_fails_before_its_first_turn_still_says_why` | a run that fails before its first turn still says why | T2 (#508) | `TestModelRunEndErrorMarksEveryLine` |
+| `tui_run.rs` | `a_multi_line_failure_arrives_as_lines_rather_than_one_run_on` | a multi line failure arrives as lines rather than one run on | T2 (#508) | `TestModelRunEndErrorMarksEveryLine` |
+| `tui_run.rs` | `a_failure_that_renders_to_nothing_is_still_not_silence` | a failure that renders to nothing is still not silence | T2 (#508) | `TestModelRunEndErrorMarksEveryLine` |
+| `tui_run.rs` | `a_run_that_ends_reports_its_exit_code_rather_than_a_verdict` | a run that ends reports its exit code rather than a verdict | T2 (#508) | `TestModelRunEndSetsTheOutcome` |
+| `tui_run.rs` | `a_run_that_panics_reports_it_and_hands_input_back` | a run that panics reports it and hands input back | T2 (#508) | `TestModelChildExitMidRunIsReported` |
+| `tui_run.rs` | `every_ending_hands_input_back` | every ending hands input back | T2 (#508) | `TestModelEveryEndingHandsInputBack` |
+| `tui_run.rs` | `an_approval_question_becomes_the_modal_and_its_key_goes_back` | an approval question becomes the modal and its key goes back | T3 (#509) |  |
+| `tui_run.rs` | `an_interface_that_goes_away_mid_question_has_not_said_yes` | an interface that goes away mid question has not said yes | T3 (#509) |  |
+| `tui_run.rs` | `a_model_the_person_chose_in_the_tui_is_not_refused_as_the_repository_s` | a model the person chose in the tui is not refused as the repository's | T2 (#508) | `TestModelStartupSetsTheModelBeforeAnyPrompt` |
+| `tui_run.rs` | `tui_steer_reaches_the_loop_and_the_trail_and_is_reported_before_the_run_ends` | tui steer reaches the loop and the trail and is reported before the run ends | T3 (#509) |  |
+| `tui_run.rs` | `tui_steer_typed_while_a_run_works_is_forwarded_to_it` | tui steer typed while a run works is forwarded to it | T3 (#509) |  |
+| `tui_run.rs` | `tui_steer_for_the_next_task_is_not_forwarded_to_the_run_ending` | tui steer for the next task is not forwarded to the run ending | T3 (#509) |  |
+| `tui_run.rs` | `tui_steer_left_from_an_ended_task_is_skipped_up_to_the_boundary` | tui steer left from an ended task is skipped up to the boundary | T3 (#509) |  |
+| `tui_run.rs` | `tui_steer_that_arrives_too_late_is_still_in_the_trail` | tui steer that arrives too late is still in the trail | T3 (#509) |  |
+
+## Routing
+
+The rule that a typed line is a question or a task is trellis's, asked
+through rpc `classify` (ADR 0052 decision 2.3, R1 #501). The Rust surfaces
+are held to it by `crates/trellis-cli/tests/hygiene.rs`.
+
+| Rust file | Rust test | Rule | Ticket | Go test |
+| --- | --- | --- | --- | --- |
+| `hygiene.rs` | `every_conversational_surface_asks_whether_the_input_is_a_task` | every conversational surface asks whether the input is a task | T6 (#512) | |
