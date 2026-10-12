@@ -158,6 +158,7 @@ pub(crate) fn run(
     list: bool,
     remove: Option<String>,
     upgrade: Option<String>,
+    dry_run: bool,
 ) -> Result<()> {
     let config = crate::user_config::dir().context(
         "no user config directory to install into: set TRELLIS_CONFIG_DIR, APPDATA, \
@@ -168,6 +169,7 @@ pub(crate) fn run(
         (_, true, _, _) => list_packages(&config, &mut out),
         (_, _, Some(name), _) => remove_package(&config, &name, &mut out),
         (_, _, _, Some(name)) => upgrade_package(&config, &name, &mut out),
+        (Some(spec), false, None, None) if dry_run => install_dry_run(&config, &spec, &mut out),
         (Some(spec), false, None, None) => install(&config, &spec, &mut out).map(|_| ()),
         (None, false, None, None) => {
             bail!("name a source as <git-url|path>@<ref>, or pass --list")
@@ -204,6 +206,110 @@ pub(crate) fn installed_dirs(config: &Path) -> Result<Vec<PathBuf>> {
 
 /// Installs `spec` (`<git-url|path>@<ref>`) under `<config>/packages/<name>/`.
 pub(crate) fn install(config: &Path, spec: &str, out: &mut dyn Write) -> Result<Entry> {
+    let dir = packages_dir(config);
+    let Prepared {
+        name,
+        source,
+        reference,
+        target,
+        mut manifest,
+    } = prepare(&dir, spec)?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
+
+    let staging = Staging::new(&dir)?;
+    let bare = staging.path.join("clone");
+    clone_bare(&source, &bare)?;
+    let commit = resolve_ref(&bare, &reference)?;
+    let plan = plan_for(&bare, &source, &commit)?;
+    let tree = staging.path.join("package");
+    let digest = stage(&bare, &plan, &tree)?;
+    std::fs::rename(&tree, &target)
+        .with_context(|| format!("cannot move the package into {}", target.display()))?;
+
+    let entry = Entry {
+        name: name.clone(),
+        source,
+        reference,
+        commit,
+        digest: Some(digest),
+    };
+    manifest.packages.push(entry.clone());
+    if let Err(e) = save(&dir, &manifest) {
+        // A directory the manifest does not name could never be listed or
+        // removed by name, so it goes too.
+        let _ = remove_tree(&target);
+        return Err(e);
+    }
+
+    writeln!(
+        out,
+        "installed {name} from {} @ {} (commit {}): {} in {}",
+        plain(&entry.source),
+        plain(&entry.reference),
+        entry.commit,
+        summary(&plan),
+        target.display()
+    )?;
+    report_skipped(&plan, out)?;
+    writeln!(
+        out,
+        "note: runs read it after the repository's own skills and templates, which win a \
+         name; a skill in <user config dir>/skills also wins over it (ADR 0039)."
+    )?;
+    Ok(entry)
+}
+
+/// `--dry-run` (#619): every check an install makes, the clone under 6's
+/// hardening and the listing under 8's bounds, then what would be copied
+/// and what skipped, and nothing written. The staging directory goes under
+/// the system temporary directory, not `packages/`: there is no rename
+/// into place to keep on one filesystem, and `packages/` and the manifest
+/// are left exactly as found, down to a `packages/` that does not exist.
+pub(crate) fn install_dry_run(config: &Path, spec: &str, out: &mut dyn Write) -> Result<()> {
+    let Prepared {
+        name,
+        source,
+        reference,
+        target,
+        ..
+    } = prepare(&packages_dir(config), spec)?;
+    let staging = Staging::new(&std::env::temp_dir())?;
+    let bare = staging.path.join("clone");
+    clone_bare(&source, &bare)?;
+    let commit = resolve_ref(&bare, &reference)?;
+    let plan = plan_for(&bare, &source, &commit)?;
+    writeln!(
+        out,
+        "dry run: {name} from {} @ {} (commit {commit}) would put {} in {}",
+        plain(&source),
+        plain(&reference),
+        summary(&plan),
+        target.display()
+    )?;
+    for f in &plan.copy {
+        writeln!(out, "  {}", plain(&f.path))?;
+    }
+    report_skipped(&plan, out)?;
+    let (skills, prompts) = counts(&plan);
+    writeln!(
+        out,
+        "would install {skills} skill(s), {prompts} prompt(s); nothing was written"
+    )?;
+    Ok(())
+}
+
+/// What `install` and `--dry-run` share before anything is fetched: the
+/// spec checked and split, the name derived, and the manifest and target
+/// found free. Creates nothing: a refused spec leaves no `packages/`.
+struct Prepared {
+    name: String,
+    source: String,
+    reference: String,
+    target: PathBuf,
+    manifest: Manifest,
+}
+
+fn prepare(dir: &Path, spec: &str) -> Result<Prepared> {
     // `<helper>::<address>` makes git run `git-remote-<helper>` from PATH,
     // so the source string would pick which installed program runs.
     // `protocol.allow=never` in `git()` refuses it too; refusing here says
@@ -236,9 +342,7 @@ pub(crate) fn install(config: &Path, spec: &str, out: &mut dyn Write) -> Result<
         source.to_string()
     };
 
-    let dir = packages_dir(config);
-    std::fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
-    let mut manifest = load(&dir)?;
+    let manifest = load(dir)?;
     if let Some(e) = manifest
         .packages
         .iter()
@@ -258,48 +362,13 @@ pub(crate) fn install(config: &Path, spec: &str, out: &mut dyn Write) -> Result<
             target.display()
         );
     }
-
-    let staging = Staging::new(&dir)?;
-    let bare = staging.path.join("clone");
-    clone_bare(&source, &bare)?;
-    let commit = resolve_ref(&bare, reference)?;
-    let plan = plan_for(&bare, &source, &commit)?;
-    let tree = staging.path.join("package");
-    let digest = stage(&bare, &plan, &tree)?;
-    std::fs::rename(&tree, &target)
-        .with_context(|| format!("cannot move the package into {}", target.display()))?;
-
-    let entry = Entry {
-        name: name.clone(),
+    Ok(Prepared {
+        name,
         source,
         reference: reference.to_string(),
-        commit,
-        digest: Some(digest),
-    };
-    manifest.packages.push(entry.clone());
-    if let Err(e) = save(&dir, &manifest) {
-        // A directory the manifest does not name could never be listed or
-        // removed by name, so it goes too.
-        let _ = remove_tree(&target);
-        return Err(e);
-    }
-
-    writeln!(
-        out,
-        "installed {name} from {} @ {} (commit {}): {} in {}",
-        plain(&entry.source),
-        plain(&entry.reference),
-        entry.commit,
-        summary(&plan),
-        target.display()
-    )?;
-    report_skipped(&plan, out)?;
-    writeln!(
-        out,
-        "note: runs read it after the repository's own skills and templates, which win a \
-         name; a skill in <user config dir>/skills also wins over it (ADR 0039)."
-    )?;
-    Ok(entry)
+        target,
+        manifest,
+    })
 }
 
 /// `--upgrade <name>` (#618): the recorded ref re-resolved against the
@@ -479,6 +548,16 @@ fn stage(bare: &Path, plan: &Plan, tree: &Path) -> Result<Digest> {
 
 /// `N skill(s), M prompt template(s), K file(s)`.
 fn summary(plan: &Plan) -> String {
+    let (skills, prompts) = counts(plan);
+    format!(
+        "{skills} skill(s), {prompts} prompt template(s), {} file(s)",
+        plan.copy.len()
+    )
+}
+
+/// Skills (a `skills/<name>/SKILL.md` one level deep) and prompt templates
+/// the plan copies.
+fn counts(plan: &Plan) -> (usize, usize) {
     let skills = plan
         .copy
         .iter()
@@ -494,10 +573,7 @@ fn summary(plan: &Plan) -> String {
         .iter()
         .filter(|f| f.path.starts_with("prompts/"))
         .count();
-    format!(
-        "{skills} skill(s), {prompts} prompt template(s), {} file(s)",
-        plan.copy.len()
-    )
+    (skills, prompts)
 }
 
 fn report_skipped(plan: &Plan, out: &mut dyn Write) -> Result<()> {
@@ -1751,6 +1827,122 @@ mod tests {
             .collect();
         left.sort();
         assert_eq!(left, vec!["packages.toml", "pkg-src"]);
+    }
+
+    /// Every path under `root` with its bytes, or `None` when `root` is
+    /// not there: the whole state a dry run must leave as it found it.
+    fn snapshot(root: &Path) -> Option<Vec<(String, Vec<u8>)>> {
+        if !root.exists() {
+            return None;
+        }
+        Some(
+            files_under(root)
+                .into_iter()
+                .map(|rel| {
+                    let bytes = std::fs::read(root.join(&rel)).unwrap();
+                    (rel, bytes)
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn install_dry_run_lists_what_would_be_copied_and_skipped_and_writes_nothing() {
+        // The risk: the only way to learn what a package would put under
+        // `packages/` was to install it; and a dry run that leaves a
+        // staging clone, a manifest, or even an empty `packages/` behind
+        // is not one. Checked against a config with no `packages/` at all
+        // and against one holding another package.
+        let d = tempfile::tempdir().unwrap();
+        let src = source(d.path());
+        let cfg = d.path().join("cfg");
+        assert_eq!(snapshot(&cfg.join("packages")), None);
+        let mut out = Vec::new();
+        install_dry_run(&cfg, &spec(&src, "v1"), &mut out).unwrap();
+        let said = String::from_utf8(out).unwrap();
+        assert!(said.starts_with("dry run: pkg-src from "), "{said}");
+        assert!(
+            said.contains("would put 2 skill(s), 1 prompt template(s), 4 file(s) in "),
+            "{said}"
+        );
+        for copied in [
+            "  prompts/review.md\n",
+            "  skills/alpha/SKILL.md\n",
+            "  skills/alpha/references/notes.md\n",
+            "  skills/beta/SKILL.md\n",
+        ] {
+            assert!(said.contains(copied), "{copied:?} not listed in:\n{said}");
+        }
+        // The skipped block is the install's, every path on its own line.
+        assert!(
+            said.contains("skipped 9 path(s): a package carries"),
+            "{said}"
+        );
+        for skipped in [
+            "  hooks/after_run.sh: outside",
+            "  skills/alpha/tool.md: executable",
+            "  skills/alpha/link.md: symbolic link",
+        ] {
+            assert!(said.contains(skipped), "{skipped} not named in:\n{said}");
+        }
+        assert!(
+            said.trim_end()
+                .ends_with("would install 2 skill(s), 1 prompt(s); nothing was written"),
+            "{said}"
+        );
+        assert!(!said.contains("installed pkg-src"), "{said}");
+        assert_eq!(
+            snapshot(&cfg.join("packages")),
+            None,
+            "a dry run created packages/"
+        );
+        assert!(!cfg.exists(), "a dry run created the config directory");
+
+        // With another package installed, the manifest and its files are
+        // byte-identical after, and the dry-run package is not installed.
+        let other = d.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        git_in(&other, &["init", "-q"]);
+        write(&other, "prompts/one.md", "one\n");
+        git_in(&other, &["add", "-A"]);
+        git_in(&other, &["commit", "-q", "-m", "other"]);
+        git_in(&other, &["tag", "v1"]);
+        install(&cfg, &spec(&other, "v1"), &mut Vec::new()).unwrap();
+        let before = snapshot(&cfg.join("packages"));
+        assert!(before.is_some());
+        install_dry_run(&cfg, &spec(&src, "v1"), &mut Vec::new()).unwrap();
+        assert_eq!(snapshot(&cfg.join("packages")), before);
+        assert_eq!(load(&cfg.join("packages")).unwrap().packages.len(), 1);
+        // A dry run of what is already installed is refused as an install
+        // would be, since the install it describes could not happen.
+        let e = install_dry_run(&cfg, &spec(&other, "v1"), &mut Vec::new()).unwrap_err();
+        assert!(format!("{e:#}").contains("already installed"), "{e:#}");
+        assert_eq!(snapshot(&cfg.join("packages")), before);
+    }
+
+    #[test]
+    fn install_dry_run_reports_a_bounds_refusal_as_an_install_would_and_writes_nothing() {
+        // The risk: a dry run that lists a package the install would refuse
+        // says it would install; or one that skips the listing bound holds
+        // an unbounded tree in memory to describe it (#200).
+        let d = tempfile::tempdir().unwrap();
+        let src = wide_source(d.path(), MAX_TREE_ENTRIES + 1);
+        let cfg = d.path().join("cfg");
+        let mut out = Vec::new();
+        let e = install_dry_run(&cfg, &spec(&src, "v1"), &mut out).unwrap_err();
+        let dry = format!("{e:#}");
+        assert!(
+            dry.contains(&format!("the limit is {MAX_TREE_ENTRIES}")),
+            "{dry}"
+        );
+        assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
+        assert!(
+            !cfg.exists(),
+            "a refused dry run wrote under the config directory"
+        );
+        // Word for word what the install says.
+        let e = install(&cfg, &spec(&src, "v1"), &mut Vec::new()).unwrap_err();
+        assert_eq!(dry, format!("{e:#}"));
     }
 
     #[test]
