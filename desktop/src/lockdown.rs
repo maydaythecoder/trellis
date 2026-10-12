@@ -3833,4 +3833,211 @@ mod tests {
             "style.css sets no width at all: read the right file?"
         );
     }
+
+    /// `style.css` with its comments removed.
+    fn css_text() -> String {
+        let css = ui_file("style.css");
+        let mut text = String::new();
+        let mut rest = css.as_str();
+        while let Some(i) = rest.find("/*") {
+            text.push_str(&rest[..i]);
+            let end = rest[i..].find("*/").expect("an unclosed CSS comment");
+            rest = &rest[i + end + 2..];
+        }
+        text.push_str(rest);
+        text
+    }
+
+    /// The colour tokens of one theme: the custom properties of the `:root`
+    /// block at `text[from..]`, by name without the leading `--`.
+    fn css_tokens(text: &str, from: usize) -> BTreeMap<String, String> {
+        let block = &text[from..];
+        let start = block.find(":root").expect("a :root block");
+        let open = block[start..].find('{').expect(":root opens") + start;
+        let close = block[open..].find('}').expect(":root closes") + open;
+        block[open + 1..close]
+            .split(';')
+            .filter_map(|d| d.split_once(':'))
+            .filter_map(|(k, v)| {
+                k.trim()
+                    .strip_prefix("--")
+                    .map(|k| (k.to_string(), v.trim().to_string()))
+            })
+            .collect()
+    }
+
+    /// The light and dark token tables: the first `:root` block, and the one
+    /// inside the dark `@media` block.
+    fn css_themes() -> [(&'static str, BTreeMap<String, String>); 2] {
+        let text = css_text();
+        let dark = text
+            .find("@media (prefers-color-scheme: dark)")
+            .expect("a dark theme block");
+        [
+            ("light", css_tokens(&text, 0)),
+            ("dark", css_tokens(&text, dark)),
+        ]
+    }
+
+    /// WCAG 2 relative luminance of a `#rrggbb` colour, computed here: no
+    /// crate parses colours, and a new one needs an ADR.
+    fn luminance(hex: &str) -> f64 {
+        let hex = hex
+            .strip_prefix('#')
+            .unwrap_or_else(|| panic!("{hex}: a token this test reads must be #rrggbb"));
+        assert_eq!(
+            hex.len(),
+            6,
+            "{hex}: a token this test reads must be #rrggbb"
+        );
+        let channel = |i: usize| -> f64 {
+            let byte =
+                u8::from_str_radix(&hex[i..i + 2], 16).unwrap_or_else(|e| panic!("#{hex}: {e}"));
+            let c = f64::from(byte) / 255.0;
+            if c <= 0.03928 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4)
+    }
+
+    /// WCAG 2 contrast ratio between two `#rrggbb` colours.
+    fn contrast(a: &str, b: &str) -> f64 {
+        let (la, lb) = (luminance(a), luminance(b));
+        let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    #[test]
+    fn field_contrast_token_meets_three_to_one_in_both_themes() {
+        // The risk (#647, UX-13): `--border` is a pane divider that measures
+        // 1.4:1 against the pane, so a field drawn with it is nearly
+        // invisible when empty. Fields take `--control-border`, which must
+        // clear WCAG's 3:1 non-text floor against both backgrounds a field
+        // sits on, in each theme. The arithmetic is checked on known pairs
+        // first, so a wrong formula cannot pass a wrong colour.
+        assert!((contrast("#000000", "#ffffff") - 21.0).abs() < 1e-9);
+        assert!((contrast("#ffffff", "#ffffff") - 1.0).abs() < 1e-9);
+        for (theme, tokens) in css_themes() {
+            let token = |k: &str| {
+                tokens
+                    .get(k)
+                    .unwrap_or_else(|| panic!("{theme}: no --{k} token"))
+                    .as_str()
+            };
+            let control = token("control-border");
+            for bg in ["pane-bg", "bg"] {
+                let ratio = contrast(control, token(bg));
+                assert!(
+                    ratio >= 3.0,
+                    "{theme}: --control-border {control} on --{bg} {} is {ratio:.2}:1, below 3:1",
+                    token(bg)
+                );
+            }
+            // The case this fixes is still the case: the divider token alone
+            // would fail, so a field that falls back to it is caught below.
+            assert!(
+                contrast(token("border"), token("pane-bg")) < 3.0,
+                "{theme}: --border now clears 3:1; the field rule below may be redundant"
+            );
+        }
+    }
+
+    /// Whether a CSS selector names a form field: an `input`, `select` or
+    /// `textarea` element, or one of the page's field ids.
+    fn names_a_field(selector: &str, field_ids: &BTreeSet<String>) -> bool {
+        let last = selector.split_whitespace().last().unwrap_or("");
+        let element = last.split(['[', ':', '.', '#']).next().unwrap_or("");
+        ["input", "select", "textarea"].contains(&element)
+            || last
+                .strip_prefix('#')
+                .map(|id| id.split([':', '[', '.']).next().unwrap_or(""))
+                .is_some_and(|id| field_ids.contains(id))
+    }
+
+    #[test]
+    fn field_contrast_every_field_border_uses_the_control_token() {
+        // The risk: a field rule added later takes `--border` by habit (every
+        // other bordered box does) and ships a 1.4:1 field. Each rule whose
+        // selector names a field and whose declarations set a border must
+        // draw it with the control token; a rule shared with a non-field
+        // (the composer's select and button) may keep `--border` only if a
+        // field-only rule after it overrides the colour.
+        let page = page();
+        let field_ids: BTreeSet<String> = page
+            .iter()
+            .filter(|e| ["input", "select", "textarea"].contains(&e.tag.as_str()))
+            .filter_map(|e| e.attr("id").map(str::to_string))
+            .collect();
+        let rules = css_rules();
+        let mut field_rules = 0;
+        let mut overridden: BTreeSet<String> = BTreeSet::new();
+        for (selectors, decls) in rules.iter().rev() {
+            let parts: Vec<&str> = selectors.split(',').map(str::trim).collect();
+            let fields: Vec<&str> = parts
+                .iter()
+                .copied()
+                .filter(|s| names_a_field(s, &field_ids))
+                .collect();
+            if fields.is_empty() || !decls.contains("border") {
+                continue;
+            }
+            let decls_s: String = decls.split_whitespace().collect();
+            let sets_colour = decls_s.contains("border:") || decls_s.contains("border-color:");
+            if !sets_colour {
+                continue;
+            }
+            field_rules += 1;
+            if decls_s.contains("var(--control-border)") {
+                overridden.extend(fields.iter().map(|s| s.to_string()));
+                continue;
+            }
+            assert!(
+                decls_s.contains("var(--border)"),
+                "{selectors} draws a field border in a colour this test cannot measure: {decls}"
+            );
+            // The one allowed shape: the rule is shared with a non-field and a
+            // later field-only rule sets the colour.
+            assert!(
+                parts.len() > fields.len(),
+                "{selectors} {{ {decls} }} draws a field with the divider token"
+            );
+            for f in &fields {
+                assert!(
+                    overridden.contains(*f),
+                    "{selectors} draws {f} with the divider token and nothing later overrides it"
+                );
+            }
+        }
+        assert!(
+            field_rules >= 8,
+            "{field_rules} field border rules found; the trails filter, codebase search, \
+             symbol, vault query, model spec, composer and atlas fields all have one"
+        );
+    }
+
+    #[test]
+    fn field_contrast_focus_ring_covers_every_field_and_summary() {
+        // The risk: `button:focus-visible` is the page's ring, but a field or
+        // a `<summary>` it does not name falls back to the engine's own,
+        // which differs between WebView2 and WebKitGTK. One rule names the
+        // four element types and draws the same `--focus` outline.
+        let rules = css_rules();
+        for element in ["input", "select", "textarea", "summary"] {
+            let want = format!("{element}:focus-visible");
+            let matching: Vec<&(String, String)> = rules
+                .iter()
+                .filter(|(s, _)| s.split(',').any(|s| s.trim() == want))
+                .collect();
+            assert_eq!(matching.len(), 1, "one bare {want} rule: {matching:?}");
+            let decls: String = matching[0].1.split_whitespace().collect();
+            assert!(
+                decls.contains("outline:2pxsolidvar(--focus)"),
+                "{want} {{ {} }} is not the page's focus ring",
+                matching[0].1
+            );
+        }
+    }
 }
