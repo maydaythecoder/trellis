@@ -147,7 +147,10 @@
         <div class="overview-grid">
           <div class="pane" role="region" aria-labelledby="ov-recent-title">
             <h3 id="ov-recent-title">Recent repositories</h3>
-            <ul id="ov-recent" class="rows"></ul>
+            <ul id="ov-recent" class="rows">
+              <li class="empty">Reading recent repositories.</li>
+              <li id="ov-recent-status" class="muted" role="status"></li>
+            </ul>
             <form id="repo-form" class="model-form" aria-label="Open another repository">
               <label for="repo-path">Open another repository (its path)</label>
               <input id="repo-path" name="path" type="text" spellcheck="false" autocomplete="off">
@@ -159,15 +162,21 @@
           </div>
           <div class="pane" role="region" aria-labelledby="ov-last-run-title">
             <h3 id="ov-last-run-title">Last run</h3>
-            <div id="ov-last-run"></div>
+            <div id="ov-last-run">
+              <p class="empty">Reading the last run.</p>
+            </div>
           </div>
           <div class="pane" role="region" aria-labelledby="ov-codebase-title">
             <h3 id="ov-codebase-title">Codebase</h3>
-            <div id="ov-codebase"></div>
+            <div id="ov-codebase">
+              <p class="empty">Reading the codebase.</p>
+            </div>
           </div>
           <div class="pane" role="region" aria-labelledby="ov-board-title">
             <h3 id="ov-board-title">Board</h3>
-            <div id="ov-board"></div>
+            <div id="ov-board">
+              <p class="empty">Reading the board.</p>
+            </div>
           </div>
         </div>
       </section>

@@ -13,7 +13,7 @@
 // characters, never parsed.
 
 import { drawView, wireLog } from "./render.js";
-import { drawOverview, drawOverviewChild } from "./overview.js";
+import { drawOpenRefusal, drawOverview, drawOverviewChild } from "./overview.js";
 import { askStarters, composerStopped, drawComposer, wireComposer } from "./composer.js";
 import { drawDialogs, wireDialogs } from "./dialogs.js";
 import { askModels, drawModelPane, modelPaneStopped, wireModelPane } from "./model.js";
@@ -91,10 +91,11 @@ async function askState(tauri) {
 
 // The overview's actions: "Open" on a recent repository. Success needs no
 // drawing here: the new child's `child-started` reads the overview again.
+// A refusal is drawn in the Recent repositories pane, where the click was.
 function overviewActions(tauri) {
   return {
     open: (path) => {
-      tauri.core.invoke("open_repository", { path }).catch((err) => show("status", String(err)));
+      tauri.core.invoke("open_repository", { path }).catch((err) => drawOpenRefusal(document, String(err)));
     },
   };
 }
