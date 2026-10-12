@@ -343,6 +343,31 @@ async fn forward_steers<T>(
     }
 }
 
+/// Sends the run's elapsed seconds to the screen once a second, until
+/// aborted or the screen is gone (#641).
+///
+/// The bridge reports elapsed only with a turn, so between turns, which is
+/// where a model call of several minutes sits, nothing on screen moved and
+/// a QA pass read a live run as a hang. The view holds no clock of its own:
+/// `update` is pure, and the time comes to it as a message like everything
+/// else. The first tick is at one second, not at zero, so a run that fails
+/// before then draws no figure it never measured.
+async fn send_elapsed(tx: Sender<Message>) {
+    let started = std::time::Instant::now();
+    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
+    ticker.tick().await;
+    loop {
+        ticker.tick().await;
+        if tx
+            .send(Message::Elapsed(started.elapsed().as_secs()))
+            .await
+            .is_err()
+        {
+            return;
+        }
+    }
+}
+
 /// Discards steers typed for tasks that have ended, up to the boundary
 /// sent ahead of the task now starting.
 ///
@@ -640,8 +665,10 @@ pub(crate) fn run(
                     let run = tokio::task::spawn_blocking(move || {
                         run_for_tui(&root, &task, &spec, model_from_user, control, &run_tx);
                     });
+                    let clock = tokio::spawn(send_elapsed(tx.clone()));
                     let joined;
                     (joined, at_boundary) = forward_steers(run, &mut steer_rx, to_run).await;
+                    clock.abort();
                     // Discarding this `JoinError` reopened the silent pane:
                     // a panicking run reports nothing and never hands input
                     // back. `send` rather than `blocking_send` — this half
@@ -1088,6 +1115,23 @@ mod tests {
             !state.running,
             "a panicking run left the interface holding input forever"
         );
+    }
+
+    /// #641: between turns the screen moved only when a turn arrived. The
+    /// driver's clock is what moves it, and its first figure is a measured
+    /// second, not a 0 sent at start.
+    #[tokio::test]
+    async fn budget_unreported_elapsed_ticks_come_from_the_driver_s_clock() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let clock = tokio::spawn(send_elapsed(tx));
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("a tick within five seconds");
+        clock.abort();
+        match first {
+            Some(Message::Elapsed(secs)) => assert!(secs >= 1, "first tick was {secs}"),
+            other => panic!("expected Elapsed, got {other:?}"),
+        }
     }
 
     #[test]
