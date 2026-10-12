@@ -1668,8 +1668,8 @@ mod tests {
         let mut keys: Vec<&String> = v[0].as_object().unwrap().keys().collect();
         keys.sort();
         // The graph is laid out from the actions, so it changes with them
-        // (#303).
-        assert_eq!(keys, ["actions", "budget", "graph", "transcript"]);
+        // (#303), and the phase with the turn's call (#615).
+        assert_eq!(keys, ["actions", "budget", "graph", "phase", "transcript"]);
 
         // Text on stdout also raises the alert (#302).
         core.stdout_line(g, "plain text");
@@ -1739,6 +1739,7 @@ mod tests {
                 "model",
                 "models",
                 "outcome",
+                "phase",
                 "queue",
                 "radius",
                 "running",
