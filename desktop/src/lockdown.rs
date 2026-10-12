@@ -2092,7 +2092,14 @@ mod tests {
         let page = page();
         let section = index_of(&page, "vault");
         let js = ui_file("vault.js");
-        for id in ["vt-status", "vt-form", "vt-query", "vt-hits", "vt-note"] {
+        for id in [
+            "vt-status",
+            "vt-form",
+            "vt-query",
+            "vt-hits",
+            "vt-note",
+            "vt-check",
+        ] {
             assert!(js.contains(&format!("\"{id}\"")), "vault.js draws no {id}");
             assert!(
                 within(&page, index_of(&page, id), section),
@@ -2138,13 +2145,55 @@ mod tests {
             assert!(!js.contains(bad), "vault.js uses {bad}");
         }
         assert!(js.contains("textContent"), "vault.js writes no text");
-        // Every type it sends is one of the two reads.
+        // Every type it sends is one of the three reads.
         let sent: Vec<&str> = js
             .split("type: \"")
             .skip(1)
             .map(|rest| &rest[..rest.find('"').unwrap()])
             .collect();
-        assert_eq!(sent, ["vault_graph", "vault_search"], "{sent:?}");
+        assert_eq!(
+            sent,
+            ["vault_graph", "vault_check", "vault_search"],
+            "{sent:?}"
+        );
+    }
+
+    #[test]
+    fn vault_check_is_drawn_in_the_vault_section_and_never_as_a_check_row() {
+        // The risk (#632): the run gate's answer, which is vault
+        // validation, drawn into the run section's checks pane as if
+        // trellis had reported a verdict (ADR 0004, desktop/CLAUDE.md "What
+        // it shows"); or a check pane the page lacks, so the report trellis
+        // answered is never shown.
+        let page = page();
+        let vault = index_of(&page, "vault");
+        let run = index_of(&page, "run");
+        for id in ["vt-check", "vt-check-ask"] {
+            let at = index_of(&page, id);
+            assert!(within(&page, at, vault), "#{id} is outside #vault");
+            assert!(!within(&page, at, run), "#{id} is inside #run");
+        }
+        let ui = ui_code();
+        let js = &ui["vault.js"];
+        for id in ["vt-check", "vt-check-ask"] {
+            assert!(js.contains(&format!("\"{id}\"")), "vault.js draws no {id}");
+        }
+        assert!(
+            function_body(js, "drawCheck").contains("getElementById(\"vt-check\")"),
+            "drawCheck does not draw into #vt-check"
+        );
+        assert!(
+            !js.contains("pane-checks"),
+            "vault.js writes into the run section's checks pane"
+        );
+        // render.js's checks pane reads the view's `checks` key only, and
+        // nothing of the vault.
+        let render = &ui["render.js"];
+        assert!(!render.contains("vault"), "render.js reads the vault view");
+        assert!(
+            function_body(render, "checks").contains("result"),
+            "render.js's checks pane no longer draws the verdict trellis reported"
+        );
     }
 
     /// `function name(` in `code` to its closing line, with all whitespace

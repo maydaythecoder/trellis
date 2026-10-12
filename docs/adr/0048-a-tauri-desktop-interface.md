@@ -264,6 +264,17 @@ commit's tree is read through `trellis_vcs` into a temporary directory
 outside the repository and removed; nothing the repository holds is
 written. No `--json` is added to `index`, `radius` or any other command,
 and section 2's spawns are unchanged.
+*Added 2026-10-12 (#632):* the vault view also reads `vault_check` (ADR
+0025 §5, added 2026-10-12, #631), one more read-only type `rpc_send`
+forwards: the report line, the issues, the warnings and the run gate's
+answer `trellis vault check` prints, as text under the vault section's
+Check pane, asked as each child starts and on the pane's button. The gate
+answer is vault validation, not a verdict (ADR 0004): it never reaches the
+run section's checks pane, held by
+`vault_check_is_drawn_in_the_vault_section_and_never_as_a_check_row` in
+`src/lockdown.rs`. No `fix` is sent; rpc refuses the field by name, and
+every vault write stays a `trellis vault` command (#70). Section 2's
+spawns are unchanged.
 
 ## Alternatives rejected
 
