@@ -11,6 +11,11 @@
 // - the session's model and where it came from (`repository`, `user` or
 //   `session`, the view's `model.source`, null when the core cannot tell);
 // - whether a run is in flight, the view's `running`;
+// - what the run is on, the view's `phase` (#615): the model being called
+//   for a turn, or the tool or checks the last turn ran, each with the
+//   turn number trellis sent; null, said as none, before the first call and
+//   once the run has ended. No elapsed time: that would be this page's
+//   clock, not a trellis figure (ADR 0048 section 8);
 // - the child's state: running since `child-started`, exited with the
 //   status `rpc-exited` carried, or not started for the reason `no-child`
 //   gave.
@@ -67,6 +72,23 @@ export function exitText(status) {
   return why === null ? "exited with no status (ended by a signal)" : `exited: ${why}`;
 }
 
+// What the run is on, as the status bar words the view's `phase`: the
+// phase trellis's last event said, and its turn number, nothing else.
+export function phaseText(p) {
+  if (p === null || typeof p !== "object") return "none";
+  const turn = typeof p.turn === "number" ? `, turn ${p.turn}` : "";
+  switch (str(p.phase)) {
+    case "model":
+      return `calling the model${turn}`;
+    case "tool":
+      return `ran ${str(p.tool) ?? "a tool"}${turn}`;
+    case "checks":
+      return `ran checks${turn}`;
+    default:
+      return "none";
+  }
+}
+
 // Draws the status bar's keys of one `view` event.
 export function drawStatus(doc, view) {
   if (view === null || typeof view !== "object") return;
@@ -74,6 +96,7 @@ export function drawStatus(doc, view) {
   if ("running" in view) {
     show(doc, "status-run", view.running === true ? "a run is in flight" : "no run in flight");
   }
+  if ("phase" in view) show(doc, "status-phase", phaseText(view.phase));
 }
 
 // Listens for the core's child events. Resolves once every listener is
