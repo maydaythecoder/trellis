@@ -824,6 +824,32 @@ mod tests {
     }
 
     #[test]
+    fn approval_answer_keeps_edits_row_undecorated_and_the_decline_in_the_transcript() {
+        // #635: after `n` the pane used to draw `- a.py` in red for a file
+        // the loop had already written. The row keeps the mark it was
+        // reported with, and the decline is the driver's transcript line.
+        let mut s = AppState::default();
+        s.update(Message::EditProposed {
+            path: "a.py".into(),
+        });
+        s.update(Message::ApprovalRequested {
+            diff: "apply the edit?".into(),
+        });
+        s.update(Message::Key(ratatui::crossterm::event::KeyEvent::new(
+            ratatui::crossterm::event::KeyCode::Char('n'),
+            ratatui::crossterm::event::KeyModifiers::NONE,
+        )));
+        // What `tui_run.rs` sends once the answer is read.
+        s.update(Message::AgentToken("· apply the edit? declined\n".into()));
+        // Tall enough for the edits pane to have a row inside its borders;
+        // at 80x24 it is borders only, which is its own finding.
+        let out = drawn(&s, 100, 30);
+        assert!(!out.contains("- a.py"), "got:\n{out}");
+        assert!(out.contains("~ a.py"), "got:\n{out}");
+        assert!(out.contains("· apply the edit? declined"), "got:\n{out}");
+    }
+
+    #[test]
     fn the_task_line_shows_what_is_typed_and_how_to_send_it() {
         let mut s = populated();
         s.input = "fix the type error".into();
