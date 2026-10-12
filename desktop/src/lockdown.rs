@@ -3451,6 +3451,66 @@ mod tests {
         );
     }
 
+    #[test]
+    fn status_bar_paths_show_a_name_with_the_whole_path_as_title() {
+        // The risk (#652): two absolute paths in a one-row bar, wrapping it
+        // over two or three lines on every screen; or a name with no way to
+        // read the path it stands for. No JavaScript runs under cargo test,
+        // so this holds the text; a node smoke script with a fake DOM ran
+        // status.js with POSIX and Windows paths (see the commit).
+        let js = code_of("status.js");
+        let started = js
+            .split(r#"listen("child-started""#)
+            .nth(1)
+            .and_then(|r| r.split("});").next())
+            .expect("status.js listens for child-started");
+        for want in [
+            r#"showPath(doc, "status-trellis", str(c.trellis), "path not reported", ` · ${version}`);"#,
+            r#"showPath(doc, "status-root", str(c.root), "not reported");"#,
+        ] {
+            assert!(started.contains(want), "child-started lacks {want}");
+        }
+        let show = function_body(&js, "showPath");
+        for want in [
+            "e.textContent = baseName(path) + after;",
+            r#"e.setAttribute("title", path);"#,
+            r#"e.removeAttribute("title");"#,
+        ] {
+            assert!(show.contains(want), "showPath lacks {want}");
+        }
+        // Either separator, so a Windows path is named by its file too.
+        assert!(
+            function_body(&js, "baseName").contains(r"path.split(/[\\/]/)"),
+            "baseName splits on one separator only"
+        );
+    }
+
+    #[test]
+    fn status_bar_paths_cells_end_in_an_ellipsis_rather_than_wrap() {
+        // The risk (#652): a long value wrapping the bar, or cut off with
+        // nothing to say it was. Each cell keeps to one line and ends in an
+        // ellipsis when it does not fit.
+        let rules = css_rules();
+        let cell: Vec<String> = rules
+            .iter()
+            .filter(|(s, _)| s.split(',').any(|s| s.trim() == ".status-bar dd"))
+            .map(|(_, d)| d.split_whitespace().collect())
+            .collect();
+        assert_eq!(cell.len(), 1, "one .status-bar dd rule");
+        for want in [
+            "text-overflow:ellipsis",
+            "white-space:nowrap",
+            "overflow:hidden",
+            "max-width:",
+        ] {
+            assert!(
+                cell[0].contains(want),
+                ".status-bar dd lacks {want}: {}",
+                cell[0]
+            );
+        }
+    }
+
     /// One of `settings.js`'s choices, from `value: <value>,` to its close.
     fn settings_choice(value: &str) -> String {
         let settings = code_of("settings.js");
