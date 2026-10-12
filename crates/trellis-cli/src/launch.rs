@@ -562,6 +562,11 @@ mod tests {
     fn stub_web(dir: &Path) -> PathBuf {
         #[cfg(windows)]
         {
+            // The wait is cmd's own `set /p`, which reads the stdin trellis
+            // gave cmd.exe. A console program started from here would not:
+            // cmd.exe runs DETACHED_PROCESS, so Windows gives its console
+            // children a console of their own, whose keyboard is their
+            // stdin. `more` waited there, past the close of our pipe.
             let p = dir.join("stub-web.cmd");
             std::fs::write(
                 &p,
@@ -569,7 +574,8 @@ mod tests {
                  (for %%a in (%*) do @echo %%~a) > \"%~dp0args.tmp\"\r\n\
                  move /y \"%~dp0args.tmp\" \"%~dp0args.txt\" >nul\r\n\
                  echo {\"url\":\"http://127.0.0.1:7/?t=stub\"}\r\n\
-                 more >nul\r\n",
+                 set /p line=\r\n\
+                 exit /b 0\r\n",
             )
             .unwrap();
             p
@@ -622,7 +628,12 @@ mod tests {
             // `attend` returns the exit, not `None`.
             let (tx, rx) = tokio::sync::mpsc::channel(4);
             tx.send(()).await.unwrap();
-            attend(child, stdin, rx).await.unwrap()
+            // Bounded: a stub that misses the end of its stdin is a failure
+            // here, not a wait that lasts until something else ends it.
+            tokio::time::timeout(Duration::from_secs(60), attend(child, stdin, rx))
+                .await
+                .expect("the web view did not exit within 60 s of its stdin closing")
+                .unwrap()
         });
         assert!(status.is_some_and(|s| s.success()), "{status:?}");
         assert_eq!(
