@@ -165,24 +165,38 @@ function drawHits(doc, tauri, v) {
     return;
   }
   const selected = str(v.graph && v.graph.note && v.graph.note.path);
+  // A browse list (#629) is the vault's notes in title order, not a
+  // ranking, so no score is drawn beside them: the core marked it, and
+  // the page reads the mark.
+  const browse = v.browse === true;
   const items = v.hits.map((h) => {
     const li = el(doc, "li");
     const b = el(doc, "button");
     b.type = "button";
     const path = str(h && h.path);
     b.append(el(doc, "span", str(h && h.title) ?? "title not reported"), " ");
-    b.append(el(doc, "code", path ?? "path not reported"), " ");
-    const score = el(doc, "span", str(h && h.score) ?? "score not reported");
-    score.className = "muted";
-    b.append(score);
+    b.append(el(doc, "code", path ?? "path not reported"));
+    if (!browse) {
+      const score = el(doc, "span", ` ${str(h && h.score) ?? "score not reported"}`);
+      score.className = "muted";
+      b.append(score);
+    }
     if (path !== null && path === selected) b.setAttribute("aria-current", "true");
     if (path === null) b.disabled = true;
     else b.addEventListener("click", () => askNote(doc, tauri, path));
     li.append(b);
     return li;
   });
-  out.push(rows(doc, items, "No note matches."));
+  out.push(rows(doc, items, browse ? "The vault has no notes." : "No note matches."));
   pane.replaceChildren(...out);
+}
+
+// Lists the vault's notes before a query is typed (#629): `vault_search`
+// with an empty query, which trellis answers in title order as Apex's
+// search box does on focus. Read-only, through the same path as a search.
+function browse(doc, tauri) {
+  asked += 1;
+  send(doc, tauri, { id: `desktop-vault-search-${asked}`, type: "vault_search", query: "" }, "Listing the vault's notes.");
 }
 
 function section(doc, heading, body) {
@@ -241,7 +255,8 @@ export function drawVault(doc, tauri, v) {
   if (str(v.error) !== null) status(doc, v.error);
   else if (Array.isArray(v.hits)) {
     const n = v.hits.length;
-    status(doc, `${n} note${n === 1 ? "" : "s"} matched, in the order trellis vault search ranks them.`);
+    if (v.browse === true) status(doc, `${n} note${n === 1 ? "" : "s"} in the vault, listed by title; type a query to rank them.`);
+    else status(doc, `${n} note${n === 1 ? "" : "s"} matched, in the order trellis vault search ranks them.`);
   } else status(doc, "Read-only: a note is changed with trellis vault or an editor, never from here.");
   drawHits(doc, tauri, v);
   drawNote(doc, tauri, v.graph);
@@ -251,26 +266,25 @@ export function drawVault(doc, tauri, v) {
 export async function wireVault(doc, tauri) {
   doc.getElementById("vt-form").addEventListener("submit", async (e) => {
     e.preventDefault();
+    // An empty query is the browse list (#629), as in Apex's search box.
     const query = doc.getElementById("vt-query").value.trim();
-    if (query === "") {
-      status(doc, "Type a query: trellis vault search takes at least one word.");
-      return;
-    }
     asked += 1;
     searching(doc, true);
-    const sent = await send(doc, tauri, { id: `desktop-vault-search-${asked}`, type: "vault_search", query }, `Searching the vault for ${query}.`);
+    const sent = await send(doc, tauri, { id: `desktop-vault-search-${asked}`, type: "vault_search", query }, query === "" ? "Listing the vault's notes." : `Searching the vault for ${query}.`);
     if (!sent) searching(doc, false);
   });
   doc.getElementById("vt-check-ask").addEventListener("click", () => askCheck(doc, tauri));
-  drawVault(doc, tauri, { error: null, reduced: null, hits: null, graph: null, check: null });
+  drawVault(doc, tauri, { error: null, reduced: null, browse: false, hits: null, graph: null, check: null });
   await tauri.event.listen("view", (event) => {
     const p = event.payload;
     if (p !== null && typeof p === "object" && "vault" in p) drawVault(doc, tauri, p.vault);
   });
   // A question the last child had not answered never will be; the new
-  // child's vault is checked as it starts, so the report is always drawn.
+  // child's vault is listed and checked as it starts, so the notes and the
+  // report are drawn before a query is typed.
   await tauri.event.listen("child-started", () => {
     searching(doc, false);
+    browse(doc, tauri);
     askCheck(doc, tauri);
   });
   await tauri.event.listen("rpc-exited", () => searching(doc, false));
