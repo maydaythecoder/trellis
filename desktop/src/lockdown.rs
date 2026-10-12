@@ -1514,6 +1514,90 @@ mod tests {
         assert_eq!(sent, ["vault_graph", "vault_search"], "{sent:?}");
     }
 
+    /// `function name(` in `code` to its closing line, with all whitespace
+    /// removed, so a check on it does not depend on how a call is wrapped.
+    fn squeezed(code: &str, name: &str) -> String {
+        let at = code
+            .find(&format!("function {name}("))
+            .unwrap_or_else(|| panic!("no function {name}"));
+        let rest = &code[at..];
+        rest[..rest.find("\n}").expect("the function closes")]
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect()
+    }
+
+    #[test]
+    fn vault_relations_with_a_path_ask_for_that_note_s_graph() {
+        // The risk (#630): a note's lineage, children and references drawn
+        // as text only, so following one meant searching for it by hand; or
+        // a relation that opens by some other line than the `vault_graph` a
+        // hit sends. No JavaScript runs under cargo test, so this holds the
+        // text; a node smoke script with a fake DOM clicked every relation
+        // (see the commit).
+        let js = code_of("vault.js");
+        let opener = squeezed(&js, "opener");
+        assert!(
+            opener.contains("elseb.addEventListener(\"click\",()=>askNote(doc,tauri,path));"),
+            "{opener}"
+        );
+        assert!(
+            squeezed(&js, "askNote").contains("type:\"vault_graph\",note:path"),
+            "a relation asks for something other than vault_graph"
+        );
+        // The lineage's paths go to the opener, and the children and both
+        // reference lists through `named`, which does.
+        let note = squeezed(&js, "drawNote");
+        assert!(
+            note.contains("li.append(opener(doc,tauri,str(p),"),
+            "the lineage is not opened: {note}"
+        );
+        for (list, each) in [
+            ("g.children", "named"),
+            ("g.refs_out", "reference"),
+            ("g.refs_in", "reference"),
+        ] {
+            assert!(
+                note.contains(&format!("list({list},{each})")),
+                "{list} is not drawn by {each}"
+            );
+        }
+        assert!(note.contains("each(doc,tauri,x)"), "{note}");
+        assert!(squeezed(&js, "reference").contains("named(doc,tauri,r)"));
+        assert!(squeezed(&js, "named").contains("li.append(opener(doc,tauri,path,"));
+    }
+
+    #[test]
+    fn vault_relations_without_a_path_cannot_be_activated() {
+        // The risk (#630): an entry trellis gave no path for drawn as a
+        // live button, sending `vault_graph` with no note, or with the
+        // "path not reported" placeholder as one. The opener is disabled
+        // and given no listener at all for a null path, and every caller
+        // passes the entry's own path, never the text drawn in its place.
+        let js = code_of("vault.js");
+        let opener = squeezed(&js, "opener");
+        let disabled = opener
+            .find("if(path===null)b.disabled=true;")
+            .expect("a path-less opener is not disabled");
+        let listens = opener
+            .find("elseb.addEventListener(")
+            .expect("the opener listens only in the else branch");
+        assert!(disabled < listens, "{opener}");
+        assert_eq!(opener.matches("addEventListener").count(), 1, "{opener}");
+        let named = squeezed(&js, "named");
+        assert!(named.contains("constpath=str(n&&n.path);"), "{named}");
+        assert!(named.contains("opener(doc,tauri,path,"), "{named}");
+        let note = squeezed(&js, "drawNote");
+        assert!(note.contains("opener(doc,tauri,str(p),"), "{note}");
+        for squeezed_code in [&named, &note] {
+            assert!(
+                !squeezed_code.contains("opener(doc,tauri,str(p)??")
+                    && !squeezed_code.contains("opener(doc,tauri,path??"),
+                "a placeholder reaches the opener as a path"
+            );
+        }
+    }
+
     /// `name` under ui/ with its `//` comments removed, so a word named
     /// only in a comment does not count. Each file read this way has no
     /// string that holds `//`.
