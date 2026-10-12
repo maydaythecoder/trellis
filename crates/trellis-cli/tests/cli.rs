@@ -1026,6 +1026,34 @@ fn help_describes_the_commands_without_marketing_them() {
 }
 
 #[test]
+fn help_current_tui_help_does_not_call_the_session_the_default() {
+    // #662. The risk: help describing a default that changed. Bare
+    // `trellis` stopped opening the line session (ADR 0050 §1, #561), and
+    // `tui --help` still said "The line-based session stays the default".
+    let out = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .args(["tui", "--help"])
+        .output()
+        .unwrap();
+    let s = stdout(&out);
+    assert!(!s.contains("stays the default"), "{s}");
+    assert!(s.contains("`trellis --tui` opens it too"), "{s}");
+}
+
+#[test]
+fn help_current_describes_bare_trellis_as_the_desktop_and_the_overview() {
+    let out = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    let s = stdout(&out);
+    assert!(
+        s.contains("trellis          open the desktop window and print the overview"),
+        "{s}"
+    );
+    assert!(!s.contains("interactive session"), "{s}");
+}
+
+#[test]
 fn an_unreachable_runtime_costs_nothing() {
     // The failure a user actually hit, four times in one sitting.
     //
