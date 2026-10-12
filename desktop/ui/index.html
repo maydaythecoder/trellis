@@ -48,8 +48,8 @@
   the keyboard can scroll them (#658).
 
   The status bar (#306), status.js's, says which trellis runs, on which
-  root, with which model and from where, whether a run is in flight, and
-  the child's state. The model pane (#564), open at launch above every
+  root, with which model and from where, whether a run is in flight, what
+  the run is on (#615), and the child's state. The model pane (#564), open at launch above every
   section, is the model picker: model.js draws the choices settings.js
   makes ("repository default", the user's configured spec, local runtimes,
   a typed spec), with the user's configured spec preselected; settings.js draws
@@ -107,6 +107,7 @@
         <dt>root</dt><dd id="status-root">none open</dd>
         <dt>model</dt><dd id="status-model">none chosen yet</dd>
         <dt>run</dt><dd id="status-run">no run in flight</dd>
+        <dt>phase</dt><dd id="status-phase">none</dd>
         <dt>child</dt><dd id="status-child">not started yet</dd>
       </dl>
       <div id="alert" class="alert" role="alert" hidden>
