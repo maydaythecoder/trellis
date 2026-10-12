@@ -552,6 +552,9 @@ fn main() -> Result<()> {
         .with(
             tracing_subscriber::fmt::layer()
                 .with_target(false)
+                // After `set_json`, so it asks about the stream `human`
+                // actually writes to.
+                .with_ansi(output::human_colour())
                 .with_writer(output::human)
                 .with_filter(filter.clone()),
         )
