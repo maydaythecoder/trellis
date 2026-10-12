@@ -21,6 +21,12 @@ use serde_json::{Map, Value};
 pub enum Frame {
     /// The loop's `turn` event.
     Turn(Turn),
+    /// The loop's `model call` event, sent before each call to the model
+    /// with the number the `turn` it produces will carry (#614). Without
+    /// the turn it names nothing, so one that lacks it is [`Frame::Ignored`].
+    ModelCall {
+        turn: u64,
+    },
     /// The loop's one `run budget` event per run.
     RunBudget {
         max_iterations: Option<u64>,
@@ -175,6 +181,10 @@ pub fn parse_stdout(line: &str) -> Frame {
                 queue_wait_ms: u(f, "queue_wait_ms"),
             }),
             _ => Frame::Ignored,
+        },
+        Some("model call") => match u(f, "turn") {
+            Some(turn) => Frame::ModelCall { turn },
+            None => Frame::Ignored,
         },
         Some("run budget") => Frame::RunBudget {
             max_iterations: u(f, "max_iterations"),
