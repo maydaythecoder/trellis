@@ -203,6 +203,18 @@ The adapter's prompt opens with a role sentence, then a protocol:
   `tests/client_contract.json`, held by
   `client_contract_overview_lists_what_the_overview_object_carries` in
   `tests/cli.rs`.
+- *Added 2026-10-12 (#614).* A `model call` tracing event, with `turn`,
+  precedes each call the loop makes to the model, on `--json` and `rpc`
+  alike; `turn` is the number the `turn` event that call produces will
+  carry, and the governance audit's turn, which calls no model, has none.
+  Replies are not streamed (ADR 0024), so without it a client hears nothing
+  between two turns of a slow local model and reads the run as hung. It
+  carries no `prompt_bytes`: the driver builds the prompt inside
+  `next_step`, so before the call its size is not yet measured, and the
+  previous call's would be a stale figure under a new number. Listed in
+  `tests/client_contract.json`, with `prompt_bytes` as absent; held by
+  `rpc_and_run_json_announce_each_model_call_before_its_turn` in
+  `tests/modes.rs`.
 
 ### 5. `trellis rpc`
 
