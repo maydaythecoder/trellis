@@ -92,7 +92,7 @@
           "probed[].error": "the runtime answered; local then holds the specs it listed that first_run would offer",
           "providers[].key_variable": "the provider's protocol is not one trellis knows"
         },
-        "about": "local holds vllm:http://<address>#<model> specs, each one first_run would offer; probed names every address tried, in first_run's order (Ollama, llama.cpp, vLLM on their default ports); providers are the user config's [[providers]], by name and the variable a key would be read from, never its value (#564)"
+        "about": "local holds the specs first_run would offer: vllm:http://<address>#<model> for a runtime, and provider:colibri#<model> for a /v1/models list owned by colibri (#625), which set_model {save: true} saves with the [[providers]] colibri entry it resolves through, key_variable COLI_API_KEY, in the user config only; probed names every address tried, in first_run's order (Ollama, llama.cpp, vLLM on their default ports); providers are the user config's [[providers]], by name and the variable a key would be read from, never its value (#564)"
       },
       "set_model": {
         "always": ["model", "configured", "saved_to"],

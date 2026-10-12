@@ -651,6 +651,11 @@ struct Server {
     waiters: Vec<std::thread::JoinHandle<()>>,
     /// Where `list_models` looks and `set_model {save}` writes.
     sources: ModelSources,
+    /// The `provider:colibri#<id>` specs `list_models` has offered, each
+    /// with the base its `[[providers]]` entry names (#625), so `set_model
+    /// {save: true}` on one writes the entry the spec needs beside the spec.
+    /// Shared with `list_models`'s thread, which fills it.
+    colibri_offers: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
 /// Where `list_models` probes for local runtimes and which user config file
@@ -724,6 +729,7 @@ fn serve_with(
         input_closed: Arc::default(),
         waiters: Vec::new(),
         sources,
+        colibri_offers: Arc::default(),
     };
     // A read error is the end of input, not a return: `?` here left `serve`
     // with a run in flight, and the process exited with no rollback and no
@@ -1517,6 +1523,22 @@ impl Server {
                 file.display()
             ));
         }
+        // A colibri `list_models` offered needs its `[[providers]]` entry
+        // beside the spec (#625), written first for the reason `first_run`
+        // writes it first: an entry refused (one named `colibri` already,
+        // at another address) leaves no spec naming a provider that points
+        // elsewhere. Only for a spec this session offered: the base is the
+        // one its probe read, and nothing else names one.
+        let offered = self
+            .colibri_offers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(spec)
+            .cloned();
+        if let Some(base) = offered {
+            crate::user_config::set_colibri_provider(file, &base)
+                .map_err(|e| format!("{e:#}; no model was set"))?;
+        }
         crate::user_config::set_model_spec(file, spec)
             .map_err(|e| format!("{e:#}; no model was set"))?;
         Ok(file.clone())
@@ -1559,8 +1581,19 @@ impl Server {
             .collect();
         let runtimes = self.sources.runtimes.clone();
         let (sink, id) = (self.sink.clone(), id.map(str::to_string));
+        let colibri_offers = self.colibri_offers.clone();
         self.waiters.push(std::thread::spawn(move || {
             let probed = crate::first_run::probe(&runtimes, crate::first_run::BOUND);
+            {
+                let mut known = colibri_offers
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                for o in crate::first_run::offers(&probed) {
+                    if let Some(base) = o.colibri_base {
+                        known.insert(o.spec, base);
+                    }
+                }
+            }
             let tried: Vec<Value> = probed
                 .iter()
                 .map(|p| {
@@ -2395,6 +2428,7 @@ mod tests {
                 runtimes: Vec::new(),
                 user_file: None,
             },
+            colibri_offers: Arc::default(),
         };
         let answered = std::thread::spawn(|| {});
         while !answered.is_finished() {
@@ -2738,6 +2772,7 @@ mod tests {
                 runtimes: Vec::new(),
                 user_file: None,
             },
+            colibri_offers: Arc::default(),
         };
         for cmd in [
             json!({"id": "g", "type": "get_codebase"}),
@@ -2789,6 +2824,7 @@ mod tests {
                 runtimes: Vec::new(),
                 user_file: None,
             },
+            colibri_offers: Arc::default(),
         };
         let cmds = [
             json!({"id": "s", "type": "get_symbols"}),
@@ -3117,6 +3153,92 @@ mod tests {
         assert_eq!(
             d["providers"],
             json!([{"name": "mine", "key_variable": "ANTHROPIC_API_KEY"}])
+        );
+        let _ = std::fs::remove_dir_all(&user);
+    }
+
+    /// A loopback stub answering `GET /v1/models` as colibri 2.0.0 does
+    /// (bf244291, c/openai_server.py:5997: `owned_by: "colibri"`).
+    fn colibri_stub() -> (std::net::SocketAddr, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        const BODY: &str = r#"{"object":"list","data":[{"id":"glm-5.2","object":"model","created":1758800000,"owned_by":"colibri"}]}"#;
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let h = std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            let mut req = Vec::new();
+            let mut b = [0u8; 1];
+            while !req.ends_with(b"\r\n\r\n") && s.read(&mut b).unwrap() == 1 {
+                req.push(b[0]);
+            }
+            assert!(req.starts_with(b"GET /v1/models "), "{req:?}");
+            write!(
+                s,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{BODY}",
+                BODY.len()
+            )
+            .unwrap();
+        });
+        (addr, h)
+    }
+
+    #[test]
+    fn first_run_colibri_rpc_list_models_offers_the_provider_spec_and_save_writes_its_entry() {
+        // The risk (#625): the desktop's picker offers colibri as a `vllm:`
+        // spec (tier 4, no chat template), or offers `provider:colibri#<id>`
+        // and a save writes the spec without the `[[providers]]` entry it
+        // resolves through, so the saved model names nothing.
+        let (dir, _) = fixture("list-models-colibri", "");
+        let (addr, stub) = colibri_stub();
+        let user = crate::testutil::scratch("rpc-list-models-colibri-user");
+        let file = user.join("config.toml");
+        std::fs::write(&file, "# mine\n").unwrap();
+        let c = Client::start_with(
+            &dir,
+            ModelSources {
+                runtimes: vec![crate::first_run::Runtime {
+                    name: "vLLM",
+                    addr,
+                    api: crate::first_run::Api::OpenAiModels,
+                }],
+                user_file: Some(file.clone()),
+            },
+        );
+        c.send(json!({"id": "l", "type": "list_models"}));
+        let r = c.wait_for(|r| r["id"] == "l");
+        stub.join().unwrap();
+        assert_eq!(r["success"], true, "{r}");
+        assert_eq!(
+            r["data"]["local"],
+            json!(["provider:colibri#glm-5.2"]),
+            "the provider spec and no vllm: one: {r}"
+        );
+        c.send(
+            json!({"id": "s", "type": "set_model", "model": "provider:colibri#glm-5.2",
+                      "save": true}),
+        );
+        let r = c.wait_for(|r| r["id"] == "s");
+        c.finish();
+        assert_eq!(r["success"], true, "{r}");
+        assert_eq!(
+            r["data"]["saved_to"],
+            json!(file.display().to_string()),
+            "{r}"
+        );
+        let written = std::fs::read_to_string(&file).unwrap();
+        assert!(written.starts_with("# mine\n"), "{written}");
+        let cfg = crate::config::RepoConfig::load_with_user(&dir, Some(&file)).unwrap();
+        assert_eq!(cfg.model().as_deref(), Some("provider:colibri#glm-5.2"));
+        let p = cfg.provider("colibri").unwrap();
+        assert_eq!(p.base_url, format!("http://{addr}/v1"));
+        assert_eq!(p.key_env, "COLI_API_KEY");
+        assert!(
+            !dir.join(".trellis/config.toml").exists()
+                || !std::fs::read_to_string(dir.join(".trellis/config.toml"))
+                    .unwrap()
+                    .contains("colibri"),
+            "nothing under .trellis/ names the provider"
         );
         let _ = std::fs::remove_dir_all(&user);
     }

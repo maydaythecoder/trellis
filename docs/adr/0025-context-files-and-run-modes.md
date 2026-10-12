@@ -879,6 +879,14 @@ on stderr.
     config's `[[providers]]` by `name` and `key_variable`, the variable a
     key would be read from, never read, so no key value is in the answer.
     It writes nothing and runs on its own thread, as `get_queue` does.
+    *Amended 2026-10-12 (#625):* `local` holds `provider:colibri#<id>` for
+    a `/v1/models` list owned by colibri, as the first run offers it (ADR
+    0050 §2 as amended), and `set_model {model, save: true}` on a spec this
+    session's `list_models` offered that way writes the `[[providers]]`
+    `colibri` entry (`key_env = "COLI_API_KEY"`, at the base the probe
+    read) before the spec, to the user's config only, refusing as the
+    first run refuses when an entry of that name sits at another base.
+    `providers[].key_variable` then names `COLI_API_KEY` for it.
   - `tests/client_contract.json` lists both under `rpc.responses`. Held by
     the `rpc_model_select_` tests in `tests/modes.rs` and `rpc.rs`; every
     earlier test that sends a `prompt` now sends `set_model` first.
