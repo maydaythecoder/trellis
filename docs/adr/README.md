@@ -61,6 +61,7 @@ stays where it is.
 | [0050](0050-starting-trellis.md) | Starting trellis: plain `trellis`, or `--tui`, `--dsk`, `--web` | Accepted (owner-directed). Not built (story S19, #377). | Bare `trellis` and three interface flags are the whole start-up surface. Parts are wired in `main.rs` since; check `docs/STATUS.md` before relying on the status line. |
 | [0051](0051-branching-main-dev-audit.md) | Branches: main, dev, audit, and ticket branches cut from dev | Accepted (owner-directed). | `main`, `dev`, `audit` are the only permanent branches; work is cut from `dev`, merged into `audit`, promoted to `dev`; `main` moves only by the owner's pull request. |
 | [0052](0052-two-rpc-clients-and-go-for-the-tui.md) | Two `trellis rpc` clients: a rendering Tauri desktop, and a Go TUI that replaces ratatui | Accepted (owner-directed). | Two clients, one engine. The desktop's views are built in `desktop/` (story S15); the Go TUI is not built (#514). |
+| [0055](0055-os-sandbox-around-the-throwaway-clone.md) | An OS sandbox around the throwaway clone's command: bwrap on Linux, sandbox-exec on macOS | Accepted (owner-decided, #621). Built for Linux; macOS compiled and its profile tested, not run on a Mac. | `bash`, custom tools, hooks and process agents run with no network, the home directory hidden and writes only to the clone and the temporary directory; a missing or failing sandbox is a warning (`sandbox: none (<reason>)`). Windows stays on ADR 0035. |
 
 ## Writing a new one
 
