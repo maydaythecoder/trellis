@@ -89,12 +89,15 @@ function reference(doc, tauri, r) {
   return li;
 }
 
+// Says whether the line was sent: a refusal is drawn as the status.
 async function send(doc, tauri, line, waiting) {
   status(doc, waiting);
   try {
     await tauri.core.invoke("rpc_send", { line });
+    return true;
   } catch (err) {
     status(doc, `Open a repository to read its vault. ${err}`);
+    return false;
   }
 }
 
@@ -181,8 +184,17 @@ function drawNote(doc, tauri, g) {
   );
 }
 
+// The Search button is disabled from the submit until a search's hits or a
+// refusal is drawn (#657), so a second click does not start a second
+// search on the child while the first is out. A child's exit answers
+// nothing, so `wireVault` enables it again when one starts or exits.
+function searching(doc, on) {
+  doc.querySelector("#vt-form button[type=submit]").disabled = on;
+}
+
 export function drawVault(doc, tauri, v) {
   if (v === null || typeof v !== "object") return;
+  if (str(v.error) !== null || Array.isArray(v.hits)) searching(doc, false);
   if (str(v.error) !== null) status(doc, v.error);
   else if (Array.isArray(v.hits)) {
     const n = v.hits.length;
@@ -193,7 +205,7 @@ export function drawVault(doc, tauri, v) {
 }
 
 export async function wireVault(doc, tauri) {
-  doc.getElementById("vt-form").addEventListener("submit", (e) => {
+  doc.getElementById("vt-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const query = doc.getElementById("vt-query").value.trim();
     if (query === "") {
@@ -201,13 +213,18 @@ export async function wireVault(doc, tauri) {
       return;
     }
     asked += 1;
-    send(doc, tauri, { id: `desktop-vault-search-${asked}`, type: "vault_search", query }, `Searching the vault for ${query}.`);
+    searching(doc, true);
+    const sent = await send(doc, tauri, { id: `desktop-vault-search-${asked}`, type: "vault_search", query }, `Searching the vault for ${query}.`);
+    if (!sent) searching(doc, false);
   });
   drawVault(doc, tauri, { error: null, reduced: null, hits: null, graph: null });
   await tauri.event.listen("view", (event) => {
     const p = event.payload;
     if (p !== null && typeof p === "object" && "vault" in p) drawVault(doc, tauri, p.vault);
   });
+  // A question the last child had not answered never will be.
+  await tauri.event.listen("child-started", () => searching(doc, false));
+  await tauri.event.listen("rpc-exited", () => searching(doc, false));
 }
 
 function start() {
