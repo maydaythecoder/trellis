@@ -303,21 +303,13 @@ async fn relay_approvals(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        let text = if req.detail.is_empty() {
-            format!("{}?", req.question)
-        } else {
-            format!(
-                "{}
-{}?",
-                req.detail.trim_end(),
-                req.question
-            )
+        // Apart, so the view can put the question where a long diff cannot
+        // push it out (#640).
+        let asked = Message::ApprovalRequested {
+            question: req.question.clone(),
+            diff: req.detail.trim_end().to_string(),
         };
-        if screen
-            .send(Message::ApprovalRequested { diff: text })
-            .await
-            .is_err()
-        {
+        if screen.send(asked).await.is_err() {
             return;
         }
         let yes = tokio::select! {
@@ -1312,11 +1304,11 @@ mod tests {
         let mut state = AppState::default();
         state.update(screen_rx.recv().await.unwrap());
         match &state.modal {
-            Some(tui_demo::tui::app::Modal::Approval { diff }) => {
-                assert!(
-                    diff.contains("- x") && diff.contains("edit a.py (+1 -1)?"),
-                    "{diff}"
-                );
+            Some(tui_demo::tui::app::Modal::Approval { question, diff, .. }) => {
+                // The question travels apart from the diff, for the title
+                // (#640); neither is lost on the way.
+                assert_eq!(question, "edit a.py (+1 -1)");
+                assert!(diff.contains("- x") && diff.contains("+ y"), "{diff}");
             }
             other => panic!("expected the approval modal, got {other:?}"),
         }
