@@ -188,6 +188,7 @@ mod tests {
         Trail {
             task: task.into(),
             started_at: iso_now(),
+            ended_at: None,
             schema: SCHEMA,
             run_id: "20260920-000000-000-test".into(),
             base_commit: "0000000".into(),

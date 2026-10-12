@@ -2581,7 +2581,7 @@ fn run_partitioned(p: Partitioned<'_>, out: &mut (dyn std::io::Write + Send)) ->
     let after = u32::try_from(transcript.turns.len())
         .unwrap_or(u32::MAX)
         .saturating_add(1);
-    for v in &integrated.checks {
+    for (v, ms) in integrated.checks.iter().zip(&integrated.check_ms) {
         let kind = format!("{:?}", v.kind());
         let _ = writeln!(
             out,
@@ -2604,6 +2604,8 @@ fn run_partitioned(p: Partitioned<'_>, out: &mut (dyn std::io::Write + Send)) ->
         integrated_checks.push(trellis_trail::CheckOutcome {
             kind,
             passed: v.passed(),
+            // The supervisor's timing around the call (#622).
+            duration_ms: Some(*ms),
         });
     }
     let gaps: Vec<trellis_trail::SuspectedRecallGap> = integrated
@@ -3369,6 +3371,9 @@ pub(crate) fn action_from(index: usize, t: &trellis_loop::Turn) -> trellis_trail
         },
         changed: Vec::new(),
         changed_count: 0,
+        // The loop's own timing of the call (#622), never a figure from
+        // inside the check.
+        duration_ms: Some(t.duration_ms),
     }
     .with_changed(&t.changed)
 }
@@ -3390,6 +3395,8 @@ pub(crate) fn read_only_action(
         wrote: false,
         changed: Vec::new(),
         changed_count: 0,
+        // Not a timed call: absent, never 0 (#622).
+        duration_ms: None,
     }
 }
 
@@ -3575,6 +3582,7 @@ fn record_trail(
             Some(CheckOutcome {
                 kind: t.check_kind.clone()?,
                 passed: t.verdict_passed?,
+                duration_ms: Some(t.duration_ms),
             })
         })
         .chain(integrated)
@@ -3698,6 +3706,9 @@ fn record_trail(
         task: task.to_string(),
         base_commit: base_commit.to_string(),
         started_at,
+        // The wall clock as the trail is built (#622), recorded beside
+        // `started_at` and never subtracted from it.
+        ended_at: Some(trellis_trail::now().1),
         provenance: Provenance {
             trellis_version: env!("CARGO_PKG_VERSION").to_string(),
             model: model.map(str::to_string),
@@ -3948,6 +3959,7 @@ mod interrupt_tests {
             human: None,
             may_have_changed_tree: false,
             changed: Vec::new(),
+            duration_ms: 0,
         };
         let transcript = |turns| trellis_loop::Transcript {
             task: "a wide radius".to_string(),
@@ -4178,6 +4190,7 @@ mod interrupt_tests {
             human: None,
             may_have_changed_tree: false,
             changed: Vec::new(),
+            duration_ms: 0,
         };
         let t = trellis_loop::Transcript {
             task: "two reads".to_string(),

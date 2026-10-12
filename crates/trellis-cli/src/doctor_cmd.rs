@@ -1626,6 +1626,7 @@ mod init_tests {
             human: None,
             may_have_changed_tree: false,
             changed: Vec::new(),
+            duration_ms: 0,
         }
     }
 
