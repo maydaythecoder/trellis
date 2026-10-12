@@ -2502,6 +2502,148 @@ mod tests {
         );
     }
 
+    /// The click handler `code` gives `on`, from its `addEventListener("click"`
+    /// to its closing `});`.
+    fn click_handler<'a>(code: &'a str, on: &str) -> &'a str {
+        code.split(&format!("{on}.addEventListener(\"click\""))
+            .nth(1)
+            .and_then(|r| r.split("});").next())
+            .unwrap_or_else(|| panic!("no click handler on {on}"))
+    }
+
+    /// composer.js's submit handler, to its closing `});`.
+    fn composer_submit(js: &str) -> &str {
+        js.split("addEventListener(\"submit\"")
+            .nth(1)
+            .and_then(|r| r.split("\n  });").next())
+            .expect("composer.js has a submit handler")
+    }
+
+    #[test]
+    fn composer_helper_textarea_is_described_by_what_enter_does() {
+        // The risk (#644): a 3-row textarea invites Enter for a new line,
+        // but Enter starts a run (a snapshot, model calls, checks and a
+        // trail), and that was said only in a code comment. The line is
+        // named by the textarea's aria-describedby, so a screen reader
+        // says it too, and it describes the key handler composer.js has.
+        let page = page();
+        let composer = index_of(&page, "composer");
+        let text = &page[index_of(&page, "composer-text")];
+        let ids = text
+            .attr("aria-describedby")
+            .expect("#composer-text has no aria-describedby");
+        let said: Vec<String> = ids
+            .split_whitespace()
+            .map(|id| {
+                let i = index_of(&page, id);
+                assert!(within(&page, i, composer), "#{id} is outside the composer");
+                page[i].text.clone()
+            })
+            .collect();
+        assert!(
+            said.iter()
+                .any(|t| t.contains("Enter sends") && t.contains("Shift+Enter adds a line")),
+            "nothing the textarea names says what Enter does: {said:?}"
+        );
+        let js = code_of("composer.js");
+        assert!(
+            js.contains(r#"if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {"#)
+                && js.contains("p.form.requestSubmit();"),
+            "the helper line no longer describes the key handler"
+        );
+    }
+
+    #[test]
+    fn composer_helper_prompt_success_says_sent_and_offers_run() {
+        // The risk (#644): after Send the text vanished with no word of
+        // what happened. A prompt the core forwarded says so and offers the
+        // Run section, through the rail's own Run button; a refusal or a
+        // steer leaves that offer hidden.
+        let js = code_of("composer.js");
+        let submit = composer_submit(&js);
+        let sent = submit
+            .split("if (await send(tauri, p, line)) {")
+            .nth(1)
+            .and_then(|r| r.split("\n    }").next())
+            .expect("the prompt has a success branch");
+        for want in [
+            "p.note.textContent = \"Sent to trellis; follow it in Run.\";",
+            "p.follow.hidden = false;",
+            "p.text.value = \"\";",
+        ] {
+            assert!(
+                sent.contains(want),
+                "the prompt success branch lacks {want}: {sent}"
+            );
+        }
+        assert!(
+            submit.trim_start().starts_with(
+                ", async (e) => {\n    e.preventDefault();\n    p.follow.hidden = true;"
+            ),
+            "a refused or steered submit leaves the last offer shown: {submit}"
+        );
+        assert_eq!(js.matches("p.follow.hidden = false;").count(), 1);
+        let follow = click_handler(&js, "p.follow");
+        assert!(
+            follow.contains(r#"doc.querySelector('nav.rail button[aria-controls="run"]')"#)
+                && follow.contains("run.click()"),
+            "{follow}"
+        );
+        let page = page();
+        let button = index_of(&page, "composer-follow");
+        assert!(within(&page, button, index_of(&page, "composer")));
+        assert!(page[button].attrs.contains_key("hidden"), "shown as served");
+        assert!(page[button].text.contains("Run"), "{}", page[button].text);
+        assert!(
+            page.iter().any(|e| e.tag == "button"
+                && e.attr("aria-controls") == Some("run")
+                && page[e.parent.expect("in the rail")].tag == "nav"),
+            "the rail has no Run button for it to press"
+        );
+    }
+
+    #[test]
+    fn composer_helper_starter_click_fills_the_template_and_sends_nothing() {
+        // The risk (#644): a starter ran on its click, one click from a
+        // snapshot and a model call, with its description only in a
+        // tooltip a keyboard user never sees. Its click chooses the
+        // template, shown with its description, and only Send runs it.
+        let js = code_of("composer.js");
+        let starters = function_body(&js, "drawStarters");
+        let click = click_handler(starters, "b");
+        for bad in ["send(", "invoke(", "rpc_send"] {
+            assert!(!click.contains(bad), "a starter click sends: {click}");
+        }
+        for want in ["template = { name, description };", "drawTemplate(doc);"] {
+            assert!(click.contains(want), "a starter click lacks {want}");
+        }
+        assert!(
+            !starters.contains("send("),
+            "drawStarters sends: {starters}"
+        );
+        let template = function_body(&js, "drawTemplate");
+        for want in [
+            "p.template.hidden = template === null;",
+            "`Template: ${template.name} — ${template.description}`",
+        ] {
+            assert!(template.contains(want), "drawTemplate lacks {want}");
+        }
+        let submit = composer_submit(&js);
+        assert!(
+            submit.contains("if (template !== null) line.prompt = template.name;"),
+            "Send does not run the chosen template: {submit}"
+        );
+        let page = page();
+        let line = index_of(&page, "composer-template");
+        assert!(within(&page, line, index_of(&page, "composer")));
+        assert!(page[line].attrs.contains_key("hidden"), "shown as served");
+        assert!(within(
+            &page,
+            index_of(&page, "composer-template-text"),
+            line
+        ));
+    }
+
     #[test]
     fn model_gate_model_js_parses_no_html() {
         // The risk: a spec, an address, a runtime's error or a provider
