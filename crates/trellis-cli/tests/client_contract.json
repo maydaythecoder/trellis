@@ -16,6 +16,13 @@
         },
         "verdict_values": ["None", "Some(true)", "Some(false)"]
       },
+      "model call": {
+        "always": ["turn"],
+        "absent_when": {
+          "prompt_bytes": "always: the driver builds the prompt inside next_step, so before the call its size is not yet measured (#614)"
+        },
+        "about": "sent before each model call, with the turn number the turn event it produces will carry; the governance audit's turn, which makes no call, has none"
+      },
       "run budget": {
         "always": ["max_iterations"]
       },
