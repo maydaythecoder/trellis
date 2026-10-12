@@ -50,7 +50,11 @@
   section, is the model picker: model.js draws the choices settings.js
   makes ("repository default", the user's configured spec, local runtimes,
   a typed spec), with the user's configured spec preselected; settings.js draws
-  the catalogue and the open-repository control. Until the child has taken
+  the catalogue, folded under its own details so the overview lands on the
+  first screen, and the open-repository control, which sits beside Recent
+  repositories in the overview rather than under the model pane, which
+  folds after the first choice (#645). The window title names the open
+  repository, written by status.js on child-started. Until the child has taken
   a set_model, the composer's textarea, Send and control are disabled, as
   served here, and the core refuses a prompt. The page has no key field and
   no endpoint field.
@@ -127,16 +131,10 @@
           <ul id="model-probed" class="rows" aria-labelledby="model-probed-title"></ul>
           <h3 id="model-providers-title">Your providers</h3>
           <ul id="model-providers" class="rows" aria-labelledby="model-providers-title"></ul>
-          <h3 id="model-catalog-title">Catalogue: weights trellis model pull fetches</h3>
-          <ul id="model-catalog" class="rows" aria-labelledby="model-catalog-title"></ul>
-        </form>
-        <form id="repo-form" class="model-form" aria-label="Open another repository">
-          <label for="repo-path">Open another repository (its path)</label>
-          <input id="repo-path" name="path" type="text" spellcheck="false" autocomplete="off">
-          <div class="composer-row">
-            <button type="submit" id="repo-open">Open</button>
-          </div>
-          <p id="repo-note" class="muted" role="status"></p>
+          <details id="model-catalog-pane">
+            <summary id="model-catalog-title">Catalogue: weights trellis model pull fetches</summary>
+            <ul id="model-catalog" class="rows" aria-labelledby="model-catalog-title"></ul>
+          </details>
         </form>
       </details>
 
@@ -147,6 +145,14 @@
           <div class="pane" role="region" aria-labelledby="ov-recent-title">
             <h3 id="ov-recent-title">Recent repositories</h3>
             <ul id="ov-recent" class="rows"></ul>
+            <form id="repo-form" class="model-form" aria-label="Open another repository">
+              <label for="repo-path">Open another repository (its path)</label>
+              <input id="repo-path" name="path" type="text" spellcheck="false" autocomplete="off">
+              <div class="composer-row">
+                <button type="submit">Open</button>
+              </div>
+              <p id="repo-note" class="muted" role="status"></p>
+            </form>
           </div>
           <div class="pane" role="region" aria-labelledby="ov-last-run-title">
             <h3 id="ov-last-run-title">Last run</h3>
