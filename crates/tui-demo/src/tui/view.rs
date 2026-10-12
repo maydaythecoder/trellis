@@ -14,10 +14,10 @@ use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, 
 const MIN_WIDTH: u16 = 80;
 const MIN_HEIGHT: u16 = 24;
 // Status 1 + budget 3 + input 3 + a body worth looking at.
-/// The right column's floor: two borders and the widest row it draws, the
-/// actions pane's `  edit         N ●─┤──◆ NN actions` at 36 columns, with
-/// the radius caption "a floor on reach, not a boundary" at 34 under it.
-const RIGHT_MIN_WIDTH: u16 = 38;
+/// The right column's floor: two borders and the radius pane's caption, "a
+/// floor on reach, not a boundary", at 34 columns. The actions pane's widest
+/// row is measured per frame (`actions_width`) and can raise it.
+const RIGHT_MIN_WIDTH: u16 = 36;
 
 /// The transcript pane's inner width at the narrowest layout drawn: its 60%
 /// of `MIN_WIDTH`, less two borders. The transcript wraps to the most rows
@@ -53,13 +53,14 @@ pub fn render(state: &AppState, frame: &mut Frame) {
         .split(area);
 
     // The right column takes two fifths of the width, and never less than
-    // RIGHT_MIN_WIDTH: at 80 columns the two fifths were 32, and the panes
-    // read "0 ac", "reac" and "not a boun" where their labels were (#655).
-    // Below 100 columns the transcript gives the difference up, since a
-    // cut figure is worse than a narrower transcript that wraps.
+    // its widest row needs: at 80 columns the two fifths were 32, and the
+    // panes read "0 ac", "reac" and "not a boun" where their labels were
+    // (#655). Below 100 columns the transcript gives the difference up,
+    // since a cut figure is worse than a narrower transcript that wraps.
     let right_w = u16::try_from(u32::from(area.width) * 2 / 5)
         .unwrap_or(u16::MAX)
-        .max(RIGHT_MIN_WIDTH);
+        .max(RIGHT_MIN_WIDTH)
+        .max(actions_width(state).saturating_add(2));
     let body = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Fill(1), Constraint::Length(right_w)])
@@ -341,6 +342,68 @@ fn render_radius(state: &AppState, area: Rect, frame: &mut Frame) {
 /// from what happened cannot show the difference.
 const TOOLS: [&str; 4] = ["blast_radius", "read_file", "edit", "run_checks"];
 
+/// One node of the action graph: a tool, and its count as the row draws it.
+struct ActionNode<'a> {
+    name: &'a str,
+    calls: usize,
+    wrote: usize,
+    /// Empty for an uncalled tool; `N` for one that only looked; `N · M
+    /// wrote` for one that changed the tree, said in words and not only in
+    /// yellow (#661), the way the desktop's graph says "3 calls · 1 wrote".
+    count: String,
+}
+
+/// The tools on the graph, in the prompt's order, then any the model called
+/// that `TOOLS` has not heard of: a node missing because a constant was out
+/// of date would make the picture a lie about what ran.
+fn action_nodes(state: &AppState) -> Vec<ActionNode<'_>> {
+    let mut names: Vec<&str> = TOOLS.to_vec();
+    for a in &state.actions {
+        if !names.contains(&a.tool.as_str()) {
+            names.push(&a.tool);
+        }
+    }
+    names
+        .into_iter()
+        .map(|name| {
+            let calls = state.actions.iter().filter(|a| a.tool == name).count();
+            let wrote = state
+                .actions
+                .iter()
+                .filter(|a| a.tool == name && a.wrote)
+                .count();
+            let count = match (calls, wrote) {
+                (0, _) => String::new(),
+                (n, 0) => n.to_string(),
+                (n, w) => format!("{n} · {w} wrote"),
+            };
+            ActionNode {
+                name,
+                calls,
+                wrote,
+                count,
+            }
+        })
+        .collect()
+}
+
+/// The columns the action graph's widest row takes, so the layout can give
+/// the pane that much before it draws (#655): indent, label, count between
+/// two spaces, glyph, edge, and the focus node with its action count.
+fn actions_width(state: &AppState) -> u16 {
+    let nodes = action_nodes(state);
+    let label_w = nodes.iter().map(|n| n.name.len()).max().unwrap_or(0);
+    let count_w = nodes
+        .iter()
+        .map(|n| n.count.chars().count())
+        .max()
+        .unwrap_or(0);
+    let n = state.actions.len();
+    let focus = format!("──◆ {n} action{}", if n == 1 { "" } else { "s" });
+    let w = 2 + label_w + 1 + count_w + 1 + 1 + 2 + Span::raw(focus).width();
+    u16::try_from(w).unwrap_or(u16::MAX)
+}
+
 /// The action graph: what this run has called, as converging edges.
 ///
 /// The reference is `ui_examples/preview.webp` — nodes with edges meeting at a
@@ -358,35 +421,31 @@ fn render_actions(state: &AppState, area: Rect, frame: &mut Frame) {
         return;
     }
 
-    // Anything the model called that this list has not heard of still belongs
-    // on the graph: a node missing because a constant was out of date would
-    // make the picture a lie about what ran.
-    let mut names: Vec<&str> = TOOLS.to_vec();
-    for a in &state.actions {
-        if !names.contains(&a.tool.as_str()) {
-            names.push(&a.tool);
-        }
-    }
-
-    let mid = names.len() / 2;
-    let label_w = names.iter().map(|n| n.len()).max().unwrap_or(0);
+    let nodes = action_nodes(state);
+    let mid = nodes.len() / 2;
+    let label_w = nodes.iter().map(|n| n.name.len()).max().unwrap_or(0);
+    let count_w = nodes
+        .iter()
+        .map(|n| n.count.chars().count())
+        .max()
+        .unwrap_or(0);
     let mut lines: Vec<Line> = Vec::new();
 
-    for (i, name) in names.iter().enumerate() {
-        let calls = state.actions.iter().filter(|a| a.tool == *name).count();
-        let wrote = state.actions.iter().any(|a| a.tool == *name && a.wrote);
+    for (i, node) in nodes.iter().enumerate() {
+        let (name, calls, wrote) = (node.name, node.calls, node.wrote);
         let connector = if i == 0 {
             '┐'
-        } else if i == names.len() - 1 {
+        } else if i == nodes.len() - 1 {
             '┘'
         } else {
             '┤'
         };
         let (glyph, colour) = if calls == 0 {
             ('○', Color::DarkGray)
-        } else if wrote {
-            // The one node whose colour carries a fact rather than a status:
-            // this tool changed the tree.
+        } else if wrote > 0 {
+            // The node whose colour carries a fact rather than a status: this
+            // tool changed the tree. The count says so in words too, for a
+            // monochrome terminal or NO_COLOR (#661).
             ('●', Color::Yellow)
         } else {
             ('●', Color::Green)
@@ -397,14 +456,12 @@ fn render_actions(state: &AppState, area: Rect, frame: &mut Frame) {
             Style::default().fg(Color::Gray)
         };
 
+        // The counts are right-aligned to the widest, so the edge column
+        // stays one column whatever a node's count says.
         let mut spans = vec![
             Span::styled(format!("  {name:<label_w$}"), label_style),
             Span::styled(
-                if calls == 0 {
-                    "     ".to_string()
-                } else {
-                    format!("{calls:>4} ")
-                },
+                format!(" {:>count_w$} ", node.count),
                 Style::default().fg(colour).add_modifier(Modifier::BOLD),
             ),
             Span::styled(glyph.to_string(), Style::default().fg(colour)),
@@ -1493,6 +1550,38 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---- #661: a write is said in words, not only in yellow ----
+
+    #[test]
+    fn wrote_in_text_on_the_edit_node_at_80_columns() {
+        // #661: under NO_COLOR or a monochrome terminal the node that changed
+        // the tree looked like the others. Three calls, one write, as the
+        // desktop's graph says it; and whole at the default width.
+        let s = acted(&[
+            ("read_file", "app/calc.py", false),
+            ("edit", "app/calc.py", false),
+            ("edit", "app/calc.py", false),
+            ("edit", "app/calc.py", true),
+        ]);
+        let rows = pane_rows(&s, "actions");
+        let edit = rows
+            .iter()
+            .find(|r| r.contains("edit"))
+            .unwrap_or_else(|| panic!("{}", rows.join("\n")));
+        assert!(edit.contains("3 · 1 wrote"), "{edit}");
+        assert!(edit.contains("◆ 4 actions"), "{}", rows.join("\n"));
+        // A node that only looked says its count alone: "wrote" on it would
+        // claim a write that did not happen.
+        let read = rows.iter().find(|r| r.contains("read_file")).unwrap();
+        assert!(!read.contains("wrote"), "{read}");
+        // The edge column is still one column.
+        let edges: std::collections::HashSet<usize> = rows
+            .iter()
+            .filter_map(|r| r.chars().position(|c| c == '●' || c == '○'))
+            .collect();
+        assert_eq!(edges.len(), 1, "{}", rows.join("\n"));
     }
 
     // ---- #519: the status bar's tier, one `tier` word, one vocabulary ----
