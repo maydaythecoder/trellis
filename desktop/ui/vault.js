@@ -1,6 +1,7 @@
 // The vault notes view (#309): the repository's notes, read-only, from the
 // `view` event's `vault` key, which the desktop core types from trellis's
-// `vault_search` and `vault_graph` answers (`desktop/src/state/vault.rs`).
+// `vault_search`, `vault_graph` and `vault_check` answers
+// (`desktop/src/state/vault.rs`).
 //
 // The core writes every figure as `trellis vault search` and `trellis vault
 // graph` print it, so this module computes nothing: the scores, the reduced
@@ -106,6 +107,48 @@ function askNote(doc, tauri, path) {
   send(doc, tauri, { id: `desktop-vault-graph-${asked}`, type: "vault_graph", note: path }, `Reading ${path}.`);
 }
 
+// Asks for what `trellis vault check` prints (#632), never `--fix`: rpc
+// has no fix field and refuses one by name. A refusal is drawn in the
+// check pane itself, so the search's status line is left alone.
+async function askCheck(doc, tauri) {
+  asked += 1;
+  const pane = doc.getElementById("vt-check");
+  try {
+    await tauri.core.invoke("rpc_send", { line: { id: `desktop-vault-check-${asked}`, type: "vault_check" } });
+  } catch (err) {
+    const p = el(doc, "p", `Open a repository to check its vault. ${err}`);
+    p.className = "empty";
+    pane.replaceChildren(p);
+  }
+}
+
+// The report `trellis vault check` prints, line for line as the core gives
+// it: the report line, the issues, the warnings and the run gate's answer.
+// The gate answer is vault validation, not a verdict (ADR 0004): it is
+// drawn here as text and never in the run section's checks pane.
+function drawCheck(doc, c) {
+  const pane = doc.getElementById("vt-check");
+  if (c === null || typeof c !== "object") {
+    const p = el(doc, "p", "Not checked yet: the report comes from trellis vault check, read-only.");
+    p.className = "empty";
+    pane.replaceChildren(p);
+    return;
+  }
+  if (str(c.error) !== null) {
+    const p = el(doc, "p", `vault_check refused: ${c.error}`);
+    p.className = "empty";
+    pane.replaceChildren(p);
+    return;
+  }
+  const lines = (xs, what) => (Array.isArray(xs) ? xs : []).map((x) => el(doc, "li", str(x) ?? `${what} not reported`));
+  pane.replaceChildren(
+    el(doc, "p", str(c.line) ?? "report line not reported"),
+    section(doc, "issues", rows(doc, lines(c.issues, "issue"), "none")),
+    section(doc, "warnings", rows(doc, lines(c.warnings, "warning"), "none")),
+    section(doc, "run gate", rows(doc, lines(c.violations, "violation"), str(c.gate) ?? "gate answer not reported")),
+  );
+}
+
 function drawHits(doc, tauri, v) {
   const pane = doc.getElementById("vt-hits");
   const out = [];
@@ -202,6 +245,7 @@ export function drawVault(doc, tauri, v) {
   } else status(doc, "Read-only: a note is changed with trellis vault or an editor, never from here.");
   drawHits(doc, tauri, v);
   drawNote(doc, tauri, v.graph);
+  drawCheck(doc, v.check);
 }
 
 export async function wireVault(doc, tauri) {
@@ -217,13 +261,18 @@ export async function wireVault(doc, tauri) {
     const sent = await send(doc, tauri, { id: `desktop-vault-search-${asked}`, type: "vault_search", query }, `Searching the vault for ${query}.`);
     if (!sent) searching(doc, false);
   });
-  drawVault(doc, tauri, { error: null, reduced: null, hits: null, graph: null });
+  doc.getElementById("vt-check-ask").addEventListener("click", () => askCheck(doc, tauri));
+  drawVault(doc, tauri, { error: null, reduced: null, hits: null, graph: null, check: null });
   await tauri.event.listen("view", (event) => {
     const p = event.payload;
     if (p !== null && typeof p === "object" && "vault" in p) drawVault(doc, tauri, p.vault);
   });
-  // A question the last child had not answered never will be.
-  await tauri.event.listen("child-started", () => searching(doc, false));
+  // A question the last child had not answered never will be; the new
+  // child's vault is checked as it starts, so the report is always drawn.
+  await tauri.event.listen("child-started", () => {
+    searching(doc, false);
+    askCheck(doc, tauri);
+  });
   await tauri.event.listen("rpc-exited", () => searching(doc, false));
 }
 
