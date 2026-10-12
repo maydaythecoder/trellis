@@ -10,9 +10,11 @@
 //! the trail, and a second copy of that sequence written for a UI would be a
 //! second set of rules about when a change is accepted.
 
+use crate::output::Abort;
 use crate::tui_bridge::LoopLayer;
 use anyhow::Result;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{Sender, UnboundedReceiver, UnboundedSender};
 use tui_demo::tui;
 use tui_demo::tui::message::{Message, SteerOut};
@@ -239,20 +241,51 @@ fn lost_run_report(join: &tokio::task::JoinError) -> Vec<Message> {
     ]
 }
 
+/// The stop handle of the run in flight, set by the driver as each run
+/// starts, so the approval relay can tell when that run has stopped (#634).
+type CurrentAbort = Arc<Mutex<Option<Arc<Abort>>>>;
+
+/// Resolves once the run has taken the stop path; never, with no run.
+///
+/// Polled, as `output::aborted` is: a run's stop is seconds of rollback, and
+/// a 50 ms poll beside it costs nothing.
+async fn stop_observed(abort: Option<Arc<Abort>>) {
+    let Some(abort) = abort else {
+        return std::future::pending().await;
+    };
+    while !abort.observed() {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 /// Carries each approval question to the modal and its answer back.
 ///
 /// A question whose answer never comes — the interface quit, the channel
 /// closed — is dropped, and a dropped reply is a no to the gate. Nothing here
 /// can turn silence into a yes.
+///
+/// Nor can a stop leave a question open. The view withdraws the modal when
+/// Ctrl-C stops a run, and the run then asks the orchestrator what it
+/// touched; an orchestrator still waiting on this question would never
+/// answer, and the stopped run would never end. So the question is dropped
+/// once the run has taken the stop path, and not before: a no delivered
+/// earlier lets the loop take its next step first, as `rpc`'s `abort_run`
+/// explains.
 async fn relay_approvals(
     mut questions: tokio::sync::mpsc::Receiver<trellis_loop::ApprovalRequest>,
     mut answers: tokio::sync::mpsc::Receiver<bool>,
     screen: Sender<Message>,
+    current: CurrentAbort,
 ) {
     while let Some(req) = questions.recv().await {
         // Answers left over from a modal the mock or a stale key raised
         // belong to no question, and must not answer this one.
         while answers.try_recv().is_ok() {}
+        // Only the run in flight can ask: one that has ended has no gate.
+        let stopping = current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let text = if req.detail.is_empty() {
             format!("{}?", req.question)
         } else {
@@ -270,8 +303,15 @@ async fn relay_approvals(
         {
             return;
         }
-        let Some(yes) = answers.recv().await else {
-            return;
+        let yes = tokio::select! {
+            a = answers.recv() => {
+                let Some(yes) = a else {
+                    return;
+                };
+                yes
+            }
+            // `req` and its reply go with this iteration: a no to the gate.
+            () = stop_observed(stopping) => continue,
         };
         let _ = screen
             .send(Message::AgentToken(format!(
@@ -298,10 +338,15 @@ async fn relay_approvals(
 /// was joined, or before this returned: once the run is joined, what is
 /// already queued is read up to the boundary, and steers among it are
 /// dropped rather than sent to the run that has ended.
+///
+/// A stop (Ctrl-C mid-run, #634) asks `abort`, the run's own handle, and the
+/// run takes the Ctrl-C path: rollback, then its trail. In raw mode Ctrl-C
+/// is a key, so `cmd_run`'s own signal arm never fires for this interface.
 async fn forward_steers<T>(
     mut run: tokio::task::JoinHandle<T>,
     typed: &mut UnboundedReceiver<SteerOut>,
     to_run: UnboundedSender<trellis_loop::Steering>,
+    abort: &Abort,
 ) -> (Result<T, tokio::task::JoinError>, bool) {
     loop {
         tokio::select! {
@@ -322,7 +367,7 @@ async fn forward_steers<T>(
                 loop {
                     match typed.try_recv() {
                         Ok(SteerOut::TaskFollows) => return (joined, true),
-                        Ok(SteerOut::Steer(_)) => {}
+                        Ok(SteerOut::Steer(_) | SteerOut::Stop) => {}
                         Err(_) => return (joined, false),
                     }
                 }
@@ -334,6 +379,7 @@ async fn forward_steers<T>(
                 SteerOut::Steer(text) => {
                     let _ = to_run.send(trellis_loop::Steering::Steer(text));
                 }
+                SteerOut::Stop => abort.request(),
                 SteerOut::TaskFollows => {
                     drop(to_run);
                     return (run.await, true);
@@ -374,10 +420,11 @@ async fn send_elapsed(tx: Sender<Message>) {
 /// Those steers were typed after their run stopped taking them, or while
 /// their task turned out to be a question and no run happened; the view has
 /// already reported them not delivered. Carried into this run, they would
-/// steer work they were not written about. `None` (the interface has gone)
+/// steer work they were not written about. A stop left over the same way
+/// would end a run nobody asked to stop. `None` (the interface has gone)
 /// ends the wait as the boundary would.
 async fn skip_to_task_boundary(typed: &mut UnboundedReceiver<SteerOut>) {
-    while let Some(SteerOut::Steer(_)) = typed.recv().await {}
+    while let Some(SteerOut::Steer(_) | SteerOut::Stop) = typed.recv().await {}
 }
 
 /// One run, as the interface drives it: the loop's events and `cmd_run`'s
@@ -385,12 +432,15 @@ async fn skip_to_task_boundary(typed: &mut UnboundedReceiver<SteerOut>) {
 ///
 /// Blocking: call it from a blocking worker, never from the runtime, since
 /// `cmd_run` blocks on its own runtime and the sends here wait for room.
+/// `abort` is the run's stop handle, which the view's Ctrl-C reaches through
+/// `forward_steers` (#634).
 fn run_for_tui(
     root: &Path,
     task: &str,
     spec: &str,
     model_from_user: bool,
     control: crate::RunControl,
+    abort: Option<Arc<Abort>>,
     tx: &Sender<Message>,
 ) {
     use tracing_subscriber::layer::SubscriberExt;
@@ -400,16 +450,22 @@ fn run_for_tui(
     let mut narration = TranscriptSink::new(tx.clone());
     let outcome = tracing::subscriber::with_default(subscriber, || {
         // No resume, and no focus override: `[context] focus` applies.
-        crate::cmd_run(
+        crate::cmd_run_with(
             root,
             task,
-            spec,
-            false,
+            crate::ModelChoice {
+                spec,
+                unconstrained: false,
+            },
             crate::RunSeeding {
                 model_from_user,
                 ..crate::RunSeeding::default()
             },
             control,
+            crate::output::RunExtras {
+                abort,
+                ..crate::output::RunExtras::default()
+            },
             &mut narration,
         )
     });
@@ -521,7 +577,13 @@ pub(crate) fn run(
         // question at a time, because the gate waits for each answer.
         let (approve_tx, approve_rx) = tokio::sync::mpsc::channel(1);
         let (answer_tx, answer_rx) = tokio::sync::mpsc::channel::<bool>(1);
-        tokio::spawn(relay_approvals(approve_rx, answer_rx, tx.clone()));
+        let current = CurrentAbort::default();
+        tokio::spawn(relay_approvals(
+            approve_rx,
+            answer_rx,
+            tx.clone(),
+            current.clone(),
+        ));
 
         // Lines typed while a run is in flight (#115). Unbounded, as the
         // loop's own steering channel is: the driver does not read this
@@ -660,14 +722,30 @@ pub(crate) fn run(
                         human: crate::Human::Channel(approve_tx.clone()),
                         steering: Some(steering),
                     };
+                    // One stop handle per run, as `rpc` keeps one, so a stop
+                    // aimed at this run cannot end another.
+                    let abort = Arc::new(Abort::default());
+                    *current
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(abort.clone());
+                    let run_abort = Some(abort.clone());
                     // `spawn_blocking`, because `cmd_run` blocks on its own
                     // runtime and must not sit on a worker of this one.
                     let run = tokio::task::spawn_blocking(move || {
-                        run_for_tui(&root, &task, &spec, model_from_user, control, &run_tx);
+                        run_for_tui(
+                            &root,
+                            &task,
+                            &spec,
+                            model_from_user,
+                            control,
+                            run_abort,
+                            &run_tx,
+                        );
                     });
                     let clock = tokio::spawn(send_elapsed(tx.clone()));
                     let joined;
-                    (joined, at_boundary) = forward_steers(run, &mut steer_rx, to_run).await;
+                    (joined, at_boundary) =
+                        forward_steers(run, &mut steer_rx, to_run, &abort).await;
                     clock.abort();
                     // Discarding this `JoinError` reopened the silent pane:
                     // a panicking run reports nothing and never hands input
@@ -1157,7 +1235,12 @@ mod tests {
         let (q_tx, q_rx) = tokio::sync::mpsc::channel(1);
         let (a_tx, a_rx) = tokio::sync::mpsc::channel(1);
         let (screen_tx, mut screen_rx) = tokio::sync::mpsc::channel(8);
-        tokio::spawn(relay_approvals(q_rx, a_rx, screen_tx));
+        tokio::spawn(relay_approvals(
+            q_rx,
+            a_rx,
+            screen_tx,
+            CurrentAbort::default(),
+        ));
 
         let (reply, answer) = tokio::sync::oneshot::channel();
         q_tx.send(trellis_loop::ApprovalRequest {
@@ -1196,7 +1279,12 @@ mod tests {
         let (q_tx, q_rx) = tokio::sync::mpsc::channel(1);
         let (a_tx, a_rx) = tokio::sync::mpsc::channel::<bool>(1);
         let (screen_tx, _screen_rx) = tokio::sync::mpsc::channel(8);
-        tokio::spawn(relay_approvals(q_rx, a_rx, screen_tx));
+        tokio::spawn(relay_approvals(
+            q_rx,
+            a_rx,
+            screen_tx,
+            CurrentAbort::default(),
+        ));
         let (reply, answer) = tokio::sync::oneshot::channel();
         q_tx.send(trellis_loop::ApprovalRequest {
             question: "edit a.py (+1 -1)".into(),
@@ -1247,6 +1335,7 @@ mod tests {
                 human: crate::Human::Absent,
                 steering: None,
             },
+            None,
             &tx,
         );
         drop(tx);
@@ -1298,6 +1387,7 @@ mod tests {
                 human: crate::Human::Absent,
                 steering: Some(steering),
             },
+            None,
             &tx,
         );
         drop(tx);
@@ -1353,7 +1443,7 @@ mod tests {
         typed_tx.send(SteerOut::Steer("use b.py".into())).unwrap();
         let (got, at_boundary) = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            forward_steers(run, &mut typed_rx, to_run),
+            forward_steers(run, &mut typed_rx, to_run, &Abort::default()),
         )
         .await
         .expect("the forwarder returns once the run does");
@@ -1386,7 +1476,7 @@ mod tests {
         release.send(()).unwrap();
         let (joined, at_boundary) = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            forward_steers(run, &mut typed_rx, to_run),
+            forward_steers(run, &mut typed_rx, to_run, &Abort::default()),
         )
         .await
         .expect("the forwarder returns once the run does");
@@ -1438,5 +1528,191 @@ mod tests {
                 trellis_trail::Steer::new(4, trellis_trail::SteerKind::Steer, "late"),
             ]
         );
+    }
+
+    /// Every message a run sent, once the run has returned.
+    fn drained(rx: &mut tokio::sync::mpsc::Receiver<Message>) -> Vec<Message> {
+        let mut got = Vec::new();
+        while let Ok(m) = rx.try_recv() {
+            got.push(m);
+        }
+        got
+    }
+
+    fn outcome_of(got: &[Message]) -> String {
+        got.iter()
+            .find_map(|m| match m {
+                Message::RunOutcome(line) => Some(line.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the run reported no outcome: {got:#?}"))
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_mid_run_reaches_the_run_which_rolls_back_as_interrupted() {
+        // #634: nothing sent the run an interrupt. In raw mode Ctrl-C is a
+        // key, so `cmd_run`'s signal arm never fired, and the run went on
+        // editing the tree after the view had gone. The stop the view sends
+        // has to reach the run's own abort and take the interrupted path.
+        let (dir, spec) = steer_fixture(
+            "stop",
+            r#"{"steps":[
+                {"tool":"edit","path":"a.py","old":"return 1","new":"return 2"},
+                {"tool":"read_file","path":"a.py"},
+                {"tool":"done","summary":"changed it"}
+            ]}"#,
+        );
+        let abort = Arc::new(Abort::default());
+        let (typed_tx, mut typed_rx) = tokio::sync::mpsc::unbounded_channel();
+        // Pressed before the run reaches its race, as during the snapshot.
+        typed_tx.send(SteerOut::Stop).unwrap();
+        let (to_run, steering) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4096);
+        let (root, run_abort) = (dir.clone(), Some(abort.clone()));
+        let run = tokio::task::spawn_blocking(move || {
+            run_for_tui(
+                &root,
+                "change f",
+                &spec,
+                false,
+                crate::RunControl {
+                    flag: Some(crate::config::ControlMode::Auto),
+                    human: crate::Human::Absent,
+                    steering: Some(steering),
+                },
+                run_abort,
+                &tx,
+            );
+        });
+        let (joined, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            forward_steers(run, &mut typed_rx, to_run, &abort),
+        )
+        .await
+        .expect("a stopped run ends");
+        joined.expect("the run did not panic");
+
+        assert!(abort.observed(), "the run took the stop path");
+        assert_eq!(
+            outcome_of(&drained(&mut rx)),
+            "interrupted; worktree restored: true"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.py")).unwrap(),
+            "def f():\n    return 1\n",
+            "rolled back"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_mid_run_drops_an_open_question_only_once_the_run_has_stopped() {
+        // Dropped too early, the gate's no lets the loop take its next step
+        // and the run can end as not converged rather than interrupted.
+        // Never dropped, the stopped run waits on its orchestrator, which
+        // waits on this question, and the run never ends.
+        let (q_tx, q_rx) = tokio::sync::mpsc::channel(1);
+        let (_a_tx, a_rx) = tokio::sync::mpsc::channel::<bool>(1);
+        let (screen_tx, mut screen_rx) = tokio::sync::mpsc::channel(8);
+        let abort = Arc::new(Abort::default());
+        let current = CurrentAbort::default();
+        *current.lock().unwrap() = Some(abort.clone());
+        tokio::spawn(relay_approvals(q_rx, a_rx, screen_tx, current));
+
+        let (reply, mut answer) = tokio::sync::oneshot::channel();
+        q_tx.send(trellis_loop::ApprovalRequest {
+            question: "edit a.py (+1 -1)".into(),
+            detail: String::new(),
+            reply,
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            screen_rx.recv().await,
+            Some(Message::ApprovalRequested { .. })
+        ));
+
+        abort.request();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(300), &mut answer)
+                .await
+                .is_err(),
+            "the question was dropped before the run took the stop path"
+        );
+        // The run's side of the race: it sees the request and takes the path.
+        crate::output::aborted(Some(abort.clone())).await;
+        let got = tokio::time::timeout(std::time::Duration::from_secs(5), answer)
+            .await
+            .expect("the question is dropped once the run has stopped");
+        assert!(got.is_err(), "dropped, which the gate reads as a no");
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_mid_run_with_a_question_open_still_ends_and_rolls_back() {
+        // The whole path, in approve mode, with the question on screen when
+        // Ctrl-C is pressed: the view withdraws the modal without answering,
+        // and only the relay's drop lets the stopped run finish.
+        let (dir, spec) = steer_fixture(
+            "stop-asked",
+            r#"{"steps":[
+                {"tool":"edit","path":"a.py","old":"return 1","new":"return 2"},
+                {"tool":"done","summary":"changed it"}
+            ]}"#,
+        );
+        let current = CurrentAbort::default();
+        let (approve_tx, approve_rx) = tokio::sync::mpsc::channel(1);
+        let (_answer_tx, answer_rx) = tokio::sync::mpsc::channel::<bool>(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4096);
+        tokio::spawn(relay_approvals(
+            approve_rx,
+            answer_rx,
+            tx.clone(),
+            current.clone(),
+        ));
+        let abort = Arc::new(Abort::default());
+        *current.lock().unwrap() = Some(abort.clone());
+
+        let (typed_tx, mut typed_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (to_run, steering) = tokio::sync::mpsc::unbounded_channel();
+        let (root, run_abort) = (dir.clone(), Some(abort.clone()));
+        let run = tokio::task::spawn_blocking(move || {
+            run_for_tui(
+                &root,
+                "change f",
+                &spec,
+                false,
+                crate::RunControl {
+                    flag: Some(crate::config::ControlMode::Approve),
+                    human: crate::Human::Channel(approve_tx),
+                    steering: Some(steering),
+                },
+                run_abort,
+                &tx,
+            );
+        });
+        let mut seen = Vec::new();
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(120), rx.recv()).await {
+                Ok(Some(Message::ApprovalRequested { .. })) => break,
+                Ok(Some(m)) => seen.push(m),
+                other => panic!("no question was asked ({other:?}): {seen:#?}"),
+            }
+        }
+        typed_tx.send(SteerOut::Stop).unwrap();
+        let (joined, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            forward_steers(run, &mut typed_rx, to_run, &abort),
+        )
+        .await
+        .expect("a run stopped with its question open still ends");
+        joined.expect("the run did not panic");
+
+        seen.extend(drained(&mut rx));
+        assert_eq!(outcome_of(&seen), "interrupted; worktree restored: true");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.py")).unwrap(),
+            "def f():\n    return 1\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
