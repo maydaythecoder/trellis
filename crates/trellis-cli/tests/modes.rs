@@ -2713,6 +2713,120 @@ fn rpc_every_turn_through_the_governance_audit_keeps_the_contract() {
     assert_eq!(end["outcome"], "converged", "{end}");
 }
 
+/// Holds the `model call` contract over one stream: each carries what the
+/// contract lists and no `prompt_bytes`; each `turn` that called the model
+/// has one before it under its own number. Returns how many `model call`s
+/// there were, for the caller to hold against the calls actually made.
+fn model_calls_precede_turns(records: &[Value], c: &Value) -> usize {
+    let spec = &c["rpc"]["events"]["model call"];
+    let loop_events: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["fields"]["message"] == "model call" || r["fields"]["message"] == "turn")
+        .map(|r| &r["fields"])
+        .collect();
+    let mut gaps: Vec<String> = Vec::new();
+    let mut announced: Vec<&Value> = Vec::new();
+    let mut calls = 0;
+    for e in &loop_events {
+        if e["message"] == "model call" {
+            calls += 1;
+            gaps.extend(missing(
+                e,
+                &spec["always"],
+                &format!("model call {}", e["turn"]),
+            ));
+            if e.get("prompt_bytes").is_some() {
+                gaps.push(format!(
+                    "model call {} carries prompt_bytes, a size not measured before the call",
+                    e["turn"]
+                ));
+            }
+            announced.push(&e["turn"]);
+            continue;
+        }
+        // The audit's turn is numbered after the last call (trellis-loop
+        // agent.rs), so it is held by the count the caller checks against
+        // the provider, not by pairing.
+        let audit = e["check_kind"] == "Governance";
+        let preceded = announced.last() == Some(&&e["turn"]);
+        if !audit && !preceded {
+            gaps.push(format!(
+                "turn {} ({}) had no model call announced under its number before it",
+                e["turn"], e["call"]
+            ));
+        }
+    }
+    assert!(gaps.is_empty(), "{gaps:?}\n{records:?}");
+    calls
+}
+
+#[test]
+fn rpc_and_run_json_announce_each_model_call_before_its_turn() {
+    // The risk: replies are not streamed, so between two turns a client
+    // hears nothing from a slow local model and reads the run as hung
+    // (qa/REPORT-2026-10-02.md). The `model call` event is the one
+    // difference a client can draw, so it has to be on both streams before
+    // the wait, under the turn number it produces, and never for the
+    // governance audit, which calls no model (ADR 0025 §4, #614).
+    let c = contract();
+    let f = fixture("rpc-model-call");
+    std::fs::create_dir_all(f.root.join(".trellis/governance")).unwrap();
+    std::fs::write(
+        f.root.join(".trellis/governance/no-vendor.toml"),
+        "name = \"Vendored code is not ours to edit\"\nrank = \"non-negotiable\"\n\
+         description = \"Changes go upstream.\"\ndeny-write = { paths = [\"vendor/\"] }\n",
+    )
+    .unwrap();
+    commit_passing_checks(&f);
+    let (base, server) = provider_stub(vec![
+        openai_call(
+            "c1",
+            "run_checks",
+            serde_json::json!({"paths": ["a.py"], "kinds": ["typecheck", "tests"]}),
+        ),
+        openai_call("c2", "done", serde_json::json!({"summary": "checked it"})),
+    ]);
+    // A variable nobody sets: a loopback endpoint is then used with no key.
+    let key_env = "TRELLIS_TEST_RPC_MODEL_CALL_KEY";
+    std::fs::write(
+        f.user.join("config.toml"),
+        format!(
+            "[[providers]]\nname = \"stub\"\nprotocol = \"openai\"\n\
+             base_url = \"{base}\"\nkey_env = \"{key_env}\"\n"
+        ),
+    )
+    .unwrap();
+    let mut cmd = trellis(&f);
+    cmd.env_remove(key_env);
+    let mut rpc = Rpc::start(cmd);
+    rpc.choose("provider:stub#m");
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "check f",
+                           "model": "provider:stub#m"}),
+    );
+    let records = rpc.finish();
+    let requests = server.join().unwrap().len();
+    assert!(
+        records
+            .iter()
+            .any(|r| r["fields"]["message"] == "turn" && r["fields"]["check_kind"] == "Governance"),
+        "the run reached no governance audit: {records:?}"
+    );
+    // One announcement per request the provider saw, no more: a count that
+    // disagreed with the provider's would be a call that never happened.
+    assert_eq!(
+        model_calls_precede_turns(&records, &c),
+        requests,
+        "{records:?}"
+    );
+
+    // `run --json`, through the scripted driver, which sends no prompt and
+    // still makes a call per step.
+    let o = run(&f, &["run", "change f", "--model", &f.spec, "--json"]);
+    let lines = jsonl(&o);
+    assert_eq!(model_calls_precede_turns(&lines, &c), 2, "{lines:?}");
+}
+
 #[test]
 fn log_json_carries_every_trail_field_the_desktop_reads() {
     // The risk: a path the desktop's trails view reads is renamed or moved

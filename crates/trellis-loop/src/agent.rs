@@ -851,6 +851,14 @@ pub async fn run_seeded<M: Model>(
         // earlier one, and a steer can never land between a call and the
         // observation of its result.
         t.steering.drain(&mut steering, t.turns.len(), false);
+        // Replies are not streamed (ADR 0024), so on a slow local model a
+        // client hears nothing between one `turn` and the next and reads
+        // the run as hung. Said before the wait, under the number the
+        // `turn` it produces will carry. No `prompt_bytes`: the driver
+        // builds the prompt inside `next_step`, so here its size is not
+        // yet measured, and `prompt_bytes()` would be the previous call's
+        // (ADR 0025 §4).
+        tracing::info!(turn = iterations + 1, "model call");
         // `Instant`, not the wall clock: a host's clock can step mid-call,
         // and a model time that went backwards would be an invented figure.
         let asked = Instant::now();
@@ -4006,6 +4014,119 @@ rank = \"non-negotiable\"
             .parse()
             .unwrap();
         assert!(ms >= 40, "{ms}");
+    }
+
+    /// `(message, turn)` of each kept event, in stream order.
+    fn message_and_turn(events: &[crate::testutil::TurnFields]) -> Vec<(String, u32)> {
+        events
+            .iter()
+            .map(|f| {
+                (
+                    f["message"].clone(),
+                    f["turn"].parse().unwrap_or_else(|e| panic!("{e}: {f:?}")),
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_model_call_event_precedes_each_turn_under_the_turn_s_own_number() {
+        // The risk: replies are not streamed, so between two `turn` events a
+        // client hears nothing and reads a slow local model as a hang. The
+        // event has to come before the wait and carry the number the turn
+        // it produces will carry, or a client cannot pair them. The call
+        // that answers `done` is a call too, and has one.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), checker(0)).spawn();
+        let mut m = Scripted::new(vec![
+            Step::Call(ToolCall::ReadFile {
+                path: "app/util.py".into(),
+            }),
+            Step::Call(ToolCall::ReadFile {
+                path: "app/util.py".into(),
+            }),
+            Step::Done {
+                summary: "read it".into(),
+            },
+        ]);
+        let events = crate::testutil::TurnEvents::default();
+        let guard = events.install();
+        run("read", &mut m, &h, &budget()).await;
+        drop(guard);
+        let got = message_and_turn(&events.taken_in_order());
+        assert_eq!(
+            got,
+            vec![
+                ("model call".to_string(), 1),
+                ("turn".to_string(), 1),
+                ("model call".to_string(), 2),
+                ("turn".to_string(), 2),
+                ("model call".to_string(), 3),
+            ]
+        );
+        // The prompt is built inside `next_step`, so its size is not yet
+        // measured here; an absent field, never a stale or invented one.
+        for f in events.taken_in_order() {
+            if f["message"] == "model call" {
+                assert!(!f.contains_key("prompt_bytes"), "{f:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_model_call_event_precedes_no_governance_audit_turn() {
+        // The risk: the audit at convergence is a `turn` event the loop
+        // emits without calling the model. A `model call` announced for it
+        // would make a client wait on a reply that is never coming.
+        let d = repo();
+        forbid_rule(d.path(), "psycopg2.connect");
+        let rules = trellis_checks::governance::load(d.path()).unwrap();
+        let (h, _j) = Orchestrator::new(d.path(), checker(0))
+            .with_rules(rules)
+            .spawn();
+        let mut m = Scripted::new(vec![
+            Step::Call(ToolCall::Edit {
+                path: "app/util.py".into(),
+                old: "return 1".into(),
+                new: "return psycopg2.connect('s')".into(),
+            }),
+            Step::Call(ToolCall::RunChecks {
+                paths: vec!["app/util.py".into()],
+                kinds: vec![CheckKind::Typecheck],
+            }),
+            Step::Done {
+                summary: "fixed it".into(),
+            },
+        ]);
+        let events = crate::testutil::TurnEvents::default();
+        let guard = events.install();
+        let (outcome, _) = run("fix it", &mut m, &h, &budget()).await;
+        drop(guard);
+        assert!(
+            matches!(
+                outcome,
+                Outcome::NotConverged {
+                    reason: NotConverged::GovernanceViolation { .. },
+                    ..
+                }
+            ),
+            "the fixture must reach the audit: {outcome:?}"
+        );
+        let got = message_and_turn(&events.taken_in_order());
+        // Three calls, three `model call`s; the audit's `turn` (numbered
+        // after the last call, like the loop numbers it) follows the third
+        // with no `model call` of its own.
+        assert_eq!(
+            got,
+            vec![
+                ("model call".to_string(), 1),
+                ("turn".to_string(), 1),
+                ("model call".to_string(), 2),
+                ("turn".to_string(), 2),
+                ("model call".to_string(), 3),
+                ("turn".to_string(), 2),
+            ]
+        );
     }
 }
 
