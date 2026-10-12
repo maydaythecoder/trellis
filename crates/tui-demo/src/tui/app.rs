@@ -121,9 +121,16 @@ pub struct Radius {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Budget {
+    /// Turns are counted from 1, so 0 is "no turn reported yet" and is
+    /// drawn as that, never as "iteration 0" (#641).
     pub iteration: u32,
-    pub prompt_bytes: u64,
-    pub elapsed_secs: u64,
+    /// The last turn's prompt size, `None` when the turn did not report
+    /// one (#641). It was a plain integer, and an unreported size drew as
+    /// "0 B prompt", which the desktop's never-0 rule forbids.
+    pub prompt_bytes: Option<u64>,
+    /// Seconds since the run began, from the last turn or the driver's
+    /// clock (`Message::Elapsed`); `None` until a run has reported any.
+    pub elapsed_secs: Option<u64>,
     /// The last turn's output tokens, model wall time and queue wait, each
     /// `None` when that turn did not report it (#257).
     pub completion_tokens: Option<u64>,
@@ -195,7 +202,7 @@ impl AppState {
                 self.budget = Budget {
                     iteration,
                     prompt_bytes,
-                    elapsed_secs,
+                    elapsed_secs: Some(elapsed_secs),
                     completion_tokens,
                     model_ms,
                     queue_wait_ms,
@@ -207,6 +214,15 @@ impl AppState {
                 self.budget = Budget {
                     max_iterations,
                     ..Budget::default()
+                }
+            }
+            // The driver's clock, sent every second while a run is in
+            // flight so a long model call is seen to be passing (#641). One
+            // that lands after the run ended is not applied: the run's time
+            // stopped with it.
+            Message::Elapsed(secs) => {
+                if self.running {
+                    self.budget.elapsed_secs = Some(secs);
                 }
             }
             Message::ApprovalRequested { diff } => self.modal = Some(Modal::Approval { diff }),
@@ -1034,6 +1050,36 @@ mod tests {
     }
 
     #[test]
+    fn budget_unreported_elapsed_follows_the_drivers_clock_while_running() {
+        // #641: between turns nothing on screen moved, and QA read a long
+        // model call as a hang. The driver's tick keeps elapsed current;
+        // one arriving after the run ended does not restart its clock.
+        let mut s = AppState::default().with_running(true);
+        assert_eq!(s.budget.elapsed_secs, None, "nothing reported yet");
+        s.update(Message::Elapsed(75));
+        assert_eq!(s.budget.elapsed_secs, Some(75));
+        s.update(Message::RunFinished);
+        s.update(Message::Elapsed(90));
+        assert_eq!(s.budget.elapsed_secs, Some(75));
+    }
+
+    #[test]
+    fn budget_unreported_prompt_size_stays_none_through_a_turn_without_one() {
+        // A turn that did not report its prompt size is not a 0-byte prompt.
+        let mut s = AppState::default();
+        s.update(Message::BudgetUpdated {
+            iteration: 1,
+            prompt_bytes: None,
+            elapsed_secs: 4,
+            completion_tokens: None,
+            model_ms: None,
+            queue_wait_ms: None,
+        });
+        assert_eq!(s.budget.prompt_bytes, None);
+        assert_eq!(s.budget.elapsed_secs, Some(4));
+    }
+
+    #[test]
     fn while_the_modal_is_up_q_does_not_quit() {
         // The keys on screen are the modal's. Quitting out from under a
         // pending approval would discard the decision silently.
@@ -1090,7 +1136,7 @@ mod tests {
         });
         s.update(Message::BudgetUpdated {
             iteration: 2,
-            prompt_bytes: 8400,
+            prompt_bytes: Some(8400),
             elapsed_secs: 18,
             completion_tokens: None,
             model_ms: None,
@@ -1101,7 +1147,7 @@ mod tests {
             passed: true,
         });
         assert_eq!(s.radius.resolved, 47);
-        assert_eq!(s.budget.prompt_bytes, 8400);
+        assert_eq!(s.budget.prompt_bytes, Some(8400));
         assert!(s.checks[0].passed);
 
         // Ticks, resizes and RunFinished are accepted and change nothing.
@@ -1109,7 +1155,7 @@ mod tests {
         s.update(Message::Resize(10, 10));
         s.update(Message::RunFinished);
         assert_eq!(s.radius.resolved, 47);
-        assert_eq!(s.budget.prompt_bytes, 8400);
+        assert_eq!(s.budget.prompt_bytes, Some(8400));
     }
 }
 

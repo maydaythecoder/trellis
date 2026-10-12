@@ -32,7 +32,7 @@ pub fn spawn_mock(tx: mpsc::Sender<Message>) {
             let _ = tx
                 .send(Message::BudgetUpdated {
                     iteration: i as u32 + 1,
-                    prompt_bytes: (i as u64 + 1) * 4200,
+                    prompt_bytes: Some((i as u64 + 1) * 4200),
                     elapsed_secs: (i as u64 + 1) * 9,
                     completion_tokens: Some(40 + i as u64 * 15),
                     model_ms: Some(8000),

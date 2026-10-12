@@ -462,10 +462,13 @@ fn render_budget(state: &AppState, area: Rect, frame: &mut Frame) {
     } else {
         f64::from(b.iteration.min(b.max_iterations)) / f64::from(b.max_iterations)
     };
-    let iteration = if b.max_iterations == 0 {
-        format!("iteration {}", b.iteration)
-    } else {
-        format!("iteration {}/{}", b.iteration, b.max_iterations)
+    // Turns count from 1: a 0 is a run that has not reported a turn, and
+    // an unreported figure is never drawn as 0 (#641), here or below.
+    let iteration = match (b.iteration, b.max_iterations) {
+        (0, 0) => "no iteration yet".to_string(),
+        (0, max) => format!("no iteration yet of {max}"),
+        (n, 0) => format!("iteration {n}"),
+        (n, max) => format!("iteration {n}/{max}"),
     };
     // A finished run does not keep presenting an iteration in progress
     // (#244): the counts stay, marked as the last run's.
@@ -479,12 +482,24 @@ fn render_budget(state: &AppState, area: Rect, frame: &mut Frame) {
         .gauge_style(Style::default().fg(Color::Cyan))
         .ratio(ratio)
         .label(format!(
-            "{iteration}  ·  {} B prompt  ·  {}s elapsed{}",
-            b.prompt_bytes,
-            b.elapsed_secs,
+            "{iteration}  ·  {}  ·  {}{}",
+            match b.prompt_bytes {
+                Some(bytes) => format!("{bytes} B prompt"),
+                None => "prompt not reported".to_string(),
+            },
+            match b.elapsed_secs {
+                Some(secs) => format!("{} elapsed", clock(secs)),
+                None => "not started".to_string(),
+            },
             turn_rate(&b)
         ));
     frame.render_widget(gauge, area);
+}
+
+/// Seconds as `m:ss`, so a minutes-long model call reads as time passing
+/// rather than as a count (#641): "1:15" where "75s" needed arithmetic.
+fn clock(secs: u64) -> String {
+    format!("{}:{:02}", secs / 60, secs % 60)
 }
 
 /// The last turn's output rate and queue wait, as the budget line's tail.
@@ -607,7 +622,7 @@ mod tests {
         s.update(Message::BudgetKnown { max_iterations: 40 });
         s.update(Message::BudgetUpdated {
             iteration: 2,
-            prompt_bytes: 8400,
+            prompt_bytes: Some(8400),
             elapsed_secs: 18,
             completion_tokens: None,
             model_ms: None,
@@ -675,7 +690,7 @@ mod tests {
         s.update(Message::BudgetKnown { max_iterations: 6 });
         s.update(Message::BudgetUpdated {
             iteration: 3,
-            prompt_bytes: 2435,
+            prompt_bytes: Some(2435),
             elapsed_secs: 42,
             completion_tokens: None,
             model_ms: None,
@@ -725,7 +740,7 @@ mod tests {
             out.contains("iteration 2/40"),
             "against the run's own ceiling"
         );
-        assert!(out.contains("18s elapsed"));
+        assert!(out.contains("0:18 elapsed"), "{out}");
     }
 
     /// `populated()` after one turn that reported these, drawn wide enough
@@ -734,7 +749,7 @@ mod tests {
         let mut s = populated();
         s.update(Message::BudgetUpdated {
             iteration: 3,
-            prompt_bytes: 8400,
+            prompt_bytes: Some(8400),
             elapsed_secs: 40,
             completion_tokens: tokens,
             model_ms,
@@ -785,6 +800,47 @@ mod tests {
         // And without a model time the tokens alone are no rate.
         let out = after_turn(Some(30), None, None);
         assert!(!out.contains("tok/s"), "{out}");
+    }
+
+    #[test]
+    fn budget_unreported_figures_are_named_not_drawn_as_zero() {
+        // #641: at launch the line read "iteration 0 · 0 B prompt · 0s
+        // elapsed", three figures nothing had reported, and the desktop's
+        // never-0 rule (render.js) was broken on the terminal.
+        let out = drawn(&AppState::default(), 100, 24);
+        assert!(!out.contains("0 B prompt"), "{out}");
+        assert!(!out.contains("iteration 0"), "{out}");
+        assert!(!out.contains("0s elapsed"), "{out}");
+        assert!(out.contains("not reported"), "{out}");
+        assert!(out.contains("no iteration yet"), "{out}");
+
+        // A turn that measured nothing still has no size to draw, and the
+        // ceiling is drawn without inventing a count against it.
+        let mut s = AppState::default().with_running(true);
+        s.update(Message::BudgetKnown { max_iterations: 40 });
+        s.update(Message::BudgetUpdated {
+            iteration: 2,
+            prompt_bytes: None,
+            elapsed_secs: 18,
+            completion_tokens: None,
+            model_ms: None,
+            queue_wait_ms: None,
+        });
+        let out = drawn(&s, 120, 24);
+        assert!(out.contains("prompt not reported"), "{out}");
+        assert!(out.contains("iteration 2/40"), "{out}");
+    }
+
+    #[test]
+    fn budget_unreported_elapsed_tick_is_drawn_as_a_clock() {
+        // #641: the driver's tick between turns is what moves on screen
+        // during a long model call; 75 s reads as 1:15.
+        let mut s = AppState::default().with_running(true);
+        s.update(Message::BudgetKnown { max_iterations: 40 });
+        s.update(Message::Elapsed(75));
+        let out = drawn(&s, 120, 24);
+        assert!(out.contains("1:15 elapsed"), "{out}");
+        assert!(out.contains("no iteration yet of 40"), "{out}");
     }
 
     #[test]
