@@ -87,6 +87,7 @@ function recent(doc, pane, o, actions) {
   const why = str(o.recent_error);
   if (why !== null) {
     only(doc, pane, `The recent list could not be read: ${why}`, "li");
+    pane.append(refusalLine(doc));
     return;
   }
   const open = str(o.root);
@@ -119,6 +120,25 @@ function recent(doc, pane, o, actions) {
   });
   if (rows.length === 0) only(doc, pane, "No repositories recorded yet.", "li");
   else pane.replaceChildren(...rows);
+  pane.append(refusalLine(doc));
+}
+
+// The line an Open refusal is written into (#659), beside the buttons that
+// asked, and announced; empty until one. The page serves it, and each
+// drawing of the list makes it anew, so a refusal does not outlive the list
+// it was about.
+function refusalLine(doc) {
+  const line = el(doc, "li");
+  line.id = "ov-recent-status";
+  line.className = "muted";
+  line.setAttribute("role", "status");
+  return line;
+}
+
+// The core's refusal of an "Open" above: a run in flight, or no repository
+// at the path. It goes next to the button that asked, not the page's top.
+export function drawOpenRefusal(doc, text) {
+  doc.getElementById("ov-recent-status").textContent = text;
 }
 
 // last run: the open repository's newest trail. The overview carries no
