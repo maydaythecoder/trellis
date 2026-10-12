@@ -3,7 +3,7 @@
 //! Every `Rect` is computed fresh from `frame.area()` each frame. Caching one
 //! is how a resize produces a layout drawn against the old size.
 
-use crate::tui::app::{AppState, Budget, EditStatus, Modal};
+use crate::tui::app::{AppState, Budget, EditStatus, Modal, Worktree};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -101,15 +101,33 @@ fn render_too_small(area: Rect, frame: &mut Frame) {
 }
 
 fn render_status(state: &AppState, area: Rect, frame: &mut Frame) {
-    let worktree = if state.edits.is_empty() {
-        Span::styled("clean", Style::default().fg(Color::Green))
-    } else {
-        Span::styled(
-            format!("{} edit(s) pending", state.edits.len()),
-            Style::default().fg(Color::Yellow),
-        )
+    let (green, yellow) = (
+        Style::default().fg(Color::Green),
+        Style::default().fg(Color::Yellow),
+    );
+    let worktree = match state.worktree() {
+        Worktree::Clean => Span::styled("clean", green),
+        Worktree::Pending(n) => Span::styled(format!("{n} edit(s) pending"), yellow),
+        Worktree::Restored => Span::styled("restored", green),
+        Worktree::LeftForReview(n) => Span::styled(format!("{n} file(s) left for review"), yellow),
     };
-    let line = Line::from(vec![
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    // The word for a tier nothing has reported, as `get_state` says it
+    // (#519); a label never repeats the `tier ` written beside it.
+    let tier = if state.tier.is_empty() {
+        "unknown".to_string()
+    } else {
+        state.tier.clone()
+    };
+    let model = if state.model.is_empty() {
+        "none".to_string()
+    } else {
+        state.model.clone()
+    };
+    // The worktree goes before the model, and the model is the span that is
+    // cut, with "…": drawn last, the worktree state was pushed past column
+    // 80 by a long spec and read "work" (#636).
+    let mut spans = vec![
         Span::styled(
             " TRELLIS ",
             Style::default()
@@ -117,30 +135,16 @@ fn render_status(state: &AppState, area: Rect, frame: &mut Frame) {
                 .bg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  model "),
-        Span::styled(
-            if state.model.is_empty() {
-                "none".to_string()
-            } else {
-                state.model.clone()
-            },
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  tier "),
-        Span::styled(
-            // The word for a tier nothing has reported, as `get_state` says
-            // it (#519); a label never repeats the `tier ` written above.
-            if state.tier.is_empty() {
-                "unknown".to_string()
-            } else {
-                state.tier.clone()
-            },
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
         Span::raw("  worktree "),
         worktree,
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+        Span::raw("  model "),
+    ];
+    let tier_spans = [Span::raw("  tier "), Span::styled(tier, bold)];
+    let used: usize = spans.iter().chain(tier_spans.iter()).map(Span::width).sum();
+    let room = usize::from(area.width).saturating_sub(used).max(1);
+    spans.push(Span::styled(truncate(&model, room), bold));
+    spans.extend(tier_spans);
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Rows `text` takes when wrapped to `width` columns: greedy word wrap, as
@@ -685,6 +689,48 @@ mod tests {
     }
 
     #[test]
+    fn worktree_state_is_whole_on_row_0_at_80_by_24_with_a_40_character_spec() {
+        // #636: the worktree was drawn last, and at 80 columns a long spec
+        // cut "worktree clean" to "work". It comes before the model now,
+        // and the model is the span that gives way, saying it was cut.
+        let spec = "llamacpp:http://127.0.0.1:8080#qwen3-8b";
+        let spec = format!("{spec}{}", "x".repeat(40 - spec.len()));
+        assert_eq!(spec.len(), 40);
+        let mut s = AppState::with_model(spec.clone(), "unknown, probing…".into());
+        let row = drawn_rows(&s, 80, 24).remove(0);
+        assert!(row.contains("worktree clean"), "{row}");
+        assert!(row.contains("tier unknown, probing…"), "{row}");
+        assert!(row.contains('…') && !row.contains(&spec), "{row}");
+
+        // The longest state the bar can say, after a converged run.
+        s.edits = ["a.py", "b.py", "c.py"]
+            .into_iter()
+            .map(|p| crate::tui::app::Edit {
+                path: p.into(),
+                status: EditStatus::Proposed,
+            })
+            .collect();
+        let row = drawn_rows(&s, 80, 24).remove(0);
+        assert!(row.contains("worktree 3 file(s) left for review"), "{row}");
+    }
+
+    #[test]
+    fn worktree_state_after_a_restored_run_has_no_edits_pending() {
+        // #636: after a rolled-back run the bar said "N edit(s) pending" and
+        // the edits pane listed files the rollback had already put back.
+        let mut s = populated().with_running(true);
+        assert!(drawn(&s, 80, 24).contains("1 edit(s) pending"));
+        s.update(Message::RunOutcome {
+            line: "did not converge; worktree restored: true".into(),
+            restored: Some(true),
+        });
+        s.update(Message::RunFinished);
+        let row = drawn_rows(&s, 80, 24).remove(0);
+        assert!(!row.contains("edit(s) pending"), "{row}");
+        assert!(row.contains("worktree restored"), "{row}");
+    }
+
+    #[test]
     fn transcript_outcome_of_a_finished_run_is_on_screen_without_scrolling() {
         let mut s = long_transcript();
         s.update(Message::BudgetKnown { max_iterations: 6 });
@@ -696,9 +742,10 @@ mod tests {
             model_ms: None,
             queue_wait_ms: None,
         });
-        s.update(Message::RunOutcome(
-            "did not converge; worktree restored: true".into(),
-        ));
+        s.update(Message::RunOutcome {
+            line: "did not converge; worktree restored: true".into(),
+            restored: Some(true),
+        });
         s.update(Message::RunFinished);
         // Scrolled back too: the outcome does not depend on where the view is.
         for _ in 0..40 {
