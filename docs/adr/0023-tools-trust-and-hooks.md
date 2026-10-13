@@ -1438,6 +1438,37 @@ at all. Tests: `read_only_table_*` in `gate.rs`, and
 `call_json_has_no_read_only_*` and `hook_payload_read_only_*` in
 `crates/trellis-loop/src/extension_tests.rs`.
 
+## Amendment 2026-10-12: replay recordings are left out of the `.trellis/` digest (#620)
+
+Status: Accepted (owner-directed): the owner's decision of 2026-10-12 on
+#620.
+
+Every run now writes `.trellis/replays/<run_id>.json` and, when absent,
+`.trellis/replays/.gitignore` (ADR 0056). §4's digest covers every file
+under `.trellis/` except what trellis writes there, and these are written by
+trellis on every run, as trails are, so they join the skips on the same
+terms:
+
+- regular files named `*.json` directly under `.trellis/replays/`;
+- `.trellis/replays/.gitignore`, only while its bytes (ignoring line
+  endings) are the file trellis writes, `trellis_loop::REPLAY_IGNORE`. One a
+  person edited is covered.
+
+Decided on the real path relative to the real `.trellis/`, as the other
+skips are. Everything else under `replays/` is hashed: `replays/gate.py`,
+`replays/sub/x.json`. A repository with no `replays/` directory has the
+digest it had, so no trust recorded before this changes. The `.trellis/`
+item's shown text in `trellis trust` still names only the three earlier
+skips: that text is part of the digest, and changing it would untrust every
+repository trusted before. Evidence:
+`only_what_trellis_writes_is_left_out_of_the_dot_trellis_digest` in
+`crates/trellis-loop/src/trust.rs` now writes a recording and the
+`.gitignore`, and shows an edited `replays/.gitignore` and the two paths
+above are covered.
+
+What reverses it: dropping the replay recording (ADR 0056), after which a
+leftover `replays/` would be hashed like any other file.
+
 ## Amendment 2026-10-13: registered linked worktrees under `.trellis/work/` are left out of the `.trellis/` digest (#718)
 
 Status: Accepted (owner-directed): the owner's decision of 2026-10-13 on

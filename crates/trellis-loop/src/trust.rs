@@ -167,6 +167,10 @@ fn rel(root: &Path, full: &Path) -> String {
 /// - `.gitignore`, while it is byte for byte the one trellis writes
 ///   (line endings aside); one a person edited is theirs and is covered
 /// - `runs/<name>.json`, the trails: regular files directly under `runs/`
+/// - `replays/<name>.json`, the replay recordings, and `replays/.gitignore`
+///   while it is the one trellis writes (ADR 0023 §4, amended 2026-10-12).
+///   The item's shown text below does not name them: it is part of the
+///   digest, and changing it would untrust every repository trusted before.
 /// - a linked worktree registered in this repository, strictly under
 ///   `work/` and reached there with no link on the way: the task
 ///   worktrees `trellis work` keeps (ADR 0053). A checkout of the
@@ -225,9 +229,16 @@ fn dot_trellis_files(root: &Path, cache: &HashCache) -> Result<Vec<(String, Stri
                 "index.bin" => true,
                 ".gitignore" => std::fs::read_to_string(real)
                     .is_ok_and(|t| t.replace("\r\n", "\n") == trellis_index::cache::IGNORE),
-                _ => inner
-                    .strip_prefix("runs/")
-                    .is_some_and(|n| !n.contains('/') && n.ends_with(".json")),
+                // Replay recordings (ADR 0023 §4, amended 2026-10-12): every
+                // run writes one, so hashing them would untrust the
+                // repository after each run, as trails would.
+                "replays/.gitignore" => std::fs::read_to_string(real)
+                    .is_ok_and(|t| t.replace("\r\n", "\n") == crate::scripted::REPLAY_IGNORE),
+                _ => ["runs/", "replays/"].iter().any(|dir| {
+                    inner
+                        .strip_prefix(dir)
+                        .is_some_and(|n| !n.contains('/') && n.ends_with(".json"))
+                }),
             }
         }
 
@@ -1952,6 +1963,14 @@ mod tests {
         std::fs::write(dot.join("index.bin"), [0u8, 1]).unwrap();
         std::fs::write(dot.join("runs/20260101-x.json"), "{}").unwrap();
         std::fs::write(dot.join(".gitignore"), trellis_index::cache::IGNORE).unwrap();
+        // And replay recordings with their own .gitignore (#620).
+        std::fs::create_dir_all(dot.join("replays")).unwrap();
+        std::fs::write(dot.join("replays/20260101-x.json"), "{}").unwrap();
+        std::fs::write(
+            dot.join("replays/.gitignore"),
+            crate::scripted::REPLAY_IGNORE,
+        )
+        .unwrap();
         assert_eq!(
             base,
             digest(),
@@ -1974,9 +1993,21 @@ mod tests {
                 "import os
 ",
             ),
+            (
+                "replays/gate.py",
+                "import os
+",
+            ),
+            (
+                "replays/sub/x.json",
+                "{}
+",
+            ),
         ] {
             let before = digest();
-            std::fs::write(dot.join(name), body).unwrap();
+            let path = dot.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
             assert_ne!(before, digest(), "`.trellis/{name}` is not covered");
         }
         // A .gitignore a person wrote is theirs, and it is covered.
@@ -1989,6 +2020,13 @@ mod tests {
         )
         .unwrap();
         assert_ne!(before, digest(), "an edited .gitignore is not covered");
+        let before = digest();
+        std::fs::write(dot.join("replays/.gitignore"), "!gate.py\n").unwrap();
+        assert_ne!(
+            before,
+            digest(),
+            "an edited replays/.gitignore is not covered"
+        );
     }
 
     #[test]

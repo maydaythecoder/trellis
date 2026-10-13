@@ -52,6 +52,74 @@ pub enum ScriptError {
     SharedPartition(String, String),
 }
 
+/// Where under `.trellis/` a run writes its replay recording (#620, ADR 0056).
+pub const REPLAYS_DIR: &str = "replays";
+
+/// The `.gitignore` trellis writes in `.trellis/replays/` unasked. Public so
+/// the trust digest can tell this file from one a person wrote (ADR 0023 §4,
+/// amended 2026-10-12).
+///
+/// Its own file rather than a line in `.trellis/.gitignore`: that one is
+/// written once and never rewritten, so a line added there would never reach
+/// a repository that already has one, and its first replay would dirty the
+/// worktree the next run needs clean (ADR 0009).
+pub const REPLAY_IGNORE: &str = r#"# Written by TRELLIS. Every run records the steps its model took here, as a
+# script `trellis run --model scripted:<file>` plays back (ADR 0056). They
+# are per-machine records, like the index: never committed, and a run
+# refuses to start while git tracks anything here.
+#
+# This file ignores itself and everything beside it, so a recording never
+# makes `git status` dirty, which would block the next run (ADR 0009).
+*
+"#;
+
+/// What one run's model decided, as the script that plays it back (#620).
+///
+/// Holds steps, never verdicts: a replay runs the checks again, so nothing
+/// read back from a recording can stand for a pass (rules 1 and 2). It is
+/// read back through [`ScriptedModel`], as data: parsed against the
+/// replaying run's own tools, with an unknown tool refused at load (rule 10).
+#[derive(Debug, Default, Clone)]
+pub struct Recording {
+    pub run_id: String,
+    /// The commit the run started from; a replay means the same tree.
+    pub base_commit: String,
+    pub task: String,
+    /// A single-agent run's steps, in the order the model gave them.
+    pub steps: Vec<Step>,
+    /// A multi-agent run's steps, one section per agent, keyed by the first
+    /// of its targets, which is how [`ScriptedModel::from_json_for`] finds an
+    /// agent's section.
+    pub targets: BTreeMap<String, Vec<Step>>,
+}
+
+impl Recording {
+    /// The recording as a script. `run_id`, `base_commit` and `task` are for
+    /// the person reading it; the loader reads only `steps` and `targets`.
+    pub fn to_json(&self) -> serde_json::Value {
+        let steps = |s: &[Step]| -> Vec<serde_json::Value> {
+            s.iter().map(crate::registry::step_json).collect()
+        };
+        let mut v = serde_json::json!({
+            "recording": 1,
+            "run_id": self.run_id,
+            "base_commit": self.base_commit,
+            "task": self.task,
+        });
+        if self.targets.is_empty() {
+            v["steps"] = steps(&self.steps).into();
+        } else {
+            let sections: serde_json::Map<String, serde_json::Value> = self
+                .targets
+                .iter()
+                .map(|(t, s)| (t.clone(), serde_json::json!({ "steps": steps(s) })))
+                .collect();
+            v["targets"] = sections.into();
+        }
+        v
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct Script {
     /// What every agent plays, unless `targets` gives it its own.
@@ -359,6 +427,40 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn a_recording_plays_back_the_steps_it_holds() {
+        // #620: a recording is a script. A single-agent one loads through
+        // `from_json_with`, one agent's section of a multi-agent one through
+        // `from_json_for`, and either holds the same steps it was given.
+        let tools = ToolSet::every_builtin();
+        let steps = vec![
+            tools
+                .parse(r#"{"tool":"edit","path":"a.py","old":"1","new":"2"}"#)
+                .unwrap(),
+            Step::Done {
+                summary: "ok".into(),
+            },
+        ];
+        let one = Recording {
+            run_id: "r".into(),
+            steps: steps.clone(),
+            ..Default::default()
+        };
+        let m = ScriptedModel::from_json_with(&one.to_json().to_string(), &tools).unwrap();
+        assert_eq!(m.steps, steps);
+        let many = Recording {
+            targets: [("fa".to_string(), steps.clone())].into(),
+            ..Default::default()
+        };
+        let text = many.to_json().to_string();
+        let all = names(&["fa", "fb"]);
+        let m = ScriptedModel::from_json_for(&text, &tools, &all, &names(&["fa"])).unwrap();
+        assert_eq!(m.steps, steps);
+        // An agent the recording has no section for has nothing to play,
+        // and is refused at load rather than given another agent's steps.
+        assert!(ScriptedModel::from_json_for(&text, &tools, &all, &names(&["fb"])).is_err());
     }
 
     #[tokio::test]
