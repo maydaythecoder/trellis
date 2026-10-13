@@ -137,10 +137,18 @@ fn process_agents(root: &Path, cache: &trellis_loop::HashCache) -> Vec<trellis_l
 /// else the sentence a waiting task shows. For `work`, before it runs a
 /// process agent, and for the process runner itself, before it spawns.
 pub(crate) fn require_trusted(root: &Path) -> std::result::Result<(), String> {
+    require_trusted_as(root, root)
+}
+
+/// [`require_trusted`] for code at `root` held to the trust entry of
+/// `key`: a queued task's worktree, whose trusted code must fingerprint-
+/// match what was trusted for the worktree `work` started in (ADR 0053
+/// decision 3). A task worktree is not a repository to trust on its own.
+pub(crate) fn require_trusted_as(root: &Path, key: &Path) -> std::result::Result<(), String> {
     const WHY: &str = "not trusted: run trellis trust";
     let cfg = RepoConfig::load(root).map_err(|e| format!("{e:#}"))?;
     let fp = fingerprint(root, &cfg);
-    match TrustStore::user().and_then(|s| s.state(root, &fp)) {
+    match TrustStore::user().and_then(|s| s.state(key, &fp)) {
         Ok(TrustState::Trusted) => Ok(()),
         Ok(TrustState::Changed) => Err(format!("{WHY} (changed since it was trusted)")),
         Ok(TrustState::Unknown) => Err(WHY.to_string()),
@@ -155,7 +163,20 @@ pub(crate) fn require_trusted(root: &Path) -> std::result::Result<(), String> {
 /// A repository that declares nothing needing trust never reaches the store.
 /// One that does, and is not trusted, runs without it and says so; it is
 /// not refused, because the run it can do safely is still worth doing.
+#[cfg(test)]
 pub(crate) fn prepare(root: &Path, cfg: &RepoConfig, run_id: &str, model: &str) -> Result<Tooling> {
+    prepare_as(root, root, cfg, run_id, model)
+}
+
+/// [`prepare`], with trust looked up under `key` and fingerprinted at
+/// `root` (ADR 0053 decision 3; see [`require_trusted_as`]).
+pub(crate) fn prepare_as(
+    root: &Path,
+    key: &Path,
+    cfg: &RepoConfig,
+    run_id: &str,
+    model: &str,
+) -> Result<Tooling> {
     let hook_cfg = cfg.hook_config();
     hook_cfg.validate().map_err(|e| anyhow!(e))?;
     let fp = fingerprint(root, cfg);
@@ -163,7 +184,7 @@ pub(crate) fn prepare(root: &Path, cfg: &RepoConfig, run_id: &str, model: &str) 
     let trusted = if fp.is_empty() {
         false
     } else {
-        match TrustStore::user().and_then(|s| s.state(root, &fp)) {
+        match TrustStore::user().and_then(|s| s.state(key, &fp)) {
             Ok(TrustState::Trusted) => true,
             Ok(TrustState::Refused { reason }) => {
                 refused = Some(reason);

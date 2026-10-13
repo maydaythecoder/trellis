@@ -311,6 +311,12 @@ pub(crate) struct RunSeeding<'a> {
     /// actions: that each ran, never its output (ADR 0026 §12). Empty for
     /// every caller but `work`.
     pub(crate) services: &'a [trellis_trail::Action],
+    /// The repository whose trust entry this run is held to, when it is
+    /// not `root`: a queued task's run in its own worktree is looked up
+    /// under the worktree `work` started in, and its trusted code must
+    /// fingerprint-match that entry (ADR 0053 decision 3). `None` for every
+    /// caller but `work`.
+    pub(crate) trust_root: Option<&'a Path>,
 }
 
 /// Who answers an approval question in approve mode (ADR 0018).
@@ -632,6 +638,7 @@ fn run_body(
         model_source,
         queued,
         services,
+        trust_root,
     } = seeding;
     let cfg = config::RepoConfig::load(root)?;
 
@@ -673,7 +680,8 @@ fn run_body(
     // file this run writes.
     let stamp = trellis_trail::now();
     let run_id = format!("{}-{}", stamp.0, trellis_trail::slugify(task));
-    let mut tooling = tooling::prepare(root, &cfg, &run_id, model_spec)?;
+    let mut tooling =
+        tooling::prepare_as(root, trust_root.unwrap_or(root), &cfg, &run_id, model_spec)?;
     // Before the profile narrows the set, so a profile with a `tools` list
     // keeps the question only by naming it, as with any other tool.
     if queued {
