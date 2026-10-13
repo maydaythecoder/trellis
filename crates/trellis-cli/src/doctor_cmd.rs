@@ -870,6 +870,10 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
     for line in repo_lines(root, &repo_cfg) {
         println!("{line}");
     }
+    // Which binary confines the clone's command, or why none does (ADR
+    // 0055): a sandbox that is missing or fails is a warning, so this is
+    // where a person finds out before a run does.
+    println!("{}", trellis_loop::OsSandbox::detected().doctor_line());
     println!("root:       {}", root.display());
 
     if model_spec.is_none() {
