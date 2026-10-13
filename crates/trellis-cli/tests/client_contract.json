@@ -16,11 +16,29 @@
         },
         "verdict_values": ["None", "Some(true)", "Some(false)"]
       },
+      "model call": {
+        "always": ["turn"],
+        "absent_when": {
+          "prompt_bytes": "always: the driver builds the prompt inside next_step, so before the call its size is not yet measured (#614)"
+        },
+        "about": "sent before each model call, with the turn number the turn event it produces will carry; the governance audit's turn, which makes no call, has none"
+      },
       "run budget": {
         "always": ["max_iterations"]
       },
       "steer delivered": {
         "always": ["after_step"]
+      },
+      "runtime identified": {
+        "always": ["runtime", "served"],
+        "health_only": ["kv_slots", "tiers_vram", "tiers_ram", "tiers_disk"],
+        "absent_when": {
+          "kv_slots": "colibri's GET /health failed, was not colibri's shape, did not answer within the read timeout, or answered without kv_slots (a liveness-only answer)",
+          "tiers_vram": "as kv_slots, or /health answered without tiers",
+          "tiers_ram": "as tiers_vram",
+          "tiers_disk": "as tiers_vram"
+        },
+        "about": "sent once per run, before the run's first model request, for an endpoint identified as colibri (ADR 0047 decision 13; #627); never for any other endpoint. runtime is always \"colibri\"; served is the model id colibri listed, cut to 200 characters. kv_slots, tiers_vram, tiers_ram and tiers_disk are colibri's own counts and are absent, never 0, when it did not report them; the three tier counts are separate figures, and no total or share is derived from them. Not in the trail (ADR 0047 decision 13)."
       }
     },
     "framing": {
@@ -296,6 +314,7 @@
       "codebase_reason",
       "board.tasks[].id",
       "board.tasks[].state",
+      "board.tasks[].status",
       "board.tasks[].task",
       "board.pr_ci.available",
       "board.pr_ci.pull_requests[].number",

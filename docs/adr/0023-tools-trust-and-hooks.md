@@ -138,6 +138,21 @@ which read outside the repository on Windows before.
   `a_link_out_of_the_repository_is_neither_read_nor_written`, which failed
   with the fix's behaviour removed.
 
+  *Amended 2026-10-11 (#611): a path git ignores is not read or listed.*
+  `find` (`git ls-files --exclude-standard`), `grep` (`git grep
+  --untracked`) and the throwaway clone already left ignored files out, so
+  a git-ignored `.env` was invisible to four tools and readable by the
+  fifth. `read_file` now asks `git check-ignore` (through `trellis_vcs`,
+  without `--no-index`, so a tracked file is read whatever its name
+  matches) and refuses an ignored path with the reason; `ls` asks once for
+  the whole directory (`--stdin -z`) and leaves ignored entries out without
+  saying so, because a note would itself name which ignored files exist.
+  Both fail closed as `write_file`'s check does: a check that could not be
+  made refuses. Git's rule, not a name list: a tracked `.env` is already in
+  the history the model is shown. A narrowing of the rule above, so no new
+  ADR. Evidence: `read_file_refuses_an_ignored_*` and
+  `ls_leaves_ignored_entries_out_*`.
+
 Output from `grep`, `bash` and custom tools is capped at the tail (8 KiB,
 with a line saying how much was cut) before it becomes an observation;
 `find` and `ls` name at most 500 paths and say how many they left out. The adapter's own tail window then applies as it does to every

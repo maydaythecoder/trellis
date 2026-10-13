@@ -119,7 +119,9 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
-    /// Omit to enter an interactive session.
+    /// Omit to start as the Start lines above say: at a terminal, the
+    /// desktop window and the overview, or the terminal interface without a
+    /// desktop; on a pipe or redirect, the line-based session.
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -258,10 +260,11 @@ enum Command {
 
     /// Watch a run happen: actions, transcript, edits, checks, radius, budget.
     ///
-    /// The line-based session stays the default. This is the surface for
-    /// watching one run rather than issuing a sequence of commands, and it
-    /// renders the same `AppState` the standalone `tui_demo` binary does —
-    /// only the source of events differs.
+    /// `trellis --tui` opens it too, as bare `trellis` does at a terminal
+    /// with no desktop to open. This is the surface for watching one run
+    /// rather than issuing a sequence of commands, and it renders the same
+    /// `AppState` the standalone `tui_demo` binary does — only the source of
+    /// events differs.
     Tui {
         /// A task to start immediately. Omit it to open idle and type one.
         task: Option<String>,
@@ -393,16 +396,27 @@ enum Command {
         /// `<git-url|path>@<ref>`.
         #[arg(
             value_name = "SOURCE@REF",
-            required_unless_present_any = ["list", "remove"],
-            conflicts_with_all = ["list", "remove"]
+            required_unless_present_any = ["list", "remove", "upgrade"],
+            conflicts_with_all = ["list", "remove", "upgrade"]
         )]
         source: Option<String>,
-        /// Print each installed package's source, ref and commit.
-        #[arg(long, conflicts_with = "remove")]
+        /// Print each installed package's source, ref, commit and whether
+        /// its files still match the digest recorded at install.
+        #[arg(long, conflicts_with_all = ["remove", "upgrade"])]
         list: bool,
         /// Delete one installed package and its manifest entry.
-        #[arg(long, value_name = "NAME")]
+        #[arg(long, value_name = "NAME", conflicts_with = "upgrade")]
         remove: Option<String>,
+        /// Re-resolve one installed package's ref and install its current
+        /// commit over the old copy. Refused when the copy was edited since
+        /// it was installed (the paths are named); there is no flag to
+        /// overwrite them.
+        #[arg(long, value_name = "NAME")]
+        upgrade: Option<String>,
+        /// With a source: fetch and list what would be copied and what
+        /// skipped, and write nothing.
+        #[arg(long, requires = "source")]
+        dry_run: bool,
     },
 
     /// Agent profiles in .trellis/agents/: list, show, pause, resume
@@ -491,14 +505,6 @@ fn main() -> Result<()> {
             )
             .exit();
     }
-    // Accepted by the parser so the surface ADR 0050 records is the one
-    // people learn, and refused here until it is built: a flag that
-    // appeared to start something it cannot is worse than one that says so.
-    if cli.web {
-        anyhow::bail!(
-            "the web view is not built yet (ADR 0050, story S19); `trellis --tui` opens the terminal interface"
-        );
-    }
     let json = match &cli.log_json {
         Some(p) => {
             let f = std::fs::OpenOptions::new()
@@ -552,6 +558,9 @@ fn main() -> Result<()> {
         .with(
             tracing_subscriber::fmt::layer()
                 .with_target(false)
+                // After `set_json`, so it asks about the stream `human`
+                // actually writes to.
+                .with_ansi(output::human_colour())
                 .with_writer(output::human)
                 .with_filter(filter.clone()),
         )
@@ -579,9 +588,10 @@ fn main() -> Result<()> {
     // `overview` too: outside a repository it prints the recent list, and
     // reads nothing under the directory it fell back to (ADR 0050 §3).
     //
-    // `--dsk` too: outside a repository the desktop opens on its overview
-    // (ADR 0050 section 3), so there is nothing to refuse.
+    // `--dsk` and `--web` too: outside a repository the desktop opens on
+    // its overview (ADR 0050 section 3), so there is nothing to refuse.
     let needs_repo = !cli.dsk
+        && !cli.web
         && !matches!(
             cli.command,
             Some(
@@ -686,6 +696,12 @@ fn main() -> Result<()> {
     if cli.dsk {
         let found = explicit || root.join(".git").exists();
         return launch::launch_desktop(found.then_some(root.as_path()));
+    }
+    // ADR 0050 section 5: the same desktop, serving its page on 127.0.0.1
+    // and waited for, on the same root rule.
+    if cli.web {
+        let found = explicit || root.join(".git").exists();
+        return launch::launch_web(found.then_some(root.as_path()));
     }
 
     let Some(command) = cli.command else {
@@ -881,7 +897,9 @@ fn main() -> Result<()> {
             source,
             list,
             remove,
-        } => install::run(source, list, remove),
+            upgrade,
+            dry_run,
+        } => install::run(source, list, remove, upgrade, dry_run),
         Command::Rpc => rpc::serve(
             &root,
             std::io::stdin().lock(),

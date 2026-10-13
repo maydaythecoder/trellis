@@ -22,7 +22,13 @@ use trellis_model::ModelSpec;
 /// How long each runtime gets, connect to last byte. They are on loopback:
 /// one that has not answered in this long is not one to start a session on,
 /// and the person is waiting at a blank terminal for the list.
-pub(crate) const BOUND: Duration = Duration::from_millis(1500);
+///
+/// Longer than Windows takes to refuse. Its TCP stack answers a RST to a
+/// SYN by sending the SYN again (twice by default), so a port with nothing
+/// listening is reported refused only after about 2 s, where Linux says so
+/// at once. At 1.5 s a machine with no runtime started read "connection
+/// timed out" for every runtime instead of "nothing is listening" (#663).
+pub(crate) const BOUND: Duration = Duration::from_secs(3);
 
 /// The one thing every command says when it needs a model and has none
 /// (#376). `trellis run`, the line session bare `trellis` opens on a pipe,
@@ -130,16 +136,36 @@ pub(crate) fn probe(runtimes: &[Runtime], bound: Duration) -> Vec<Probed> {
     })
 }
 
-/// The specs to offer, in runtime order then the runtime's own order.
+/// One model the picker offers: the spec that reaches it, and the words
+/// the list shows beside it (#663). The spec is `vllm:` for every runtime,
+/// Ollama included, because that is the dialect each of them answers; an
+/// Ollama user reading it alone took it for the wrong runtime, so the list
+/// names the runtime and the model, and the spec under them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Offer {
+    pub(crate) spec: String,
+    pub(crate) model: String,
+    pub(crate) runtime: &'static str,
+    pub(crate) addr: SocketAddr,
+}
+
+impl Offer {
+    /// `qwen3:8b — Ollama at 127.0.0.1:11434`.
+    fn label(&self) -> String {
+        format!("{} — {} at {}", self.model, self.runtime, self.addr)
+    }
+}
+
+/// The models to offer, in runtime order then the runtime's own order.
 ///
-/// Pure: the probe's answers in, specs out. A body that is not the expected
+/// Pure: the probe's answers in, offers out. A body that is not the expected
 /// shape offers nothing from that runtime rather than failing the others.
 /// The ids come off the network and are printed to a terminal, so one that
 /// is empty, over-long, or carries a control character or whitespace is
 /// dropped, and every spec offered is one `ModelSpec` parses back to the
 /// same model.
-pub(crate) fn specs(probed: &[Probed]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+pub(crate) fn offers(probed: &[Probed]) -> Vec<Offer> {
+    let mut out: Vec<Offer> = Vec::new();
     for p in probed {
         let Ok(body) = &p.answer else { continue };
         for id in ids(p.runtime.api, body) {
@@ -148,12 +174,22 @@ pub(crate) fn specs(probed: &[Probed]) -> Vec<String> {
                 spec.parse::<ModelSpec>(),
                 Ok(ModelSpec::Runtime { model: Some(m), .. }) if m == id
             );
-            if reaches && !out.contains(&spec) {
-                out.push(spec);
+            if reaches && !out.iter().any(|o| o.spec == spec) {
+                out.push(Offer {
+                    spec,
+                    model: id,
+                    runtime: p.runtime.name,
+                    addr: p.runtime.addr,
+                });
             }
         }
     }
     out
+}
+
+/// The specs alone, as rpc's `list_models` answers them.
+pub(crate) fn specs(probed: &[Probed]) -> Vec<String> {
+    offers(probed).into_iter().map(|o| o.spec).collect()
 }
 
 fn ids(api: Api, body: &str) -> Vec<String> {
@@ -201,7 +237,7 @@ pub(crate) fn nothing_found(probed: &[Probed]) -> String {
 /// The numbered list on `out`, a number read from `input`. `q` or end of
 /// input is no choice, and so nothing written.
 pub(crate) fn pick(
-    specs: &[String],
+    offered: &[Offer],
     target: &Path,
     input: &mut dyn BufRead,
     out: &mut dyn Write,
@@ -210,8 +246,11 @@ pub(crate) fn pick(
         out,
         "No model is configured. These are running on this machine:"
     )?;
-    for (i, s) in specs.iter().enumerate() {
-        writeln!(out, "  {}. {s}", i + 1)?;
+    // The runtime and model in words, then the spec that is written: what
+    // is saved is still shown, so the file holds no surprise.
+    for (i, o) in offered.iter().enumerate() {
+        writeln!(out, "  {}. {}", i + 1, o.label())?;
+        writeln!(out, "     {}", o.spec)?;
     }
     writeln!(
         out,
@@ -230,8 +269,10 @@ pub(crate) fn pick(
             return Ok(None);
         }
         match t.parse::<usize>() {
-            Ok(n) if (1..=specs.len()).contains(&n) => return Ok(Some(specs[n - 1].clone())),
-            _ => writeln!(out, "That is not a number from 1 to {}.", specs.len())?,
+            Ok(n) if (1..=offered.len()).contains(&n) => {
+                return Ok(Some(offered[n - 1].spec.clone()));
+            }
+            _ => writeln!(out, "That is not a number from 1 to {}.", offered.len())?,
         }
     }
 }
@@ -245,8 +286,20 @@ pub(crate) fn choose(
     input: &mut dyn BufRead,
     out: &mut dyn Write,
 ) -> Result<Option<String>> {
+    // Said before the probe, not after it: the probe is up to `bound` of
+    // blank terminal otherwise, with nothing to say what it waits on (#650).
+    let places: Vec<String> = runtimes
+        .iter()
+        .map(|r| format!("{} ({})", r.addr, r.name))
+        .collect();
+    writeln!(
+        out,
+        "looking for models at {} (up to {:.1} s)",
+        places.join(", "),
+        bound.as_secs_f64()
+    )?;
     let probed = probe(runtimes, bound);
-    let offered = specs(&probed);
+    let offered = offers(&probed);
     if offered.is_empty() {
         anyhow::bail!(nothing_found(&probed));
     }
@@ -274,6 +327,28 @@ pub(crate) fn offer_model_choice() -> Result<Option<String>> {
     )
 }
 
+/// Ollama's `GET /api/ps` at `base`'s origin: what it has loaded and where
+/// each model sits, for doctor's placement line (#633). The same loopback
+/// GET as the `/api/tags` probe: a base that is not this machine is not
+/// asked, and a server that does not answer the path (llama.cpp, vLLM) is
+/// an `Err` the caller prints nothing for.
+pub(crate) fn ollama_ps(base: &str, bound: Duration) -> std::result::Result<String, String> {
+    let rest = base
+        .strip_prefix("http://")
+        .ok_or_else(|| format!("{base} is not plain http on this machine"))?;
+    let authority = rest.split('/').next().unwrap_or("");
+    let (host, port) =
+        trellis_model::split_authority(base, authority, 80).map_err(|e| e.to_string())?;
+    if !trellis_model::is_loopback(&host) {
+        return Err(format!("{host} is not this machine"));
+    }
+    // `localhost` is not an address; the listing probe uses 127.0.0.1 too.
+    let ip = host
+        .parse::<std::net::IpAddr>()
+        .unwrap_or(std::net::IpAddr::from([127, 0, 0, 1]));
+    get(SocketAddr::new(ip, port), "/api/ps", bound)
+}
+
 /// A plain HTTP GET, bounded end to end.
 ///
 /// No client in the tree does a GET: `trellis_model`'s transport is
@@ -282,7 +357,16 @@ pub(crate) fn offer_model_choice() -> Result<Option<String>> {
 /// chunked answer anyway is refused by name rather than parsed as JSON.
 fn get(addr: SocketAddr, path: &str, bound: Duration) -> std::result::Result<String, String> {
     let deadline = Instant::now() + bound;
-    let mut s = TcpStream::connect_timeout(&addr, bound).map_err(|e| e.to_string())?;
+    // A refused connection in words first (#663): "os error 111" told a new
+    // user nothing, where "nothing is listening" is the whole finding. The
+    // OS text follows, since it is what a bug report quotes.
+    let mut s = TcpStream::connect_timeout(&addr, bound).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::ConnectionRefused {
+            format!("nothing is listening at {addr} ({e})")
+        } else {
+            e.to_string()
+        }
+    })?;
     s.set_write_timeout(Some(bound))
         .map_err(|e| e.to_string())?;
     write!(
@@ -475,6 +559,29 @@ mod tests {
     }
 
     #[test]
+    fn wait_line_choose_says_where_it_looks_before_it_looks() {
+        // #650: the probe was up to 1.5 s of blank terminal before the list
+        // or the refusal. The first thing written names every address asked
+        // and the bound, even when nothing answers.
+        let dir = tempfile::tempdir().unwrap();
+        let addr = closed();
+        let mut shown = Vec::new();
+        let _ = choose(
+            &[ollama_at(addr)],
+            BOUND,
+            &dir.path().join("config.toml"),
+            &mut "q\n".as_bytes(),
+            &mut shown,
+        );
+        let shown = String::from_utf8(shown).unwrap();
+        assert_eq!(
+            shown.lines().next(),
+            Some(format!("looking for models at {addr} (Ollama) (up to 3.0 s)").as_str()),
+            "{shown}"
+        );
+    }
+
+    #[test]
     fn first_run_choosing_a_spec_writes_the_user_config_and_not_the_repository() {
         // The risk (ADR 0024 §3, ADR 0050 §2): where a model is is the
         // user's decision, so the choice must land in the user's own file
@@ -529,10 +636,78 @@ mod tests {
     }
 
     #[test]
+    fn picker_names_runtime_beside_each_model_and_still_writes_the_spec() {
+        // #663: the list showed "vllm:http://127.0.0.1:11434#qwen3:8b" alone,
+        // and an Ollama user took `vllm:` for the wrong runtime. The words
+        // name the runtime; what is written to config is the spec, unchanged.
+        let user = tempfile::tempdir().unwrap();
+        let file = user.path().join("config.toml");
+        let (addr, server) = serve(TWO_MODELS);
+        let mut shown = Vec::new();
+        let chosen = choose(
+            &[ollama_at(addr)],
+            BOUND,
+            &file,
+            &mut "2\n".as_bytes(),
+            &mut shown,
+        )
+        .unwrap();
+        server.join().unwrap();
+        let shown = String::from_utf8(shown).unwrap();
+        assert!(
+            shown.contains(&format!("  1. qwen3:8b — Ollama at {addr}\n")),
+            "{shown}"
+        );
+        assert!(
+            shown.contains(&format!("  2. qwen2.5:3b — Ollama at {addr}\n")),
+            "{shown}"
+        );
+        let want = format!("vllm:http://{addr}#qwen2.5:3b");
+        assert!(
+            shown.contains(&format!("     {want}\n")),
+            "the spec is still shown: {shown}"
+        );
+        assert_eq!(chosen.as_deref(), Some(want.as_str()));
+        let written = std::fs::read_to_string(&file).unwrap();
+        assert!(written.contains(&format!("\"{want}\"")), "{written}");
+        assert!(
+            !written.contains("Ollama at"),
+            "the words are the list's, not the file's: {written}"
+        );
+    }
+
+    #[test]
+    fn picker_names_runtime_refused_probe_says_nothing_is_listening_before_the_os_text() {
+        // #663: the desktop's model pane and the picker's refusal both showed
+        // "Connection refused (os error 111)" bare, three times, to someone
+        // who had not started a runtime. Probed with the product's BOUND, so
+        // on Windows, which reports the refusal only after retrying the SYN,
+        // this also fails if BOUND is too short to see it.
+        let addr = closed();
+        let probed = probe(&[ollama_at(addr)], BOUND);
+        let err = probed[0].answer.clone().unwrap_err();
+        assert!(
+            err.starts_with(&format!("nothing is listening at {addr} (")),
+            "{err}"
+        );
+        assert!(
+            err.len() > format!("nothing is listening at {addr} ()").len(),
+            "the OS text follows: {err}"
+        );
+        let msg = nothing_found(&probed);
+        assert!(msg.contains("nothing is listening at"), "{msg}");
+    }
+
+    #[test]
     fn first_run_quitting_writes_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("config.toml");
-        let specs = ["vllm:http://127.0.0.1:11434#a".to_string()];
+        let specs = [Offer {
+            spec: "vllm:http://127.0.0.1:11434#a".to_string(),
+            model: "a".to_string(),
+            runtime: "Ollama",
+            addr: SocketAddr::from(([127, 0, 0, 1], 11434)),
+        }];
         for input in ["q\n", ""] {
             let got = pick(&specs, &file, &mut input.as_bytes(), &mut Vec::new()).unwrap();
             assert_eq!(got, None, "{input:?}");
