@@ -1251,7 +1251,7 @@ fn ignore_task_worktrees(root: &Path) -> std::result::Result<(), String> {
             Some(0) => Ok(true),
             Some(1) => Ok(false),
             _ => Err(format!(
-                "git check-ignore failed: {}",
+                "could not ask whether .trellis/work/ is ignored (check-ignore): {}",
                 String::from_utf8_lossy(&out.stderr).trim()
             )),
         }
