@@ -78,7 +78,9 @@ pub(crate) enum Edges {
     All,
 }
 
-/// The codebase graph for `root` as data, for rpc's `get_codebase`.
+/// The codebase graph for `root` as data, for rpc's `get_codebase` at a
+/// commit, whose tree is copied out and never cached. The worktree's answer
+/// builds its index itself, since it saves it (`atlas::codebase`, #654).
 ///
 /// What `codebase_lines` draws for the same `limit`, field for field: the
 /// same modules, busiest first, and the same edges per module, with what was
