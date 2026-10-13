@@ -165,24 +165,18 @@ func (m *Model) key(k tea.KeyMsg) {
 	// The modal is answered first: while it is up, the keys underneath it
 	// are not the ones on screen.
 	if m.Modal != nil {
-		if k.Type == tea.KeyRunes && len(k.Runes) == 1 {
-			switch k.Runes[0] {
-			case 'y':
-				m.answer(true)
-			case 'n':
-				m.answer(false)
-			}
-		}
+		m.modalKey(k)
 		return
 	}
 	switch k.Type {
 	case tea.KeyEsc:
-		// Esc clears the line; on an empty line with no run in flight it
-		// leaves. Mid-run it does not: ^c is the way to stop a run.
+		// Esc clears the line; on an empty line it leaves as ^c does,
+		// stopping a run in flight first (#634): leaving mid-run used to
+		// be ^c's alone, and the ratatui TUI now stops on both.
 		if m.Input != "" {
 			m.Input = ""
-		} else if !m.Running {
-			m.quit()
+		} else {
+			m.ctrlC()
 		}
 	case tea.KeyEnter:
 		m.submit()
@@ -205,7 +199,8 @@ func (m *Model) key(k tea.KeyMsg) {
 // ctrlC aborts a run in flight first, so it rolls back through trellis,
 // then quits; the program ends when the child exits. An approval on screen
 // is closed unanswered: the run's abort answers its gate no, and nothing
-// here turns leaving into a yes.
+// here turns leaving into a yes. A question still on its way is not shown
+// either (approvalRequested): nobody is waiting for its answer.
 func (m *Model) ctrlC() {
 	if m.Quitting {
 		return
@@ -489,7 +484,7 @@ func (m *Model) View() string {
 		status = "last run: " + m.Outcome
 	}
 	if m.Modal != nil {
-		return view.Modal(m.Modal.Text, w, h)
+		return view.Modal(m.Modal.Question, m.Modal.Diff, m.Modal.Scroll, w, h)
 	}
 	input := "> " + Plain(m.Input)
 	if m.Running {
