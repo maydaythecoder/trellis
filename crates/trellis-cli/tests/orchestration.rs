@@ -153,9 +153,43 @@ fn task(d: &Path, state: &str, id: &str) -> serde_json::Value {
     serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
 }
 
+/// A run's trail. `work` runs each task in a worktree of its own and the
+/// run commits its trail on the task's branch (ADR 0053), so it is looked
+/// for there first, then in the worktree `work` started in.
 fn trail(d: &Path, run_id: &str) -> serde_json::Value {
-    let p = d.join(".trellis/runs").join(format!("{run_id}.json"));
-    serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
+    let rel = format!(".trellis/runs/{run_id}.json");
+    let refs = git(
+        d,
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads/trellis/task/",
+        ],
+    );
+    for r in refs.lines() {
+        let out = trellis_vcs::command()
+            .args(["show", &format!("{r}:{rel}")])
+            .current_dir(d)
+            .output()
+            .unwrap();
+        if out.status.success() {
+            return serde_json::from_slice(&out.stdout).unwrap();
+        }
+    }
+    serde_json::from_str(&std::fs::read_to_string(d.join(&rel)).unwrap()).unwrap()
+}
+
+/// The worktree `work` ran task `id` in (ADR 0053): where a converged
+/// change waits, uncommitted, for a person.
+fn task_wt(d: &Path, id: &str) -> PathBuf {
+    d.join(".trellis/work/task").join(id)
+}
+
+/// The one task in `state`.
+fn only(d: &Path, state: &str) -> String {
+    let v = ids(d, state);
+    assert_eq!(v.len(), 1, "{state}: {v:?}");
+    v[0].clone()
 }
 
 fn queued_id(out: &str) -> String {
@@ -432,7 +466,7 @@ fn process_agent_task_model_on_a_task_reassigned_to_one_runs_with_a_note() {
         s.contains("CONVERGED") && !s.contains("NOT CONVERGED"),
         "the process agent ran, not the task's model: {s}"
     );
-    assert!(d.join("app/made.cfg").exists(), "{s}");
+    assert!(task_wt(&d, &id).join("app/made.cfg").exists(), "{s}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -745,9 +779,10 @@ fn a_process_agent_converges_only_when_it_changed_something_and_the_checks_pass(
         "{s}"
     );
     assert!(
-        d.join("app/made.cfg").exists(),
-        "the change is left for review"
+        task_wt(&d, &id).join("app/made.cfg").exists(),
+        "the change is left for review in the task's worktree"
     );
+    assert_eq!(porcelain(&d), "", "and not where `work` started");
     let t = task(&d, "done", &id);
     let tr = trail(&d, t["outcome"]["run_id"].as_str().unwrap());
     assert_eq!(tr["factual"]["agent"], "maker");
@@ -802,14 +837,19 @@ fn allow_write_refuses_a_process_agent_s_write_outside_it_and_names_it() {
             Some(r) => {
                 assert!(s.contains("NOT CONVERGED"), "{name}:\n{s}");
                 assert!(s.contains(r), "{name}: the refusal is named:\n{s}");
-                assert!(!d.join("app/made.cfg").exists(), "{name}: rolled back");
+                let id = only(&d, "failed");
+                assert!(
+                    !task_wt(&d, &id).join("app/made.cfg").exists(),
+                    "{name}: rolled back"
+                );
             }
             None => {
                 assert!(
                     s.contains("CONVERGED (converged: both checks passed)"),
                     "{name}:\n{s}"
                 );
-                assert!(d.join("app/made.cfg").exists(), "{name}");
+                let id = only(&d, "done");
+                assert!(task_wt(&d, &id).join("app/made.cfg").exists(), "{name}");
             }
         }
         let _ = std::fs::remove_dir_all(&d);
@@ -840,6 +880,9 @@ fn a_process_agent_s_write_into_the_vault_is_refused_and_named() {
         "the refusal names the path and the setting:\n{s}"
     );
     assert!(!d.join("app/made.cfg").exists(), "rolled back:\n{s}");
+    // Removed without `--force`, which git refuses for a changed tree: the
+    // task worktree was restored.
+    assert!(!task_wt(&d, &only(&d, "failed")).exists(), "{s}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -862,7 +905,8 @@ fn a_process_agent_runs_in_trellis_s_own_process_group() {
         s.contains("CONVERGED") && !s.contains("NOT CONVERGED"),
         "{s}"
     );
-    let theirs = std::fs::read_to_string(d.join("app/pgid.txt")).unwrap();
+    let theirs =
+        std::fs::read_to_string(task_wt(&d, &only(&d, "done")).join("app/pgid.txt")).unwrap();
     let ours = Command::new("ps")
         .args(["-o", "pgid=", "-p", &std::process::id().to_string()])
         .output()
@@ -1312,6 +1356,7 @@ fn a_process_agent_whose_checks_fail_is_rolled_back_whatever_its_exit_code() {
         "{s}"
     );
     assert!(!d.join("app/made.cfg").exists(), "rolled back:\n{s}");
+    assert!(!task_wt(&d, &id).exists(), "restored, so removed:\n{s}");
     assert_eq!(ids(&d, "failed"), vec![id.clone()]);
     let t = task(&d, "failed", &id);
     assert!(
@@ -1465,11 +1510,14 @@ fn a_process_agent_that_writes_git_config_or_a_hook_has_it_restored() {
     // would roll back the worktree and leave both in place. By absolute
     // path: a relative write lands in the agent's clone (ADR 0032), and
     // this guard is for the command that finds the repository anyway.
+    // The task worktree's `.git` is a file; its config and hooks are the
+    // common git directory's, reached through its own git directory.
     for (name, target) in [
         ("proc-git-config", ".git/config"),
         ("proc-git-hook", ".git/hooks/pre-commit"),
     ] {
-        let cmd = format!(r#"["git", "config", "--file", "{{ROOT}}/{target}", "evil.x", "y"]"#);
+        let path = in_common_git_dir(target.trim_start_matches(".git/"));
+        let cmd = shell_argv(&format!("git config --file {path} evil.x y"));
         let d = process_fixture(name, &cmd, PASSES);
         let before = std::fs::read(d.join(".git/config")).unwrap();
         ok(&d, &["queue", "add", "touch git", "--assignee", "maker"]);
@@ -1503,17 +1551,31 @@ fn shell_argv(script: &str) -> String {
     }
 }
 
-/// `script`, run from the repository rather than from the agent's clone:
+/// `script`, run from the run's root rather than from the agent's clone:
 /// the command that finds the repository and writes there by absolute
 /// path, which the clone does not stop and the guards on the repository
-/// are kept for (ADR 0032, "Limits"). `{ROOT}` is the fixture's root,
-/// unquoted under `cmd`: Rust passes an inner `"` to it as `\"`, which
-/// `cmd` does not read, and the test's temporary directory has no space.
+/// are kept for (ADR 0032, "Limits"). The run's root is the task's own
+/// worktree (ADR 0053), found by `TRELLIS_TASK_ID`, so the command names
+/// no file that exists when it is trusted or when the task worktree's
+/// trust is checked (decision 3). `{ROOT}` is the fixture's root, unquoted
+/// under `cmd`: Rust passes an inner `"` to it as `\"`, which `cmd` does
+/// not read, and the test's temporary directory has no space.
 fn in_repo(script: &str) -> String {
     if cfg!(windows) {
-        format!("cd /d {{ROOT}} && {script}")
+        format!("cd /d {{ROOT}}/.trellis/work/task/%TRELLIS_TASK_ID% && {script}")
     } else {
-        format!(r#"cd "{{ROOT}}" && {script}"#)
+        format!(r#"cd "{{ROOT}}/.trellis/work/task/$TRELLIS_TASK_ID" && {script}"#)
+    }
+}
+
+/// A file under the repository's common git directory, by a path that
+/// goes through the task worktree's own git directory, so it names no file
+/// when trust is decided (see [`in_repo`]). For a command run by a shell.
+fn in_common_git_dir(rel: &str) -> String {
+    if cfg!(windows) {
+        format!("{{ROOT}}/.git/worktrees/%TRELLIS_TASK_ID%/../../{rel}")
+    } else {
+        format!("{{ROOT}}/.git/worktrees/$TRELLIS_TASK_ID/../../{rel}")
     }
 }
 
@@ -1549,16 +1611,24 @@ fn a_process_agent_that_commits_part_of_its_change_is_refused_and_the_commit_und
         s.contains(".trellis/sneak.txt"),
         "the committed path is judged too:\n{s}"
     );
-    assert_eq!(ids(&d, "failed"), vec![id], "{s}");
-    assert!(!d.join(".trellis/sneak.txt").exists(), "rolled back:\n{s}");
-    assert!(!d.join("app/made.txt").exists(), "rolled back:\n{s}");
-    assert_eq!(branch(&d), on, "{s}");
+    assert_eq!(ids(&d, "failed"), vec![id.clone()], "{s}");
+    // It ran in the task's worktree (ADR 0053), which the restored
+    // rollback removed; its branch keeps the trail.
+    assert!(!task_wt(&d, &id).exists(), "rolled back and removed:\n{s}");
+    let task_branch = format!("trellis/task/{id}");
     // The trail's commit sits on top of the snapshot, not of the agent's.
     assert_eq!(
-        git(&d, &["rev-parse", "HEAD~1"]).trim(),
+        git(&d, &["rev-parse", &format!("{task_branch}~1")]).trim(),
         head,
         "the agent's commit is gone:\n{s}"
     );
+    let tree = git(&d, &["ls-tree", "-r", "--name-only", &task_branch]);
+    assert!(
+        !tree.contains(".trellis/sneak.txt") && !tree.contains("app/made.txt"),
+        "{tree}"
+    );
+    assert_eq!(branch(&d), on, "{s}");
+    assert_eq!(git(&d, &["rev-parse", "HEAD"]).trim(), head, "{s}");
     assert_eq!(porcelain(&d), "", "{s}");
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -1577,15 +1647,24 @@ fn a_process_agent_that_switches_branch_is_refused_and_put_back_on_the_original(
     let d = process_fixture("proc-branch", &shell_argv(&in_repo(script)), PASSES);
     let head = git(&d, &["rev-parse", "HEAD"]).trim().to_string();
     let on = branch(&d);
-    ok(&d, &["queue", "add", "switch", "--assignee", "maker"]);
+    let id = queued_id(&ok(&d, &["queue", "add", "switch", "--assignee", "maker"]));
     let s = ok(&d, &["work"]);
     assert!(
         s.contains("NOT CONVERGED") && s.contains("moved HEAD"),
         "{s}"
     );
-    assert_eq!(branch(&d), on, "back on the original branch:\n{s}");
-    assert_eq!(git(&d, &["rev-parse", "HEAD~1"]).trim(), head, "{s}");
-    assert!(!d.join("app/made.txt").exists(), "{s}");
+    // Put back on the task's branch, where the trail's commit then landed
+    // on the snapshot, rather than on the agent's branch (ADR 0053: the run
+    // is the task worktree's, which the restored rollback removed).
+    let task_branch = format!("trellis/task/{id}");
+    assert_eq!(
+        git(&d, &["rev-parse", &format!("{task_branch}~1")]).trim(),
+        head,
+        "{s}"
+    );
+    assert!(!task_wt(&d, &id).exists(), "{s}");
+    assert_eq!(branch(&d), on, "{s}");
+    assert_eq!(git(&d, &["rev-parse", "HEAD"]).trim(), head, "{s}");
     assert_eq!(porcelain(&d), "", "{s}");
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -1609,7 +1688,10 @@ fn a_process_agent_that_writes_git_info_exclude_has_it_restored() {
     // and nothing in the worktree changes to say so.
     let d = process_fixture(
         "proc-git-exclude",
-        r#"["git", "config", "--file", "{ROOT}/.git/info/exclude", "evil.x", "y"]"#,
+        &shell_argv(&format!(
+            "git config --file {} evil.x y",
+            in_common_git_dir("info/exclude")
+        )),
         PASSES,
     );
     let before = std::fs::read(d.join(".git/info/exclude")).ok();
@@ -1620,7 +1702,9 @@ fn a_process_agent_that_writes_git_info_exclude_has_it_restored() {
     let s = ok(&d, &["work"]);
     assert!(s.contains("NOT CONVERGED"), "{s}");
     assert!(
-        s.contains("changed .git/info/exclude; put back"),
+        // Named by its full path: it is the common git directory's,
+        // outside the task worktree the run is rooted in (ADR 0053).
+        s.contains("/.git/info/exclude; put back"),
         "the report names it:\n{s}"
     );
     assert_eq!(
@@ -1631,9 +1715,10 @@ fn a_process_agent_that_writes_git_info_exclude_has_it_restored() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// [`MAKES_A_FILE`], written in the repository by absolute path.
-const MAKES_A_FILE_IN_REPO: &str =
-    r#"["git", "config", "--file", "{ROOT}/app/made.cfg", "a.b", "c"]"#;
+/// [`MAKES_A_FILE`], written in the run's root by absolute path.
+fn makes_a_file_in_repo() -> String {
+    shell_argv(&in_repo("git config --file app/made.cfg a.b c"))
+}
 
 const PASSING_CHECKS: &str =
     "[checks]\ntypecheck = [\"git\", \"--version\"]\ntests = [\"git\", \"--version\"]\n";
@@ -1645,11 +1730,16 @@ fn a_process_agent_s_ignored_writes_are_removed_on_rollback() {
     // what it wrote in place (`.venv/.../sitecustomize.py` runs in the next
     // check). What the command created is removed. By absolute path: in
     // the agent's clone an ignored file is never carried back at all.
-    let d = ignored_fixture("proc-ignored", MAKES_A_FILE_IN_REPO, PASSING_CHECKS);
+    // The run is in the task's worktree, which is then removed whatever
+    // ignored files it holds, so that the rollback itself removed it is
+    // held in place by `process_agent`'s
+    // `an_ignored_file_written_past_the_clone_is_removed_by_the_rollback`.
+    let d = ignored_fixture("proc-ignored", &makes_a_file_in_repo(), PASSING_CHECKS);
     ok(&d, &["queue", "add", "make a file", "--assignee", "maker"]);
     let s = ok(&d, &["work"]);
     assert!(s.contains("NOT CONVERGED"), "{s}");
     assert!(s.contains("app/made.cfg"), "the report names it:\n{s}");
+    assert!(!task_wt(&d, &only(&d, "failed")).exists(), "{s}");
     assert!(
         !d.join("app/made.cfg").exists(),
         "an ignored file the command created survived the rollback:\n{s}"
@@ -1657,60 +1747,11 @@ fn a_process_agent_s_ignored_writes_are_removed_on_rollback() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-#[test]
-fn a_process_agent_that_changed_a_pre_existing_ignored_file_is_reported_and_work_goes_on() {
-    // trellis keeps no copy of ignored files, so one the command changed
-    // cannot be put back, and it is named. It does not make the rollback
-    // "not restored": the tracked tree is restored, which is what ADR 0009
-    // promises, and an agent that runs the tests itself rewrites their
-    // caches on every run, so counting it stopped `work` with exit 2 on
-    // every failed run of such an agent (review round 9, finding 2).
-    let cmd = r#"["git", "config", "--file", "{ROOT}/app/old.cfg", "a.b", "c"]"#;
-    let d = ignored_fixture("proc-ignored-old", cmd, PASSING_CHECKS);
-    std::fs::write(d.join("app/old.cfg"), "[x]\n\ty = 1\n").unwrap();
-    ok(&d, &["trust"]);
-    ok(&d, &["queue", "add", "change it", "--assignee", "maker"]);
-    let o = trellis(&d, &["work"]);
-    let s = combined(&o);
-    assert!(s.contains("app/old.cfg"), "named:\n{s}");
-    assert!(!s.contains("NOT restored"), "{s}");
-    assert_eq!(o.status.code(), Some(0), "{s}");
-    let _ = std::fs::remove_dir_all(&d);
-}
-
-#[test]
-fn a_changed_or_deleted_ignored_file_the_rules_protect_leaves_the_tree_not_restored() {
-    // The stricter signal is kept where it means something: a pre-existing
-    // ignored file `deny_write` names that the command changed, or one it
-    // deleted, is not a restored tree, and `work` stops.
-    let deny = format!("{PASSING_CHECKS}[governance]\ndeny_write = [\"app/old.cfg\"]\n");
-    // By absolute path: the agent's clone holds no ignored file to change.
-    let rm = if cfg!(windows) {
-        r#"["cmd", "/C", "cd /d {ROOT} && del app\\gone.cfg"]"#
-    } else {
-        r#"["rm", "{ROOT}/app/gone.cfg"]"#
-    };
-    for (name, cmd, config) in [
-        (
-            "proc-ignored-old-denied",
-            r#"["git", "config", "--file", "{ROOT}/app/old.cfg", "a.b", "c"]"#,
-            deny.as_str(),
-        ),
-        ("proc-ignored-gone", rm, PASSING_CHECKS),
-    ] {
-        let d = ignored_fixture(name, cmd, config);
-        std::fs::write(d.join("app/old.cfg"), "[x]\n\ty = 1\n").unwrap();
-        std::fs::write(d.join("app/gone.cfg"), "[x]\n\ty = 1\n").unwrap();
-        ok(&d, &["trust"]);
-        ok(&d, &["queue", "add", "change it", "--assignee", "maker"]);
-        let o = trellis(&d, &["work"]);
-        let s = combined(&o);
-        assert!(s.contains("NOT put back"), "{name}:\n{s}");
-        assert!(s.contains("left the tree NOT restored"), "{name}:\n{s}");
-        assert_eq!(o.status.code(), Some(2), "{name}:\n{s}");
-        let _ = std::fs::remove_dir_all(&d);
-    }
-}
+// A pre-existing ignored file a process agent changes or deletes: a task's
+// worktree is a fresh checkout and holds none when its run starts (ADR
+// 0053), so `work` cannot stage it. Held in place, against
+// `process_agent::run`, by `a_changed_pre_existing_ignored_file_is_named_and_the_tree_counts_as_restored`
+// and `a_changed_or_deleted_ignored_file_the_rules_protect_is_not_a_restored_tree`.
 
 #[test]
 fn a_process_agent_s_ignored_write_under_trellis_or_a_denied_path_is_a_breach() {
@@ -1721,14 +1762,14 @@ fn a_process_agent_s_ignored_write_under_trellis_or_a_denied_path_is_a_breach() 
     // path: in the agent's clone an ignored write never comes back.
     let both = |a: &str| {
         if cfg!(windows) {
-            format!(
-                r#"['cmd', '/C', 'cd /d {{ROOT}} && git config --file {} a.b c && git config --file app\x.txt a.b c']"#,
+            shell_argv(&in_repo(&format!(
+                r"git config --file {} a.b c && git config --file app\x.txt a.b c",
                 a.replace('/', r"\")
-            )
+            )))
         } else {
-            format!(
-                r#"['sh', '-c', 'cd "{{ROOT}}" && git config --file {a} a.b c && git config --file app/x.txt a.b c']"#
-            )
+            shell_argv(&in_repo(&format!(
+                "git config --file {a} a.b c && git config --file app/x.txt a.b c"
+            )))
         }
     };
     let mut cases = vec![
@@ -1763,6 +1804,7 @@ fn a_process_agent_s_ignored_write_under_trellis_or_a_denied_path_is_a_breach() 
         );
         assert!(!d.join(target).exists(), "{name}: removed:\n{s}");
         assert!(!d.join("app/x.txt").exists(), "{name}: rolled back:\n{s}");
+        assert!(!task_wt(&d, &only(&d, "failed")).exists(), "{name}:\n{s}");
         let _ = std::fs::remove_dir_all(&d);
     }
 }
@@ -1785,8 +1827,14 @@ fn isolated_agent_writes_to_trellis_and_git_in_the_clone_never_reach_the_reposit
     let d = process_fixture(
         "iso-agent-judge",
         &per_os(
-            r"git config --file .git/config evil.x y && echo planted> .git\planted && echo x> .git\hooks\pre-commit && echo [hooks]> .trellis\config.toml && echo x> .trellis\new.txt && echo y> app\made.txt",
-            "git config --file .git/config evil.x y && echo planted > .git/planted && echo x > .git/hooks/pre-commit && echo [hooks] > .trellis/config.toml && echo x > .trellis/new.txt && echo y > app/made.txt",
+            // `.git/../.git/config`, not `.git/config`: a token naming a
+            // file in the repository is hashed into trust, and the task
+            // worktree's `.git` is a file, so `.git/config` exists when
+            // `trellis trust` runs here and not in the task worktree
+            // whose trust is checked (ADR 0053 decision 3). A path with
+            // `..` in it is never hashed. In the clone it is the same file.
+            r"git config --file .git\..\.git\config evil.x y && echo planted> .git\planted && echo x> .git\hooks\pre-commit && echo [hooks]> .trellis\config.toml && echo x> .trellis\new.txt && echo y> app\made.txt",
+            "git config --file .git/../.git/config evil.x y && echo planted > .git/planted && echo x > .git/hooks/pre-commit && echo [hooks] > .trellis/config.toml && echo x > .trellis/new.txt && echo y > app/made.txt",
         ),
         PASSES,
     );
@@ -1819,6 +1867,7 @@ fn isolated_agent_writes_to_trellis_and_git_in_the_clone_never_reach_the_reposit
     );
     assert!(!d.join(".trellis/new.txt").exists());
     assert!(!d.join("app/made.txt").exists(), "rolled back:\n{s}");
+    assert!(!task_wt(&d, &only(&d, "failed")).exists(), "restored:\n{s}");
     assert_eq!(porcelain(&d), "", "{s}");
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -1868,15 +1917,18 @@ fn isolated_agent_edit_new_file_and_deletion_are_carried_back() {
         s.contains("clone:    deleted from the clone: app/old.py"),
         "{s}"
     );
+    // Carried back into the run's root, the task's worktree (ADR 0053).
+    let wt = task_wt(&d, &id);
     assert!(
-        std::fs::read_to_string(d.join("app/core.py"))
+        std::fs::read_to_string(wt.join("app/core.py"))
             .unwrap()
             .contains("x = 1")
     );
-    assert!(d.join("app/new.py").exists());
-    assert!(!d.join("app/old.py").exists());
+    assert!(wt.join("app/new.py").exists());
+    assert!(!wt.join("app/old.py").exists());
+    assert_eq!(porcelain(&d), "", "not where `work` started");
     // It ran in the clone, not here.
-    let at = std::fs::read_to_string(d.join("app/where.txt")).unwrap();
+    let at = std::fs::read_to_string(wt.join("app/where.txt")).unwrap();
     assert!(at.contains("trellis-clone-"), "{at}");
     // Left for review, and the trail names all three.
     let t = task(&d, "done", &id);
@@ -1897,9 +1949,11 @@ fn isolated_agent_edit_new_file_and_deletion_are_carried_back() {
 fn isolated_agent_carried_back_change_is_undone_by_rollback() {
     // The point of carrying back only what `git reset --hard` and `git
     // clean -fd` restore (ADR 0009): a run whose check fails leaves the
-    // tree as it was, the new file and the deletion included.
+    // tree as it was, the new file and the deletion included. The tree is
+    // the task's worktree (ADR 0053), and its removal without `--force`,
+    // which git refuses for a changed tree, is what shows it restored.
     let d = edit_create_delete("iso-agent-rollback", r#"["git", "no-such-subcommand"]"#);
-    ok(&d, &["queue", "add", "change", "--assignee", "maker"]);
+    let id = queued_id(&ok(&d, &["queue", "add", "change", "--assignee", "maker"]));
     let s = ok(&d, &["work"]);
     assert!(
         s.contains("NOT CONVERGED (not converged: a check failed)"),
@@ -1914,6 +1968,8 @@ fn isolated_agent_carried_back_change_is_undone_by_rollback() {
         std::fs::read_to_string(d.join("app/old.py")).unwrap(),
         "z = 3\n"
     );
+    assert!(!task_wt(&d, &id).exists(), "{s}");
+    assert!(!s.contains("could not be removed"), "{s}");
     assert_eq!(porcelain(&d), "", "{s}");
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -1953,6 +2009,7 @@ fn isolated_agent_cannot_unignore_a_file_by_editing_gitignore_in_its_clone() {
         std::fs::read_to_string(d.join(".gitignore")).unwrap(),
         "*.cfg\n"
     );
+    assert!(!task_wt(&d, &only(&d, "failed")).exists(), "restored:\n{s}");
     assert_eq!(porcelain(&d), "", "{s}");
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -1972,17 +2029,20 @@ fn isolated_agent_that_commits_in_its_clone_leaves_head_alone_and_its_change_com
         PASSES,
     );
     let head = git(&d, &["rev-parse", "HEAD"]).trim().to_string();
-    ok(&d, &["queue", "add", "commit", "--assignee", "maker"]);
+    let id = queued_id(&ok(&d, &["queue", "add", "commit", "--assignee", "maker"]));
     let s = ok(&d, &["work"]);
     assert!(
         s.contains("CONVERGED (converged: both checks passed)"),
         "{s}"
     );
     assert!(!s.contains("moved HEAD"), "{s}");
-    assert!(d.join("app/made.txt").exists(), "{s}");
+    let wt = task_wt(&d, &id);
+    assert!(wt.join("app/made.txt").exists(), "{s}");
     // The trail's commit sits on the snapshot; the agent's never left the clone.
-    assert_eq!(git(&d, &["rev-parse", "HEAD~1"]).trim(), head, "{s}");
-    assert_eq!(porcelain(&d).trim(), "?? app/made.txt", "{s}");
+    assert_eq!(git(&wt, &["rev-parse", "HEAD~1"]).trim(), head, "{s}");
+    assert_eq!(porcelain(&wt).trim(), "?? app/made.txt", "{s}");
+    assert_eq!(git(&d, &["rev-parse", "HEAD"]).trim(), head, "{s}");
+    assert_eq!(porcelain(&d), "", "{s}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -2149,9 +2209,11 @@ fn a_claim_records_where_it_was_made_under_release_and_only_there() {
     // none, so a dead holder's claim is never released. The process agent
     // prints its own claim file, found by `TRELLIS_TASK_ID`, while it
     // holds the claim.
+    // From the worktree `work` started in, whose git directory holds the
+    // queue; the task's own worktree has none (ADR 0053 decision 5).
     let cmd = per_os(
-        &in_repo(r"type .git\trellis\queue\claimed\%TRELLIS_TASK_ID%.json"),
-        &in_repo("cat .git/trellis/queue/claimed/$TRELLIS_TASK_ID.json"),
+        r"cd /d {ROOT} && type .git\trellis\queue\claimed\%TRELLIS_TASK_ID%.json",
+        r#"cd "{ROOT}" && cat .git/trellis/queue/claimed/$TRELLIS_TASK_ID.json"#,
     );
     let d = process_fixture("claimant", &cmd, PASSES);
     ok(
