@@ -26,7 +26,9 @@
 //
 // Opening another repository is the core's `open_repository`, which refuses
 // a path with no `.git` entry and refuses while a run is in flight; its
-// error text is shown as it came.
+// error text is shown as it came. The control sits in the overview beside
+// Recent repositories, not under the model pane, which folds after the
+// first choice (#645).
 //
 // Every spec, name, licence and error is trellis- or configuration-supplied
 // text, so it reaches the DOM through textContent only (ADR 0007, S10).

@@ -126,6 +126,11 @@ const COMMANDS: &[(&str, &str)] = &[
          read-only: {note}",
     ),
     (
+        "vault_check",
+        "the report line, issues, warnings and run-gate answer `trellis vault check` \
+         prints, as data, read-only; `--fix` has no rpc form, and a `fix` field is refused",
+    ),
+    (
         "classify",
         "whether {text} is a question or a task, by the rule the TUI routes on; starts no \
          run: {intent}, and {answer} when it is a question",
@@ -1048,6 +1053,33 @@ impl Server {
         }));
     }
 
+    /// `vault_check`: what `trellis vault check` prints, from the same
+    /// report, as data; nothing is written. `--fix` is a vault write, and
+    /// every vault write stays a `trellis vault` command (#70), so a `fix`
+    /// field is refused by name rather than ignored: a client that sent it
+    /// would otherwise read the unrepaired report as the repaired one. The
+    /// CLI's path exits the process on a refusing gate and is not reused.
+    /// Answered from another thread, as `vault_search` is.
+    fn vault_check(&mut self, cmd: &Value, id: Option<&str>) {
+        if cmd.get("fix").is_some() {
+            self.respond(
+                id,
+                "vault_check",
+                Err(
+                    "`fix` is not an rpc field: rpc reads the vault and never repairs it; \
+                     `trellis vault check --fix` does (#70)"
+                        .into(),
+                ),
+            );
+            return;
+        }
+        let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
+        self.waiters.push(std::thread::spawn(move || {
+            let result = crate::vault_cmd::check_json(&root).map_err(|e| format!("{e:#}"));
+            respond_on(&sink, id.as_deref(), "vault_check", result);
+        }));
+    }
+
     /// `steer` and `follow_up`: refused with no run in flight; otherwise
     /// sent on the run's steering channel, never the approval channel.
     ///
@@ -1337,6 +1369,7 @@ impl Server {
             "list_paths" => self.list_paths(cmd, id),
             "vault_search" => self.vault_search(cmd, id),
             "vault_graph" => self.vault_graph(cmd, id),
+            "vault_check" => self.vault_check(cmd, id),
             "classify" => {
                 if let Err(e) = self.classify(cmd, id) {
                     self.respond(id, kind, Err(e));

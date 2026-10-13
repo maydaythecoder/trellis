@@ -40,7 +40,7 @@ cargo install --locked --path desktop
 ## Opening a repository
 
 ```
-trellis-desktop [--root <repo>] [--trellis <path>]
+trellis-desktop [--root <repo>] [--trellis <path>] [--web]
 ```
 
 - `--root <repo>` opens that repository. Without it, the window opens the
@@ -53,6 +53,15 @@ trellis-desktop [--root <repo>] [--trellis <path>]
 - Another repository is opened from the window's "Open another repository"
   control, which refuses a path with no `.git` entry and refuses while a
   run is in flight.
+- `--web` opens no window: it serves the same page, and the same four
+  commands and events, over HTTP on 127.0.0.1 and a free port, behind a
+  token drawn per launch (ADR 0050 §5; `src/web.rs`). It prints the URL
+  once on stdout as `{"url": ...}` and stops when its stdin ends. `trellis
+  --web` is how it is meant to be started: that reads the URL, opens it in
+  the browser, and closes the stdin on Ctrl-C, so the rpc child is sent
+  `quit` and finishes rolling back a run in flight. A request without the
+  token, or with a Host header other than `127.0.0.1:<port>` or
+  `localhost:<port>`, is refused with 403 before anything else is read.
 
 After launch the window asks which model to use, with your own configured
 spec preselected (or, with none, the repository's), and keeps prompt input
