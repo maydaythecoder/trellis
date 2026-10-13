@@ -1848,6 +1848,7 @@ mod tests {
         let v = rec.wait_for("codebase", |_| true);
         assert_eq!(v.get("error"), None, "{v}");
         assert_eq!(v["modules_indexed"], 2, "{v}");
+        assert_eq!(v["index_saved"], true, "{v}");
         let regions = v["overview"]["regions"].as_array().unwrap();
         assert_eq!(regions.len(), 1, "{v}");
         assert_eq!(regions[0]["package"], "app");
@@ -1882,9 +1883,12 @@ mod tests {
         assert!(err.contains("no .git entry"), "{err}");
         assert!(is_empty(&plain), "nothing was written to the directory");
         finish(&core).unwrap();
+        // The one write a read-only view causes (#654, ADR 0048 section 10
+        // amended 2026-10-12): the index trellis drew, saved where the
+        // overview reads it.
         assert!(
-            !repo.join(".trellis").exists(),
-            "get_codebase wrote under the repository"
+            repo.join(".trellis/index.bin").is_file(),
+            "get_codebase did not save the index"
         );
         for d in [&repo, &plain, &config] {
             let _ = std::fs::remove_dir_all(d);
