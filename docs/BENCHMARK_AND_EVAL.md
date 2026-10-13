@@ -1178,6 +1178,22 @@ Method:
 The five runs in §5.2 (four configurations), and the per-call audit in §5.4,
 rest on logs with no client-set run, so nothing in §5.2 through §5.8 changes.
 
+**Re-testing the harness from here on is a replay, not a live re-run**
+(#620, ADR 0056). Every run since then writes
+`.trellis/replays/<run_id>.json`, each step its model gave. A harness change
+whose effect on a past run is the question (a client fix like 4f612eb, a
+check or rollback change) is re-tested by checking out the recording's
+`base_commit` and running
+`trellis run --model scripted:.trellis/replays/<id>.json "<task>"` (with the
+same `--target`s for a multi-agent run): real edits, checks and rollback over
+the recorded decisions, with no tokens and no sampling variance. What a
+replay cannot test is a change that would have changed the model's
+decisions, since it replays them rather than asking again; a model whose
+replies a client bug cut short has no recorded step past that reply, so
+those runs still need a live re-run. A replay is a re-test of the harness,
+never a model floor (S7). No floor run here has a recording yet: the runs
+above predate it.
+
 ### Exit criteria for v0.1
 
 A measured recall figure — **done**, §2. A stated threshold with reasoning —
