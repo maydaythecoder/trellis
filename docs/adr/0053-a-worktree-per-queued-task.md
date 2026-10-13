@@ -1,8 +1,8 @@
 # ADR 0053 — Amends ADR 0020 §5: `work` runs each queued task in a worktree of its own
 
 **Status:** Accepted (owner-directed) when the owner approves #624's pull
-request (G7: the ticket is `risk:high`). Not built: the build is #709 and
-#710, named at the end.
+request (G7: the ticket is `risk:high`). Built: `trellis_vcs::TaskWorktree`
+(#709) and `work` (#710), named at the end.
 **Date:** 2026-10-12
 **Decided by:** ADR 0021 row 59–63, as amended on 2026-10-06 (#332),
 Accepted (owner-directed) as the session's choice under the owner's
@@ -138,7 +138,7 @@ What exists to build on:
 - An unattended `work` runs a whole queue instead of stopping at its first
   success, and each converged change waits in its own worktree. ADR 0020's
   Consequences line "A long unattended session stops at its first converged
-  change" no longer holds once this is built.
+  change" no longer holds.
 - Kept worktrees and the branches of failed tasks accumulate under
   `.trellis/work/task/` and `trellis/task/`. trellis does not prune them;
   each costs a checkout's disk space. A pruning command is not decided here.

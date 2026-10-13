@@ -1938,6 +1938,7 @@ impl Chain {
                 model_source: crate::hosted::SpecSource::Repository,
                 queued: false,
                 services: &[],
+                trust_root: None,
             },
             RunControl {
                 flag: self.flag,
