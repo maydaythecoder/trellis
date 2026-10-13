@@ -211,6 +211,13 @@ pub struct Codebase {
     pub region_edges: Vec<(usize, usize)>,
     /// One per region, in region order.
     pub packages: Vec<Package>,
+    /// Whether trellis saved this index to `.trellis/index.bin` (#654), as
+    /// the answer said; `None` when it did not say. The overview's codebase
+    /// pane reads only that cache, so a saved answer is what lets it show
+    /// the same counts as this view.
+    pub index_saved: Option<bool>,
+    /// trellis's reason the index was not saved, as it gave it.
+    pub index_not_saved: Option<String>,
 }
 
 /// The view for a `get_codebase` answer's `data`.
@@ -286,6 +293,11 @@ pub fn layout(data: &Value) -> Codebase {
         regions,
         region_edges,
         packages,
+        index_saved: data.get("index_saved").and_then(Value::as_bool),
+        index_not_saved: data
+            .get("index_not_saved")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     }
 }
 
@@ -500,6 +512,8 @@ impl Codebase {
                 "edges": region_edges,
             },
             "packages": packages,
+            "index_saved": self.index_saved,
+            "index_not_saved": self.index_not_saved,
         })
     }
 }
@@ -778,6 +792,66 @@ mod tests {
         let c = layout(&answer(three(), 5));
         assert_eq!(c.regions[0].modules, 2);
         assert_eq!(c.to_json()["modules_not_drawn"], 5);
+    }
+
+    #[test]
+    fn overview_indexed_whether_the_index_was_saved_reaches_the_page_as_trellis_said() {
+        // #654. The risk: the page told an index was saved when trellis
+        // did not say so, so it reads the overview again expecting counts
+        // and finds "not indexed"; or a refusal to save dropped, so the
+        // user is not told why the overview still says it. Not said is
+        // null, never false.
+        let mods = vec![module("app.a", &[], 0, 0)];
+        let mut saved = answer(mods.clone(), 0);
+        saved["index_saved"] = json!(true);
+        saved["index_bytes"] = json!(812);
+        let v = layout(&saved).to_json();
+        assert_eq!(v["index_saved"], true, "{v}");
+        assert_eq!(v["index_not_saved"], Value::Null, "{v}");
+
+        let mut unsaved = answer(mods.clone(), 0);
+        unsaved["index_saved"] = json!(false);
+        unsaved["index_not_saved"] = json!(".trellis/index.bin not written: denied");
+        let v = layout(&unsaved).to_json();
+        assert_eq!(v["index_saved"], false, "{v}");
+        assert_eq!(
+            v["index_not_saved"], ".trellis/index.bin not written: denied",
+            "{v}"
+        );
+
+        let v = layout(&answer(mods, 0)).to_json();
+        assert_eq!(v["index_saved"], Value::Null, "an older trellis: {v}");
+        let mut odd = answer(vec![], 0);
+        odd["index_saved"] = json!("yes");
+        assert_eq!(layout(&odd).to_json()["index_saved"], Value::Null);
+    }
+
+    #[test]
+    fn overview_indexed_the_page_rereads_the_overview_after_a_saved_answer() {
+        // #654. The risk: trellis saves the index, but the overview pane
+        // was drawn before and is not read again until a run ends, so it
+        // keeps saying "not indexed; run trellis index" beside the graph.
+        // No JavaScript runs under cargo test, so this holds main.js's
+        // `codebase` listener to rereading the overview only for an answer
+        // that says it saved; a node smoke script with a fake DOM ran it
+        // (see the commit).
+        let js = ui_file("main.js");
+        let listener = js
+            .split(r#"listen("codebase""#)
+            .nth(1)
+            .and_then(|r| r.split("});").next())
+            .expect("main.js listens for codebase");
+        assert!(listener.contains("index_saved === true"), "{listener}");
+        assert!(listener.contains("readOverview(tauri)"), "{listener}");
+        let status = ui_file("codebase.js");
+        let summary = status
+            .split("function summary(d)")
+            .nth(1)
+            .and_then(|r| r.split("\n}").next())
+            .expect("codebase.js has summary");
+        for want in ["d.index_saved === true", "d.index_not_saved"] {
+            assert!(summary.contains(want), "summary does not read {want}");
+        }
     }
 
     #[test]

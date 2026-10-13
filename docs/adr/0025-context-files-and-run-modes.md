@@ -432,6 +432,16 @@ on stderr.
     does not exist and the fixture's worktree is clean; it is answered while
     an approve-mode run waits on its question, before that run's `run_end`;
     and its modules and counts equal what `trellis index --graph` prints.
+  - *Amended 2026-10-12 (#654), owner-directed (the owner's decision of
+    2026-10-12):* the worktree's index is saved to `.trellis/index.bin`
+    after it is built, through `index_cmd::save_index`, the writer `trellis
+    index` uses, so the overview reads what this answer drew (ADR 0048
+    §10, ADR 0050 §3, both amended 2026-10-12). `data` gains
+    `index_saved`, with `index_bytes` when true and `index_not_saved` (why)
+    when false; a `ref` answer is never saved, and a failed save does not
+    fail the answer. Nothing else is written. Evidence: the same test now
+    asserts the blob exists, its size is `index_bytes` and the worktree is
+    clean; and the `overview_indexed_` tests in `tests/cli.rs`.
 - *Added 2026-10-05 (#293), owner-directed: the session's choice under the owner's 2026-10-04 delegation (ADR 0048 §10).*
   **`get_radius {symbol}`** answers with the blast radius `trellis radius
   <symbol>` prints, as data, so an rpc client never parses human output (ADR

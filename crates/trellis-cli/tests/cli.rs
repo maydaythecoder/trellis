@@ -5032,6 +5032,176 @@ fn overview_reads_a_current_index_and_calls_a_changed_tree_stale() {
     let _ = std::fs::remove_dir_all(&user);
 }
 
+/// `get_codebase`'s answer in `d`, asked through rpc with `extra` merged
+/// into the command.
+fn get_codebase_in(d: &Path, extra: serde_json::Value) -> serde_json::Value {
+    let mut cmd = serde_json::json!({"id": "g", "type": "get_codebase"});
+    for (k, v) in extra.as_object().unwrap() {
+        cmd[k] = v.clone();
+    }
+    rpc_answer(&rpc_records(d, None, &[cmd]), "g").clone()
+}
+
+#[test]
+fn overview_indexed_by_get_codebase_shows_the_saved_index_not_run_trellis_index() {
+    // #654. The risk: the desktop's Codebase section draws the graph and
+    // the overview beside it says "not indexed; run trellis index" for the
+    // same root, two answers to one question in one window. The owner's
+    // decision of 2026-10-12: `get_codebase` saves `.trellis/index.bin`,
+    // and the overview, which still never indexes, reads it. The save must
+    // not dirty the worktree, or the next run refuses to start (ADR 0009).
+    let d = repo("overview-indexed");
+    let user = scratch("overview-indexed-user");
+    let args = ["--json", "overview"];
+    let before = overview_json(&overview_in(
+        "overview-indexed",
+        &d,
+        &user,
+        Gh::Absent,
+        &args,
+    ));
+    assert_eq!(
+        before["codebase_reason"], "not indexed; run trellis index",
+        "{before}"
+    );
+
+    let r = get_codebase_in(&d, serde_json::json!({}));
+    assert_eq!(r["success"], true, "{r}");
+    let data = &r["data"];
+    assert_eq!(data["index_saved"], true, "{data}");
+    assert!(data.get("index_not_saved").is_none(), "{data}");
+    let saved = std::fs::metadata(d.join(".trellis/index.bin"))
+        .expect("get_codebase saved the index")
+        .len();
+    assert_eq!(data["index_bytes"], saved, "{data}");
+    assert_eq!(porcelain_unlocked(&d), "", "the save dirtied the worktree");
+
+    let v = overview_json(&overview_in(
+        "overview-indexed",
+        &d,
+        &user,
+        Gh::Absent,
+        &args,
+    ));
+    assert!(v.get("codebase_reason").is_none_or(|r| r.is_null()), "{v}");
+    assert_eq!(
+        v["codebase"]["modules_indexed"], data["modules_indexed"],
+        "the overview reads the index get_codebase drew: {v}"
+    );
+    assert_eq!(
+        v["codebase"]["bound_call_sites"], data["bound_call_sites"],
+        "{v}"
+    );
+    let s = stdout(&overview_in(
+        "overview-indexed",
+        &d,
+        &user,
+        Gh::Absent,
+        &["overview"],
+    ));
+    assert!(!s.contains("run trellis index"), "{s}");
+    assert!(s.contains("module(s) indexed"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&user);
+}
+
+#[test]
+fn overview_indexed_by_get_codebase_replaces_a_stale_cache_with_a_current_one() {
+    // #654. The risk: a save that keeps the old blob, or writes one keyed
+    // to the wrong fingerprint, so the overview still calls the index
+    // stale after the desktop has drawn the tree as it now stands.
+    let d = repo("overview-indexed-stale");
+    let user = scratch("overview-indexed-stale-user");
+    let o = run(&d, &["index"]);
+    assert!(o.status.success(), "{}", combined(&o));
+    std::fs::write(
+        d.join("app/extra.py"),
+        "from app.core import greet
+
+def again(who):
+    return greet(who)
+",
+    )
+    .unwrap();
+    let args = ["--json", "overview"];
+    let v = overview_json(&overview_in(
+        "overview-indexed-stale",
+        &d,
+        &user,
+        Gh::Absent,
+        &args,
+    ));
+    assert_eq!(
+        v["codebase_reason"], "index is stale; run trellis index",
+        "{v}"
+    );
+
+    let r = get_codebase_in(&d, serde_json::json!({}));
+    assert_eq!(r["data"]["index_saved"], true, "{r}");
+    let v = overview_json(&overview_in(
+        "overview-indexed-stale",
+        &d,
+        &user,
+        Gh::Absent,
+        &args,
+    ));
+    assert!(v.get("codebase_reason").is_none_or(|r| r.is_null()), "{v}");
+    assert_eq!(
+        v["codebase"]["modules_indexed"], r["data"]["modules_indexed"],
+        "{v}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&user);
+}
+
+#[test]
+fn overview_indexed_is_never_a_commit_s_graph_saved_as_the_worktree_s() {
+    // #654. The risk: `get_codebase` at a `ref` (the Atlas's snapshot)
+    // saving that commit's index as `.trellis/index.bin`. Its fingerprint
+    // would not match the worktree, so nothing would show it, but a commit
+    // whose `.py` files equal the worktree's would be read as the current
+    // index of a tree it was never built from; and the answer must say
+    // nothing was saved rather than leave the client to guess.
+    let d = repo("overview-indexed-ref");
+    let r = get_codebase_in(&d, serde_json::json!({"ref": "HEAD"}));
+    assert_eq!(r["success"], true, "{r}");
+    assert_eq!(r["data"]["index_saved"], false, "{r}");
+    assert!(r["data"].get("index_bytes").is_none(), "{r}");
+    let why = r["data"]["index_not_saved"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{r}"));
+    assert!(why.contains(".trellis/index.bin"), "{why}");
+    assert!(
+        !d.join(".trellis").exists(),
+        "a ref's answer wrote under .trellis"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn overview_indexed_get_codebase_still_answers_its_graph_when_the_save_fails() {
+    // #654. The risk: a cache that cannot be written (here `.trellis` is a
+    // file, so its directory cannot be made) failing the graph the user
+    // asked for, or being reported as saved. The cache is derived state:
+    // the answer stands, and says why nothing was saved.
+    let d = repo("overview-indexed-unsaved");
+    std::fs::write(d.join(".trellis"), "not a directory\n").unwrap();
+    let r = get_codebase_in(&d, serde_json::json!({}));
+    assert_eq!(r["success"], true, "{r}");
+    assert!(module_in(&r["data"], "app.core").is_some(), "{r}");
+    assert_eq!(r["data"]["index_saved"], false, "{r}");
+    let why = r["data"]["index_not_saved"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{r}"));
+    assert!(why.starts_with(".trellis/index.bin not written: "), "{why}");
+    assert_eq!(
+        std::fs::read_to_string(d.join(".trellis")).unwrap(),
+        "not a directory\n",
+        "the file in the way was left as it was"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 #[test]
 fn overview_shows_a_listed_repository_s_last_outcome_and_the_current_last_run() {
     // The recent list carries each repository's last outcome (ADR 0021
@@ -6181,13 +6351,20 @@ fn rpc_atlas_get_codebase_ref_answers_the_codebase_at_that_commit_and_writes_not
         &[
             serde_json::json!({"id": "r", "type": "get_codebase", "limit": 1000, "ref": "v1"}),
             serde_json::json!({"id": "c", "type": "get_codebase", "limit": 1000, "ref": v1}),
-            serde_json::json!({"id": "h", "type": "get_codebase", "limit": 1000}),
         ],
     );
     assert_eq!(bytes_under(&d), before, "the repository changed");
     assert_eq!(porcelain_unlocked(&d), "");
     let left: Vec<_> = std::fs::read_dir(&tmp).unwrap().collect();
     assert!(left.is_empty(), "left in the temporary directory: {left:?}");
+    // The worktree's answer, asked for after the check above: it saves
+    // `.trellis/index.bin` (#654), which a commit's never does.
+    let mut records = records;
+    records.extend(rpc_records(
+        &d,
+        None,
+        &[serde_json::json!({"id": "h", "type": "get_codebase", "limit": 1000})],
+    ));
 
     let r = rpc_answer(&records, "r");
     assert_eq!(r["success"], true, "{r}");
@@ -6891,8 +7068,12 @@ fn rpc_atlas_contract_lists_every_field_the_atlas_commands_answer() {
     let c = client_contract();
     let responses = &c["rpc"]["responses"];
     for (id, command, lists) in [
-        ("g", "get_codebase", &["always"][..]),
-        ("r", "get_codebase", &["always", "ref_only"][..]),
+        ("g", "get_codebase", &["always", "saved_only"][..]),
+        (
+            "r",
+            "get_codebase",
+            &["always", "ref_only", "not_saved_only"][..],
+        ),
         ("s", "get_symbols", &["always"][..]),
         ("x", "get_radius", &["always"][..]),
         ("h", "get_history", &["always", "head_only"][..]),
