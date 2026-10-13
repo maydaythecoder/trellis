@@ -194,7 +194,11 @@ func (m *Model) key(k tea.KeyMsg) {
 	case tea.KeySpace:
 		m.Input += " "
 	case tea.KeyRunes:
-		m.Input += string(k.Runes)
+		if k.Paste {
+			m.Input += pasted(k.Runes)
+		} else {
+			m.Input += string(k.Runes)
+		}
 	}
 }
 
@@ -213,6 +217,18 @@ func (m *Model) ctrlC() {
 		m.pushLine("· stopping: the run rolls back before trellis exits")
 	}
 	m.quit()
+}
+
+// pasted is a bracketed paste as input text (#639). Bubble Tea delivers a
+// paste as one key carrying every rune, its line breaks among them; each
+// break, CR, LF or CRLF, becomes one space, so a paste never submits
+// anything (a break is not an Enter) and a multi-line task is one line
+// until Enter sends it. Any other control character is dropped, as Plain
+// drops it from served text.
+func pasted(r []rune) string {
+	s := strings.ReplaceAll(string(r), "\r\n", " ")
+	s = strings.NewReplacer("\r", " ", "\n", " ").Replace(s)
+	return Plain(s)
 }
 
 // submit hands the typed line to trellis: a task when no run is in
