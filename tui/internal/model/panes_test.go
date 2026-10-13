@@ -66,18 +66,36 @@ func TestPanesOnlyAnAppliedWriteIsAPendingEdit(t *testing.T) {
 	}
 }
 
-// Answering an approval marks the pending edits: y applies, n rejects.
-func TestPanesAnApprovalAnswerMarksThePendingEdits(t *testing.T) {
+// #635: an approval answer is about the next call, not the edits already
+// shown. The loop reports an edit once it has written it and asks before
+// the next call, so a.py is in the tree whatever the answer: marking it
+// rejected on n told an approve-mode user a written file was not there to
+// review. The row keeps the mark it was reported with, on y and on n, and
+// the decline is said in the transcript.
+func TestPanesAnApprovalAnswerKeepsTheEditsAsReported(t *testing.T) {
 	for _, c := range []struct {
 		key  rune
-		want view.EditStatus
-	}{{'y', view.Applied}, {'n', view.Rejected}} {
+		yes  bool
+		said string
+	}{{'y', true, "approved"}, {'n', false, "declined"}} {
 		m := running(t)
 		feed(m, turn(1, "edit a.py", map[string]any{"observation": "applied: true"}))
-		feed(m, approval("a1", "keep a.py", ""))
+		feed(m, approval("a1", "edit a.py (+1 -1)", "apply the edit?"))
 		key(m, c.key)
-		if m.Edits[0].Status != c.want {
-			t.Fatalf("%c: %+v", c.key, m.Edits[0])
+		if len(m.Edits) != 1 || m.Edits[0] != (view.Edit{Path: "a.py", Status: view.Proposed}) {
+			t.Fatalf("%c: %+v", c.key, m.Edits)
+		}
+		out := m.TakeOutbox()
+		if len(out) != 1 || out[0].Cmd["yes"] != c.yes {
+			t.Fatalf("%c sent %v", c.key, kinds(out))
+		}
+		m.Update(windowSize(100, 30))
+		v := m.View()
+		if !strings.Contains(v, "~ a.py") || strings.Contains(v, "- a.py") || strings.Contains(v, "+ a.py") {
+			t.Fatalf("%c: the edits row was relabelled:\n%s", c.key, v)
+		}
+		if !strings.Contains(v, "· edit a.py (+1 -1) "+c.said) {
+			t.Fatalf("%c: the answer is not in the transcript:\n%s", c.key, v)
 		}
 	}
 }
@@ -115,7 +133,7 @@ func TestPanesBudgetCarriesTheCeilingTheTurnsFiguresAndElapsed(t *testing.T) {
 	}
 	m.Update(windowSize(140, 30))
 	v := m.View()
-	if !strings.Contains(v, "iteration 2/40  ·  8400 B prompt  ·  18s elapsed  ·  30 tok, 2.0 tok/s  ·  queued 10.0 s") {
+	if !strings.Contains(v, "iteration 2/40  ·  8400 B prompt  ·  0:18 elapsed  ·  30 tok, 2.0 tok/s  ·  queued 10.0 s") {
 		t.Fatalf("%s", v)
 	}
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))

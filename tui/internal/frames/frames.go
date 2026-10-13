@@ -44,6 +44,12 @@ const (
 	// "no progress; stopping": the explanation for a run about to end, shown
 	// as text (tui_bridge.rs does the same).
 	Warning
+	// ModelCall is the loop's "model call" event, sent before each call to
+	// the model with the turn number the turn it produces will carry
+	// (#614).
+	ModelCall
+	// RuntimeIdentified is colibri's self-report, once per run (#627).
+	RuntimeIdentified
 )
 
 // Frame is one typed line. Only the fields of its Kind are set.
@@ -59,6 +65,9 @@ type Frame struct {
 	RunEndFields   *RunEndFields
 	ResponseFields *ResponseFields
 	Approval       *ApprovalFields
+	// ModelCallTurn is the turn a ModelCall names.
+	ModelCallTurn *uint64
+	Runtime       *RuntimeFields
 }
 
 // TurnFields is a turn event. Turn and Call are what make an event a turn,
@@ -81,6 +90,21 @@ type TurnFields struct {
 	ModelMs          *uint64
 	CompletionTokens *uint64
 	QueueWaitMs      *uint64
+}
+
+// RuntimeFields is the "runtime identified" event (client_contract.json).
+// Served is what makes it name a runtime, so an event that lacks it is
+// Ignored. Each count is colibri's own and nil when it did not report one
+// (a liveness-only or failed /health): never a 0 standing in for it. The
+// three tier counts stay three; nothing here adds them or takes a share,
+// as desktop/src/frames.rs keeps them.
+type RuntimeFields struct {
+	Runtime   *string
+	Served    string
+	KVSlots   *uint64
+	TiersVRAM *uint64
+	TiersRAM  *uint64
+	TiersDisk *uint64
 }
 
 type RunStartFields struct {
@@ -194,6 +218,26 @@ func Parse(l rpc.Line) Frame {
 			ModelMs:          u(f, "model_ms"),
 			CompletionTokens: u(f, "completion_tokens"),
 			QueueWaitMs:      u(f, "queue_wait_ms"),
+		}}
+	case msg != nil && *msg == "model call":
+		// Without its turn it names nothing.
+		turn := u(f, "turn")
+		if turn == nil {
+			return Frame{Kind: Ignored}
+		}
+		return Frame{Kind: ModelCall, ModelCallTurn: turn}
+	case msg != nil && *msg == "runtime identified":
+		served := s(f, "served")
+		if served == nil {
+			return Frame{Kind: Ignored}
+		}
+		return Frame{Kind: RuntimeIdentified, Runtime: &RuntimeFields{
+			Runtime:   s(f, "runtime"),
+			Served:    *served,
+			KVSlots:   u(f, "kv_slots"),
+			TiersVRAM: u(f, "tiers_vram"),
+			TiersRAM:  u(f, "tiers_ram"),
+			TiersDisk: u(f, "tiers_disk"),
 		}}
 	case msg != nil && *msg == "run budget":
 		return Frame{Kind: RunBudget, MaxIterations: u(f, "max_iterations")}

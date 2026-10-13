@@ -2,6 +2,7 @@ package model
 
 import (
 	"strings"
+	"time"
 
 	"github.com/maydaythecoder/trellis/tui/internal/frames"
 	"github.com/maydaythecoder/trellis/tui/internal/view"
@@ -13,13 +14,16 @@ import (
 // comes only from a verdict trellis sent (ADR 0004).
 
 // clearPanes empties the run panes for a new run. They are kept after a run
-// ends, so what it did stays on screen until the next one starts.
+// ends, so what it did stays on screen until the next one starts. The last
+// run's restored goes with them: a run starts from a clean tree, and the
+// last run's ending is not this one's (#636).
 func (m *Model) clearPanes() {
 	m.Actions = nil
 	m.Edits = nil
 	m.Checks = nil
 	m.Radius = nil
 	m.Budget = view.Budget{}
+	m.restored = nil
 	m.runStart = m.now()
 }
 
@@ -83,16 +87,17 @@ func (m *Model) runBudget(max *uint64) {
 	m.Budget = view.Budget{MaxIterations: max}
 }
 
-// markEdits records the answer to an approval on the edits it covered.
-func (m *Model) markEdits(yes bool) {
-	for i := range m.Edits {
-		if m.Edits[i].Status == view.Proposed {
-			if yes {
-				m.Edits[i].Status = view.Applied
-			} else {
-				m.Edits[i].Status = view.Rejected
-			}
-		}
+// tick keeps the budget's elapsed time current between turns (#641): the
+// screen moved only when a turn arrived, and a long model call read as a
+// hang. The figure is measured from the run's start; a tick with no run in
+// flight changes nothing, so a run that has ended keeps the time it took.
+func (m *Model) tick() {
+	if !m.Running || m.runStart.IsZero() {
+		return
+	}
+	if d := m.now().Sub(m.runStart); d >= time.Second {
+		secs := uint64(d / time.Second)
+		m.Budget.ElapsedSecs = &secs
 	}
 }
 
@@ -113,5 +118,6 @@ func (m *Model) viewState() view.State {
 		Radius:     m.Radius,
 		Budget:     m.Budget,
 		Stderr:     m.Stderr,
+		Restored:   m.restored,
 	}
 }
