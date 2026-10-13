@@ -255,6 +255,26 @@ commit's tree is read through `trellis_vcs` into a temporary directory
 outside the repository and removed; nothing the repository holds is
 written. No `--json` is added to `index`, `radius` or any other command,
 and section 2's spawns are unchanged.
+*Amended 2026-10-12 (#654), owner-directed (the owner's decision of
+2026-10-12, on #654):* after `get_codebase` indexes the worktree, it saves
+that index to `.trellis/index.bin`, so the overview's codebase pane, which
+reads only a current cache (ADR 0050 section 3), describes the graph the
+Codebase section just drew instead of saying "not indexed; run trellis
+index". This is the one write a read-only view causes, and it is not a new
+writer: it goes through `index_cmd::save_index`, the function `trellis
+index` saves through, onto `trellis_index::cache::save`, after the same
+refusal of a root with no `.git` entry; the self-ignoring
+`.trellis/.gitignore` that writer makes keeps the worktree clean (ADR
+0009), and the trust digest already leaves the blob out (ADR 0023, amended
+2026-09-27). A `get_codebase` with `ref` saves nothing, since the cache
+describes the worktree. The answer says which as `index_saved`, with
+`index_bytes` when saved and `index_not_saved` (why) when not; a failed
+save does not fail the answer. `get_radius`, `get_symbols`, `get_history`,
+`get_queue`, `vault_search` and `vault_graph` still write nothing, and the
+vault and the queue are still written only through `prompt`. The desktop
+reads the overview again when the Codebase section's answer says it saved;
+the Atlas's worktree answers save too, and the overview shows them at its
+next read. Built 2026-10-12 (#654).
 
 ## Alternatives rejected
 

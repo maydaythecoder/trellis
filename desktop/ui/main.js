@@ -73,7 +73,8 @@ function overviewActions(tauri) {
 
 // Reads the overview for the open repository and draws it. Each read runs
 // trellis once, and `gh` within it, so it is asked for only when what it
-// shows has changed: a child started, or a run ended.
+// shows has changed: a child started, a run ended, or a Codebase answer
+// saved the index (#654).
 async function readOverview(tauri) {
   try {
     drawOverview(document, await tauri.core.invoke("get_overview"), overviewActions(tauri));
@@ -135,6 +136,14 @@ async function main() {
   await tauri.event.listen("rpc-frame", (event) => {
     const f = event.payload;
     if (f !== null && typeof f === "object" && f.type === "run_end") askSessionTokens(tauri);
+  });
+  // A Codebase answer that saved .trellis/index.bin (#654) changes what the
+  // overview's codebase pane reads, which is only that cache, so the
+  // overview is read again; otherwise it would keep saying "not indexed"
+  // beside the graph until the next run ended.
+  await tauri.event.listen("codebase", (event) => {
+    const c = event.payload;
+    if (c !== null && typeof c === "object" && c.index_saved === true) readOverview(tauri);
   });
   await tauri.event.listen("no-child", (event) => {
     show("status", String(event.payload));

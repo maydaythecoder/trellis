@@ -101,10 +101,14 @@
           "modules[].ambiguous",
           "modules[].unresolved",
           "commit",
-          "date"
+          "date",
+          "index_saved"
         ],
         "ref_only": ["ref"],
         "head_unreadable_only": ["head_error"],
+        "saved_only": ["index_bytes"],
+        "not_saved_only": ["index_not_saved"],
+        "index_saved": "true when the worktree's index was saved to .trellis/index.bin (#654, the owner's decision of 2026-10-12), through the writer trellis index uses; index_bytes is then the bytes written. false with index_not_saved (why) when a ref was asked for, since a commit's graph is never saved as the worktree's cache, or when the write failed; a failed save never fails the answer.",
         "null_when": {
           "commit": "no ref was asked for, and the repository has no commit yet or git could not read HEAD; the worktree's graph is answered either way",
           "date": "as commit"
