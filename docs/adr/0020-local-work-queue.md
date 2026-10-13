@@ -7,8 +7,8 @@ claim, decided by the owner on 2026-09-28.
 §5 amended again on 2026-10-06 for #352: a task is blocked after its
 third stale-claim release instead of being released again.
 §1 and §5 amended on 2026-10-12 by ADR 0053 (#624): `work` runs each
-task in a worktree of its own and continues past a converged one, once
-built.
+task in a worktree of its own and continues past a converged one (built:
+#709, #710).
 **Date:** 2026-09-27
 **Reference design:** Paperclip (`paperclipai/paperclip`, MIT). Five of its
 ideas are borrowed as designs, and no Paperclip code or server is used:
@@ -171,12 +171,11 @@ task file to `done/` or `failed/` with the run id and exit reason appended.
 - `--max-tasks` bounds how many tasks one invocation runs. The per-run budget
   (ADR 0008) bounds each run. Nothing multiplies.
 
-*Amended 2026-10-12 by ADR 0053 (#624), not yet built:* each claimed task
-runs in its own linked worktree on `trellis/task/<id>`, a converged task's
-worktree is kept with its change for a person, and `work` continues to the
-next task instead of stopping. Until the build lands, the rule above holds.
-ADR 0053 decision 4 replaces the outcome table below; `--max-tasks` keeps
-its meaning.
+*Amended 2026-10-12 by ADR 0053 (#624), built in #709 and #710:* each
+claimed task runs in its own linked worktree on `trellis/task/<id>`, a
+converged task's worktree is kept with its change for a person, and `work`
+continues to the next task instead of stopping. ADR 0053 decision 4
+replaces the outcome table below; `--max-tasks` keeps its meaning.
 
 *Settled in implementation. This ADR left these open:*
 
@@ -401,4 +400,5 @@ telemetry path holds. This covers what pi's `--mode json` offers.
 - Three new subcommands grow the CLI beyond brief §4.12. That was owner-directed
   and is recorded here, following the precedent of `session`, `log` and `why`.
 - A long unattended session stops at its first converged change. That
-  behaviour is intended. *Amended 2026-10-12:* until ADR 0053 is built.
+  behaviour is intended. *Amended 2026-10-12:* no longer, since ADR 0053
+  is built (#709, #710).

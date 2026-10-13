@@ -356,8 +356,9 @@ enum Command {
 
     /// Run queued tasks one at a time, oldest first, through `trellis run`.
     ///
-    /// Stops at the first converged change, which waits for review; never
-    /// claims a task while the worktree is dirty.
+    /// Each task runs in a worktree of its own on `trellis/task/<id>`, where
+    /// a converged change waits for review (ADR 0053); never claims a task
+    /// while the worktree is dirty.
     Work(work::WorkArgs),
 
     /// Check, search, inspect and edit an Apex-format note vault (ADR 0022).
@@ -807,6 +808,7 @@ fn main() -> Result<()> {
                     // `trellis run` has no task for a question to wait on.
                     queued: false,
                     services: &[],
+                    trust_root: None,
                 },
                 RunControl {
                     flag,

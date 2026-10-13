@@ -185,55 +185,226 @@ fn a_prompt_that_does_not_exist_is_refused_when_queued_not_hours_later() {
 }
 
 #[test]
-fn a_converged_run_stops_work_and_the_task_records_the_trail_it_wrote() {
+fn task_worktree_two_converging_tasks_each_leave_their_change_in_a_kept_worktree() {
+    // ADR 0053: one `work` runs both tasks, each converged change waits
+    // uncommitted in its own worktree on `trellis/task/<id>`, and the
+    // worktree `work` started in keeps its tree and HEAD. Before, `work`
+    // stopped at the first converged change (ADR 0020 §5).
     let d = fixture("converged");
     add(&d, &["change the greeting"]);
     add(&d, &["a second task"]);
+    let head = git(&d, &["rev-parse", "HEAD"]);
     let o = trellis(&d, &["work", "--model", &model(&d, "converge.json")]);
     let s = combined(&o);
-    assert!(
-        o.status.success(),
-        "a stop that is the design is exit 0:\n{s}"
-    );
-    assert!(s.contains("CONVERGED"), "{s}");
-    assert!(
-        s.contains(
-            "converged change awaits review; accept or revert it, then run `trellis work` again"
-        ),
-        "{s}"
-    );
+    assert!(o.status.success(), "{s}");
+    assert_eq!(s.matches("CONVERGED").count(), 2, "{s}");
+    assert!(s.contains("queue empty"), "went on past the first:\n{s}");
 
     let done = ids(&d, "done");
-    assert_eq!(done.len(), 1, "{s}");
-    assert_eq!(ids(&d, "pending").len(), 1, "the second task waits");
-    assert!(ids(&d, "claimed").is_empty());
+    assert_eq!(done.len(), 2, "{s}");
+    assert!(ids(&d, "pending").is_empty() && ids(&d, "claimed").is_empty());
+    for id in &done {
+        let t = task_json(&d, "done", id);
+        let branch = format!("trellis/task/{id}");
+        assert_eq!(t["outcome"]["branch"], branch.as_str(), "{t}");
+        let wt = PathBuf::from(t["outcome"]["worktree"].as_str().expect("recorded"));
+        assert_eq!(
+            std::fs::canonicalize(&wt).unwrap(),
+            std::fs::canonicalize(d.join(".trellis/work/task").join(id)).unwrap()
+        );
+        assert_eq!(
+            git(&wt, &["branch", "--show-current"]).trim(),
+            branch.as_str()
+        );
+        // The trail is committed on the task branch, as a run commits it
+        // wherever it runs; the change is not.
+        assert_eq!(
+            git(&wt, &["rev-parse", "HEAD^"]),
+            head,
+            "one commit on the base"
+        );
+        let run_id = t["outcome"]["run_id"].as_str().expect("a trail");
+        assert_eq!(
+            git(&wt, &["show", "--name-only", "--format=", "HEAD"]).trim(),
+            format!(".trellis/runs/{run_id}.json"),
+            "only the trail is committed"
+        );
+        assert_eq!(
+            porcelain(&wt).trim(),
+            "M app/core.py",
+            "the change waits there, uncommitted"
+        );
+        assert_eq!(t["attempts"], 1);
+    }
 
-    let t = task_json(&d, "done", &done[0]);
-    let run_id = t["outcome"]["run_id"]
-        .as_str()
-        .expect("a converged run wrote a trail");
+    // The starting worktree: tree and HEAD as they were.
+    assert_eq!(porcelain(&d), "");
+    assert_eq!(git(&d, &["rev-parse", "HEAD"]), head);
     assert!(
-        d.join(".trellis/runs")
-            .join(format!("{run_id}.json"))
-            .exists(),
-        "the recorded run id names the trail on disk"
+        std::fs::read_to_string(d.join("app/core.py"))
+            .unwrap()
+            .contains("hello")
     );
-    assert_eq!(t["attempts"], 1);
-    assert!(t["outcome"]["exit"].as_str().unwrap().contains("converged"));
 
-    // The change is left for the human, uncommitted.
-    assert!(porcelain(&d).contains("app/core.py"));
-    // And the next `work` refuses rather than claiming the second task.
+    // `queue list` says where each change is.
+    let l = combined(&trellis(&d, &["queue", "list"]));
+    for id in &done {
+        assert!(l.contains(&format!("on trellis/task/{id}")), "{l}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn task_worktree_of_a_rolled_back_task_is_removed_and_its_branch_keeps_the_trail() {
+    // ADR 0053 decision 4: the trail `record_trail` commits on the task
+    // branch is the record of what the run did (ADR 0007); deleting the
+    // branch with the worktree would delete it.
+    let d = fixture("rolled-back-branch");
+    add(&d, &["one"]);
+    let head = git(&d, &["rev-parse", "HEAD"]);
+    let o = trellis(&d, &["work", "--model", &model(&d, "stop.json")]);
+    let s = combined(&o);
+    assert!(o.status.success(), "{s}");
+    let id = &ids(&d, "failed")[0];
+    let t = task_json(&d, "failed", id);
+    assert!(t["outcome"]["worktree"].is_null(), "removed: {t}");
+    let branch = format!("trellis/task/{id}");
+    assert_eq!(t["outcome"]["branch"], branch.as_str(), "{t}");
+    assert!(!d.join(".trellis/work/task").join(id).exists());
+    let run_id = t["outcome"]["run_id"].as_str().unwrap();
+    git(
+        &d,
+        &[
+            "cat-file",
+            "-e",
+            &format!("{branch}:.trellis/runs/{run_id}.json"),
+        ],
+    );
+    assert_eq!(
+        git(&d, &["rev-parse", &format!("{branch}^")]),
+        head,
+        "one trail commit on the base"
+    );
+    assert_eq!(porcelain(&d), "");
+    assert_eq!(git(&d, &["rev-parse", "HEAD"]), head);
+
+    // Requeued, it is refused until a person clears the branch (decision
+    // 2), and put back untouched.
+    assert!(trellis(&d, &["queue", "requeue", id]).status.success());
+    let before = std::fs::read(queue_dir(&d, "pending").join(format!("{id}.json"))).unwrap();
+    let o = trellis(&d, &["work", "--model", &model(&d, "stop.json")]);
+    let s = combined(&o);
+    assert_eq!(o.status.code(), Some(1), "{s}");
+    assert!(s.contains(&format!("git branch -D {branch}")), "{s}");
+    assert_eq!(
+        std::fs::read(queue_dir(&d, "pending").join(format!("{id}.json"))).unwrap(),
+        before
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Runs `work` once against a task that `setup` arranges to be refused, and
+/// checks the refusal of ADR 0053 decision 2: exit 1, the reason printed,
+/// the task back in `pending/` byte for byte, nothing run, and nothing
+/// left in `claimed/`.
+fn refused_untouched(name: &str, setup: impl FnOnce(&Path, &str), why: &str) -> (PathBuf, String) {
+    let d = fixture(name);
+    add(&d, &["one"]);
+    let id = ids(&d, "pending")[0].clone();
+    setup(&d, &id);
+    let id = ids(&d, "pending")[0].clone();
+    let before = std::fs::read(queue_dir(&d, "pending").join(format!("{id}.json"))).unwrap();
     let o = trellis(&d, &["work", "--model", &model(&d, "converge.json")]);
     let s = combined(&o);
     assert_eq!(o.status.code(), Some(1), "{s}");
-    assert!(s.contains("not claiming a task"), "{s}");
+    assert!(s.contains(why), "{s}");
+    assert!(s.contains("attempts unchanged"), "{s}");
+    assert!(!s.contains("snapshot at"), "no run started:\n{s}");
     assert_eq!(
-        ids(&d, "pending").len(),
-        1,
-        "never claim a task that cannot start"
+        std::fs::read(queue_dir(&d, "pending").join(format!("{id}.json"))).unwrap(),
+        before,
+        "put back byte for byte"
     );
     assert!(ids(&d, "claimed").is_empty());
+    assert!(ids(&d, "failed").is_empty() && ids(&d, "done").is_empty());
+    assert_eq!(porcelain(&d), "");
+    (d, id)
+}
+
+#[test]
+fn task_worktree_over_an_existing_branch_is_refused_and_the_task_put_back() {
+    // The branch may hold an earlier attempt's trail or a converged change.
+    let (d, _) = refused_untouched(
+        "refuse-branch",
+        |d, id| {
+            git(d, &["branch", &format!("trellis/task/{id}")]);
+        },
+        "already exists",
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn task_worktree_over_an_existing_directory_is_refused_and_the_task_put_back() {
+    // A directory a person left there, or one a removal did not finish.
+    let (d, _) = refused_untouched(
+        "refuse-dir",
+        |d, id| {
+            let p = d.join(".trellis/work/task").join(id);
+            std::fs::create_dir_all(&p).unwrap();
+            std::fs::write(p.join("notes.txt"), "mine\n").unwrap();
+            std::fs::write(d.join(".trellis/.gitignore"), ".gitignore\nwork/\n").unwrap();
+        },
+        "already exists",
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn task_worktree_for_an_id_that_is_not_a_branch_name_is_refused_and_the_task_put_back() {
+    // `queue add` never makes such an id; a file placed by hand might, and
+    // `..` in it would climb out of `.trellis/work/task/`.
+    let (d, _) = refused_untouched(
+        "refuse-id",
+        |d, id| {
+            let dir = queue_dir(d, "pending");
+            std::fs::rename(dir.join(format!("{id}.json")), dir.join("by..hand.json")).unwrap();
+        },
+        "does not make a valid branch name",
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn task_worktree_that_is_not_clean_after_checkout_is_refused_and_removed() {
+    // A checkout that leaves the new worktree dirty (here a smudge filter
+    // that writes a file beside what it checks out) would be snapshotted
+    // dirty; it is refused, and nothing created for it is left behind.
+    let (d, id) = refused_untouched(
+        "refuse-dirty",
+        |d, _| {
+            std::fs::write(d.join(".gitattributes"), "*.py filter=mark\n").unwrap();
+            git(d, &["add", ".gitattributes"]);
+            git(d, &["commit", "-qm", "a filter"]);
+            git(
+                d,
+                &[
+                    "config",
+                    "filter.mark.smudge",
+                    "sh -c 'cat; : > smudged.txt'",
+                ],
+            );
+            git(d, &["config", "filter.mark.clean", "cat"]);
+        },
+        "is not clean after checkout",
+    );
+    assert!(!d.join(".trellis/work/task").join(&id).exists(), "removed");
+    assert!(
+        git(&d, &["branch", "--list", "trellis/task/*"])
+            .trim()
+            .is_empty(),
+        "and its branch"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -273,15 +444,20 @@ fn a_backward_clock_step_still_records_the_run_id_of_a_rolled_back_run() {
     add(&d, &["one"]);
     let o = trellis(&d, &["work", "--once", "--model", &model(&d, "stop.json")]);
     assert!(o.status.success(), "{}", combined(&o));
+    // The run was in its own worktree, so its trail is on its task branch
+    // (ADR 0053); it is brought into this worktree's HEAD under the later
+    // stamp, which every later task's worktree is based on.
     let runs = d.join(".trellis/runs");
     let first = task_json(&d, "failed", &ids(&d, "failed")[0]);
+    let branch = first["outcome"]["branch"].as_str().unwrap().to_string();
     let first = first["outcome"]["run_id"].as_str().unwrap().to_string();
     let ahead = format!("9{}", &first[1..]);
-    std::fs::rename(
-        runs.join(format!("{first}.json")),
-        runs.join(format!("{ahead}.json")),
-    )
-    .unwrap();
+    let trail = git(
+        &d,
+        &["show", &format!("{branch}:.trellis/runs/{first}.json")],
+    );
+    std::fs::create_dir_all(&runs).unwrap();
+    std::fs::write(runs.join(format!("{ahead}.json")), trail).unwrap();
     git(&d, &["add", "-A"]);
     git(
         &d,
@@ -307,7 +483,15 @@ fn a_backward_clock_step_still_records_the_run_id_of_a_rolled_back_run() {
         .unwrap_or_else(|| panic!("{t}"));
     assert_ne!(id, ahead, "the id of the run before the step:\n{t}");
     assert!(id.ends_with("-two"), "{t}");
-    assert!(runs.join(format!("{id}.json")).is_file(), "{t}");
+    let branch = t["outcome"]["branch"].as_str().unwrap();
+    git(
+        &d,
+        &[
+            "cat-file",
+            "-e",
+            &format!("{branch}:.trellis/runs/{id}.json"),
+        ],
+    );
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -1147,5 +1331,98 @@ fn work_sends_no_key_to_an_endpoint_the_repository_chose() {
         matches!(l.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
         "something connected to the repository's port: {s}"
     );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// `fixture` with an `after_run` hook that records each run in `marker`, a
+/// file outside the repository (hooks run in a throwaway clone, ADR 0032),
+/// and a trust store of its own in `home`.
+fn hooked(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+    let d = fixture(name);
+    let home = scratch(&format!("{name}-home"));
+    let marker = home.join("marker.cfg");
+    let config = std::fs::read_to_string(d.join(".trellis/config.toml")).unwrap();
+    std::fs::write(
+        d.join(".trellis/config.toml"),
+        format!(
+            "{config}\n[hooks]\nafter_run = [\"git\", \"config\", \"--file\", {:?}, \"--add\", \"hook.ran\", \"yes\"]\n",
+            marker.display().to_string()
+        ),
+    )
+    .unwrap();
+    git(&d, &["commit", "-qam", "a hook"]);
+    (d, home, marker)
+}
+
+fn trellis_home(d: &Path, home: &Path, args: &[&str]) -> Output {
+    let h = home.display().to_string();
+    trellis_env(d, args, &[("APPDATA", &h), ("XDG_CONFIG_HOME", &h)])
+}
+
+#[test]
+fn task_worktree_runs_trusted_hooks_without_a_second_trust() {
+    // ADR 0053 decision 3: trust is looked up under the worktree `work`
+    // started in, and the task worktree's code must match it. The risk on
+    // one side is a task worktree treated as a new repository, so every
+    // task runs without the hooks the person trusted.
+    let (d, home, marker) = hooked("hooks-trusted");
+    let t = trellis_home(&d, &home, &["trust"]);
+    assert!(t.status.success(), "{}", combined(&t));
+    add(&d, &["one"]);
+    let o = trellis_home(&d, &home, &["work", "--model", &model(&d, "stop.json")]);
+    let s = combined(&o);
+    assert!(o.status.success(), "{s}");
+    assert!(!s.contains("not trusted"), "{s}");
+    assert!(
+        std::fs::read_to_string(&marker).is_ok_and(|m| m.contains("ran = yes")),
+        "the trusted hook ran in the task worktree:\n{s}"
+    );
+    for p in [&d, &home] {
+        let _ = std::fs::remove_dir_all(p);
+    }
+}
+
+#[test]
+fn task_worktree_whose_trusted_code_differs_from_the_trusted_entry_is_untrusted() {
+    // The other side: a task worktree whose hook is not what was trusted
+    // (here a commit changed it after `trellis trust`) runs without it and
+    // says so, as the same change would in place (ADR 0023).
+    let (d, home, marker) = hooked("hooks-changed");
+    let t = trellis_home(&d, &home, &["trust"]);
+    assert!(t.status.success(), "{}", combined(&t));
+    let config = std::fs::read_to_string(d.join(".trellis/config.toml")).unwrap();
+    std::fs::write(
+        d.join(".trellis/config.toml"),
+        config.replace("\"yes\"]", "\"changed\"]"),
+    )
+    .unwrap();
+    git(
+        &d,
+        &["commit", "-qam", "the hook changed after it was trusted"],
+    );
+    add(&d, &["one"]);
+    let o = trellis_home(&d, &home, &["work", "--model", &model(&d, "stop.json")]);
+    let s = combined(&o);
+    assert!(o.status.success(), "{s}");
+    assert!(s.contains("not trusted (run trellis trust)"), "{s}");
+    assert!(!marker.exists(), "the changed hook did not run:\n{s}");
+    for p in [&d, &home] {
+        let _ = std::fs::remove_dir_all(p);
+    }
+}
+
+#[test]
+fn task_worktree_runs_hold_no_queue_of_their_own() {
+    // ADR 0053 decision 5: the queue is the starting worktree's; nothing
+    // run in a task worktree makes one in that worktree's git directory.
+    let d = fixture("no-second-queue");
+    add(&d, &["one"]);
+    let o = trellis(&d, &["work", "--model", &model(&d, "converge.json")]);
+    assert!(o.status.success(), "{}", combined(&o));
+    let id = &ids(&d, "done")[0];
+    let wt = d.join(".trellis/work/task").join(id);
+    let gd = PathBuf::from(git(&wt, &["rev-parse", "--absolute-git-dir"]).trim());
+    assert!(gd.starts_with(d.join(".git/worktrees")), "{}", gd.display());
+    assert!(!gd.join("trellis").exists(), "{}", gd.display());
     let _ = std::fs::remove_dir_all(&d);
 }

@@ -183,6 +183,10 @@ pub(crate) struct ProcessRun<'a> {
     /// The profile's services, started by the caller before this run and
     /// recorded first among the trail's actions (ADR 0026 §12).
     pub services: &'a [trellis_trail::Action],
+    /// The repository whose trust entry `root`'s code is held to: `root`
+    /// itself, or for a queued task in its own worktree, the worktree
+    /// `work` started in (ADR 0053 decision 3).
+    pub trust_root: &'a Path,
 }
 
 pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
@@ -193,6 +197,7 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
         text,
         stop,
         services,
+        trust_root,
     } = p;
     let argv = profile.file.command.clone().unwrap_or_default();
     let timeout = Duration::from_secs(
@@ -204,7 +209,7 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
 
     // Trusted first (ADR 0023 §4): `work` already waits on this, and the
     // runner checks again rather than assume every caller did.
-    if let Err(why) = crate::tooling::require_trusted(root) {
+    if let Err(why) = crate::tooling::require_trusted_as(root, trust_root) {
         return RunEnd::Error {
             run_id: None,
             error: format!("agent `{}` runs a repository command; {why}", profile.name),
@@ -938,6 +943,7 @@ mod tests {
                 text,
                 stop: &stop,
                 services: &[],
+                trust_root: root,
             },
             &mut out,
         );
