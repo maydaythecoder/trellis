@@ -1184,4 +1184,94 @@ mod tests {
         assert!(matches!(end, RunEnd::NotRestored { .. }), "{end:?}\n{s}");
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    // In place, the run's root being the repository itself: `work` runs a
+    // task in a fresh worktree of its own (ADR 0053), which holds no
+    // ignored file when the run starts, so these cases cannot be staged
+    // through it. They were `orchestration.rs` tests before.
+
+    /// A repository ignoring `*.cfg`, with `config`, committed and trusted.
+    fn ignoring(name: &str, config: &str) -> PathBuf {
+        repo(name, config, &[(".gitignore", "*.cfg\n")])
+    }
+
+    #[test]
+    fn an_ignored_file_written_past_the_clone_is_removed_by_the_rollback() {
+        // The risk: `git status` does not list ignored files, so a command
+        // that wrote only ignored paths "changed nothing", was rolled
+        // back, and left what it wrote in place (`.venv/.../sitecustomize.py`
+        // runs in the next check). By absolute path: in the agent's clone
+        // an ignored file is never carried back at all.
+        let root = ignoring("proc-ignored-made", CHECKS);
+        let (end, s) = go(
+            &root,
+            &profile(&writes_in_repo(&root, "app/made.cfg"), 20),
+            "x",
+            false,
+        );
+        assert!(matches!(end, RunEnd::RolledBack { .. }), "{end:?}\n{s}");
+        assert!(s.contains("app/made.cfg"), "the report names it:\n{s}");
+        assert!(
+            !root.join("app/made.cfg").exists(),
+            "an ignored file the command created survived the rollback:\n{s}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_changed_pre_existing_ignored_file_is_named_and_the_tree_counts_as_restored() {
+        // trellis keeps no copy of ignored files, so one the command
+        // changed cannot be put back, and it is named. It does not make the
+        // rollback "not restored": the tracked tree is restored, which is
+        // what ADR 0009 promises, and an agent that runs the tests itself
+        // rewrites their caches on every run (review round 9, finding 2).
+        let root = ignoring("proc-ignored-old", CHECKS);
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        std::fs::write(root.join("app/old.cfg"), "[x]\n\ty = 1\n").unwrap();
+        let (end, s) = go(
+            &root,
+            &profile(&writes_in_repo(&root, "app/old.cfg"), 20),
+            "x",
+            false,
+        );
+        assert!(s.contains("app/old.cfg"), "named:\n{s}");
+        assert!(!s.contains("NOT restored"), "{s}");
+        assert!(matches!(end, RunEnd::RolledBack { .. }), "{end:?}\n{s}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_changed_or_deleted_ignored_file_the_rules_protect_is_not_a_restored_tree() {
+        // The stricter signal is kept where it means something: a
+        // pre-existing ignored file `deny_write` names that the command
+        // changed, or one it deleted, is not a restored tree, and `work`
+        // stops (exit 2).
+        let deny = format!("{CHECKS}[governance]\ndeny_write = [\"app/old.cfg\"]\n");
+        for (name, config) in [
+            ("proc-ignored-old-denied", deny.as_str()),
+            ("proc-ignored-gone", CHECKS),
+        ] {
+            let root = ignoring(name, config);
+            std::fs::create_dir_all(root.join("app")).unwrap();
+            std::fs::write(root.join("app/old.cfg"), "[x]\n\ty = 1\n").unwrap();
+            std::fs::write(root.join("app/gone.cfg"), "[x]\n\ty = 1\n").unwrap();
+            let cmd = if name == "proc-ignored-gone" {
+                let gone = root.join("app/gone.cfg").display().to_string();
+                if cfg!(windows) {
+                    format!("['cmd', '/C', 'del {gone}']")
+                } else {
+                    format!("['rm', '{gone}']")
+                }
+            } else {
+                writes_in_repo(&root, "app/old.cfg")
+            };
+            let (end, s) = go(&root, &profile(&cmd, 20), "x", false);
+            assert!(s.contains("NOT put back"), "{name}:\n{s}");
+            assert!(
+                matches!(end, RunEnd::NotRestored { .. }),
+                "{name}: {end:?}\n{s}"
+            );
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
 }
