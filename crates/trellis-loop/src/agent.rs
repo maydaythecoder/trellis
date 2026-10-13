@@ -224,6 +224,11 @@ pub enum NotConverged {
     /// different: the code is correct and not allowed.
     GovernanceViolation {
         detail: String,
+        /// Shown beside the failure when the model's summary names another
+        /// non-negotiable rule (ADR 0054). It changes nothing about the
+        /// outcome: the run does not converge and rolls back the same way
+        /// with or without it, and no `Verdict` is touched.
+        conflict: Option<crate::governance::ConflictEscalation>,
     },
     /// A check passed, and then something that may have changed the tree
     /// ran: an edit, a created file, `bash`, a custom tool, or a hook. The
@@ -345,13 +350,22 @@ impl NotConverged {
                 ),
                 detail
             ),
-            NotConverged::GovernanceViolation { detail } => format!(
-                concat!(
-                    "the checks passed and a project rule was broken, so the ",
-                    "run did not converge and nothing was accepted:\n{}"
-                ),
-                detail
-            ),
+            NotConverged::GovernanceViolation { detail, conflict } => {
+                let mut s = format!(
+                    concat!(
+                        "the checks passed and a project rule was broken, so the ",
+                        "run did not converge and nothing was accepted:\n{}"
+                    ),
+                    detail
+                );
+                if let Some(c) = conflict {
+                    if !s.ends_with('\n') {
+                        s.push('\n');
+                    }
+                    s.push_str(&c.to_string());
+                }
+                s
+            }
             NotConverged::NoProgress { repeated, times } => format!(
                 concat!(
                     "no progress: the same call was made {} times with the same ",
@@ -943,9 +957,14 @@ pub async fn run_seeded<M: Model>(
                             changed: Vec::new(),
                         });
                         if !v.passed() {
+                            // Asked only now, after the outcome is settled:
+                            // whatever comes back is shown beside it, and
+                            // nothing here can make the run converge.
+                            let conflict = orch.conflict_escalation(&summary).await;
                             break 'run Outcome::NotConverged {
                                 reason: NotConverged::GovernanceViolation {
                                     detail: detail.stdout.clone(),
+                                    conflict,
                                 },
                                 iterations,
                             };
@@ -1948,7 +1967,7 @@ rank = \"non-negotiable\"
         let (outcome, t) = run("fix it", &mut m, &h, &budget()).await;
         match outcome {
             Outcome::NotConverged {
-                reason: NotConverged::GovernanceViolation { detail },
+                reason: NotConverged::GovernanceViolation { detail, .. },
                 ..
             } => {
                 assert!(detail.contains("psycopg2.connect"), "{detail}");
@@ -3214,6 +3233,189 @@ rank = \"non-negotiable\"
             ),
             "the audit must run whatever the gates say, got {outcome:?}"
         );
+    }
+
+    // ---- conflicting non-negotiable rules (ADR 0054) ----
+
+    const DB_DESCRIPTION: &str = "Go through app.db.\nA direct connection skips the pool.";
+    const MIGRATIONS_DESCRIPTION: &str = "The schema is released; a migration needs a DBA.";
+
+    /// Two non-negotiable rules and one nice-to-have, each in its own file.
+    /// Only "No direct DB" can be broken by the scripted edit.
+    fn conflicting_rules(root: &std::path::Path) {
+        let g = root.join(".trellis").join("governance");
+        std::fs::create_dir_all(&g).unwrap();
+        let rule = |file: &str, body: String| std::fs::write(g.join(file), body).unwrap();
+        rule(
+            "a-db.toml",
+            format!(
+                "name = \"No direct DB\"\nrank = \"non-negotiable\"\n\
+                 description = {DB_DESCRIPTION:?}\n\
+                 forbid = {{ pattern = \"psycopg2.connect\" }}\n"
+            ),
+        );
+        rule(
+            "b-migrations.toml",
+            format!(
+                "name = \"Migrations are frozen\"\nrank = \"non-negotiable\"\n\
+                 description = {MIGRATIONS_DESCRIPTION:?}\n\
+                 deny-write = {{ paths = [\"migrations/\"] }}\n"
+            ),
+        );
+        rule(
+            "c-orm.toml",
+            "name = \"Use the ORM\"\nrank = \"nice-to-have\"\n\
+             description = \"Raw SQL is harder to review.\"\n\
+             forbid = { pattern = \"cursor.execute\" }\n"
+                .to_string(),
+        );
+    }
+
+    /// A run that breaks "No direct DB", passes its typecheck, and stops
+    /// with `summary`.
+    async fn run_breaking_the_db_rule(summary: &str) -> (Outcome, Transcript) {
+        let d = repo();
+        conflicting_rules(d.path());
+        let rules = trellis_checks::governance::load(d.path()).unwrap();
+        let (h, _j) = Orchestrator::new(d.path(), checker(0))
+            .with_rules(rules)
+            .spawn();
+        let mut m = Scripted::new(vec![
+            Step::Call(ToolCall::Edit {
+                path: "app/util.py".into(),
+                old: "return 1".into(),
+                new: "return psycopg2.connect('s')".into(),
+            }),
+            Step::Call(ToolCall::RunChecks {
+                paths: vec!["app/util.py".into()],
+                kinds: vec![CheckKind::Typecheck],
+            }),
+            Step::Done {
+                summary: summary.into(),
+            },
+        ]);
+        run("fix it", &mut m, &h, &budget()).await
+    }
+
+    /// The failure's detail, iteration count and escalation, or a panic
+    /// naming the outcome that was not a governance violation.
+    fn governance_failure(
+        outcome: &Outcome,
+    ) -> (&str, u32, Option<&crate::governance::ConflictEscalation>) {
+        match outcome {
+            Outcome::NotConverged {
+                reason: NotConverged::GovernanceViolation { detail, conflict },
+                iterations,
+            } => (detail.as_str(), *iterations, conflict.as_ref()),
+            other => panic!("a broken non-negotiable must not converge, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn conflict_escalation_shows_both_rules_verbatim_and_rules_on_neither() {
+        // The risk: the harness arbitrating between rules the user declared
+        // equally inviolable — by naming one the winner, by ordering them as
+        // a repair plan, or by letting the escalation soften the failure.
+        let (outcome, t) = run_breaking_the_db_rule(
+            "I could not satisfy No direct DB without breaking Migrations are frozen",
+        )
+        .await;
+        let (detail, iterations, conflict) = governance_failure(&outcome);
+        let c = conflict.expect("the summary names a second non-negotiable rule");
+        assert_eq!(
+            c.rules,
+            vec![
+                crate::governance::EscalatedRule {
+                    name: "No direct DB".into(),
+                    source: Some(".trellis/governance/a-db.toml".into()),
+                    description: DB_DESCRIPTION.into(),
+                },
+                crate::governance::EscalatedRule {
+                    name: "Migrations are frozen".into(),
+                    source: Some(".trellis/governance/b-migrations.toml".into()),
+                    description: MIGRATIONS_DESCRIPTION.into(),
+                },
+            ],
+            "both rules, attributed, in file order and in the user's words"
+        );
+
+        let shown = c.to_string();
+        assert!(
+            shown.starts_with(&format!("{}\n", crate::governance::CONFLICT_LINE)),
+            "{shown}"
+        );
+        for word in ["winner", "prefer", "first", "fix", "should", "instead"] {
+            assert!(
+                !shown.to_lowercase().contains(word),
+                "the escalation must not rank the rules ({word:?}): {shown}"
+            );
+        }
+        let Outcome::NotConverged { reason, .. } = &outcome else {
+            unreachable!("checked by governance_failure");
+        };
+        let explained = reason.explain();
+        assert!(
+            explained.contains(crate::governance::CONFLICT_LINE),
+            "{explained}"
+        );
+        for line in [
+            "  rule: No direct DB",
+            "  source: .trellis/governance/a-db.toml",
+            "  description: Go through app.db.\nA direct connection skips the pool.",
+            "  rule: Migrations are frozen",
+            "  source: .trellis/governance/b-migrations.toml",
+            "  description: The schema is released; a migration needs a DBA.",
+        ] {
+            assert!(explained.contains(line), "missing {line:?} in {explained}");
+        }
+
+        // The outcome is the one a single non-negotiable failure has: the
+        // same variant, detail, iteration count and recorded turns as a run
+        // whose summary names nothing. Rollback is decided by the outcome,
+        // so it is the same rollback.
+        let (plain, plain_t) = run_breaking_the_db_rule("fixed it").await;
+        let (plain_detail, plain_iterations, plain_conflict) = governance_failure(&plain);
+        assert!(plain_conflict.is_none());
+        assert_eq!(detail, plain_detail);
+        assert_eq!(iterations, plain_iterations);
+        let verdicts =
+            |t: &Transcript| t.turns.iter().map(|x| x.verdict_passed).collect::<Vec<_>>();
+        assert_eq!(verdicts(&t), verdicts(&plain_t));
+        assert_eq!(t.turns.last().map(|x| x.verdict_passed), Some(Some(false)));
+    }
+
+    #[tokio::test]
+    async fn conflict_escalation_is_not_shown_when_the_summary_names_only_the_broken_rule() {
+        // Naming the rule that failed is a model describing its failure, not
+        // a second rule it could not satisfy.
+        let (outcome, _) =
+            run_breaking_the_db_rule("No direct DB was in the way, so I left it").await;
+        let (_, _, conflict) = governance_failure(&outcome);
+        assert_eq!(conflict, None);
+    }
+
+    #[tokio::test]
+    async fn conflict_escalation_is_not_shown_when_the_summary_names_a_nice_to_have_rule() {
+        // A nice-to-have cannot fail the audit, so there is no inviolable
+        // rule on the other side of the conflict.
+        let (outcome, _) =
+            run_breaking_the_db_rule("I could not satisfy No direct DB and Use the ORM together")
+                .await;
+        let (_, _, conflict) = governance_failure(&outcome);
+        assert_eq!(conflict, None);
+    }
+
+    #[tokio::test]
+    async fn conflict_escalation_is_not_shown_when_the_summary_names_no_rule() {
+        let (outcome, _) = run_breaking_the_db_rule("fixed it").await;
+        let (_, _, conflict) = governance_failure(&outcome);
+        assert_eq!(conflict, None);
+        // Case-sensitive, as the rule is matched by its exact name: a
+        // summary that only resembles a name names nothing.
+        let (outcome, _) =
+            run_breaking_the_db_rule("no direct db versus migrations are frozen").await;
+        let (_, _, conflict) = governance_failure(&outcome);
+        assert_eq!(conflict, None);
     }
 
     // ---- skills (ADR 0019) ----
