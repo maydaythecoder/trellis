@@ -1855,6 +1855,10 @@ fn repo_context(
         skills.valid.retain(|s| pol.check(&s.name).is_ok());
     }
     let disclosed = skills.disclosed();
+    // Whether `bash`, a custom tool or a hook runs under an OS sandbox or
+    // only in its clone (ADR 0055), on every run: a missing or failing
+    // sandbox is a warning, and this line is where it is given.
+    let sandbox = trellis_loop::OsSandbox::detected().label();
     if !governance.is_empty()
         || vault_refusal.is_some()
         || notes.is_some()
@@ -1866,7 +1870,7 @@ fn repo_context(
     {
         let _ = writeln!(
             out,
-            "repo:     {} write rule(s){}{}{}{}{}{}",
+            "repo:     {} write rule(s), sandbox: {sandbox}{}{}{}{}{}{}",
             governance.rules().len(),
             // `rules()` is `deny_write` only; the vault's refusal is said
             // apart, naming the setting that put it there.
@@ -1932,6 +1936,10 @@ fn repo_context(
                 .map(|r| format!(", {r}"))
                 .collect::<String>(),
         );
+    } else {
+        // Nothing else to say about the repository, and no "0 write
+        // rule(s)" to teach the reader to skip this line.
+        let _ = writeln!(out, "repo:     sandbox: {sandbox}");
     }
 
     // Configured and silently unused is the failure this line prevents: a
