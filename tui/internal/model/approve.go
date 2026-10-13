@@ -95,11 +95,12 @@ func (m *Model) scrollModal(d int) {
 }
 
 // answer sends approve {id, yes} for the question on screen, says which,
-// and shows the next question waiting, if any.
+// and shows the next question waiting, if any. The edits pane is left as
+// trellis reported it: the answer is about the next call, and an edit the
+// loop has written is in the tree whatever the answer (#635).
 func (m *Model) answer(yes bool) {
 	a := m.Modal
 	m.send("approve", map[string]any{"id": a.ID, "yes": yes})
-	m.markEdits(yes)
 	word := "declined"
 	if yes {
 		word = "approved"

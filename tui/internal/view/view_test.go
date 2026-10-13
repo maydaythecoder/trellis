@@ -64,15 +64,16 @@ func TestBudgetLineWithNoModelTimeLeftDrawsNoRate(t *testing.T) {
 	}
 }
 
-// A figure trellis did not report is left out, never drawn as 0; the
-// iteration is against the run's own ceiling once it is known.
-func TestBudgetLineLeavesOutWhatWasNotReported(t *testing.T) {
+// A figure trellis did not report is named as unreported, never drawn as
+// 0 (#641); the iteration is against the run's own ceiling once it is
+// known, and the elapsed time is a clock.
+func TestBudgetLineNamesWhatWasNotReported(t *testing.T) {
 	s := State{Running: true, Budget: Budget{Iteration: 1}}
-	if got := BudgetLine(s); got != "iteration 1" {
+	if got := BudgetLine(s); got != "iteration 1  ·  prompt not reported  ·  not started" {
 		t.Fatalf("got %q", got)
 	}
 	s.Budget = Budget{Iteration: 2, MaxIterations: u(40), PromptBytes: u(8400), ElapsedSecs: u(18)}
-	if got := BudgetLine(s); got != "iteration 2/40  ·  8400 B prompt  ·  18s elapsed" {
+	if got := BudgetLine(s); got != "iteration 2/40  ·  8400 B prompt  ·  0:18 elapsed" {
 		t.Fatalf("got %q", got)
 	}
 }
@@ -82,7 +83,7 @@ func TestBudgetLineLeavesOutWhatWasNotReported(t *testing.T) {
 func TestViewSixRegionsAtEightyByTwentyFour(t *testing.T) {
 	out := Render(populated(), 80, 24)
 	for _, want := range []string{"TRELLIS", "transcript", "edits", "checks", "radius", "budget",
-		"Reading blast radius", "resolved", "8400 B prompt", "iteration 2/40", "18s elapsed"} {
+		"Reading blast radius", "resolved", "8400 B prompt", "iteration 2/40", "0:18 elapsed"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("%q missing from:\n%s", want, out)
 		}

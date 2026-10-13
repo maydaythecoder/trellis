@@ -64,15 +64,15 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `app.rs` | `a_steer_never_marks_a_check_or_an_edit_adr_0004` | a steer never marks a check or an edit (ADR 0004) | T3 (#509) | `TestSteerIsNeverAVerdict` |
 | `app.rs` | `steers_are_counted_per_run` | steers are counted per run | T3 (#509) | `TestSteerCountedPerRun` |
 | `app.rs` | `the_modal_takes_the_keys_while_it_is_up` | the modal takes the keys while it is up | T3 (#509) | `TestApproveModalTakesTheKeys` |
-| `app.rs` | `approval_answer_keeps_edits_as_reported_on_n` | approval answer keeps edits as reported on n | T4 (#510) |  |
-| `app.rs` | `approval_answer_keeps_edits_as_reported_on_y` | approval answer keeps edits as reported on y | T4 (#510) |  |
-| `app.rs` | `budget_unreported_elapsed_follows_the_drivers_clock_while_running` | budget unreported elapsed follows the drivers clock while running | T4 (#510) |  |
-| `app.rs` | `budget_unreported_prompt_size_stays_none_through_a_turn_without_one` | budget unreported prompt size stays none through a turn without one | T4 (#510) |  |
+| `app.rs` | `approval_answer_keeps_edits_as_reported_on_n` | approval answer keeps edits as reported on n | T4 (#510) | `TestPanesAnApprovalAnswerKeepsTheEditsAsReported` |
+| `app.rs` | `approval_answer_keeps_edits_as_reported_on_y` | approval answer keeps edits as reported on y | T4 (#510) | `TestPanesAnApprovalAnswerKeepsTheEditsAsReported` |
+| `app.rs` | `budget_unreported_elapsed_follows_the_drivers_clock_while_running` | budget unreported elapsed follows the drivers clock while running | T4 (#510) | `TestPanesClockKeepsElapsedCurrentWhileRunning` |
+| `app.rs` | `budget_unreported_prompt_size_stays_none_through_a_turn_without_one` | budget unreported prompt size stays none through a turn without one | T4 (#510) | `TestPanesTurnWithoutAPromptSizeLeavesItUnreported` |
 | `app.rs` | `approval_modal_scroll_stays_inside_the_diff_and_other_keys_do_nothing` | approval modal scroll stays inside the diff and other keys do nothing | T3 (#509) | `TestApproveModalScrollStaysInsideTheDiff` |
-| `app.rs` | `page_keys_page_up_moves_ten_rows_back` | page keys page up moves ten rows back | T4 (#510) |  |
-| `app.rs` | `page_keys_page_down_moves_ten_rows_forward_and_stops_at_the_end` | page keys page down moves ten rows forward and stops at the end | T4 (#510) |  |
-| `app.rs` | `page_keys_home_shows_the_first_line_and_page_up_stops_there` | page keys home shows the first line and page up stops there | T4 (#510) |  |
-| `app.rs` | `page_keys_end_follows_the_end_again` | page keys end follows the end again | T4 (#510) |  |
+| `app.rs` | `page_keys_page_up_moves_ten_rows_back` | page keys page up moves ten rows back | T4 (#510) | `TestPanesPageUpMovesTenRowsBack` |
+| `app.rs` | `page_keys_page_down_moves_ten_rows_forward_and_stops_at_the_end` | page keys page down moves ten rows forward and stops at the end | T4 (#510) | `TestPanesPageDownMovesTenRowsForwardAndStopsAtTheEnd` |
+| `app.rs` | `page_keys_home_shows_the_first_line_and_page_up_stops_there` | page keys home shows the first line and page up stops there | T4 (#510) | `TestPanesHomeShowsTheFirstLineAndPageUpStopsThere` |
+| `app.rs` | `page_keys_end_follows_the_end_again` | page keys end follows the end again | T4 (#510) | `TestPanesEndFollowsTheEndAgain` |
 | `app.rs` | `page_keys_are_listed_in_help` | page keys are listed in help | T5 (#511) |  |
 | `app.rs` | `paste_lands_in_the_input_and_submits_nothing` | paste lands in the input and submits nothing | T2 (#508) | `TestModelPasteIsOneInputAndSubmitsNothing` |
 | `app.rs` | `paste_with_crlf_breaks_is_one_space_per_break` | paste with crlf breaks is one space per break | T2 (#508) | `TestModelPasteIsOneInputAndSubmitsNothing` |
@@ -109,16 +109,16 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `view.rs` | `tier_status_bar_with_no_label_says_unknown` | tier status bar with no label says unknown | T5 (#511) |  |
 | `view.rs` | `worktree_state_is_whole_on_row_0_at_80_by_24_with_a_40_character_spec` | worktree state is whole on row 0 at 80 by 24 with a 40 character spec | T5 (#511) |  |
 | `view.rs` | `worktree_state_after_a_restored_run_has_no_edits_pending` | worktree state after a restored run has no edits pending | T5 (#511) |  |
-| `view.rs` | `budget_unreported_figures_are_named_not_drawn_as_zero` | budget unreported figures are named not drawn as zero | T4 (#510) |  |
-| `view.rs` | `budget_unreported_elapsed_tick_is_drawn_as_a_clock` | budget unreported elapsed tick is drawn as a clock | T4 (#510) |  |
+| `view.rs` | `budget_unreported_figures_are_named_not_drawn_as_zero` | budget unreported figures are named not drawn as zero | T4 (#510) | `TestBudgetLineUnreportedFiguresAreNamedNotDrawnAsZero`, `TestBudgetLineNamesWhatWasNotReported` |
+| `view.rs` | `budget_unreported_elapsed_tick_is_drawn_as_a_clock` | budget unreported elapsed tick is drawn as a clock | T4 (#510) | `TestPanesClockKeepsElapsedCurrentWhileRunning`, `TestBudgetLineUnreportedFiguresAreNamedNotDrawnAsZero` |
 | `view.rs` | `approval_modal_scroll_keeps_the_question_drawn_at_80_by_24_with_a_60_line_diff` | approval modal scroll keeps the question drawn at 80 by 24 with a 60 line diff | T3 (#509) | `TestApproveModalKeepsTheQuestionDrawnWhileTheDiffScrolls` |
 | `view.rs` | `approval_modal_scroll_page_down_reaches_the_last_line_and_y_still_answers` | approval modal scroll page down reaches the last line and y still answers | T3 (#509) | `TestApproveModalKeepsTheQuestionDrawnWhileTheDiffScrolls` |
 | `view.rs` | `approval_modal_scroll_title_says_call_for_a_call_that_is_not_an_edit` | approval modal scroll title says call for a call that is not an edit | T3 (#509) | `TestApproveModalNamesACallThatIsNotAnEdit` |
-| `view.rs` | `approval_answer_keeps_edits_row_undecorated_and_the_decline_in_the_transcript` | approval answer keeps edits row undecorated and the decline in the transcript | T4 (#510) |  |
-| `view.rs` | `fits_80_columns_actions_and_radius_labels_are_whole` | fits 80 columns actions and radius labels are whole | T4 (#510) |  |
-| `view.rs` | `fits_80_columns_budget_line_ends_with_a_whole_segment` | fits 80 columns budget line ends with a whole segment | T4 (#510) |  |
+| `view.rs` | `approval_answer_keeps_edits_row_undecorated_and_the_decline_in_the_transcript` | approval answer keeps edits row undecorated and the decline in the transcript | T4 (#510) | `TestPanesAnApprovalAnswerKeepsTheEditsAsReported` |
+| `view.rs` | `fits_80_columns_actions_and_radius_labels_are_whole` | fits 80 columns actions and radius labels are whole | T4 (#510) | `TestViewFitsEightyColumnsActionsAndRadiusLabelsAreWhole` |
+| `view.rs` | `fits_80_columns_budget_line_ends_with_a_whole_segment` | fits 80 columns budget line ends with a whole segment | T4 (#510) | `TestBudgetLineAtEightyColumnsEndsWithAWholeSegment` |
 | `view.rs` | `fits_80_columns_help_has_no_row_ending_mid_word` | fits 80 columns help has no row ending mid word | T5 (#511) |  |
-| `view.rs` | `wrote_in_text_on_the_edit_node_at_80_columns` | wrote in text on the edit node at 80 columns | T4 (#510) |  |
+| `view.rs` | `wrote_in_text_on_the_edit_node_at_80_columns` | wrote in text on the edit node at 80 columns | T4 (#510) | `TestViewWroteInTextOnTheEditNodeAtEightyColumns` |
 | `events.rs` | `quit_ends_the_loop_and_returns_ok` | quit ends the loop and returns ok | T2 (#508) | `TestModelCtrlCIdleQuitsAndEndsOnExit` |
 | `events.rs` | `pending_messages_are_coalesced_into_one_draw` | pending messages are coalesced into one draw | T2 (#508) | not ported: Bubble Tea's renderer coalesces updates at its own frame rate; this client has no draw loop of its own to hold to it |
 | `events.rs` | `a_modal_answer_is_sent_to_the_asker` | a modal answer is sent to the asker | T3 (#509) | `TestApproveYesAndNoSendTheirAnswer` |
@@ -145,7 +145,7 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `tui_bridge.rs` | `a_warning_reaches_the_transcript_even_though_it_is_not_a_turn` | a warning reaches the transcript even though it is not a turn | T4 (#510) | `TestPanesAWarningIsALineAndNotATurn` |
 | `tui_bridge.rs` | `an_ordinary_debug_line_is_not_mistaken_for_a_turn` | an ordinary debug line is not mistaken for a turn | T4 (#510) | `TestPanesAWarningIsALineAndNotATurn`, `TestFramesWrongTypesAreAbsent` |
 | `tui_bridge.rs` | `a_steer_delivery_is_numbered_in_order_and_names_the_turn_it_reached` | a steer delivery is numbered in order and names the turn it reached | T3 (#509) | `TestSteerDeliveredOnceAtItsTurn` |
-| `tui_bridge.rs` | `budget_unreported_prompt_size_is_none_not_zero` | budget unreported prompt size is none not zero | T4 (#510) |  |
+| `tui_bridge.rs` | `budget_unreported_prompt_size_is_none_not_zero` | budget unreported prompt size is none not zero | T4 (#510) | `TestPanesTurnWithoutAPromptSizeLeavesItUnreported` |
 | `tui_run.rs` | `a_model_spec_that_does_not_parse_is_refused_before_the_terminal` | a model spec that does not parse is refused before the terminal | T2 (#508) | `TestModelFailedSetModelIsShown` |
 | `tui_run.rs` | `a_runtime_that_cannot_be_reached_does_not_claim_a_tier` | a runtime that cannot be reached does not claim a tier | T5 (#511) |  |
 | `tui_run.rs` | `a_scripted_model_is_labelled_as_one_without_asking_anything` | a scripted model is labelled as one without asking anything | T5 (#511) | not ported: the tier label is computed by trellis and served as `get_state`'s `tier` (#269); the rule is tested in Rust where it lives |
@@ -176,7 +176,7 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `tui_run.rs` | `tui_steer_for_the_next_task_is_not_forwarded_to_the_run_ending` | tui steer for the next task is not forwarded to the run ending | T3 (#509) | `TestSteerAfterTheRunEndedIsATask` |
 | `tui_run.rs` | `tui_steer_left_from_an_ended_task_is_skipped_up_to_the_boundary` | tui steer left from an ended task is skipped up to the boundary | T3 (#509) | `TestSteerCountedPerRun` |
 | `tui_run.rs` | `tui_steer_that_arrives_too_late_is_still_in_the_trail` | tui steer that arrives too late is still in the trail | T3 (#509) | not ported: the trail is trellis's to write, and rpc keeps every steer it was sent in it (rpc.rs, SteeringPort), which the client cannot read; the client's half, saying a late steer was not delivered, is TestSteerAnswersMarkItDeliveredOrNot |
-| `tui_run.rs` | `budget_unreported_elapsed_ticks_come_from_the_driver_s_clock` | budget unreported elapsed ticks come from the driver s clock | T4 (#510) |  |
+| `tui_run.rs` | `budget_unreported_elapsed_ticks_come_from_the_driver_s_clock` | budget unreported elapsed ticks come from the driver s clock | T4 (#510) | `TestPanesClockTicksOnceASecond` |
 | `tui_run.rs` | `worktree_state_follows_the_exit_the_run_returned` | worktree state follows the exit the run returned | T5 (#511) |  |
 | `tui_run.rs` | `ctrl_c_mid_run_reaches_the_run_which_rolls_back_as_interrupted` | ctrl c mid run reaches the run which rolls back as interrupted | T3 (#509) | not ported: the stop reaches the run as rpc's `abort`, which trellis carries out and rolls back (rpc.rs, abort_interrupts_the_run_and_it_rolls_back); the client's half, sending abort once before quit, is TestModelCtrlCMidRunSendsAbortThenQuit |
 | `tui_run.rs` | `ctrl_c_mid_run_drops_an_open_question_only_once_the_run_has_stopped` | ctrl c mid run drops an open question only once the run has stopped | T3 (#509) | not ported: rpc's abort_run drops the open questions only once the run has observed the abort (rpc.rs), the order this test holds for the Rust driver; the client's half, withdrawing the question unanswered, is TestModelStopMidRunWithdrawsTheQuestionAndShowsNoNewOne |

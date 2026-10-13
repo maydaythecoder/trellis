@@ -160,6 +160,9 @@ type (
 	ExitedMsg struct{ Err error }
 	// SendFailedMsg says a write to the child failed.
 	SendFailedMsg struct{ Err error }
+	// TickMsg is the program's clock, once a second (App), so the budget's
+	// elapsed time moves between turns.
+	TickMsg struct{}
 )
 
 // Update applies one message. It does no IO.
@@ -175,6 +178,8 @@ func (m *Model) Update(msg tea.Msg) {
 		m.exited(msg.Err)
 	case SendFailedMsg:
 		m.pushLine("! could not write to trellis rpc: " + Plain(msg.Err.Error()))
+	case TickMsg:
+		m.tick()
 	}
 }
 
@@ -221,7 +226,23 @@ func (m *Model) key(k tea.KeyMsg) {
 		if m.ScrollBack > 0 {
 			m.ScrollBack--
 		}
+	case tea.KeyPgUp:
+		// Held at the top, so PgDn after it moves at once rather than
+		// first spending presses on rows above the first (#660).
+		m.ScrollBack = min(m.ScrollBack+view.TranscriptPage, m.transcriptTop())
+	case tea.KeyPgDown:
+		m.ScrollBack = max(m.ScrollBack-view.TranscriptPage, 0)
+	case tea.KeyHome:
+		m.ScrollBack = m.transcriptTop()
+	case tea.KeyEnd:
+		m.ScrollBack = 0
 	}
+}
+
+// transcriptTop is the scroll back that shows the transcript's first row
+// at the current width.
+func (m *Model) transcriptTop() int {
+	return view.TranscriptRows(m.viewState(), m.Width)
 }
 
 // ctrlC aborts a run in flight first, so it rolls back through trellis,
