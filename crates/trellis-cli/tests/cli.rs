@@ -7508,3 +7508,135 @@ fn rpc_atlas_get_codebase_answers_its_modules_when_head_cannot_be_read() {
     let _ = std::fs::remove_dir_all(&refused);
     let _ = std::fs::remove_dir_all(&unborn);
 }
+
+// ---------------------------------------------------------------------------
+// index.bin behind a link (#721)
+// ---------------------------------------------------------------------------
+
+/// A committed repository whose `.trellis/<name>` is a link to `target`,
+/// as a clone of a hostile repository arrives. `None` (the test skips)
+/// where the platform will not make a file link.
+fn repo_with_linked(test: &str, name: &str, target: &Path) -> Option<PathBuf> {
+    let d = repo(test);
+    std::fs::create_dir_all(d.join(".trellis")).unwrap();
+    let link = d.join(".trellis").join(name);
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_file(target, &link);
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, &link);
+    if let Err(e) = made {
+        eprintln!("skipped: cannot create a file symlink here: {e}");
+        let _ = std::fs::remove_dir_all(&d);
+        return None;
+    }
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "a linked .trellis entry"]);
+    Some(d)
+}
+
+fn is_link(p: &Path) -> bool {
+    std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink())
+}
+
+#[test]
+fn cache_symlink_trellis_index_leaves_the_linked_outside_file_untouched() {
+    // #721's reproduction: `.trellis/index.bin` committed as a link to
+    // `outside/rc.sh`. `trellis index` overwrote rc.sh with the blob, and a
+    // file name holding a shell command made the blob a runnable script.
+    let outside = scratch("cache-symlink-index-outside");
+    let target = outside.join("rc.sh");
+    std::fs::write(&target, "echo original\n").unwrap();
+    let Some(d) = repo_with_linked("cache-symlink-index", "index.bin", &target) else {
+        return;
+    };
+
+    let o = run(&d, &["index"]);
+    let all = combined(&o);
+    assert!(all.contains("not written"), "{all}");
+    assert!(
+        all.contains("symbolic link"),
+        "the refusal names why: {all}"
+    );
+    assert!(all.contains("index.bin"), "and names the path: {all}");
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "echo original\n",
+        "the file outside the repository was written through the link"
+    );
+    assert!(is_link(&d.join(".trellis/index.bin")));
+    assert!(
+        !d.join(".trellis/.gitignore").exists(),
+        "a refusal writes nothing, the .gitignore included"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+#[test]
+fn cache_symlink_dangling_index_bin_creates_nothing_through_index_or_radius() {
+    // A dangling link: `fs::write` would create its target. `radius` writes
+    // through `build_cached`, the second of the three writers.
+    let outside = scratch("cache-symlink-dangling-outside");
+    let target = outside.join("planted");
+    let Some(d) = repo_with_linked("cache-symlink-dangling", "index.bin", &target) else {
+        return;
+    };
+
+    let o = run(&d, &["index"]);
+    assert!(combined(&o).contains("symbolic link"), "{}", combined(&o));
+    let o = run(&d, &["radius", "app.core.greet"]);
+    assert!(o.status.success(), "{}", combined(&o));
+    assert!(
+        std::fs::symlink_metadata(&target).is_err(),
+        "the dangling link was followed and its target created"
+    );
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    assert!(is_link(&d.join(".trellis/index.bin")));
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+#[test]
+fn cache_symlink_dangling_gitignore_creates_nothing() {
+    // `ignore_the_blob` checked `.trellis/.gitignore` with `exists()`, which
+    // follows the link, so a dangling one created a file at its target.
+    let outside = scratch("cache-symlink-ignore-outside");
+    let target = outside.join("planted");
+    let Some(d) = repo_with_linked("cache-symlink-ignore", ".gitignore", &target) else {
+        return;
+    };
+
+    let o = run(&d, &["index"]);
+    assert!(combined(&o).contains("symbolic link"), "{}", combined(&o));
+    assert!(std::fs::symlink_metadata(&target).is_err());
+    assert!(
+        std::fs::symlink_metadata(d.join(".trellis/index.bin")).is_err(),
+        "nothing is written beside a refused .gitignore"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+#[test]
+fn cache_symlink_get_codebase_refuses_the_link_and_says_so() {
+    // The desktop's Codebase view saves the index through rpc's
+    // `get_codebase` (#654), the third writer. It must refuse the link as
+    // `trellis index` does, and still answer with the graph.
+    let outside = scratch("cache-symlink-rpc-outside");
+    let target = outside.join("rc.sh");
+    std::fs::write(&target, "echo original\n").unwrap();
+    let Some(d) = repo_with_linked("cache-symlink-rpc", "index.bin", &target) else {
+        return;
+    };
+
+    let r = get_codebase_in(&d, serde_json::json!({}));
+    assert_eq!(r["success"], true, "the graph is still drawn: {r}");
+    let data = &r["data"];
+    assert_eq!(data["index_saved"], false, "{data}");
+    let why = data["index_not_saved"].as_str().unwrap_or_default();
+    assert!(why.contains("symbolic link"), "{data}");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "echo original\n");
+    assert!(is_link(&d.join(".trellis/index.bin")));
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&outside);
+}
