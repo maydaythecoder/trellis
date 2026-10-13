@@ -2,8 +2,10 @@
 //! on the owner's request of 2026-10-11: "the current view is nice in the
 //! trellis atlas, could you add that to the current view without removing
 //! the other ones". The Atlas is a seventh section beside the six; every
-//! answer here is data trellis or git already holds, and nothing here
-//! writes to the repository (ADR 0025 §5, ADR 0048 §10).
+//! answer here is data trellis or git already holds (ADR 0025 §5, ADR 0048
+//! §10). The one write is `get_codebase`'s save of the worktree's index to
+//! `.trellis/index.bin` (#654, the owner's decision of 2026-10-12); nothing
+//! else here writes to the repository.
 
 use crate::doctor_cmd::Edges;
 use serde_json::{Value, json};
@@ -24,6 +26,15 @@ use trellis_vcs::history::{self, HistoryError};
 /// reads), indexed there exactly as a worktree is, and removed: its paths
 /// are the repository-relative ones the commit holds. A `rev` needs git,
 /// so one git cannot resolve is refused.
+///
+/// The worktree's index is saved to `.trellis/index.bin` through
+/// `index_cmd::save_index`, the writer `trellis index` uses, so the
+/// overview, which reads only that cache, describes the graph the desktop
+/// just drew (#654, the owner's decision of 2026-10-12). `index_saved`
+/// says whether it was, with `index_bytes` when it was and
+/// `index_not_saved` (why) when it was not. A failed save does not fail
+/// the answer: the cache is derived state and the graph is still right. A
+/// commit's graph is never saved, since the cache describes the worktree.
 pub(crate) fn codebase(
     root: &Path,
     limit: usize,
@@ -31,7 +42,21 @@ pub(crate) fn codebase(
     rev: Option<&str>,
 ) -> Result<Value, String> {
     let Some(rev) = rev else {
-        let mut data = crate::doctor_cmd::codebase_json(root, limit, edges);
+        let sources = trellis_index::read_sources(root);
+        let index = trellis_index::build_from_sources(&sources);
+        let mut data =
+            crate::doctor_cmd::graph_json(&trellis_index::module_graph(&index), limit, edges);
+        match crate::index_cmd::save_index(root, &index) {
+            Ok(bytes) => {
+                data["index_saved"] = json!(true);
+                data["index_bytes"] = json!(bytes);
+            }
+            Err(e) => {
+                data["index_saved"] = json!(false);
+                data["index_not_saved"] =
+                    json!(format!("{} not written: {e}", crate::index_cmd::INDEX_BIN));
+            }
+        }
         match history::head(root) {
             Ok(head) => {
                 data["commit"] = json!(head.as_ref().map(|h| &h.commit));
@@ -50,6 +75,11 @@ pub(crate) fn codebase(
         .map_err(|e| refusal("get_codebase", root, e))?;
     let mut data = crate::doctor_cmd::codebase_json(copy.path(), limit, edges);
     data["ref"] = json!(rev);
+    data["index_saved"] = json!(false);
+    data["index_not_saved"] = json!(format!(
+        "a commit's graph is not the worktree's; {} describes only the worktree",
+        crate::index_cmd::INDEX_BIN
+    ));
     data["commit"] = json!(at.commit);
     data["date"] = json!(at.date);
     Ok(data)

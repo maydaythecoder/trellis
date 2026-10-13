@@ -132,6 +132,17 @@ started in the root through `secrets::scrub` with no stdin and no token, as
 seconds, after which it and what it started are killed. Missing, not logged
 in, timed out, failing or not JSON, it is `{"available": false, "reason"}`
 and the command still exits 0. Nothing is written.
+*Amended 2026-10-12 (#654), owner-directed (the owner's decision of
+2026-10-12, on #654):* the overview still never indexes and never writes:
+its codebase is still `.trellis/index.bin` only when that cache is
+current. What changes is who else saves that cache. rpc's `get_codebase`,
+which the desktop's Codebase and Atlas sections send, now saves the
+worktree's index there through the writer `trellis index` uses (ADR 0048
+section 10, amended 2026-10-12), so after the desktop has drawn a
+repository's graph the overview shows its counts for the same root rather
+than "not indexed" or "index is stale". The desktop's pane says the counts
+come from `.trellis/index.bin`. The reasons the overview gives when no
+current cache exists are unchanged.
 *As built 2026-10-07 (#555):* a root is recorded only from an interface
 start (bare `trellis`, `trellis tui`, `--tui`, `--dsk`), never from another
 command, and never when it is under the temporary directory. In the home
