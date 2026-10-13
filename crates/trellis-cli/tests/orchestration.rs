@@ -962,6 +962,83 @@ fn a_process_agent_runs_in_trellis_s_own_process_group() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+#[cfg(unix)]
+#[test]
+fn ctrl_c_stops_an_idle_work_every_loop_with_its_own_exit_and_line() {
+    // The risk (#248, work.rs `listen_for_ctrl_c`): with no listener, SIGINT
+    // is the default action and kills `work --every` mid-wait, so it never
+    // says why it stopped and exits by signal, not 130. `cmd_run` takes the
+    // process's SIGINT for tokio once a task runs (see the function's doc),
+    // so the flag is the only way an idle heartbeat hears Ctrl-C. Unix
+    // only: `kill -INT`, as tests/interrupt.rs sends it.
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let d = fixture("work-sigint", &[]);
+    let mut child = trellis_command(&d, &["work", "--every", "3600"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let stdout = child.stdout.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut all = String::new();
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            all.push_str(&line);
+            all.push('\n');
+            let _ = tx.send(line);
+        }
+        all
+    });
+    // The listener is set up just before this line is printed; the pause
+    // after it covers its thread registering the handler.
+    let started = Instant::now() + Duration::from_secs(30);
+    loop {
+        let left = started.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(l) if l.starts_with("work:     queue at") => break,
+            Ok(_) => {}
+            Err(_) => {
+                let _ = child.kill();
+                panic!("`work --every` never said where its queue is");
+            }
+        }
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let sent = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .expect("kill(1) is on PATH")
+        .success();
+    assert!(sent, "kill -INT failed");
+
+    // The idle loop checks the flag every 100 ms; 20 s is slack, not a wait.
+    let until = Instant::now() + Duration::from_secs(20);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() > until {
+            let _ = child.kill();
+            panic!("`work --every` did not stop within 20 s of Ctrl-C");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let o = child.wait_with_output().unwrap();
+    let said = reader.join().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(
+        o.status.code(),
+        Some(130),
+        "an interrupt exits 130, not by the signal ({:?}):\n{said}{err}",
+        o.status
+    );
+    assert!(
+        said.contains("stopped: interrupted"),
+        "says why it stopped:\n{said}{err}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 #[cfg(windows)]
 #[test]
 fn job_object_kills_a_process_agent_s_tree() {

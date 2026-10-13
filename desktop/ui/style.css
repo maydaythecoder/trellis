@@ -15,6 +15,10 @@
   --rail-bg: #efeeea;
   --pane-bg: #ffffff;
   --border: #d9d8d2;
+  /* Form fields (#647): --border is a pane divider at 1.4:1 against the
+     pane, below the 3:1 non-text contrast floor, so a field's border is a
+     darker token; field_contrast_token_meets_three_to_one measures it. */
+  --control-border: #7d7d76;
   --accent: #2f5d50;
   --passed: #1f6b3a;
   --failed: #a3261b;
@@ -62,6 +66,7 @@
     --rail-bg: #1f201d;
     --pane-bg: #1b1c1a;
     --border: #34352f;
+    --control-border: #7b7c74;
     --accent: #8cc4b2;
     --passed: #7fcf98;
     --failed: #f08a7e;
@@ -133,7 +138,12 @@ body {
 }
 
 button:focus-visible,
-.log:focus-visible {
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+.log:focus-visible,
+.approval-detail:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
@@ -147,6 +157,17 @@ main {
 h2 {
   margin: 0 0 12px;
   font-size: 18px;
+}
+
+/* Read by a screen reader and not drawn (#646): the page's one h1. Not
+   display or visibility, which would hide it from the reader too. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 h3 {
@@ -294,7 +315,7 @@ code {
   width: 100%;
   margin: 4px 0 8px;
   padding: 6px 8px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 4px;
   background: var(--bg);
   color: var(--fg);
@@ -319,6 +340,10 @@ code {
   font: inherit;
 }
 
+.composer select {
+  border-color: var(--control-border);
+}
+
 .composer button {
   color: var(--accent);
   cursor: pointer;
@@ -335,6 +360,22 @@ code {
 .composer textarea:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
+}
+
+/* Stop (#637) aborts and rolls the run back, which cannot be undone, so it
+   must not read as Send's twin: it takes the failed colour, here and in the
+   dialog that confirms it, and sits at the far end of its row. */
+.composer button.danger,
+.approval button.danger {
+  color: var(--failed);
+}
+
+#composer-stop {
+  margin-left: auto;
+}
+
+#stop-confirm-stop {
+  font-weight: 600;
 }
 
 .composer-list {
@@ -472,7 +513,7 @@ code {
 .model-form input[type="text"] {
   width: 100%;
   padding: 4px 8px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 4px;
   background: var(--bg);
   color: var(--fg);
@@ -506,8 +547,15 @@ code {
   color: var(--muted);
 }
 
+/* One line per cell (#652): a long value ends in an ellipsis, never cut
+   off unmarked, and the binary and root cells carry their whole path as
+   their title. */
 .status-bar dd {
+  max-width: 40ch;
   margin: 0 8px 0 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* The action graph (#303): SVG graph.js builds from the core's layout. It
@@ -598,7 +646,8 @@ code {
 
 .cb-bar button,
 .cb-crumbs button,
-#cb-results button {
+#cb-results button,
+.cb-modules button {
   padding: 1px 8px;
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -676,6 +725,17 @@ code {
   margin-bottom: 12px;
 }
 
+/* The graph's level as a list (#648): a package of hundreds of modules
+   scrolls here rather than pushing the radius pane off the page. */
+.cb-list {
+  margin-top: 12px;
+}
+
+.cb-modules {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
 #cb-details p + dl,
 #cb-details dl + p {
   margin-top: 6px;
@@ -686,7 +746,7 @@ code {
   width: 100%;
   margin: 4px 0 6px;
   padding: 4px 6px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 4px;
   background: var(--bg);
   color: var(--fg);
@@ -713,7 +773,7 @@ code {
   flex: 1 1 auto;
   min-width: 0;
   padding: 4px 6px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 4px;
   background: var(--bg);
   color: var(--fg);
@@ -757,7 +817,7 @@ h5 {
   width: 100%;
   margin: 4px 0 8px;
   padding: 4px 6px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 4px;
   background: var(--bg);
   color: var(--fg);
@@ -882,12 +942,30 @@ article.past-run section + section {
   list-style: none;
 }
 
-.qb-cell {
+/* Each cell is a button that filters the list (#656), drawn as the cell it
+   was rather than as the pane's small buttons. */
+.qb-counts .qb-cell {
   display: flex;
   flex-direction: column;
+  width: 100%;
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.qb-counts .qb-cell[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--pane-bg);
+}
+
+.qb-counts .qb-cell:disabled {
+  color: var(--muted);
+  cursor: default;
 }
 
 .qb-count {
@@ -1051,7 +1129,7 @@ article.past-run section + section {
 
 .at select {
   padding: 2px 4px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 4px;
   background: var(--bg);
   color: var(--fg);
@@ -1680,7 +1758,7 @@ article.past-run section + section {
   flex: 1 1 auto;
   min-width: 0;
   padding: 5px 8px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 4px;
   background: var(--bg);
   color: var(--fg);

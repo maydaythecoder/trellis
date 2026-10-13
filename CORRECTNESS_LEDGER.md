@@ -1052,6 +1052,13 @@ killed, 1 unexercisable). 76 killed in all. Lines in tooling.rs,
 context_files.rs, tui_run.rs and tui_bridge.rs had moved; each mutant was
 found at its new line. No bug was found.
 
+work.rs on Linux: pass 2's one Windows-only disposition in work.rs,
+`listen_for_ctrl_c` (861:5), is killed by a unix-only test that sends
+`kill -INT` to an idle `work --every`; the mutant was applied by hand at
+this pass's base and the test seen to fail (the process exited by signal
+2, not 130). `has_terminal -> false` (983:5) stays unexercisable: it needs
+a pty. No bug was found.
+
 ```
 unexercisable (#248): differs only for ERROR-level events (an empty RUST_LOG parsed as a directive is ERROR everywhere), and trellis's three are not reachable on demand: an orchestrator task gone, or a failed rollback of an interrupted plan | crates/trellis-cli/src/main.rs:401:18: replace match guard s.trim().is_empty() with false in main
 killed (#248) by tests/cli.rs an_inferred_root_is_named_and_an_explicit_one_is_not | crates/trellis-cli/src/main.rs:507:8: delete ! in main
@@ -1372,7 +1379,7 @@ killed (#248) by work::list_line_tests::ages_are_in_the_largest_whole_unit | cra
 killed (#248) by work::list_line_tests::ages_are_in_the_largest_whole_unit | crates/trellis-cli/src/work.rs:759:9: delete match arm 60..3600 in ago
 killed (#248) by work::list_line_tests::ages_are_in_the_largest_whole_unit | crates/trellis-cli/src/work.rs:760:9: delete match arm 3600..86_400 in ago
 killed (#248) by tests/orchestration.rs a_claim_records_where_it_was_made_under_release_and_only_there | crates/trellis-cli/src/work.rs:784:21: replace == with != in work
-unexercisable on Windows (#248): needs a Ctrl-C delivered to the `work` process, which a test can send only on unix (`kill -INT`, as tests/interrupt.rs does); a unix-only `work --every` + SIGINT test is the kill, not written here because it could not be seen failing on this host | crates/trellis-cli/src/work.rs:861:5: replace listen_for_ctrl_c with ()
+killed (#248) by tests/orchestration.rs ctrl_c_stops_an_idle_work_every_loop_with_its_own_exit_and_line (unix only; under the mutant SIGINT kills `work --every` by signal) | crates/trellis-cli/src/work.rs:861:5: replace listen_for_ctrl_c with ()
 killed (#248) by tests/orchestration.rs an_approve_mode_agent_waits_when_work_has_no_terminal_to_ask_on | crates/trellis-cli/src/work.rs:937:9: replace CliRunner<'_>::approve_mode -> bool with false
 killed (#248) by tests/orchestration.rs an_approve_mode_agent_waits_when_work_has_no_terminal_to_ask_on | crates/trellis-cli/src/work.rs:983:5: replace has_terminal -> bool with true
 unexercisable by `cargo test` (#248): differs only when stdin and stdout are both a terminal, which needs a pty the suite does not have | crates/trellis-cli/src/work.rs:983:5: replace has_terminal -> bool with false

@@ -203,6 +203,66 @@ fn rpc_runs_a_prompt_to_completion_when_input_ends() {
     );
 }
 
+/// Stderr of `trellis rpc` after one scripted run, read with `NO_COLOR`
+/// removed: the colour decision under test must come from the pipe, not from
+/// the variable the other tests set.
+fn rpc_stderr_without_no_color(f: &Fixture) -> String {
+    let mut child = trellis(f)
+        .env_remove("NO_COLOR")
+        .arg("rpc")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({"id": "m", "type": "set_model", "model": f.spec})
+    )
+    .unwrap();
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({"id": "1", "type": "prompt", "task": "change f", "model": f.spec})
+    )
+    .unwrap();
+    drop(stdin);
+    let o = child.wait_with_output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8_lossy(&o.stderr).into_owned()
+}
+
+#[test]
+fn rpc_stderr_has_no_ansi_on_a_pipe() {
+    // The desktop pipes `trellis rpc`'s stderr into a text pane (ADR 0048
+    // §2). With colour on regardless of the stream, every tracing line there
+    // read `[2m...[0m [32m INFO[0m` with the escapes drawn as glyphs (#642).
+    let f = fixture("rpc-no-ansi");
+    let err = rpc_stderr_without_no_color(&f);
+    // Not vacuous: the run's tracing lines did reach stderr.
+    assert!(err.contains("INFO"), "no tracing line on stderr:\n{err}");
+    assert!(!err.contains("\x1b["), "colour codes on a pipe:\n{err:?}");
+}
+
+#[test]
+fn run_human_output_has_no_ansi_on_a_pipe() {
+    // Outside JSON mode the human stream, tracing included, is stdout; a
+    // `trellis run | tee` or a CI log must not carry escape bytes either.
+    let f = fixture("run-no-ansi");
+    let o = trellis(&f)
+        .env_remove("NO_COLOR")
+        .args(["run", "change f", "--model", &f.spec])
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(out.contains("INFO"), "no tracing line on stdout:\n{out}");
+    assert!(!out.contains("\x1b["), "colour codes on a pipe:\n{out:?}");
+    assert!(!err.contains("\x1b["), "colour codes on a pipe:\n{err:?}");
+}
+
 #[test]
 fn rpc_a_backward_clock_step_still_reports_the_run_id_of_the_run() {
     // A trail's name is `<wall-clock stamp>-<slug>`, so after the clock
@@ -1788,6 +1848,51 @@ fn rpc_vault_search_returns_what_vault_search_prints() {
     );
 }
 
+#[test]
+fn rpc_vault_search_empty_query_lists_every_note_in_title_order_and_writes_nothing() {
+    // The risks (#629): an empty query refused, when the port keeps Apex's
+    // empty-query branch (`search.rs`: every note, by title then path,
+    // score 0) and a client has no other way to list the vault; a list
+    // ranked or scored as if matched; or a read that writes the vault
+    // (#70). Held alone, mid-run and before a `quit`, as the other reads.
+    let f = vault_fixture("rpc-vault-search-empty");
+    let data = answered_three_ways(
+        &f,
+        &serde_json::json!({"type": "vault_search", "query": ""}),
+    );
+    let hits = data["hits"].as_array().unwrap_or_else(|| panic!("{data}"));
+    assert_eq!(
+        hits.iter()
+            .map(|h| (h["title"].as_str().unwrap(), h["path"].as_str().unwrap()))
+            .collect::<Vec<_>>(),
+        [
+            ("Child", "child.md"),
+            ("Orphan", "orphan.md"),
+            ("Root", "root.md")
+        ],
+        "every note, by title: {data}"
+    );
+    assert!(
+        hits.iter().all(|h| h["score"] == 0.0),
+        "a browse list scores nothing: {data}"
+    );
+    assert_eq!(
+        data["mode"],
+        serde_json::json!({"body": true, "trigrams": true})
+    );
+    // `limit` cuts the list as it cuts a ranking; whitespace is empty too.
+    let one = answer(
+        &f,
+        serde_json::json!({"id": "l", "type": "vault_search", "query": "  ", "limit": 1}),
+    );
+    assert_eq!(one["success"], true, "{one}");
+    assert_eq!(one["data"]["hits"][0]["path"], "child.md", "{one}");
+    assert_eq!(one["data"]["hits"].as_array().unwrap().len(), 1, "{one}");
+    // The CLI keeps its required query argument: without one it refuses.
+    let o = run(&f, &["vault", "search"]);
+    assert!(!o.status.success(), "the CLI ran with no query");
+}
+
 /// `path "title"`, as `vault graph` labels a note.
 fn printed_label(s: &str) -> Value {
     let (path, title) = s.split_once(" \"").unwrap();
@@ -1909,6 +2014,136 @@ fn rpc_vault_graph_returns_what_vault_graph_prints() {
         cli_error(&bare, &["vault", "graph", "child"]),
         "{got}"
     );
+}
+
+/// What `trellis vault check` printed, in `vault_check`'s shape: the
+/// report line, the `issues:` block, the `warning:` lines and the run
+/// gate's answer, with the `--fix` hint a refusing gate adds left out.
+fn printed_check(stdout: &str) -> Value {
+    let mut lines = stdout.lines();
+    let line = lines.next().expect("the report line");
+    let mut issues = Vec::new();
+    let mut warnings = Vec::new();
+    let mut gate = Value::Null;
+    let mut in_issues = false;
+    for l in lines {
+        if l == "issues:" {
+            in_issues = true;
+        } else if let Some(w) = l.strip_prefix("warning: ") {
+            in_issues = false;
+            warnings.push(w.to_string());
+        } else if let Some(s) = l.strip_prefix("run gate: accepts this vault (") {
+            in_issues = false;
+            let stats: serde_json::Map<String, Value> = s
+                .trim_end_matches(')')
+                .split(' ')
+                .map(|kv| {
+                    let (k, v) = kv.split_once('=').expect("k=v");
+                    (k.to_string(), json_u64(v))
+                })
+                .collect();
+            gate = serde_json::json!({"accepts": true, "stats": stats});
+        } else if l.starts_with("run gate: refuses this vault, ") {
+            in_issues = false;
+            gate = serde_json::json!({"accepts": false, "violations": []});
+        } else if let Some(item) = l.strip_prefix("  ") {
+            if in_issues {
+                issues.push(item.to_string());
+            } else {
+                gate["violations"]
+                    .as_array_mut()
+                    .expect("after the gate line")
+                    .push(item.into());
+            }
+        }
+    }
+    serde_json::json!({"line": line, "issues": issues, "warnings": warnings, "gate": gate})
+}
+
+fn json_u64(v: &str) -> Value {
+    Value::from(v.parse::<u64>().expect("a count"))
+}
+
+#[test]
+fn rpc_vault_check_returns_what_vault_check_prints() {
+    // The risks: a client parsing `vault check`'s text because it has no
+    // data form (ADR 0048 §2); a read that writes the vault (every vault
+    // write is a `trellis vault` command, #70); a check blocking the
+    // reader while a run waits on an approval; a `quit` that exits before
+    // the answer; and a gate answer that drifts from what the CLI prints.
+    let f = vault_fixture("rpc-vault-check");
+    let data = answered_three_ways(&f, &serde_json::json!({"type": "vault_check"}));
+
+    // Last: what `trellis vault check` prints. The fixture's orphan makes
+    // the gate refuse, which exits 1 on the CLI and is data here.
+    let o = run(&f, &["vault", "check"]);
+    assert!(!o.status.success(), "the gate refuses this vault");
+    assert_eq!(
+        data,
+        printed_check(&String::from_utf8_lossy(&o.stdout)),
+        "what `trellis vault check` prints"
+    );
+    assert_eq!(data["gate"]["accepts"], false, "{data}");
+    assert_eq!(
+        data["gate"]["violations"].as_array().unwrap().len(),
+        1,
+        "{data}"
+    );
+    assert_eq!(data["issues"].as_array().unwrap().len(), 2, "{data}");
+
+    // A vault the gate accepts: its stats, as counts, and no violation.
+    std::fs::write(
+        f.root.join("notes/orphan.md"),
+        "---\ntitle: \"Orphan\"\nparent: \"[[root]]\"\n---\nA found note. Back to [[child]].\n",
+    )
+    .unwrap();
+    git(&f.root, &["commit", "-qam", "adopted"]);
+    let ok = answer(&f, serde_json::json!({"id": "k", "type": "vault_check"}));
+    assert_eq!(ok["success"], true, "{ok}");
+    let o = run(&f, &["vault", "check"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        ok["data"],
+        printed_check(&String::from_utf8_lossy(&o.stdout))
+    );
+    assert_eq!(ok["data"]["gate"]["accepts"], true, "{ok}");
+    assert_eq!(ok["data"]["gate"]["stats"]["notes"], 3, "{ok}");
+    assert_eq!(ok["data"]["issues"], serde_json::json!([]), "{ok}");
+
+    // No vault configured: the CLI's message.
+    let bare = fixture("rpc-vault-check-bare");
+    let got = answer(&bare, serde_json::json!({"id": "e", "type": "vault_check"}));
+    assert_eq!(got["success"], false, "{got}");
+    assert_eq!(got["error"], cli_error(&bare, &["vault", "check"]), "{got}");
+}
+
+#[test]
+fn rpc_vault_check_refuses_a_fix_field_by_name_and_writes_nothing() {
+    // The risk: a `fix` field taken as `--fix`, so an rpc read repairs the
+    // vault (#70); or ignored, so the client reads the unrepaired report as
+    // the repaired one. Either value is refused, and the vault is untouched.
+    let f = vault_fixture("rpc-vault-check-fix");
+    for (id, fix) in [("t", Value::from(true)), ("f", Value::from(false))] {
+        let got = answer(
+            &f,
+            serde_json::json!({"id": id, "type": "vault_check", "fix": fix}),
+        );
+        assert_eq!(got["command"], "vault_check", "{got}");
+        assert_eq!(got["success"], false, "{got}");
+        let err = got["error"].as_str().unwrap_or_default();
+        assert!(err.contains("`fix`"), "names the field: {got}");
+        assert!(
+            got.get("data").is_none(),
+            "no report beside the refusal: {got}"
+        );
+    }
+    let status = trellis_vcs::command()
+        .args(["status", "--porcelain"])
+        .current_dir(&f.root)
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    assert_eq!(String::from_utf8_lossy(&status.stdout), "", "worktree");
 }
 
 /// The `paths` of a successful `list_paths` answer, each a JSON string.
@@ -2653,6 +2888,120 @@ fn rpc_every_turn_through_the_governance_audit_keeps_the_contract() {
     assert_eq!(end["outcome"], "converged", "{end}");
 }
 
+/// Holds the `model call` contract over one stream: each carries what the
+/// contract lists and no `prompt_bytes`; each `turn` that called the model
+/// has one before it under its own number. Returns how many `model call`s
+/// there were, for the caller to hold against the calls actually made.
+fn model_calls_precede_turns(records: &[Value], c: &Value) -> usize {
+    let spec = &c["rpc"]["events"]["model call"];
+    let loop_events: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["fields"]["message"] == "model call" || r["fields"]["message"] == "turn")
+        .map(|r| &r["fields"])
+        .collect();
+    let mut gaps: Vec<String> = Vec::new();
+    let mut announced: Vec<&Value> = Vec::new();
+    let mut calls = 0;
+    for e in &loop_events {
+        if e["message"] == "model call" {
+            calls += 1;
+            gaps.extend(missing(
+                e,
+                &spec["always"],
+                &format!("model call {}", e["turn"]),
+            ));
+            if e.get("prompt_bytes").is_some() {
+                gaps.push(format!(
+                    "model call {} carries prompt_bytes, a size not measured before the call",
+                    e["turn"]
+                ));
+            }
+            announced.push(&e["turn"]);
+            continue;
+        }
+        // The audit's turn is numbered after the last call (trellis-loop
+        // agent.rs), so it is held by the count the caller checks against
+        // the provider, not by pairing.
+        let audit = e["check_kind"] == "Governance";
+        let preceded = announced.last() == Some(&&e["turn"]);
+        if !audit && !preceded {
+            gaps.push(format!(
+                "turn {} ({}) had no model call announced under its number before it",
+                e["turn"], e["call"]
+            ));
+        }
+    }
+    assert!(gaps.is_empty(), "{gaps:?}\n{records:?}");
+    calls
+}
+
+#[test]
+fn rpc_and_run_json_announce_each_model_call_before_its_turn() {
+    // The risk: replies are not streamed, so between two turns a client
+    // hears nothing from a slow local model and reads the run as hung
+    // (qa/REPORT-2026-10-02.md). The `model call` event is the one
+    // difference a client can draw, so it has to be on both streams before
+    // the wait, under the turn number it produces, and never for the
+    // governance audit, which calls no model (ADR 0025 §4, #614).
+    let c = contract();
+    let f = fixture("rpc-model-call");
+    std::fs::create_dir_all(f.root.join(".trellis/governance")).unwrap();
+    std::fs::write(
+        f.root.join(".trellis/governance/no-vendor.toml"),
+        "name = \"Vendored code is not ours to edit\"\nrank = \"non-negotiable\"\n\
+         description = \"Changes go upstream.\"\ndeny-write = { paths = [\"vendor/\"] }\n",
+    )
+    .unwrap();
+    commit_passing_checks(&f);
+    let (base, server) = provider_stub(vec![
+        openai_call(
+            "c1",
+            "run_checks",
+            serde_json::json!({"paths": ["a.py"], "kinds": ["typecheck", "tests"]}),
+        ),
+        openai_call("c2", "done", serde_json::json!({"summary": "checked it"})),
+    ]);
+    // A variable nobody sets: a loopback endpoint is then used with no key.
+    let key_env = "TRELLIS_TEST_RPC_MODEL_CALL_KEY";
+    std::fs::write(
+        f.user.join("config.toml"),
+        format!(
+            "[[providers]]\nname = \"stub\"\nprotocol = \"openai\"\n\
+             base_url = \"{base}\"\nkey_env = \"{key_env}\"\n"
+        ),
+    )
+    .unwrap();
+    let mut cmd = trellis(&f);
+    cmd.env_remove(key_env);
+    let mut rpc = Rpc::start(cmd);
+    rpc.choose("provider:stub#m");
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "check f",
+                           "model": "provider:stub#m"}),
+    );
+    let records = rpc.finish();
+    let requests = server.join().unwrap().len();
+    assert!(
+        records
+            .iter()
+            .any(|r| r["fields"]["message"] == "turn" && r["fields"]["check_kind"] == "Governance"),
+        "the run reached no governance audit: {records:?}"
+    );
+    // One announcement per request the provider saw, no more: a count that
+    // disagreed with the provider's would be a call that never happened.
+    assert_eq!(
+        model_calls_precede_turns(&records, &c),
+        requests,
+        "{records:?}"
+    );
+
+    // `run --json`, through the scripted driver, which sends no prompt and
+    // still makes a call per step.
+    let o = run(&f, &["run", "change f", "--model", &f.spec, "--json"]);
+    let lines = jsonl(&o);
+    assert_eq!(model_calls_precede_turns(&lines, &c), 2, "{lines:?}");
+}
+
 #[test]
 fn log_json_carries_every_trail_field_the_desktop_reads() {
     // The risk: a path the desktop's trails view reads is renamed or moved
@@ -3366,6 +3715,135 @@ fn rpc_get_state_tier_after_a_colibri_refusal_is_the_refusal_the_run_decided() {
     );
     rpc.finish();
     assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+// ---- #627: the `runtime identified` event is in the client contract ----
+
+/// A loopback stub that answers as colibri serving `glm-5.2` and accepting
+/// tools, whose `GET /health` says `health`, and whose first chat request
+/// is a `done` call. As `tests/colibri_run.rs`'s `stub_health` does for
+/// `run --json`.
+fn colibri_health_stub(health: &'static str) -> String {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(mut s) = s else { break };
+            let (raw, body) = read_request(&mut s);
+            let first = raw.lines().next().unwrap_or_default();
+            let reply = if is_models_get(&raw) {
+                r#"{"object":"list","data":[{"id":"glm-5.2","object":"model","created":1758800000,"owned_by":"colibri"}]}"#.to_string()
+            } else if first.starts_with("GET ") && first.contains("/health ") {
+                health.to_string()
+            } else if serde_json::from_str::<Value>(&body).is_ok_and(|v| v["max_tokens"] == 1) {
+                // The tools probe (ADR 0047 decision 4): accepted.
+                r#"{"id":"chatcmpl-1","object":"chat.completion","created":1758800000,"model":"glm-5.2","choices":[{"index":0,"message":{"role":"assistant","content":"I"},"finish_reason":"length"}],"usage":{"prompt_tokens":40,"completion_tokens":1,"total_tokens":41}}"#.to_string()
+            } else {
+                openai_call(
+                    "c1",
+                    "done",
+                    serde_json::json!({"summary": "nothing to do"}),
+                )
+            };
+            let _ = s.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{reply}",
+                    reply.len()
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    format!("http://{addr}")
+}
+
+/// One rpc run against [`colibri_health_stub`] answering `health`: the
+/// stream's `runtime identified` events, and the run's records.
+fn rpc_run_on_colibri(name: &str, health: &'static str) -> (Fixture, Vec<Value>, Vec<Value>) {
+    let f = fixture(name);
+    let base = colibri_health_stub(health);
+    let key_env = user_provider(&f, "coli", &format!("{base}/v1"));
+    let mut cmd = trellis(&f);
+    cmd.env_remove(key_env);
+    let mut rpc = Rpc::start(cmd);
+    rpc.choose("provider:coli#glm-5.2");
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                                "model": "provider:coli#glm-5.2"}),
+    );
+    let end = rpc.next(|v| v["type"] == "run_end" && v["id"] == "p");
+    assert_eq!(end["outcome"], "not_converged", "{end}");
+    let records = rpc.finish();
+    let events: Vec<Value> = records
+        .iter()
+        .filter(|r| r["fields"]["message"] == "runtime identified")
+        .cloned()
+        .collect();
+    (f, events, records)
+}
+
+#[test]
+fn rpc_runtime_identified_carries_every_field_the_contract_lists_once_per_run() {
+    // The risk: the event a client reads colibri's self-report from
+    // (ADR 0048 §6) missing from rpc's stdout, doubled, or without a field
+    // tests/client_contract.json lists; or a count colibri did report read
+    // back as something else.
+    const HEALTH_FULL: &str = r#"{"status":"ok","kv_slots":16,"tiers":{"vram":120,"ram":2400,"disk":17000,"vram_gb":22.5,"ram_gb":96.0}}"#;
+    let (f, events, records) = rpc_run_on_colibri("rpc-runtime-identified", HEALTH_FULL);
+    assert_eq!(events.len(), 1, "one event per run: {records:?}");
+    let fields = &events[0]["fields"];
+    let c = contract();
+    let event = &c["rpc"]["events"]["runtime identified"];
+    let mut gaps = missing(fields, &event["always"], "runtime identified");
+    gaps.extend(missing(fields, &event["health_only"], "runtime identified"));
+    assert!(gaps.is_empty(), "{gaps:?}: {fields}");
+    assert_eq!(fields["runtime"], "colibri", "{fields}");
+    assert_eq!(fields["served"], "glm-5.2", "{fields}");
+    assert_eq!(fields["kv_slots"], 16, "{fields}");
+    assert_eq!(fields["tiers_vram"], 120, "{fields}");
+    assert_eq!(fields["tiers_ram"], 2400, "{fields}");
+    assert_eq!(fields["tiers_disk"], 17000, "{fields}");
+    // Before the run's first model request: the client may draw it as the
+    // run starts.
+    let at = |p: &dyn Fn(&Value) -> bool| records.iter().position(p).expect("present");
+    assert!(
+        at(&|r| r["fields"]["message"] == "runtime identified")
+            < at(&|r| r["fields"]["message"] == "model call"),
+        "{records:?}"
+    );
+    // Not in the trail (ADR 0047 decision 13): a record of it would look
+    // more complete than colibri's report is.
+    for t in std::fs::read_dir(f.root.join(".trellis/runs")).unwrap() {
+        let text = std::fs::read_to_string(t.unwrap().path()).unwrap();
+        assert!(
+            !text.contains("kv_slots"),
+            "the trail carries the self-report"
+        );
+    }
+}
+
+#[test]
+fn rpc_runtime_identified_leaves_unreported_counts_absent_never_0() {
+    // The risk: a liveness-only /health read back as 0 slots and 0 experts
+    // on every tier, which a client would draw as a figure (ADR 0048 §8).
+    const HEALTH_LIVENESS: &str = r#"{"status":"ok"}"#;
+    let (_f, events, records) =
+        rpc_run_on_colibri("rpc-runtime-identified-liveness", HEALTH_LIVENESS);
+    assert_eq!(events.len(), 1, "one event per run: {records:?}");
+    let fields = &events[0]["fields"];
+    let c = contract();
+    let event = &c["rpc"]["events"]["runtime identified"];
+    assert!(
+        missing(fields, &event["always"], "runtime identified").is_empty(),
+        "{fields}"
+    );
+    for k in names(&event["health_only"]) {
+        assert!(fields.get(k).is_none(), "{k} on {fields}");
+        assert!(
+            event["absent_when"].get(k).is_some(),
+            "the contract says when {k} is absent"
+        );
+    }
 }
 
 // ---- #564: a session's model is chosen before its first prompt ----

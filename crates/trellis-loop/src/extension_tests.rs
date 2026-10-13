@@ -297,6 +297,42 @@ async fn bash_runs_in_a_clone_of_the_repository_with_the_run_s_identity_and_a_ti
 }
 
 #[tokio::test]
+async fn sgr_colour_codes_in_bash_output_do_not_reach_the_model() {
+    // #623: a shell with FORCE_COLOR exported colours into the pipe, and the
+    // codes landed in the tail the model reads (ADR 0019) and in the trail.
+    // The command's environment is left alone; the capture is what is
+    // cleaned, so a grounded check's own run is not touched (ADR 0021 1.16).
+    let d = git_repo();
+    let tools = with_bash(&[], true, Duration::from_secs(10));
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_tools(tools)
+        .spawn();
+    // Windows `cmd` has no escape in `echo`, so the sequence is written
+    // through PowerShell's `[char]27` there; `printf` elsewhere. No double
+    // quote is in it: std quotes the script for a program that reads its
+    // command line the C runtime's way, `cmd /C` does not, and PowerShell
+    // was handed `"Write-Output (...)"` as a string and printed it unrun
+    // (#666's Windows CI). Unquoted, `-Command` joins what follows it.
+    let command = if cfg!(windows) {
+        "powershell -NoProfile -Command Write-Output ([char]27 + '[31mred' + [char]27 + '[0m')"
+    } else {
+        "printf '\\033[31mred\\033[0m\\n'"
+    };
+    let out = orch
+        .call(&ToolCall::Bash {
+            command: command.into(),
+        })
+        .await;
+    match &out.result {
+        ToolResult::Output(s) => {
+            assert!(s.contains("exit 0\nred"), "{s:?}");
+            assert!(!s.contains('\x1b'), "{s:?}");
+        }
+        other => panic!("bash did not run: {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn a_tool_outside_the_run_s_set_is_refused_by_the_orchestrator() {
     // The parser refuses it too, but the orchestrator is the one that binds:
     // a call can reach it by more than one door.
@@ -563,7 +599,8 @@ fn refused(r: ToolResult) -> String {
 async fn a_profile_tool_list_narrows_the_run_and_the_orchestrator_refuses_the_rest() {
     // The risk: a profile's `tools` list shapes the prompt while the
     // orchestrator, the one refusal that binds, still serves everything.
-    let d = repo();
+    // Under git: `read_file` asks git whether the path is ignored (#611).
+    let d = git_repo();
     let (set, not_offered) = ToolSet::default().narrowed(&["read_file".to_string()]);
     assert!(not_offered.is_empty());
     assert_eq!(set.names(), ["read_file", "run_checks"]);
@@ -704,6 +741,155 @@ async fn write_file_refuses_when_git_cannot_say_whether_the_path_is_ignored() {
         other => panic!("an unanswered ignore check must refuse: {other:?}"),
     }
     assert!(!d.path().join("app/new.py").exists());
+}
+
+/// `git_repo()` with an ignore file, an ignored `.env` and an ignored
+/// directory, each holding `canary`, next to the tracked-in-tree `app/`.
+fn with_ignored_files(canary: &str) -> tempfile::TempDir {
+    let d = git_repo();
+    std::fs::write(d.path().join(".gitignore"), ".env\nbuild/\n").unwrap();
+    std::fs::write(d.path().join(".env"), format!("TOKEN={canary}\n")).unwrap();
+    std::fs::create_dir_all(d.path().join("build")).unwrap();
+    std::fs::write(d.path().join("build/out.txt"), format!("{canary}\n")).unwrap();
+    d
+}
+
+#[tokio::test]
+async fn read_file_refuses_an_ignored_file_and_shows_none_of_it() {
+    // The risk (#611): `find`, `grep` and the throwaway clone all leave a
+    // git-ignored `.env` out, and `read_file` was the one tool that put its
+    // bytes into an observation, the trail and a hosted request body.
+    let canary = format!("canary-{}", std::process::id());
+    let d = with_ignored_files(&canary);
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+    for path in [".env", "build/out.txt"] {
+        let e = refused(
+            orch.call(&ToolCall::ReadFile { path: path.into() })
+                .await
+                .result,
+        );
+        assert!(
+            e.starts_with("read_file refused:") && e.contains("ignored by git"),
+            "{path}: {e}"
+        );
+        assert!(!e.contains(&canary), "{path}: {e}");
+    }
+    // An untracked file git does not ignore reads as before.
+    let r = orch
+        .call(&ToolCall::ReadFile {
+            path: "app/util.py".into(),
+        })
+        .await
+        .result;
+    assert!(matches!(r, ToolResult::FileContent(_)), "{r:?}");
+}
+
+#[tokio::test]
+async fn read_file_refuses_an_ignored_path_by_git_s_rule_and_not_by_its_name() {
+    // The risk: a name list in place of git's rule. A tracked `.env` is in
+    // the history the model is already shown, and a fixture called `.env`
+    // is legitimate; git's own answer is what `find` and `grep` go by.
+    let canary = format!("canary-{}", std::process::id());
+    let d = with_ignored_files(&canary);
+    std::fs::write(d.path().join("app/.env"), "FIXTURE=1\n").unwrap();
+    crate::testutil::git(d.path(), &["add", "-f", "app/.env"]);
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+    let r = orch
+        .call(&ToolCall::ReadFile {
+            path: "app/.env".into(),
+        })
+        .await
+        .result;
+    assert!(
+        matches!(r, ToolResult::FileContent(ref s) if s.contains("FIXTURE=1")),
+        "a tracked file is read whatever its name matches: {r:?}"
+    );
+    let e = refused(
+        orch.call(&ToolCall::ReadFile {
+            path: ".env".into(),
+        })
+        .await
+        .result,
+    );
+    assert!(e.contains("ignored by git") && !e.contains(&canary), "{e}");
+}
+
+#[tokio::test]
+async fn read_file_refuses_an_ignored_check_it_could_not_make() {
+    // Fail closed, as `write_file` does. The risk: `git check-ignore`
+    // failing (not a repository, no git) read as "not ignored", so the one
+    // case where git cannot say is the one case the file is read.
+    let d = repo(); // not a git repository: check-ignore exits 128
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+    let e = refused(
+        orch.call(&ToolCall::ReadFile {
+            path: "app/util.py".into(),
+        })
+        .await
+        .result,
+    );
+    assert!(
+        e.starts_with("read_file refused:") && e.contains("could not ask git"),
+        "{e}"
+    );
+    assert!(!e.contains("def helper"), "{e}");
+}
+
+#[tokio::test]
+async fn ls_leaves_ignored_entries_out_and_says_nothing_about_them() {
+    // The risk (#611): a listing that names a git-ignored `.env` invites
+    // the read that `read_file` refuses, and a "(n ignored)" note would
+    // itself say which ignored files exist. Tracked and untracked-unignored
+    // entries list as before, in the root and in a subdirectory.
+    let canary = format!("canary-{}", std::process::id());
+    let d = with_ignored_files(&canary);
+    std::fs::write(d.path().join("app/.env"), "FIXTURE=1\n").unwrap();
+    std::fs::write(d.path().join("app/notes.txt"), "n\n").unwrap();
+    crate::testutil::git(d.path(), &["add", "-f", "app/.env"]);
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_tools(write_tools())
+        .spawn();
+    let text = |r: ToolResult| match r {
+        ToolResult::Output(s) => s,
+        other => panic!("{other:?}"),
+    };
+    let top = text(orch.call(&ToolCall::Ls { path: ".".into() }).await.result);
+    let names: Vec<&str> = top.lines().collect();
+    assert!(
+        names.contains(&"app/") && names.contains(&".gitignore"),
+        "{top}"
+    );
+    for hidden in [".env", "build/", "build"] {
+        assert!(!names.contains(&hidden), "{hidden}: {top}");
+    }
+    assert!(!top.contains("ignored"), "says nothing about them: {top}");
+    // In a subdirectory: the tracked `.env` stays, the rule being git's and
+    // not the name's.
+    let sub = text(
+        orch.call(&ToolCall::Ls {
+            path: "app/".into(),
+        })
+        .await
+        .result,
+    );
+    let names: Vec<&str> = sub.lines().collect();
+    assert_eq!(names, [".env", "notes.txt", "util.py"], "{sub}");
+}
+
+#[tokio::test]
+async fn ls_leaves_ignored_entries_out_or_refuses_when_git_cannot_say() {
+    // Fail closed: a listing whose ignore check never ran would show every
+    // entry, ignored ones included.
+    let d = repo(); // not a git repository
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_tools(write_tools())
+        .spawn();
+    let e = refused(orch.call(&ToolCall::Ls { path: "app".into() }).await.result);
+    assert!(
+        e.starts_with("ls refused:") && e.contains("could not ask git"),
+        "{e}"
+    );
+    assert!(!e.contains("util.py"), "{e}");
 }
 
 #[tokio::test]

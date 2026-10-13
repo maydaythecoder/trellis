@@ -227,6 +227,36 @@ fn check(dir: &Path, fix: bool) -> Result<()> {
     Ok(())
 }
 
+/// `rpc`'s `vault_check`: what `trellis vault check` prints, as data, and
+/// never `--fix`'s path: `edit::check(dir, false)` writes nothing and
+/// touches nothing, so there is no `dates.json` to keep in step, and every
+/// vault write stays a `trellis vault` command (#70). The gate answer is
+/// the run gate's vault validation, not a `Verdict` (ADR 0004); it says
+/// whether a run would accept the vault, and nothing about code.
+/// Strings are given as stored, as `search_json` gives them.
+pub(crate) fn check_json(root: &Path) -> Result<serde_json::Value> {
+    let r = edit::check(&vault_dir(root, None)?, false)?;
+    let gate = match &r.gate {
+        Ok(s) => serde_json::json!({
+            "accepts": true,
+            "stats": {
+                "notes": s.notes,
+                "parentless": s.parentless,
+                "connected": s.connected,
+                "manifest_missing": s.manifest_missing,
+                "manifest_extra": s.manifest_extra,
+            },
+        }),
+        Err(violations) => serde_json::json!({"accepts": false, "violations": violations}),
+    };
+    Ok(serde_json::json!({
+        "line": r.line,
+        "issues": r.issues.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        "warnings": r.warnings,
+        "gate": gate,
+    }))
+}
+
 fn search(dir: &Path, query: &str, limit: usize) -> Result<()> {
     for l in search_lines(dir, query, limit)? {
         println!("{l}");

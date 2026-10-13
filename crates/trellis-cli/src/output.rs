@@ -44,6 +44,24 @@ pub(crate) fn human() -> Box<dyn Write + Send> {
     }
 }
 
+/// Whether the human stream may carry colour codes: only when the stream
+/// `human()` writes to is a terminal and `NO_COLOR` is unset. A pipe gets
+/// none, because what reads it shows text: the desktop's messages pane drew
+/// every escape as a glyph (ADR 0048 §2, #642), and so does a CI log.
+pub(crate) fn human_colour() -> bool {
+    use std::io::IsTerminal;
+    let terminal = if json() {
+        std::io::stderr().is_terminal()
+    } else {
+        std::io::stdout().is_terminal()
+    };
+    colour(terminal, std::env::var_os("NO_COLOR").is_some())
+}
+
+fn colour(terminal: bool, no_color: bool) -> bool {
+    terminal && !no_color
+}
+
 /// A place framing records are written, one whole line per lock.
 pub(crate) type Sink = Arc<Mutex<dyn Write + Send>>;
 
@@ -321,6 +339,17 @@ pub(crate) fn log_json(root: &Path, limit: usize, out: &mut dyn Write) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_terminal_keeps_colour_and_a_pipe_or_no_color_drops_it() {
+        // The pipe half is held through the binary in tests/modes.rs; a pty
+        // is not available there, so the terminal half is held here: the fix
+        // for #642 must not turn colour off for a person at a terminal.
+        assert!(colour(true, false));
+        assert!(!colour(false, false));
+        assert!(!colour(true, true));
+        assert!(!colour(false, true));
+    }
 
     #[test]
     fn c1_controls_are_escaped_and_the_line_stays_valid_json() {

@@ -8,6 +8,11 @@
 the trust store untouched, each held by a test.
 **Amended:** 2026-09-30 (#200): §8, the tree listing bounded while it is
 read.
+**Amended:** 2026-10-12 (#617): §4, each entry carries a per-file content
+digest and `--list` reports it.
+**Amended:** 2026-10-12 (#618): §1 and §11, `--upgrade <name>`; "Upgrade
+in place" leaves "Not built".
+**Amended:** 2026-10-12 (#619): §1 and §12, `--dry-run`.
 **Amends:** ADR 0021 row 10 ("packages: deferred ... needs the trust store
 first"). Grows the CLI surface fixed by brief 4.12, as the owner directed.
 
@@ -25,10 +30,13 @@ Its paths, file modes and sizes are all chosen by whoever wrote it.
 
 ## Decision
 
-1. **The surface.** One command, three forms:
+1. **The surface.** One command, four forms and one flag:
    - `trellis install <git-url|path>@<ref>`
    - `trellis install --list`
    - `trellis install --remove <name>`
+   - `trellis install --upgrade <name>` (2026-10-12, #618; see 11)
+   - `trellis install <git-url|path>@<ref> --dry-run` (2026-10-12, #619;
+     see 12)
 
    It needs no repository: packages are user state, as models are.
 
@@ -54,6 +62,20 @@ Its paths, file modes and sizes are all chosen by whoever wrote it.
    refuses the command rather than reading as empty, since the next save
    would drop every entry (ADR 0025 §7's rule for config files). A source
    URL carrying a password is refused, because it would be written here.
+
+   *2026-10-12 (#617):* an entry also carries `digest`, a table of
+   `<package path> = <sha256>` over the bytes of each file as the install
+   wrote them (ADR 0044's rule: the bytes on disk are what count), one per
+   file rather than one over all of them so a change can be named by path.
+   `--list` ends each line with `digest ok`, `modified: <paths>` (an edited
+   path bare, a missing one `(missing)`, one not installed `(added)`; a
+   link or an unreadable file counts as modified) or `not recorded`. The
+   field is optional: a manifest from before this date still loads, its
+   entries read "not recorded" and never "unchanged", and a save does not
+   invent one. The digest is informational and never a trust decision; §9
+   holds and the trust store is untouched. The hashing is `sha2`, already
+   in the tree through ADR 0044. Evidence: `install_digest_*`
+   (`cargo test -p trellis-cli install_digest_`).
 
 5. **What is copied.** Exactly two shapes, and only as plain files (git
    mode `100644`):
@@ -168,10 +190,42 @@ Its paths, file modes and sizes are all chosen by whoever wrote it.
       (`cargo test -p trellis-cli installed_skill_`) and
       `installed_template_is_listed_and_read_and_the_repository_wins_a_name`.
 
+11. **`--upgrade <name>`** (2026-10-12, #618). The entry's recorded source
+    and ref are re-resolved; a ref that is a tag or a commit id resolves
+    to the same commit, so a pin is implicit and only a branch ref moves
+    (2 keeps the ref required). The same commit is a no-op that says so
+    and touches nothing. Otherwise the new commit is listed, selected,
+    bounded and staged exactly as an install is (5 to 8 unchanged, and 6's
+    settings, since the manifest is a file the user can edit, are applied
+    to the recorded source and ref as to a fresh one), the old copy is
+    moved into the staging directory, the new one is renamed into place,
+    and only then are the entry's `commit` and `digest` rewritten; a swap
+    or save that fails puts the old copy back. A copy whose files differ
+    from the digest in 4 is refused with every path named, and an entry
+    with no digest is refused because nothing can say it was not edited;
+    `--remove` then install is the way past both. There is no `--force`:
+    an upgrade that overwrote the user's edits would be a removal nobody
+    asked for. An unknown name, or one outside 3's alphabet, is refused
+    before any path or git argument is built from it. Reinstalling a name
+    by `install <source>@<ref>` stays refused. Evidence:
+    `install_upgrade_*` (`cargo test -p trellis-cli install_upgrade_`).
+
+12. **`--dry-run`** (2026-10-12, #619). Every check an install makes,
+    the clone under 6's hardening and the listing under 8's bounds, then
+    the commit the ref resolved to, each path that would be copied on its
+    own line, the skipped block of 5 word for word, and "would install N
+    skill(s), M prompt(s); nothing was written". Nothing is read by blob
+    and nothing written: the staging directory, bare clone included, goes
+    under the system temporary directory rather than `packages/`, since
+    there is no rename into place to keep on one filesystem, so
+    `packages/` and `packages.toml` are byte-identical before and after,
+    down to a `packages/` that did not exist. A refusal (a name already
+    installed, a tree or package over 8's bounds, nothing to install) is
+    the install's, word for word. Evidence: `install_dry_run_*`
+    (`cargo test -p trellis-cli install_dry_run_`).
+
 ## Not built
 
-- **Upgrade in place.** Reinstalling a name is refused; `--remove` then
-  install.
 - **The fetch itself is not bounded.** `git clone` downloads the whole
   source before the bounds in 8 apply, and a slow or huge source is waited
   on. The bounds cap what is listed and written, not what is fetched.
