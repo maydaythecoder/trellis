@@ -888,30 +888,122 @@ fn a_process_agent_s_write_into_the_vault_is_refused_and_named() {
 
 #[cfg(unix)]
 #[test]
+fn sandboxed_writer_process_agent_cannot_connect_to_loopback_or_read_a_fake_home() {
+    // ADR 0055 (#621): a process agent runs under the same OS sandbox as
+    // `bash`, from `trellis-cli`'s own spawn, with the home directory
+    // trellis was started with hidden. Without a working sandbox it runs
+    // as before and the run says why, which is checked instead.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let home = scratch("proc-sandbox-fakehome");
+    std::fs::create_dir_all(&home).unwrap();
+    let canary = format!("canary-621-{}", std::process::id());
+    std::fs::write(home.join("credentials"), &canary).unwrap();
+    let script = format!(
+        "mkdir -p app; (bash -c 'echo x > /dev/tcp/127.0.0.1/{port}' 2>/dev/null \
+         && echo CONNECTED || echo NO-CONNECTION) > app/seen.txt; \
+         (cat {}/credentials 2>/dev/null || echo UNREADABLE) >> app/seen.txt",
+        home.display()
+    );
+    let argv = serde_json::to_string(&["sh", "-c", &script]).unwrap();
+    let d = process_fixture("proc-sandbox", &argv, PASSES);
+    ok(&d, &["queue", "add", "look around", "--assignee", "maker"]);
+    let out = trellis_command(&d, &["work"])
+        .env("HOME", &home)
+        .output()
+        .unwrap();
+    let s = combined(&out);
+    assert!(
+        s.contains("CONVERGED") && !s.contains("NOT CONVERGED"),
+        "{s}"
+    );
+    // ADR 0053: the task ran in a worktree of its own.
+    let seen =
+        std::fs::read_to_string(task_wt(&d, &only(&d, "done")).join("app/seen.txt")).unwrap();
+    if s.contains("sandbox:  bwrap") || s.contains("sandbox:  sandbox-exec") {
+        assert!(seen.contains("NO-CONNECTION"), "{seen}\n{s}");
+        assert!(
+            !seen.contains(&canary) && seen.contains("UNREADABLE"),
+            "{seen}\n{s}"
+        );
+    } else {
+        assert!(s.contains("sandbox:  none ("), "the run says why:\n{s}");
+        assert!(
+            seen.contains("CONNECTED") && seen.contains(&canary),
+            "{seen}"
+        );
+    }
+    drop(listener);
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[cfg(unix)]
+#[test]
 fn a_process_agent_runs_in_trellis_s_own_process_group() {
     // The risk (review round 9, finding 5): in a process group of its own
     // the agent was a background job on the user's terminal, stopped by
     // SIGTTOU or SIGTTIN the moment it wrote to or read from it. That
     // cannot be staged without a terminal, so this guards the cause: the
     // agent's group is trellis's, which is this test's.
+    //
+    // Read from outside the agent, with `ps` over every process: under
+    // `bwrap` (ADR 0055) the agent is in a pid namespace of its own, where
+    // a group led from outside reads as 0, although the kernel, and the
+    // terminal, still put it in trellis's group.
+    let marker = format!("trellis-pgid-marker-{}", std::process::id());
     let d = process_fixture(
         "proc-pgid",
-        r#"["sh", "-c", "mkdir -p app && ps -o pgid= -p $$ > app/pgid.txt"]"#,
+        &format!(
+            r#"["sh", "-c", "sleep 3; mkdir -p app && echo done > app/done.txt", "{marker}"]"#
+        ),
         PASSES,
     );
     ok(&d, &["queue", "add", "pgid", "--assignee", "maker"]);
-    let s = ok(&d, &["work"]);
-    assert!(
-        s.contains("CONVERGED") && !s.contains("NOT CONVERGED"),
-        "{s}"
-    );
-    let theirs =
-        std::fs::read_to_string(task_wt(&d, &only(&d, "done")).join("app/pgid.txt")).unwrap();
     let ours = Command::new("ps")
         .args(["-o", "pgid=", "-p", &std::process::id().to_string()])
         .output()
         .unwrap();
-    assert_eq!(theirs.trim(), String::from_utf8_lossy(&ours.stdout).trim());
+    let ours = String::from_utf8_lossy(&ours.stdout).trim().to_string();
+    let work = trellis_command(&d, &["work"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // The agent's own `sh`, not the sandbox's `bwrap` whose arguments hold
+    // the same text.
+    let is_agent = |l: &str| l.split_whitespace().nth(1) == Some("sh");
+    let started = std::time::Instant::now();
+    let mut seen: Vec<String> = Vec::new();
+    while started.elapsed() < std::time::Duration::from_secs(20) {
+        let all = Command::new("ps")
+            .args(["-A", "-o", "pgid=", "-o", "args="])
+            .output()
+            .unwrap();
+        seen = String::from_utf8_lossy(&all.stdout)
+            .lines()
+            .filter(|l| l.contains(&marker))
+            .map(|l| l.trim().to_string())
+            .collect();
+        if seen.iter().any(|l| is_agent(l)) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let out = work.wait_with_output().unwrap();
+    let s = combined(&out);
+    assert!(
+        s.contains("CONVERGED") && !s.contains("NOT CONVERGED"),
+        "{s}"
+    );
+    assert!(
+        seen.iter().any(|l| is_agent(l)),
+        "the agent was never seen running:\n{s}"
+    );
+    for line in &seen {
+        let pgid = line.split_whitespace().next().unwrap_or_default();
+        assert_eq!(pgid, ours, "{line}\n{seen:?}");
+    }
     let _ = std::fs::remove_dir_all(&d);
 }
 

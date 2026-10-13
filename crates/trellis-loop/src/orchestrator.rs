@@ -389,6 +389,9 @@ pub struct Orchestrator {
     /// (ADR 0032, "Hooks"): made at the first hook, refreshed before each
     /// later one, removed when the call ends.
     hook_clone: Option<crate::isolate::Sandbox>,
+    /// The OS sandbox `bash` and custom tools run under inside their clone
+    /// (ADR 0055): the machine's, detected once, unless a caller set one.
+    os: crate::os_sandbox::OsSandbox,
 }
 
 impl Orchestrator {
@@ -413,7 +416,16 @@ impl Orchestrator {
             changed: Vec::new(),
             guard: None,
             hook_clone: None,
+            os: crate::os_sandbox::OsSandbox::detected().clone(),
         }
+    }
+
+    /// The OS sandbox `bash` and custom tools run under, in place of the
+    /// one detected for this machine.
+    #[must_use]
+    pub fn with_os_sandbox(mut self, os: crate::os_sandbox::OsSandbox) -> Self {
+        self.os = os;
+        self
     }
 
     /// The trust guard for this run's trusted code: custom tools refuse to
@@ -1079,6 +1091,7 @@ impl Orchestrator {
             cap: crate::exec::OUTPUT_CAP,
             head: false,
             whole: false,
+            os: Some(&self.os),
         })
         .await;
         // Off the runtime: every copied-in file is hashed again.

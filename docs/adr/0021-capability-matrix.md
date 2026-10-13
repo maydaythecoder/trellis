@@ -32,7 +32,9 @@ The clone is not an OS sandbox: a writer that reaches the repository by
 absolute path can still write there, `.git` included, and against that
 writer ADR 0009's guarantee is best-effort; nor are network access or
 reads outside the clone contained (ADR 0032 "Limits"). An OS sandbox or
-container, row 13.3 below, is still deferred. The rows below for `bash`,
+container, row 13.3 below, is still deferred. *Amended 2026-10-12 (ADR
+0055):* an OS sandbox is built where `bwrap` (Linux) or `sandbox-exec`
+(macOS) is present and works; elsewhere these limits hold as written. The rows below for `bash`,
 hooks, custom tools and process agents mean "built, with that limit".
 
 **When the waves landed** (2026-09-27):
@@ -124,7 +126,7 @@ override any row.
 | 1.3 built-in tools read/edit | built; **write, grep, find, ls, bash → W-B** (bash is opt-in, see ADR 0023) |
 | 1.4 tool selection flags | W-B (`[tools]` enable/disable) |
 | 1.5 output truncation | built (2,000-character tail, and a separate skill window, ADR 0019) |
-| 1.6 swappable tool backends (ssh, micro-VM) | deferred: needs the sandbox decision (S-series) first |
+| 1.6 swappable tool backends (ssh, micro-VM) | deferred: needs the sandbox decision (S-series) first. **Amended 2026-10-12 (#621, ADR 0055):** the sandbox decision is taken for local commands (`bwrap` on Linux, `sandbox-exec` on macOS, a warning when missing or failing, Windows on ADR 0035's job objects); ssh and micro-VM backends stay deferred |
 | 1.7 parallel tool calls | excluded: one call per turn is the loop shape (ADR 0005). **Amended 2026-09-29 (#63):** the owner kept it excluded on 2026-09-28, and the shape carries weight beyond ADR 0005. ADR 0023's gate log records a denial against the turn number, because the loop makes exactly one `Request::Call` per turn; the trail's actions, the rollback points and the write/check serialization (S5) assume one call per turn too. Building it needs an ADR that first gives the gate log and the trail per-call ids and serializes writes, with a test that two edits to one file never interleave. **Amended 2026-10-04 (#324):** pi 1.0.2 (inventory 1.7, 4.23, 17.1) adds codemode (17.1) and nested tool calls (4.23) as further routes to several calls in one turn: a codemode script calls tools in parallel, and `ctx.executeTool` runs one tool from inside another. Both are excluded under the same clause (#63), and so are the rows the re-inventory section gives them. Accepted (owner-directed): the session's choice under the owner's 2026-10-04 delegation. |
 | 1.8 terminate flag | built in effect (`done` ends a run; convergence is decided by checks) |
 | 1.9 retry/backoff | built (format retries); provider backoff → W-C |
@@ -166,7 +168,7 @@ override any row.
 | 11 TUI features | excluded [cosmetic]; `@` file search is built in `tui` (paths from `git ls-files`, so ignored files are never offered; #52), and `session` line mode has none. **Amended 2026-10-06 (#500), by ADR 0052, accepted 2026-10-07:** the TUI these features are measured against moves from ratatui (`crates/tui-demo`) to a Go/Bubble Tea client of `trellis rpc` (`tui/`) once it reaches parity; `@` file search moves with it, through an rpc `list_paths` command that keeps ignored files out. The row stays excluded [cosmetic] for everything else. |
 | 12 settings layering | W-D (user-level `~/.config/trellis/config.toml` under the repo's) |
 | 13.1–13.2 trust | W-B |
-| 13.3 containers | first step built: `bash` and custom tools run in a throwaway git clone (ADR 0032); containers, for network and home-directory isolation, still deferred |
+| 13.3 containers | first step built: `bash` and custom tools run in a throwaway git clone (ADR 0032); containers, for network and home-directory isolation, still deferred. **Amended 2026-10-12 (#621, ADR 0055):** second step built: the clone's command (`bash`, custom tools, hooks, process agents) runs under `bwrap` on Linux or `sandbox-exec` on macOS, with no network, the home directory hidden and writes only to the clone and the temporary directory; when the binary is missing or fails, it runs as before and the `repo:` line and `trellis doctor` say `sandbox: none (<reason>)`. Containers stay deferred |
 | 13.4 guard examples | built in effect: `permission-gate` = ADR 0018, `protected-paths` = `deny_write`, `dirty-repo-guard` = ADR 0009, `git-checkpoint` = snapshot and rollback. **Amended 2026-09-29 (#141):** `plan-mode` = an agent profile whose `tools` list is read-only (for example `read_file`, `grep`, `find`, `ls`; ADR 0026 §4), built in effect |
 | 14 telemetry / durability | built (`tracing`, trail, queue) **Amended 2026-10-04 (14.3 pi-durable):** pi-durable was rebuilt in 1.0.0 as a durable harness with checkpointed tasks and subagents. Built in effect through the trail, the queue and `trellis resume` (ADR 0038); an interrupted run rolls back (ADR 0009) rather than resuming a tool call. Its subagents are row 15.6. Accepted (owner-directed) under the 2026-10-04 delegation. |
 | 15 experimental (chord, pi-protocol, pi-server) | excluded: networked/multi-attach (brief Part 1) |
