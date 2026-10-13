@@ -186,24 +186,18 @@ func (m *Model) key(k tea.KeyMsg) {
 	// The modal is answered first: while it is up, the keys underneath it
 	// are not the ones on screen.
 	if m.Modal != nil {
-		if k.Type == tea.KeyRunes && len(k.Runes) == 1 {
-			switch k.Runes[0] {
-			case 'y':
-				m.answer(true)
-			case 'n':
-				m.answer(false)
-			}
-		}
+		m.modalKey(k)
 		return
 	}
 	switch k.Type {
 	case tea.KeyEsc:
-		// Esc clears the line; on an empty line with no run in flight it
-		// leaves. Mid-run it does not: ^c is the way to stop a run.
+		// Esc clears the line; on an empty line it leaves as ^c does,
+		// stopping a run in flight first (#634): leaving mid-run used to
+		// be ^c's alone, and the ratatui TUI now stops on both.
 		if m.Input != "" {
 			m.Input = ""
-		} else if !m.Running {
-			m.quit()
+		} else {
+			m.ctrlC()
 		}
 	case tea.KeyEnter:
 		m.submit()
@@ -215,7 +209,11 @@ func (m *Model) key(k tea.KeyMsg) {
 	case tea.KeySpace:
 		m.Input += " "
 	case tea.KeyRunes:
-		m.Input += string(k.Runes)
+		if k.Paste {
+			m.Input += pasted(k.Runes)
+		} else {
+			m.Input += string(k.Runes)
+		}
 	case tea.KeyUp:
 		m.ScrollBack++
 	case tea.KeyDown:
@@ -229,7 +227,8 @@ func (m *Model) key(k tea.KeyMsg) {
 // ctrlC aborts a run in flight first, so it rolls back through trellis,
 // then quits; the program ends when the child exits. An approval on screen
 // is closed unanswered: the run's abort answers its gate no, and nothing
-// here turns leaving into a yes.
+// here turns leaving into a yes. A question still on its way is not shown
+// either (approvalRequested): nobody is waiting for its answer.
 func (m *Model) ctrlC() {
 	if m.Quitting {
 		return
@@ -241,6 +240,18 @@ func (m *Model) ctrlC() {
 		m.pushLine("· stopping: the run rolls back before trellis exits")
 	}
 	m.quit()
+}
+
+// pasted is a bracketed paste as input text (#639). Bubble Tea delivers a
+// paste as one key carrying every rune, its line breaks among them; each
+// break, CR, LF or CRLF, becomes one space, so a paste never submits
+// anything (a break is not an Enter) and a multi-line task is one line
+// until Enter sends it. Any other control character is dropped, as Plain
+// drops it from served text.
+func pasted(r []rune) string {
+	s := strings.ReplaceAll(string(r), "\r\n", " ")
+	s = strings.NewReplacer("\r", " ", "\n", " ").Replace(s)
+	return Plain(s)
 }
 
 // submit hands the typed line to trellis: a task when no run is in
@@ -514,7 +525,7 @@ func (m *Model) View() string {
 		w, h = view.MinWidth, view.MinHeight
 	}
 	if m.Modal != nil {
-		return view.Modal(m.Modal.Text, w, h)
+		return view.Modal(m.Modal.Question, m.Modal.Diff, m.Modal.Scroll, w, h)
 	}
 	return view.Render(m.viewState(), w, h)
 }
