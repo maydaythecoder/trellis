@@ -852,10 +852,67 @@ pub fn call_json(call: &ToolCall) -> Value {
     }
 }
 
+/// A step as the flat JSON reply [`ToolSet::parse_value`] accepts, so a
+/// recorded run reads back through the parser a live reply goes through
+/// (#620). `done` has no `ToolCall`, so it is spelt here; every call is
+/// [`call_json`]'s shape.
+pub fn step_json(step: &Step) -> Value {
+    match step {
+        Step::Call(call) => call_json(call),
+        Step::Done { summary } => serde_json::json!({ "tool": "done", "summary": summary }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn replay_recording_step_json_reads_back_as_the_same_step_for_every_tool() {
+        // The risk (#620): a recording whose JSON the parser reads as a
+        // different call, so a replay does something the run did not. Every
+        // built-in, `done` and a custom tool go out and back.
+        let tools = ToolSet {
+            custom: vec![lint()],
+            ..ToolSet::every_builtin()
+        };
+        let replies = [
+            json!({"tool":"blast_radius","symbol":"f"}),
+            json!({"tool":"read_file","path":"a.py"}),
+            json!({"tool":"edit","path":"a.py","old":"x","new":"y\n"}),
+            json!({"tool":"run_checks","paths":["a.py"],"kinds":["typecheck","tests"]}),
+            json!({"tool":"run_checks"}),
+            json!({"tool":"read_skill","name":"s"}),
+            json!({"tool":"write_file","path":"b.py","content":"x = 1\n"}),
+            json!({"tool":"grep","pattern":"def"}),
+            json!({"tool":"grep","pattern":"def","path":"pkg"}),
+            json!({"tool":"find","glob":"*.py"}),
+            json!({"tool":"ls"}),
+            json!({"tool":"bash","command":"ls -la"}),
+            json!({"tool":"search_notes","query":"q"}),
+            json!({"tool":"search_notes","query":"q","limit":3}),
+            json!({"tool":"read_note","note":"n"}),
+            json!({"tool":"ask_human","question":"which?","options":["a","b"]}),
+            json!({"tool":"callers_of","symbol":"f"}),
+            json!({"tool":"callees_of","symbol":"f"}),
+            json!({"tool":"coverage_report","paths":["a.py"]}),
+            json!({"tool":"lint","path":"a.py"}),
+            json!({"tool":"done","summary":"ok"}),
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for reply in replies {
+            let step = tools.parse_value(reply.clone()).unwrap_or_else(|e| {
+                panic!("{reply}: {e}");
+            });
+            let again = tools.parse_value(step_json(&step)).unwrap();
+            assert_eq!(again, step, "{reply} read back as another step");
+            seen.insert(step_json(&step)["tool"].as_str().unwrap().to_string());
+        }
+        for t in BUILTIN_TOOLS.iter().chain(&["done", "lint"]) {
+            assert!(seen.contains(*t), "{t} is not covered by this test");
+        }
+    }
 
     #[test]
     fn builtin_and_approvable_tools_are_the_same_set() {

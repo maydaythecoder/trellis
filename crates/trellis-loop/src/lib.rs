@@ -64,9 +64,9 @@ pub use partition::{FailurePolicy, Partition, WorkUnit, plan};
 pub use path_rules::names_trellis_dir;
 pub use registry::{
     BUILTIN_TOOLS, BashSettings, CustomTool, DEFAULT_CUSTOM_TIMEOUT_S, NotesSource, ToolCallError,
-    ToolConfigError, ToolSelection, ToolSet, call_json,
+    ToolConfigError, ToolSelection, ToolSet, call_json, step_json,
 };
-pub use scripted::{ScriptError, ScriptedModel};
+pub use scripted::{REPLAY_IGNORE, REPLAYS_DIR, Recording, ScriptError, ScriptedModel};
 pub use skills::{
     DISCLOSURE_CAP, Disclosed, InvalidSkill, SKILLS_DIR, Skill, SkillAccess, SkillCatalog,
     SkillError, SkillPolicy, read_body, read_body_in,
