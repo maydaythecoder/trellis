@@ -14,13 +14,16 @@ import (
 // comes only from a verdict trellis sent (ADR 0004).
 
 // clearPanes empties the run panes for a new run. They are kept after a run
-// ends, so what it did stays on screen until the next one starts.
+// ends, so what it did stays on screen until the next one starts. The last
+// run's restored goes with them: a run starts from a clean tree, and the
+// last run's ending is not this one's (#636).
 func (m *Model) clearPanes() {
 	m.Actions = nil
 	m.Edits = nil
 	m.Checks = nil
 	m.Radius = nil
 	m.Budget = view.Budget{}
+	m.restored = nil
 	m.runStart = m.now()
 }
 
@@ -115,5 +118,6 @@ func (m *Model) viewState() view.State {
 		Radius:     m.Radius,
 		Budget:     m.Budget,
 		Stderr:     m.Stderr,
+		Restored:   m.restored,
 	}
 }

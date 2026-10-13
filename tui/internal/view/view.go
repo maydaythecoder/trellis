@@ -99,6 +99,9 @@ type State struct {
 	// Stderr is trellis's stderr, the newest last, for the capped messages
 	// line (ADR 0052 section 4).
 	Stderr []string
+	// Restored is the last run's run_end restored, nil when it did not say
+	// or no run has ended since the current one started.
+	Restored *bool
 }
 
 // Render draws the whole screen at width by height.
@@ -123,7 +126,7 @@ func Render(s State, w, h int) string {
 	right = append(right, radius(s, rightW, radiusH)...)
 
 	var out []string
-	out = append(out, pad(status(s), w))
+	out = append(out, pad(status(s, w), w))
 	for i := 0; i < bodyH; i++ {
 		out = append(out, left[i]+right[i])
 	}
@@ -152,7 +155,7 @@ func TranscriptRows(s State, w int) int {
 	left, _ := columns(s, w)
 	n := 0
 	for _, l := range s.Transcript {
-		n += len(wrap(plain(l), left-2))
+		n += len(wrapWords(plain(l), left-2))
 	}
 	return n
 }
@@ -161,9 +164,11 @@ func tooSmall(w, h int) string {
 	return fmt.Sprintf("terminal too small\n%dx%d — need at least %dx%d", w, h, MinWidth, MinHeight)
 }
 
-// status is the one-line bar: TRELLIS, the model and tier, and whether the
-// worktree has edits pending.
-func status(s State) string {
+// status is the one-line bar: TRELLIS, the worktree's state, the model and
+// the tier. The worktree comes before the model, and the model is the span
+// cut, with "…", to the room left: drawn last, the worktree was pushed past
+// column 80 by a long spec and read "work" (#636).
+func status(s State, w int) string {
 	model := plain(s.Model)
 	if model == "" {
 		model = "none"
@@ -172,21 +177,36 @@ func status(s State) string {
 	if tier == "" {
 		tier = "probing…"
 	}
-	worktree := "clean"
-	if n := pending(s.Edits); n > 0 {
-		worktree = fmt.Sprintf("%d edit(s) pending", n)
-	}
-	return " TRELLIS   model " + model + "  tier " + tier + "  worktree " + worktree
+	head := " TRELLIS   worktree " + WorktreeState(s) + "  model "
+	tail := "  tier " + tier
+	room := max(w-len([]rune(head))-len([]rune(tail)), 1)
+	return head + cut(model, room) + tail
 }
 
-func pending(es []Edit) int {
-	n := 0
-	for _, e := range es {
-		if e.Status == Proposed {
-			n++
+// WorktreeState is what the bar says about the worktree (#636), from this
+// task's writes and how its run ended. The edits pane holds one row per
+// write trellis reported, so a run in flight counts writes and a finished
+// one counts the files they touched. A run that rolled back has left
+// nothing, and one that did not say so (a converged run, or an ending that
+// did not report it) has left its files for the person to review.
+func WorktreeState(s State) string {
+	if s.Running {
+		if n := len(s.Edits); n > 0 {
+			return fmt.Sprintf("%d edit(s) pending", n)
 		}
+		return "clean"
 	}
-	return n
+	if s.Restored != nil && *s.Restored {
+		return "restored"
+	}
+	files := map[string]bool{}
+	for _, e := range s.Edits {
+		files[e.Path] = true
+	}
+	if len(files) > 0 {
+		return fmt.Sprintf("%d file(s) left for review", len(files))
+	}
+	return "clean"
 }
 
 // transcript draws the transcript, following its end unless scrolled
@@ -196,7 +216,7 @@ func transcript(s State, w, h int) []string {
 	inner := w - 2
 	var rows []string
 	for _, l := range s.Transcript {
-		rows = append(rows, wrap(plain(l), inner)...)
+		rows = append(rows, wrapWords(plain(l), inner)...)
 	}
 	innerH := h - 2
 	// Scrolled back past the first row, the first page is shown: the view
@@ -580,4 +600,38 @@ func contains(xs []string, x string) bool {
 		}
 	}
 	return false
+}
+
+// wrapWords breaks a transcript line into rows of at most w runes at word
+// boundaries, as the ratatui paragraph does: a row cut inside a word reads
+// as a different word (#655). A word longer than the row is broken across
+// rows.
+func wrapWords(s string, w int) []string {
+	if w < 1 {
+		w = 1
+	}
+	var out []string
+	row := []rune{}
+	for i, word := range strings.Split(s, " ") {
+		r := []rune(word)
+		if i > 0 {
+			if len(row)+1+len(r) <= w {
+				row = append(row, ' ')
+				row = append(row, r...)
+				continue
+			}
+			out = append(out, string(row))
+			row = row[:0:0]
+		}
+		for len(r) > w {
+			if len(row) > 0 {
+				out = append(out, string(row))
+				row = row[:0:0]
+			}
+			out = append(out, string(r[:w]))
+			r = r[w:]
+		}
+		row = append(row, r...)
+	}
+	return append(out, string(row))
 }

@@ -73,11 +73,11 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `app.rs` | `page_keys_page_down_moves_ten_rows_forward_and_stops_at_the_end` | page keys page down moves ten rows forward and stops at the end | T4 (#510) | `TestPanesPageDownMovesTenRowsForwardAndStopsAtTheEnd` |
 | `app.rs` | `page_keys_home_shows_the_first_line_and_page_up_stops_there` | page keys home shows the first line and page up stops there | T4 (#510) | `TestPanesHomeShowsTheFirstLineAndPageUpStopsThere` |
 | `app.rs` | `page_keys_end_follows_the_end_again` | page keys end follows the end again | T4 (#510) | `TestPanesEndFollowsTheEndAgain` |
-| `app.rs` | `page_keys_are_listed_in_help` | page keys are listed in help | T5 (#511) |  |
+| `app.rs` | `page_keys_are_listed_in_help` | page keys are listed in help | T5 (#511) | `TestSlashHelpListsThePageKeysAndTheStop` |
 | `app.rs` | `paste_lands_in_the_input_and_submits_nothing` | paste lands in the input and submits nothing | T2 (#508) | `TestModelPasteIsOneInputAndSubmitsNothing` |
 | `app.rs` | `paste_with_crlf_breaks_is_one_space_per_break` | paste with crlf breaks is one space per break | T2 (#508) | `TestModelPasteIsOneInputAndSubmitsNothing` |
-| `app.rs` | `worktree_state_a_second_task_clears_the_four_panes` | worktree state a second task clears the four panes | T5 (#511) |  |
-| `app.rs` | `worktree_state_follows_how_the_run_ended` | worktree state follows how the run ended | T5 (#511) |  |
+| `app.rs` | `worktree_state_a_second_task_clears_the_four_panes` | worktree state a second task clears the four panes | T5 (#511) | `TestStatusWorktreeASecondTaskClearsTheFourPanes` |
+| `app.rs` | `worktree_state_follows_how_the_run_ended` | worktree state follows how the run ended | T5 (#511) | `TestStatusWorktreeFollowsHowTheRunEnded` |
 | `app.rs` | `ctrl_c_mid_run_asks_the_run_to_stop_and_leaves_once_it_has_finished` | ctrl c mid run asks the run to stop and leaves once it has finished | T3 (#509) | `TestModelCtrlCMidRunSendsAbortThenQuit`, `TestModelStopMidRunEscOnAnEmptyLineStopsAsCtrlCDoes` |
 | `app.rs` | `ctrl_c_mid_run_no_longer_applies_after_run_finished` | ctrl c mid run no longer applies after run finished | T3 (#509) | `TestModelStopMidRunNoLongerAppliesAfterTheRunEnded` |
 | `app.rs` | `ctrl_c_mid_run_esc_on_an_empty_line_stops_the_same_way` | ctrl c mid run esc on an empty line stops the same way | T3 (#509) | `TestModelStopMidRunEscOnAnEmptyLineStopsAsCtrlCDoes`, `TestModelEscClearsTheLineThenQuitsWhenIdle` |
@@ -107,8 +107,8 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `view.rs` | `the_graph_survives_a_pane_too_narrow_to_draw_it` | the graph survives a pane too narrow to draw it | T4 (#510) | `TestViewLongTargetsAreCutAndANarrowPaneDrawsNothing` |
 | `view.rs` | `tier_status_bar_writes_the_word_once_before_the_label` | tier status bar writes the word once before the label | T5 (#511) | `TestStatusTierWordOnceAndPlain` |
 | `view.rs` | `tier_status_bar_with_no_label_says_unknown` | tier status bar with no label says unknown | T5 (#511) | `TestStatusProbingUntilATier` |
-| `view.rs` | `worktree_state_is_whole_on_row_0_at_80_by_24_with_a_40_character_spec` | worktree state is whole on row 0 at 80 by 24 with a 40 character spec | T5 (#511) |  |
-| `view.rs` | `worktree_state_after_a_restored_run_has_no_edits_pending` | worktree state after a restored run has no edits pending | T5 (#511) |  |
+| `view.rs` | `worktree_state_is_whole_on_row_0_at_80_by_24_with_a_40_character_spec` | worktree state is whole on row 0 at 80 by 24 with a 40 character spec | T5 (#511) | `TestStatusWorktreeIsWholeAtEightyColumnsWithALongSpec` |
+| `view.rs` | `worktree_state_after_a_restored_run_has_no_edits_pending` | worktree state after a restored run has no edits pending | T5 (#511) | `TestStatusWorktreeFollowsHowTheRunEnded` |
 | `view.rs` | `budget_unreported_figures_are_named_not_drawn_as_zero` | budget unreported figures are named not drawn as zero | T4 (#510) | `TestBudgetLineUnreportedFiguresAreNamedNotDrawnAsZero`, `TestBudgetLineNamesWhatWasNotReported` |
 | `view.rs` | `budget_unreported_elapsed_tick_is_drawn_as_a_clock` | budget unreported elapsed tick is drawn as a clock | T4 (#510) | `TestPanesClockKeepsElapsedCurrentWhileRunning`, `TestBudgetLineUnreportedFiguresAreNamedNotDrawnAsZero` |
 | `view.rs` | `approval_modal_scroll_keeps_the_question_drawn_at_80_by_24_with_a_60_line_diff` | approval modal scroll keeps the question drawn at 80 by 24 with a 60 line diff | T3 (#509) | `TestApproveModalKeepsTheQuestionDrawnWhileTheDiffScrolls` |
@@ -117,7 +117,7 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `view.rs` | `approval_answer_keeps_edits_row_undecorated_and_the_decline_in_the_transcript` | approval answer keeps edits row undecorated and the decline in the transcript | T4 (#510) | `TestPanesAnApprovalAnswerKeepsTheEditsAsReported` |
 | `view.rs` | `fits_80_columns_actions_and_radius_labels_are_whole` | fits 80 columns actions and radius labels are whole | T4 (#510) | `TestViewFitsEightyColumnsActionsAndRadiusLabelsAreWhole` |
 | `view.rs` | `fits_80_columns_budget_line_ends_with_a_whole_segment` | fits 80 columns budget line ends with a whole segment | T4 (#510) | `TestBudgetLineAtEightyColumnsEndsWithAWholeSegment` |
-| `view.rs` | `fits_80_columns_help_has_no_row_ending_mid_word` | fits 80 columns help has no row ending mid word | T5 (#511) |  |
+| `view.rs` | `fits_80_columns_help_has_no_row_ending_mid_word` | fits 80 columns help has no row ending mid word | T5 (#511) | `TestSlashHelpHasNoRowEndingMidWord` |
 | `view.rs` | `wrote_in_text_on_the_edit_node_at_80_columns` | wrote in text on the edit node at 80 columns | T4 (#510) | `TestViewWroteInTextOnTheEditNodeAtEightyColumns` |
 | `events.rs` | `quit_ends_the_loop_and_returns_ok` | quit ends the loop and returns ok | T2 (#508) | `TestModelCtrlCIdleQuitsAndEndsOnExit` |
 | `events.rs` | `pending_messages_are_coalesced_into_one_draw` | pending messages are coalesced into one draw | T2 (#508) | not ported: Bubble Tea's renderer coalesces updates at its own frame rate; this client has no draw loop of its own to hold to it |
@@ -128,7 +128,7 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `events.rs` | `paste_event_becomes_one_paste_message` | paste event becomes one paste message | T2 (#508) | `TestModelPasteArrivesAsOneKey` |
 | `events.rs` | `ctrl_c_mid_run_emits_one_stop_before_the_loop_ends` | ctrl c mid run emits one stop before the loop ends | T3 (#509) | `TestModelCtrlCMidRunSendsAbortThenQuit`, `TestModelStopMidRunEscOnAnEmptyLineStopsAsCtrlCDoes` |
 | `events.rs` | `ctrl_c_mid_run_with_nothing_to_stop_it_leaves_at_once` | ctrl c mid run with nothing to stop it leaves at once | T3 (#509) | `TestModelStopWithNoChildToStopStillEnds` |
-| `events.rs` | `ctrl_c_mid_run_draws_the_stopping_line_and_help_says_so` | ctrl c mid run draws the stopping line and help says so | T5 (#511) |  |
+| `events.rs` | `ctrl_c_mid_run_draws_the_stopping_line_and_help_says_so` | ctrl c mid run draws the stopping line and help says so | T5 (#511) | `TestSlashHelpListsThePageKeysAndTheStop` |
 | `tui_bridge.rs` | `tui_bridge_budget_carries_the_runs_ceiling_and_its_elapsed_time` | tui bridge budget carries the runs ceiling and its elapsed time | T4 (#510) | `TestPanesBudgetCarriesTheCeilingTheTurnsFiguresAndElapsed` |
 | `tui_bridge.rs` | `turn_tokens_reach_the_budget` | turn tokens reach the budget | T4 (#510) | `TestPanesBudgetCarriesTheCeilingTheTurnsFiguresAndElapsed` |
 | `tui_bridge.rs` | `a_turn_with_a_passing_check_becomes_a_line_and_a_check` | a turn with a passing check becomes a line and a check | T4 (#510) | `TestPanesCheckRowsComeOnlyFromASomeVerdict`, `TestModelTurnsFillTheTranscript` |
@@ -177,7 +177,7 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `tui_run.rs` | `tui_steer_left_from_an_ended_task_is_skipped_up_to_the_boundary` | tui steer left from an ended task is skipped up to the boundary | T3 (#509) | `TestSteerCountedPerRun` |
 | `tui_run.rs` | `tui_steer_that_arrives_too_late_is_still_in_the_trail` | tui steer that arrives too late is still in the trail | T3 (#509) | not ported: the trail is trellis's to write, and rpc keeps every steer it was sent in it (rpc.rs, SteeringPort), which the client cannot read; the client's half, saying a late steer was not delivered, is TestSteerAnswersMarkItDeliveredOrNot |
 | `tui_run.rs` | `budget_unreported_elapsed_ticks_come_from_the_driver_s_clock` | budget unreported elapsed ticks come from the driver s clock | T4 (#510) | `TestPanesClockTicksOnceASecond` |
-| `tui_run.rs` | `worktree_state_follows_the_exit_the_run_returned` | worktree state follows the exit the run returned | T5 (#511) |  |
+| `tui_run.rs` | `worktree_state_follows_the_exit_the_run_returned` | worktree state follows the exit the run returned | T5 (#511) | `TestStatusWorktreeFollowsHowTheRunEnded` |
 | `tui_run.rs` | `ctrl_c_mid_run_reaches_the_run_which_rolls_back_as_interrupted` | ctrl c mid run reaches the run which rolls back as interrupted | T3 (#509) | not ported: the stop reaches the run as rpc's `abort`, which trellis carries out and rolls back (rpc.rs, abort_interrupts_the_run_and_it_rolls_back); the client's half, sending abort once before quit, is TestModelCtrlCMidRunSendsAbortThenQuit |
 | `tui_run.rs` | `ctrl_c_mid_run_drops_an_open_question_only_once_the_run_has_stopped` | ctrl c mid run drops an open question only once the run has stopped | T3 (#509) | not ported: rpc's abort_run drops the open questions only once the run has observed the abort (rpc.rs), the order this test holds for the Rust driver; the client's half, withdrawing the question unanswered, is TestModelStopMidRunWithdrawsTheQuestionAndShowsNoNewOne |
 | `tui_run.rs` | `ctrl_c_mid_run_with_a_question_open_still_ends_and_rolls_back` | ctrl c mid run with a question open still ends and rolls back | T3 (#509) | not ported: a client that stops with a question open sends abort and closes rpc's input, and trellis declines the question and exits (rpc.rs, end_of_input_with_a_question_open_declines_it_and_the_process_exits); the client's half is TestApproveLeavingMidQuestionSaysNoYes |

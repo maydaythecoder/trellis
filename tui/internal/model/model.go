@@ -96,6 +96,10 @@ type Model struct {
 	// Offered are the @ completions on offer (complete.go).
 	Offered []string
 
+	// restored is the last run_end's restored, for the bar's worktree
+	// state (#636); nil until a run has ended and said.
+	restored *bool
+
 	// now is the clock the budget's elapsed time is read from; tests set
 	// it. runStart is when the run in flight started.
 	now      func() time.Time
@@ -395,6 +399,7 @@ func (m *Model) runEnd(e *frames.RunEndFields) {
 	m.Modal = nil
 	m.approvals = nil
 	m.Outcome = OutcomeLine(e)
+	m.restored = e.Restored
 	if e.Outcome != nil && *e.Outcome == "error" {
 		m.errorLines(e.Error)
 		return
