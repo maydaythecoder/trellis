@@ -374,7 +374,10 @@ repeat is a ~9% event, not a 20% one, and no code shipped for it.
 
 Every run against ollama printed `tier 2, schema enforced by the runtime —
 degradation: none for correctness`. Ollama does not implement `guided_json`;
-that is vLLM's parameter, and ollama accepts and ignores it. Measured: the same
+that is vLLM's parameter, and ollama accepts and ignores it. (vLLM itself
+removed `guided_json` in 0.12.0 and reads `structured_outputs.json` since, so
+the vLLM dialect now sends `structured_outputs: {"json": <schema>}` with
+`guided_json` beside it for servers older than 0.12.0; #610.) Measured: the same
 prompt three times with and without the schema returned byte-identical text and
 an identical completion-token count, which a schema that changed sampling could
 not produce.
