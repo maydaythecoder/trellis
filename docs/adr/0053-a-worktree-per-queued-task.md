@@ -199,3 +199,54 @@ Filed from this ADR, each blocked by #624:
   trust looked up under the starting root, keep or remove by outcome,
   continue past a converged task, and record the worktree and branch in
   `done/` and `failed/` (decisions 2 to 6).
+
+## Amendment 2026-10-13: a task whose run asked reuses its trail-only branch (#710, PR #717)
+
+**Decided by:** the owner, 2026-10-13, on PR #717.
+
+A run that ends by asking a person (`ask_human`) is treated as restored:
+its task worktree is removed and its branch kept, because `record_trail`
+committed the run's trail on it (decision 4). Under decision 2 the
+answered task's next claim was then refused until a person deleted the
+branch, which deleted the trail with it. The table in decision 4 did not
+name this outcome.
+
+**Change to decision 2.** When `work` claims a task whose last run asked
+(a model note at or after the task's `notes_seen` marker; the question is
+the only note the queue writes as the model), and `trellis/task/<id>`
+exists, the branch is **reused** — checked out as it is at
+`.trellis/work/task/<id>/`, with no reset — when both hold:
+
+- the base this claim would use (the starting worktree's `HEAD`, decision
+  1) is an ancestor of the branch tip; and
+- every commit from the base to the tip has one parent and only adds
+  regular files at `.trellis/runs/<name>.json`, the path `record_trail`
+  commits (`trellis_trail::Trail::path`), with no `/` in `<name>`.
+
+Anything else is refused exactly as before, with the same message: a
+commit that touches any other path, modifies or deletes a trail, or is a
+merge; an empty commit; a `HEAD` that moved since the branch was made (the
+task would otherwise run without that commit under it, against decision
+1); an existing directory; and every task whose last run did not ask,
+including one requeued from `failed/`. The task worktree's recorded base
+stays the claim's `HEAD`, so a later removal keeps the branch, which holds
+the trails, rather than deleting it.
+
+Built as `trellis_vcs::TaskWorktree::create_with(.., ExistingBranch::
+ReuseTrailOnly)` (`ExistingBranch::Refuse` is `create`), chosen in
+`work.rs` by `last_run_asked`. Evidence: `task_worktree_reuse_*` in
+`crates/trellis-vcs/src/lib.rs` (trail-only branch reused at its tip;
+five non-trail shapes refused with the branch untouched; a moved base
+refused; no branch creates one fresh; an existing directory still
+refused) and in `crates/trellis-cli/src/work.rs` (an answered task's
+second run starts on the first run's trail commit; a requeued task that
+did not ask is still refused).
+
+This replaces, for this case only, the Consequences line "A task requeued
+from `failed/`, or put back in `pending/` after an interrupt whose trail
+was committed, is refused at its next claim" and the rejected alternative
+"Reuse or rename an existing `trellis/task/<id>` on a second attempt": the
+reason given there, that reuse resets a branch that may hold a converged
+change, does not apply to a branch checked to hold only trails, and reuse
+here never resets. Reversed by passing `ExistingBranch::Refuse` in
+`work.rs`.

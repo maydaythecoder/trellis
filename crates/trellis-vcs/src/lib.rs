@@ -1278,7 +1278,85 @@ pub struct TaskWorktree {
     /// The base commit, resolved to a full id at creation, so removal
     /// compares the branch tip against a commit and not a name that moves.
     pub base: String,
+    /// The branch existed and was checked out as it was, because past the
+    /// base it held only trail commits ([`ExistingBranch::ReuseTrailOnly`]).
+    pub reused: bool,
     parent: PathBuf,
+}
+
+/// What [`TaskWorktree::create_with`] does when `trellis/task/<id>` already
+/// exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExistingBranch {
+    /// Refuse, as ADR 0053 decision 2 says.
+    Refuse,
+    /// Check the branch out as it is when `base` is an ancestor of its tip
+    /// and every commit past `base` only adds trail files; refuse otherwise.
+    /// For a task whose last run asked a question, which leaves a branch
+    /// holding that run's trail and nothing else (ADR 0053, amended
+    /// 2026-10-13).
+    ReuseTrailOnly,
+}
+
+/// Whether `tip` is `base` plus commits that each only add a trail: one
+/// parent, and every change an added regular file directly under
+/// `.trellis/runs/` named `*.json`, the path `record_trail` commits
+/// (`trellis_trail::Trail::path`). Anything else on the branch (a person's
+/// commit, a merge, a trail modified or deleted, a base that is not an
+/// ancestor because `HEAD` moved since the branch was made) answers no, and
+/// the caller refuses as it did before reuse existed.
+fn only_trails_past(root: &Path, base: &str, tip: &str) -> Result<bool, VcsError> {
+    if run_git_optional(root, &["merge-base", "--is-ancestor", base, tip])?.is_none() {
+        return Ok(false);
+    }
+    let range = format!("{base}..{tip}");
+    for line in run_git(root, &["rev-list", "--parents", &range])?.lines() {
+        let ids: Vec<&str> = line.split_whitespace().collect();
+        let [commit, _parent] = ids.as_slice() else {
+            return Ok(false);
+        };
+        // `-z --raw`: `:<old mode> <new mode> <old> <new> <status>` and the
+        // path as separate NUL-terminated fields, so no path is quoted or
+        // split. `--no-renames`, so a moved file reads as a delete and an
+        // add rather than one record the check would have to interpret.
+        let raw = run_git(
+            root,
+            &[
+                "diff-tree",
+                "--no-commit-id",
+                "-r",
+                "-z",
+                "--raw",
+                "--no-renames",
+                commit,
+            ],
+        )?;
+        let mut fields = raw.split('\0').filter(|f| !f.is_empty());
+        let mut changes = 0;
+        while let Some(meta) = fields.next() {
+            let Some(path) = fields.next() else {
+                return Ok(false);
+            };
+            let meta: Vec<&str> = meta.trim_start_matches(':').split(' ').collect();
+            let added_file = matches!(meta.as_slice(), [_, "100644", _, _, "A"]);
+            if !added_file || !is_trail_path(path) {
+                return Ok(false);
+            }
+            changes += 1;
+        }
+        // An empty commit is not one `record_trail` makes.
+        if changes == 0 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// `.trellis/runs/<name>.json` with no further `/`: the trails, as the
+/// trust digest's skip names them (ADR 0023 §4).
+fn is_trail_path(path: &str) -> bool {
+    path.strip_prefix(".trellis/runs/")
+        .is_some_and(|n| !n.is_empty() && !n.contains('/') && n.ends_with(".json"))
 }
 
 /// What [`TaskWorktree::remove`] did with the branch.
@@ -1298,6 +1376,17 @@ impl TaskWorktree {
     /// name and an existing branch or directory: either may hold an earlier
     /// attempt's trail or a converged change (ADR 0053 decision 2).
     pub fn create(root: &Path, id: &str, base: &str) -> Result<Self, VcsError> {
+        Self::create_with(root, id, base, ExistingBranch::Refuse)
+    }
+
+    /// [`TaskWorktree::create`], with what to do about an existing branch
+    /// chosen by the caller. Every other refusal is the same.
+    pub fn create_with(
+        root: &Path,
+        id: &str,
+        base: &str,
+        existing: ExistingBranch,
+    ) -> Result<Self, VcsError> {
         let branch = format!("trellis/task/{id}");
         // Checked on the whole branch name, since that is what `worktree add
         // -b` is given. It also keeps `..`, a leading `.` and a backslash out
@@ -1312,14 +1401,22 @@ impl TaskWorktree {
         }
 
         let refname = format!("refs/heads/{branch}");
-        if run_git_optional(root, &["rev-parse", "--verify", "-q", &refname])?.is_some() {
-            return Err(TaskRefusal::BranchExists { branch }.into());
-        }
+        let tip = run_git_optional(root, &["rev-parse", "--verify", "-q", &refname])?
+            .map(|t| t.trim().to_string());
 
         let path = root.join(".trellis").join("work").join("task").join(id);
-        // `symlink_metadata`, so a dangling symlink there counts as existing
-        // rather than being followed to nothing.
-        if std::fs::symlink_metadata(&path).is_ok() {
+        // Before the branch is judged, so a branch that could be reused
+        // still never has `worktree add` pointed at a directory a person
+        // left there.
+        let path_exists = || {
+            // `symlink_metadata`, so a dangling symlink there counts as
+            // existing rather than being followed to nothing.
+            std::fs::symlink_metadata(&path).is_ok()
+        };
+        if tip.is_some() && existing == ExistingBranch::Refuse {
+            return Err(TaskRefusal::BranchExists { branch }.into());
+        }
+        if path_exists() {
             return Err(TaskRefusal::PathExists { path, branch }.into());
         }
 
@@ -1327,21 +1424,27 @@ impl TaskWorktree {
         let base = run_git(root, &["rev-parse", "--verify", &commit])?
             .trim()
             .to_string();
-        run_git(
-            root,
-            &[
-                "worktree",
-                "add",
-                "-b",
-                &branch,
-                &path.display().to_string(),
-                &base,
-            ],
-        )?;
+        let path_arg = path.display().to_string();
+        let reused = match &tip {
+            Some(tip) => {
+                if !only_trails_past(root, &base, tip)? {
+                    return Err(TaskRefusal::BranchExists { branch }.into());
+                }
+                // No `-b`: the branch is checked out where it is, so the
+                // trail commits on it stay on it.
+                run_git(root, &["worktree", "add", &path_arg, &branch])?;
+                true
+            }
+            None => {
+                run_git(root, &["worktree", "add", "-b", &branch, &path_arg, &base])?;
+                false
+            }
+        };
         Ok(Self {
             path,
             branch,
             base,
+            reused,
             parent: root.to_path_buf(),
         })
     }
@@ -2952,6 +3055,196 @@ mod tests {
             .expect("an id is free again after removal")
             .remove()
             .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A task branch left as a run that asked leaves it: created from
+    /// `base`, one trail committed on it, its worktree removed. Returns the
+    /// branch tip.
+    fn asked_task_branch(dir: &Path, id: &str, base: &str) -> String {
+        let wt = TaskWorktree::create(dir, id, base).unwrap();
+        std::fs::create_dir_all(wt.path.join(".trellis/runs")).unwrap();
+        let trail = ".trellis/runs/20261013T000000-asked.json";
+        std::fs::write(wt.path.join(trail), "{}\n").unwrap();
+        commit_paths(&wt.path, &[trail], "trellis: trail for asked").unwrap();
+        let TaskBranch::Kept { tip } = wt.remove().unwrap() else {
+            panic!("a branch holding a trail must be kept");
+        };
+        tip
+    }
+
+    #[test]
+    fn task_worktree_reuse_checks_out_a_branch_holding_only_trail_commits_as_it_is() {
+        // The risk (owner decision 2026-10-13 on #717): a task whose run
+        // asked a question was refused at every later claim until a person
+        // deleted its branch; or, reused, the branch was reset to the base
+        // and the asking run's trail lost (ADR 0007).
+        let (dir, base) = task_repo("task-reuse-trail-only");
+        let tip = asked_task_branch(&dir, "12", &base);
+
+        let wt = TaskWorktree::create_with(&dir, "12", &base, ExistingBranch::ReuseTrailOnly)
+            .expect("a trail-only branch is reused");
+
+        assert!(wt.reused);
+        assert_eq!(wt.base, base, "removal still compares against the base");
+        assert_eq!(
+            run_git(&wt.path, &["rev-parse", "HEAD"]).unwrap().trim(),
+            tip,
+            "checked out at the branch tip, trail and all"
+        );
+        assert_eq!(
+            run_git(&wt.path, &["branch", "--show-current"])
+                .unwrap()
+                .trim(),
+            "trellis/task/12"
+        );
+        assert!(
+            wt.path
+                .join(".trellis/runs/20261013T000000-asked.json")
+                .exists()
+        );
+        assert!(pending(&wt.path).unwrap().is_empty(), "and clean");
+        // Removed again with nothing new on it, the branch still holds the
+        // trail, so it is kept, not deleted.
+        assert_eq!(wt.remove().unwrap(), TaskBranch::Kept { tip: tip.clone() });
+        assert_eq!(
+            run_git(&dir, &["rev-parse", "refs/heads/trellis/task/12"])
+                .unwrap()
+                .trim(),
+            tip
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn task_worktree_reuse_refuses_a_branch_holding_a_commit_that_is_not_a_trail() {
+        // The risk: reuse handing a run a branch that holds a converged
+        // change or a person's commit, which the run's rollback (ADR 0009)
+        // would then treat as its starting point. Each case is one more
+        // commit on an asked task's branch.
+        let cases: [(&str, &[(&str, &str)]); 5] = [
+            ("code", &[("a.py", "def f():\n    return 3\n")]),
+            (
+                "trail-and-code",
+                &[
+                    (".trellis/runs/20261013T000001-b.json", "{}\n"),
+                    ("a.py", "def f():\n    return 3\n"),
+                ],
+            ),
+            ("nested", &[(".trellis/runs/sub/x.json", "{}\n")]),
+            ("not-json", &[(".trellis/runs/gate.py", "print(1)\n")]),
+            // A trail rewritten in place is not what `record_trail` does.
+            (
+                "rewritten",
+                &[(".trellis/runs/20261013T000000-asked.json", "{\"x\":1}\n")],
+            ),
+        ];
+        for (i, (name, files)) in cases.iter().enumerate() {
+            let (dir, base) = task_repo(&format!("task-reuse-refused-{name}"));
+            let id = format!("13{i}");
+            asked_task_branch(&dir, &id, &base);
+            let branch = format!("trellis/task/{id}");
+            let wt =
+                TaskWorktree::create_with(&dir, &format!("{id}x"), &base, ExistingBranch::Refuse)
+                    .unwrap();
+            run_git(&wt.path, &["checkout", "-q", &branch]).unwrap();
+            for (path, text) in *files {
+                let full = wt.path.join(path);
+                std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+                std::fs::write(&full, text).unwrap();
+            }
+            let paths: Vec<&str> = files.iter().map(|(p, _)| *p).collect();
+            commit_paths(&wt.path, &paths, "more").unwrap();
+            run_git(
+                &dir,
+                &[
+                    "worktree",
+                    "remove",
+                    "--force",
+                    &wt.path.display().to_string(),
+                ],
+            )
+            .unwrap();
+            let held = run_git(&dir, &["rev-parse", &format!("refs/heads/{branch}")])
+                .unwrap()
+                .trim()
+                .to_string();
+
+            let err = TaskWorktree::create_with(&dir, &id, &base, ExistingBranch::ReuseTrailOnly)
+                .expect_err(name);
+
+            assert!(
+                matches!(&err, VcsError::TaskRefused(TaskRefusal::BranchExists { branch: b })
+                    if *b == branch),
+                "{name}: {err}"
+            );
+            assert_eq!(
+                run_git(&dir, &["rev-parse", &format!("refs/heads/{branch}")])
+                    .unwrap()
+                    .trim(),
+                held,
+                "{name}: the branch still points where it did"
+            );
+            assert!(
+                !dir.join(".trellis/work/task").join(&id).exists(),
+                "{name}: no directory created"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn task_worktree_reuse_refuses_a_trail_only_branch_whose_base_is_not_head() {
+        // The risk: a person commits between two claims (ADR 0053 decision
+        // 1 bases a task on HEAD at its claim), and the reused branch runs
+        // the task on the older base without that commit.
+        let (dir, base) = task_repo("task-reuse-moved-base");
+        asked_task_branch(&dir, "14", &base);
+        let head = run_git(&dir, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        assert_ne!(head, base);
+
+        let err = TaskWorktree::create_with(&dir, "14", &head, ExistingBranch::ReuseTrailOnly)
+            .expect_err("base moved");
+        assert!(matches!(
+            err,
+            VcsError::TaskRefused(TaskRefusal::BranchExists { .. })
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn task_worktree_reuse_with_no_branch_creates_one_fresh_from_the_base() {
+        // The risk: the reuse path changing the ordinary claim, which has
+        // no branch yet.
+        let (dir, base) = task_repo("task-reuse-fresh");
+        let wt = TaskWorktree::create_with(&dir, "15", &base, ExistingBranch::ReuseTrailOnly)
+            .expect("fresh");
+        assert!(!wt.reused);
+        assert_eq!(
+            run_git(&wt.path, &["rev-parse", "HEAD"]).unwrap().trim(),
+            base
+        );
+        assert_eq!(wt.remove().unwrap(), TaskBranch::Deleted);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn task_worktree_reuse_still_refuses_an_existing_directory() {
+        // The risk: reuse pointing `worktree add` at a directory a person
+        // left there (ADR 0053 decision 2 holds for the directory).
+        let (dir, base) = task_repo("task-reuse-dir");
+        asked_task_branch(&dir, "16", &base);
+        let path = dir.join(".trellis/work/task/16");
+        std::fs::create_dir_all(&path).unwrap();
+        let err = TaskWorktree::create_with(&dir, "16", &base, ExistingBranch::ReuseTrailOnly)
+            .expect_err("directory");
+        assert!(matches!(
+            err,
+            VcsError::TaskRefused(TaskRefusal::PathExists { .. })
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
