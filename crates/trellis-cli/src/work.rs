@@ -1276,15 +1276,36 @@ fn ignore_task_worktrees(root: &Path) -> std::result::Result<(), String> {
     ))
 }
 
+/// Whether the task's last run ended by asking a person (`ask_human`). The
+/// question is the only note the queue writes as [`Actor::Model`] (`Claim::
+/// ask`), and it sits at or after the `notes_seen` marker that run left, so
+/// a model note in that range is the question and nothing else is. The
+/// same anchor `Task::input_since_last_run` uses, for the same reason: the
+/// `Blocked::Question` block is cleared by `queue set --status todo` before
+/// the task can be claimed again.
+fn last_run_asked(t: &trellis_queue::Task) -> bool {
+    let start = t.notes_seen.map_or(0, |n| n as usize).min(t.notes.len());
+    t.notes[start..].iter().any(|n| n.actor == Actor::Model)
+}
+
 /// Creates the claimed task's worktree from `root`'s `HEAD` and checks it
 /// is clean (ADR 0053 decisions 1 and 2). On a refusal nothing created is
 /// left behind, and the reason is what `work` prints.
-fn task_worktree(root: &Path, id: &str) -> std::result::Result<trellis_vcs::TaskWorktree, String> {
+///
+/// `existing` is what to do with a `trellis/task/<id>` already there:
+/// reused for a task whose last run asked, when past `HEAD` it holds only
+/// that run's trail, and refused otherwise (ADR 0053, amended 2026-10-13).
+fn task_worktree(
+    root: &Path,
+    id: &str,
+    existing: trellis_vcs::ExistingBranch,
+) -> std::result::Result<trellis_vcs::TaskWorktree, String> {
     ignore_task_worktrees(root)?;
     let head = routine::Repo::head(&RoutineRepo(root)).ok_or_else(|| {
         "the worktree `work` started in has no commit to base a task on".to_string()
     })?;
-    let wt = trellis_vcs::TaskWorktree::create(root, id, &head).map_err(|e| e.to_string())?;
+    let wt = trellis_vcs::TaskWorktree::create_with(root, id, &head, existing)
+        .map_err(|e| e.to_string())?;
     // The same check `work` makes before a claim. A fresh worktree should
     // always pass; one a checkout filter or attribute rewrote is refused
     // rather than snapshotted dirty (ADR 0009).
@@ -1503,10 +1524,15 @@ impl Runner for CliRunner<'_> {
     fn prepare(
         &mut self,
         id: &str,
-        _task: &trellis_queue::Task,
+        task: &trellis_queue::Task,
     ) -> std::result::Result<Option<trellis_queue::Workspace>, String> {
         self.task = None;
-        let wt = task_worktree(self.root, id)?;
+        let existing = if last_run_asked(task) {
+            trellis_vcs::ExistingBranch::ReuseTrailOnly
+        } else {
+            trellis_vcs::ExistingBranch::Refuse
+        };
+        let wt = task_worktree(self.root, id, existing)?;
         let w = trellis_queue::Workspace {
             path: wt.path.clone(),
             branch: wt.branch.clone(),
@@ -1531,7 +1557,9 @@ impl Runner for CliRunner<'_> {
                 let _ = writeln!(
                     out,
                     "work:     task worktree removed; branch {} kept: it holds {} (the run's \
-                     trail), and a later claim of this task is refused until it is cleared",
+                     trail). A later claim reuses it if the run asked a question and the \
+                     branch holds only trails; otherwise it is refused until the branch is \
+                     cleared",
                     plain(&wt.branch),
                     tip.get(..12).unwrap_or(&tip)
                 );
@@ -2697,6 +2725,123 @@ mod task_worktree_tests {
         let o = t.outcome.unwrap();
         assert_eq!((o.worktree, o.branch), (None, None), "nothing left");
         assert_eq!(git_stdout(&root, &["status", "--porcelain"]), "");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A run that commits a trail on its task branch, as `record_trail`
+    /// does, and ends as `end` says, leaving the tree as it found it.
+    struct TrailRun<'a> {
+        inner: CliRunner<'a>,
+        end: fn() -> RunEnd,
+        /// The `HEAD` each run started at, in order.
+        heads: Vec<String>,
+    }
+
+    impl Runner for TrailRun<'_> {
+        fn blocker(&mut self) -> Option<String> {
+            self.inner.blocker()
+        }
+        fn run(&mut self, _: &trellis_queue::Task) -> RunEnd {
+            let root = self.inner.run_root();
+            self.heads.push(git_stdout(&root, &["rev-parse", "HEAD"]));
+            let trail = format!(".trellis/runs/20261013T00000{}-t.json", self.heads.len());
+            std::fs::create_dir_all(root.join(".trellis/runs")).unwrap();
+            std::fs::write(root.join(&trail), "{}\n").unwrap();
+            trellis_vcs::commit_paths(&root, &[&trail], "trellis: trail").unwrap();
+            (self.end)()
+        }
+        fn stop_requested(&self) -> bool {
+            false
+        }
+        fn idle(&mut self, _: Duration) -> bool {
+            false
+        }
+        fn prepare(
+            &mut self,
+            id: &str,
+            t: &trellis_queue::Task,
+        ) -> std::result::Result<Option<trellis_queue::Workspace>, String> {
+            self.inner.prepare(id, t)
+        }
+        fn remove_workspace(&mut self, out: &mut dyn Write) -> Left {
+            self.inner.remove_workspace(out)
+        }
+    }
+
+    fn asked() -> RunEnd {
+        RunEnd::Asked {
+            run_id: None,
+            question: "Keep v1 for mobile?".into(),
+            options: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn task_worktree_reuse_runs_an_answered_task_on_its_branch_with_the_earlier_trail() {
+        // The owner's 2026-10-13 decision on #717: a task whose run asked
+        // was refused at its next claim until a person ran `git branch -D`,
+        // which also deleted the asking run's trail. Now the answered task
+        // runs on that branch, on top of the trail.
+        let (root, q) = repo("tw-reuse-asked");
+        let id = add(&q, "retire v1");
+        let mut r = TrailRun {
+            inner: test_runner(&root, q.clone(), trusted),
+            end: asked,
+            heads: Vec::new(),
+        };
+        let mut out = Vec::new();
+        trellis_queue::work(&q, &mut r, WorkOptions::default(), &mut out).unwrap();
+        let branch = format!("trellis/task/{id}");
+        let first_tip = git_stdout(&root, &["rev-parse", &branch]);
+        // Answered, as `queue note` and `queue set --status todo` do.
+        q.edit(&id, |t, _| {
+            t.note_from_person("No.");
+            t.blocked = None;
+            t.status = Some(trellis_queue::Status::Todo);
+            Ok(None)
+        })
+        .unwrap();
+
+        r.end = || RunEnd::RolledBack { run_id: None };
+        let mut out = Vec::new();
+        let (n, stop) = trellis_queue::work(&q, &mut r, WorkOptions::default(), &mut out).unwrap();
+        let said = String::from_utf8_lossy(&out);
+
+        assert_eq!((n, stop), (1, Stop::Empty), "{said}");
+        assert_eq!(
+            r.heads[1], first_tip,
+            "the second run starts on the first run's trail: {said}"
+        );
+        let log = git_stdout(&root, &["log", "--format=%s", &branch]);
+        assert_eq!(log.matches("trellis: trail").count(), 2, "{log}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn task_worktree_reuse_is_only_for_a_task_whose_last_run_asked() {
+        // The risk: reuse widening past the owner's decision, to a task
+        // requeued from failed/, whose branch ADR 0053 still has refused
+        // until a person clears it.
+        let (root, q) = repo("tw-reuse-not-asked");
+        let id = add(&q, "one");
+        let mut r = TrailRun {
+            inner: test_runner(&root, q.clone(), trusted),
+            end: || RunEnd::RolledBack { run_id: None },
+            heads: Vec::new(),
+        };
+        let mut out = Vec::new();
+        trellis_queue::work(&q, &mut r, WorkOptions::default(), &mut out).unwrap();
+        assert_eq!(q.find(&id).unwrap().0, State::Failed);
+        q.requeue(&id).unwrap();
+
+        let mut out = Vec::new();
+        let (_, stop) = trellis_queue::work(&q, &mut r, WorkOptions::default(), &mut out).unwrap();
+
+        assert!(
+            matches!(&stop, Stop::Refused { why, .. } if why.contains("already exists")),
+            "{stop:?}"
+        );
+        assert_eq!(r.heads.len(), 1, "the second claim never ran");
         let _ = std::fs::remove_dir_all(&root);
     }
 
