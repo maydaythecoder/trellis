@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -22,10 +23,10 @@ func running(t *testing.T) *Model {
 	return m
 }
 
-// An approval_request opens a modal showing the detail, then the question
-// with a "?", as tui_run.rs builds it; y sends approve {id, yes: true} and
-// n sends yes: false, each for the id trellis sent, and the answer goes
-// back to trellis, the asker.
+// An approval_request opens a modal holding the question and the detail
+// apart, as tui_run.rs sends them since #640; y sends approve {id, yes:
+// true} and n sends yes: false, each for the id trellis sent, and the
+// answer goes back to trellis, the asker.
 func TestApproveYesAndNoSendTheirAnswer(t *testing.T) {
 	for _, c := range []struct {
 		key rune
@@ -34,7 +35,7 @@ func TestApproveYesAndNoSendTheirAnswer(t *testing.T) {
 	}{{'y', true, "approved"}, {'n', false, "declined"}} {
 		m := running(t)
 		feed(m, approval("approval-7", "edit a.py", "--- a.py\n+++ a.py\n-return 1\n+return 2\n"))
-		if m.Modal == nil || m.Modal.Text != "--- a.py\n+++ a.py\n-return 1\n+return 2\nedit a.py?" {
+		if m.Modal == nil || m.Modal.Question != "edit a.py" || m.Modal.Diff != "--- a.py\n+++ a.py\n-return 1\n+return 2" {
 			t.Fatalf("modal %+v", m.Modal)
 		}
 		key(m, c.key)
@@ -57,8 +58,8 @@ func TestApproveYesAndNoSendTheirAnswer(t *testing.T) {
 func TestApproveModalTakesTheKeys(t *testing.T) {
 	m := running(t)
 	feed(m, approval("a1", "run tests", ""))
-	if m.Modal.Text != "run tests?" {
-		t.Fatalf("no detail: modal text %q", m.Modal.Text)
+	if m.Modal.Question != "run tests" || m.Modal.Diff != "" {
+		t.Fatalf("no detail: modal %+v", m.Modal)
 	}
 	key(m, 'q')
 	typeLine(m, "x z")
@@ -116,10 +117,93 @@ func TestApproveModalCoversTheScreen(t *testing.T) {
 	if strings.Contains(v, "change f") {
 		t.Fatalf("the transcript shows through the modal:\n%s", v)
 	}
-	if !strings.Contains(v, "[y] accept  [n] reject") || !strings.Contains(v, "detail line") || !strings.Contains(v, "edit [31ma.py?") {
+	if !strings.Contains(v, "[y] accept this change  [n] reject") || !strings.Contains(v, "detail line") || !strings.Contains(v, "edit [31ma.py?") {
 		t.Fatalf("modal not drawn as expected:\n%s", v)
 	}
 	if strings.ContainsAny(v, "\x07") || strings.Contains(v, "\x1b[31m") {
 		t.Fatalf("a control character from served text reached the screen")
+	}
+}
+
+// asked is a running model at 80x24 with an approval of question whose
+// detail is n numbered lines.
+func asked(t *testing.T, question string, n int) *Model {
+	t.Helper()
+	m := running(t)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	var diff []string
+	for i := 1; i <= n; i++ {
+		diff = append(diff, fmt.Sprintf("+ line %02d", i))
+	}
+	feed(m, approval("a1", question, strings.Join(diff, "\n")))
+	return m
+}
+
+func press(m *Model, k tea.KeyType) { m.Update(tea.KeyMsg{Type: k}) }
+
+// #640: the arrows and PgUp and PgDn scroll the diff while the modal is
+// up, never above its first line or past its last; q, Esc and Enter still
+// do nothing, and only y or n answers.
+func TestApproveModalScrollStaysInsideTheDiff(t *testing.T) {
+	m := asked(t, "edit a.py (+3 -0)", 3)
+	press(m, tea.KeyUp)
+	press(m, tea.KeyPgUp)
+	if m.Modal.Scroll != 0 {
+		t.Fatalf("scrolled above the first line: %d", m.Modal.Scroll)
+	}
+	press(m, tea.KeyPgDown)
+	press(m, tea.KeyDown)
+	if m.Modal.Scroll != 2 {
+		t.Fatalf("scroll %d, want 2: the last line is as far as it goes", m.Modal.Scroll)
+	}
+	key(m, 'q')
+	press(m, tea.KeyEsc)
+	press(m, tea.KeyEnter)
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y"), Paste: true})
+	if out := m.TakeOutbox(); len(out) != 0 || m.Quitting || m.Modal == nil || m.Modal.Scroll != 2 {
+		t.Fatalf("a key that is not the modal's acted: out %v quitting %v modal %+v", kinds(out), m.Quitting, m.Modal)
+	}
+}
+
+// #640: at 80x24 a 60-line diff no longer pushes the question out of the
+// box. The question is on the top border, the keys on the bottom one, and
+// a row says which lines are in view; paging down reaches the last line,
+// the question still drawn, and y still answers.
+func TestApproveModalKeepsTheQuestionDrawnWhileTheDiffScrolls(t *testing.T) {
+	m := asked(t, "edit a.py (+60 -0)", 60)
+	v := m.View()
+	for _, want := range []string{" edit a.py (+60 -0)? ", "[y] accept this change  [n] reject", "+ line 01", "lines 1–", " of 60"} {
+		if !strings.Contains(v, want) {
+			t.Fatalf("%q not drawn:\n%s", want, v)
+		}
+	}
+	if strings.Contains(v, "+ line 60") {
+		t.Fatalf("the tail is drawn before it is scrolled to:\n%s", v)
+	}
+	for i := 0; i < 10; i++ {
+		press(m, tea.KeyPgDown)
+	}
+	v = m.View()
+	for _, want := range []string{"+ line 60", "–60 of 60", " edit a.py (+60 -0)? "} {
+		if !strings.Contains(v, want) {
+			t.Fatalf("%q not drawn after paging down:\n%s", want, v)
+		}
+	}
+	key(m, 'y')
+	out := m.TakeOutbox()
+	if m.Modal != nil || len(out) != 1 || out[0].Cmd["yes"] != true {
+		t.Fatalf("y did not answer: %v", kinds(out))
+	}
+}
+
+// A gated call that is not an edit is named a call, and a diff that fits
+// says no position.
+func TestApproveModalNamesACallThatIsNotAnEdit(t *testing.T) {
+	v := asked(t, "bash", 3).View()
+	if !strings.Contains(v, " bash? ") || !strings.Contains(v, "[y] accept this call  [n] reject") {
+		t.Fatalf("view:\n%s", v)
+	}
+	if strings.Contains(v, "lines 1–") {
+		t.Fatalf("a diff that fits says a position:\n%s", v)
 	}
 }
