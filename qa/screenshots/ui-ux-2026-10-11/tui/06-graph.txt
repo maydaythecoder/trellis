@@ -1,0 +1,25 @@
+# tui_demo · 80x24 · t=6.44s · keys so far: n /help Enter /graph Enter · cursor=(8, 22)
+ TRELLIS   model none  tier unknown  worktree 1 edit(s) pending
+┌ transcript ──────────────────────────────────┐┌ actions ─────────────────────┐
+│rolls back if it                              ││  blast_radius     ○─┐        │
+│  does not converge.                          ││  read_file        ○─┤        │
+│                                              ││  edit             ○─┤──◆ 0 ac│
+│  For the model catalogue, weights and config,││  run_checks       ○─┘        │
+│leave and use                                 │└──────────────────────────────┘
+│  `trellis model` or `trellis session`.       │┌ edits ───────────────────────┐
+│> /graph                                      │└──────────────────────────────┘
+│· reach: 47 resolved · 3 candidates · 2       │┌ checks ──────────────────────┐
+│unresolved                                    ││pass typecheck                │
+│  drawn in the radius pane on the right, as   │└──────────────────────────────┘
+│converging edges.                             │┌ radius ──────────────────────┐
+│  three counts, never a ratio: they come from ││  resolved      47 ●─┐        │
+│different populations.                        ││  candidates     3 ◐─┤──◆ reac│
+│  resolved is a floor on reach, not a boundary││  unresolved     2 ○─┘        │
+│(Constraint 1).                               ││  a floor on reach, not a boun│
+└──────────────────────────────────────────────┘└──────────────────────────────┘
+┌ budget ──────────────────────────────────────────────────────────────────────┐
+│iteration 4  ·  16800 B prompt  ·  36s elapsed  ·  85 tok, 11.3 tok/s  ·  queu│
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ task  ·  enter to run  ·  /help  ·  esc to clear, esc again to quit ─────────┐
+│█                                                                             │
+└──────────────────────────────────────────────────────────────────────────────┘

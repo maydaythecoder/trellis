@@ -1,0 +1,25 @@
+# tui_demo · 80x24 · t=5.07s · keys so far: (none) · cursor=(64, 18)
+ TRELLIS   model none  tier unknown  worktree 1 edit(s) pending
+┌ transcript ──────────────────────────────────┐┌ actions ─────────────────────┐
+│Reading blast radius for `resolve_symbol`...  ││  blast_radius     ○─┐        │
+│12 callers found. Checking scope resolution.  ││  read_file        ○─┤        │
+│Editing src/index/resolve.rs                  ││  edit             ○─┤──◆ 0 ac│
+│Running type ch┌ approve this change?  [y] accept  [n] reject ┐    ○─┘        │
+│               │--- a/src/index/resolve.rs                    │───────────────┘
+│               │+++ b/src/index/resolve.rs                    │───────────────┐
+│               │@@                                            │───────────────┘
+│               │-    if i < len {                             │───────────────┐
+│               │+    if i <= len {                            │               │
+│               │                                              │───────────────┘
+│               │                                              │───────────────┐
+│               │                                              │ 47 ●─┐        │
+│               │                                              │  3 ◐─┤──◆ reac│
+│               │                                              │  2 ○─┘        │
+│               │                                              │ach, not a boun│
+└───────────────│                                              │───────────────┘
+┌ budget ───────└──────────────────────────────────────────────┘───────────────┐
+│iteration 4  ·  16800 B prompt  ·  36s elapsed  ·  85 tok, 11.3 tok/s  ·  queu│
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ task  ·  enter to run  ·  /help  ·  esc to clear, esc again to quit ─────────┐
+│█                                                                             │
+└──────────────────────────────────────────────────────────────────────────────┘
