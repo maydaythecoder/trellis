@@ -385,6 +385,111 @@ pub fn git_dir(root: &Path) -> Result<PathBuf, VcsError> {
     Ok(PathBuf::from(out.trim()))
 }
 
+/// The most bytes read from a `.git` file or a worktree's `gitdir` file.
+/// Git writes one path and a newline there; a longer file is not one git
+/// wrote, and is not read further.
+const POINTER_FILE_MAX: u64 = 4096;
+
+/// A git pointer file's text, or `None` when it cannot be read or is
+/// longer than [`POINTER_FILE_MAX`].
+fn read_pointer_file(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut text = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(POINTER_FILE_MAX + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    (text.len() as u64 <= POINTER_FILE_MAX).then_some(text)
+}
+
+/// A path written in a pointer file, made canonical: as written when
+/// absolute, against `base` when relative (git writes relative ones under
+/// `worktree.useRelativePaths`). Canonical, so `..` and links in it are
+/// resolved before anything is compared.
+fn resolve_pointer(text: &str, base: &Path) -> Option<PathBuf> {
+    let p = Path::new(text);
+    std::fs::canonicalize(if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        base.join(p)
+    })
+    .ok()
+}
+
+/// Trailing line endings off, as git reads `.git` and `commondir`.
+fn line(text: &str) -> &str {
+    text.trim_end_matches(['\n', '\r'])
+}
+
+/// The directory a `.git` file names (`gitdir: <path>`), canonical.
+fn gitfile_target(dotgit: &Path) -> Option<PathBuf> {
+    let text = read_pointer_file(dotgit)?;
+    let target = line(&text).strip_prefix("gitdir: ")?;
+    resolve_pointer(target, dotgit.parent()?)
+}
+
+/// The common git directory of the worktree at `root`, canonical, read from
+/// the files git keeps rather than asked of git: `root/.git` when it is a
+/// directory, otherwise the `commondir` of the directory its `.git` file
+/// names. `None` when neither reads as git would write it, `.git` being a
+/// symbolic link included.
+///
+/// Read from disk because its caller is the trust digest (ADR 0023 §4,
+/// amended 2026-10-13), which runs before every hook spawn; a `git` process
+/// per recheck would cost more than the walk it serves.
+pub fn common_git_dir_on_disk(root: &Path) -> Option<PathBuf> {
+    let dotgit = root.join(".git");
+    let md = std::fs::symlink_metadata(&dotgit).ok()?;
+    if md.is_dir() {
+        return std::fs::canonicalize(&dotgit).ok();
+    }
+    if !md.is_file() {
+        return None;
+    }
+    let admin = gitfile_target(&dotgit)?;
+    match read_pointer_file(&admin.join("commondir")) {
+        Some(common) => resolve_pointer(line(&common), &admin),
+        None => Some(admin),
+    }
+}
+
+/// Whether `dir` is a linked worktree registered in the repository whose
+/// common git directory is `common` (canonical, as
+/// [`common_git_dir_on_disk`] returns it). All of these must hold:
+/// - `dir/.git` is a regular file, not a directory or a symbolic link;
+/// - its `gitdir:` resolves to `<common>/worktrees/<name>`, a directory
+///   directly under `worktrees`, and `<common>/worktrees` is not itself a
+///   link;
+/// - that directory's `gitdir` file resolves back to `dir/.git`.
+///
+/// The last is what makes it registered: git writes both pointers when it
+/// adds a worktree, and a `.git` file planted in a directory can name an
+/// existing worktree's directory but cannot make that directory name it
+/// back without a write into `.git/`. No git is run, for the reason given
+/// at [`common_git_dir_on_disk`].
+pub fn is_registered_linked_worktree(dir: &Path, common: &Path) -> bool {
+    let dotgit = dir.join(".git");
+    let is_file = std::fs::symlink_metadata(&dotgit).is_ok_and(|m| m.is_file());
+    if !is_file {
+        return false;
+    }
+    let worktrees = common.join("worktrees");
+    if std::fs::canonicalize(&worktrees).ok().as_ref() != Some(&worktrees) {
+        return false;
+    }
+    let Some(admin) = gitfile_target(&dotgit) else {
+        return false;
+    };
+    if admin.parent() != Some(worktrees.as_path()) || !admin.is_dir() {
+        return false;
+    }
+    // Trailing whitespace off, as git reads this one (`strbuf_rtrim`).
+    let back = read_pointer_file(&admin.join("gitdir"))
+        .and_then(|t| resolve_pointer(t.trim_end(), &admin));
+    back.is_some() && back == std::fs::canonicalize(&dotgit).ok()
+}
+
 /// A digest of what a commit of the whole worktree would hold right now:
 /// the tree id `git add -A && git write-tree` would give, computed in a
 /// throwaway copy of the index so the user's index is never touched.

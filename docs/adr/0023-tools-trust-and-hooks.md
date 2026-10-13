@@ -1434,3 +1434,71 @@ What reverses it: the owner wanting custom tools to declare
 at all. Tests: `read_only_table_*` in `gate.rs`, and
 `call_json_has_no_read_only_*` and `hook_payload_read_only_*` in
 `crates/trellis-loop/src/extension_tests.rs`.
+
+## Amendment 2026-10-13: registered linked worktrees under `.trellis/work/` are left out of the `.trellis/` digest (#718)
+
+Status: Accepted (owner-directed): the owner's decision of 2026-10-13 on
+PR #717, filed as #718.
+
+`trellis work` keeps a converged task's linked worktree at
+`.trellis/work/task/<id>/` (ADR 0053). §4's digest walked it like any
+directory under `.trellis/`, so keeping one changed the starting worktree's
+fingerprint, and every later trust check there (`work`'s gate for process
+agents and services, an in-place `trellis run`) read "changed since it was
+trusted". A run in the task worktree changed it again with every edit. A
+worktree is a checkout of the repository, not code the person trusted under
+`.trellis/`, so it joins the skips, on terms a directory cannot claim for
+itself. A directory is left out only when all of these hold:
+
+- its real path is strictly under the real `.trellis/work/`, and the walk
+  reached it there, with no symbolic link on the way;
+- its `.git` is a regular file (not a directory, not a link) whose
+  `gitdir:` line resolves, `..` and relative paths included, to
+  `<common git dir>/worktrees/<name>`, a directory directly under a
+  `worktrees` that is not itself a link;
+- that directory's `gitdir` file resolves back to this `.git`: the
+  worktree is registered in this repository.
+
+The common git directory is read from disk (`root/.git`, or the
+`commondir` its `.git` file leads to), as are the two pointer files, each
+read up to 4096 bytes. No git process is run: the digest is taken before
+every hook spawn. Built as `trellis_vcs::common_git_dir_on_disk` and
+`trellis_vcs::is_registered_linked_worktree`. Everything else under
+`.trellis/work/` is hashed as before: a directory with no `.git`, with a
+`.git` directory, with a `.git` pointing elsewhere, at the common git
+directory, or at another worktree's directory (which does not name it
+back), a `.git` that is a link, a worktree whose registration was removed,
+and a link under `.trellis/` to a registered worktree, whose files are then
+recorded under their real paths as any alias's are. A linked worktree
+outside `.trellis/work/` is hashed too.
+
+A hook or custom tool whose argv names a file inside such a worktree
+(decided on the canonical path, so a link under `.trellis/` into one counts)
+is refused, as code outside `.trellis/` is (the eleventh and twelfth
+amendments above): it is not in the digest, and a run rooted in that
+worktree edits it. `trellis trust` prints the item, the file and the
+worktree, and says to move the code to `.trellis/hooks/` or
+`.trellis/tools/`.
+
+A repository with no linked worktree under `.trellis/work/` has the digest
+it had, so no trust recorded before this changes. The `.trellis/` item's
+shown text in `trellis trust` is unchanged, as for #620: that text is part
+of the digest, and changing it would untrust every repository trusted
+before. Evidence, in `crates/trellis-loop/src/trust.rs`:
+`trust_linked_worktree_registered_under_work_is_left_out_of_the_digest`
+(the fingerprint is the same before a task worktree is added, after, and
+after edits in it; relative pointers with `..` resolve),
+`trust_linked_worktree_forged_or_unregistered_is_still_fingerprinted`,
+`trust_linked_worktree_outside_work_is_still_fingerprinted` and
+`trust_linked_worktree_code_named_by_a_hook_is_refused`.
+
+**Not covered, plainly:** whoever can write `.git/worktrees/` can register
+a directory, and so leave it out. That is the same writer who can already
+change `.git/config`, and a run refuses when `.git/` changed during it
+(§5, ADR 0032); a clone cannot carry a `.git` file, since git refuses the
+path. The skip is decided each time the digest is taken: a directory that
+becomes registered, or stops being registered, after a trust changes the
+digest, and reads as changed.
+
+What reverses it: removing the skip from `dot_trellis_files`, after which
+kept task worktrees untrust the starting worktree again.

@@ -1412,6 +1412,35 @@ fn task_worktree_whose_trusted_code_differs_from_the_trusted_entry_is_untrusted(
 }
 
 #[test]
+fn trust_linked_worktree_kept_by_work_leaves_the_starting_worktree_trusted() {
+    // #718: a converged task's kept worktree sits under `.trellis/work/`,
+    // and the `.trellis/` trust digest walked it, so after one `work` the
+    // starting worktree read "changed since it was trusted" and its hooks
+    // stopped running in place.
+    let (d, home, _marker) = hooked("trust-kept-worktree");
+    let t = trellis_home(&d, &home, &["trust"]);
+    assert!(t.status.success(), "{}", combined(&t));
+    add(&d, &["change the greeting"]);
+    let o = trellis_home(&d, &home, &["work", "--model", &model(&d, "converge.json")]);
+    let s = combined(&o);
+    assert!(o.status.success(), "{s}");
+    assert!(s.contains("CONVERGED"), "{s}");
+    let id = ids(&d, "done").pop().expect("one done task");
+    assert!(
+        d.join(".trellis/work/task")
+            .join(&id)
+            .join(".git")
+            .is_file()
+    );
+
+    let shown = combined(&trellis_home(&d, &home, &["trust", "--show"]));
+    assert!(shown.contains("state:   trusted"), "{shown}");
+    for p in [&d, &home] {
+        let _ = std::fs::remove_dir_all(p);
+    }
+}
+
+#[test]
 fn task_worktree_runs_hold_no_queue_of_their_own() {
     // ADR 0053 decision 5: the queue is the starting worktree's; nothing
     // run in a task worktree makes one in that worktree's git directory.
