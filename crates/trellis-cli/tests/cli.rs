@@ -686,6 +686,81 @@ fn log_actions_lists_each_recorded_action_and_only_the_outcomes_there_are() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// A trail whose factual section holds the given check outcomes and radius
+/// counts, planted under `.trellis/runs`.
+fn plant_log_fixture(d: &Path, checks: &str, radius: &str) {
+    let runs = d.join(".trellis/runs");
+    std::fs::create_dir_all(&runs).unwrap();
+    std::fs::write(
+        runs.join("r1.json"),
+        format!(
+            r#"{{"run_id":"r1","task":"t","factual":{{"proposed":["a.py"],
+                "check_outcomes":{checks},"radius":{radius},"actions":[]}}}}"#
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn log_words_checks_are_passed_or_failed_not_a_suffix() {
+    // #651: "checks: Tests+ Typecheck-" read as marks on the checks, and the
+    // one line of terminal history a person scans for a run's result
+    // carried its verdicts in a glyph. The word is what an executed
+    // process said; nothing else here is a verdict (ADR 0004).
+    let d = repo("log-words-checks");
+    plant_log_fixture(
+        &d,
+        r#"[{"kind":"Tests","passed":true},{"kind":"Typecheck","passed":false}]"#,
+        r#"{"reached_resolved":0,"reached_ambiguous":0,"widest_unbound_in_touched_files":0,"radius_queries":0}"#,
+    );
+    let s = stdout(&run(&d, &["log"]));
+    assert!(
+        s.contains("recorded checks: tests passed, typecheck failed"),
+        "{s}"
+    );
+    assert!(!s.contains("Tests+") && !s.contains("Typecheck-"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn log_words_radius_is_three_figures_and_never_one_sum() {
+    // #651: "15 reached" added the resolved and ambiguous reach, which rule
+    // 3 forbids as much as a ratio: the two reach counts are sums over the
+    // run's queries and the unbound count is one query's, so no arithmetic
+    // across them is a figure about anything. Each is printed by itself,
+    // and the doubt figure is printed beside the reach it qualifies.
+    let d = repo("log-words-radius");
+    plant_log_fixture(
+        &d,
+        "[]",
+        r#"{"reached_resolved":12,"reached_ambiguous":3,"widest_unbound_in_touched_files":4,"radius_queries":2}"#,
+    );
+    let s = stdout(&run(&d, &["log"]));
+    assert!(
+        s.contains(
+            "radius: 12 resolved, 3 ambiguous reached; 4 unbound in touched files \
+             (widest single query, of 2)"
+        ),
+        "{s}"
+    );
+    assert!(!s.contains("15 reached"), "{s}");
+    assert!(s.contains("recorded checks: none"), "{s}");
+
+    // A run that asked no radius has no counts to show: zeros here would
+    // read as a radius that found nothing rather than one never queried.
+    let d2 = repo("log-words-radius-none");
+    plant_log_fixture(
+        &d2,
+        "[]",
+        r#"{"reached_resolved":0,"reached_ambiguous":0,"widest_unbound_in_touched_files":0,"radius_queries":0}"#,
+    );
+    let s = stdout(&run(&d2, &["log"]));
+    assert!(s.contains("radius: no query recorded"), "{s}");
+    assert!(!s.contains("0 resolved"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&d2);
+}
+
 #[test]
 fn an_inferred_root_is_named_and_an_explicit_one_is_not() {
     // The risk (#248): acting on a tree found several levels up without
@@ -1023,6 +1098,34 @@ fn help_describes_the_commands_without_marketing_them() {
     for cmd in ["index", "radius", "run", "check", "doctor", "partitions"] {
         assert!(s.contains(cmd), "--help omits `{cmd}`");
     }
+}
+
+#[test]
+fn help_current_tui_help_does_not_call_the_session_the_default() {
+    // #662. The risk: help describing a default that changed. Bare
+    // `trellis` stopped opening the line session (ADR 0050 §1, #561), and
+    // `tui --help` still said "The line-based session stays the default".
+    let out = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .args(["tui", "--help"])
+        .output()
+        .unwrap();
+    let s = stdout(&out);
+    assert!(!s.contains("stays the default"), "{s}");
+    assert!(s.contains("`trellis --tui` opens it too"), "{s}");
+}
+
+#[test]
+fn help_current_describes_bare_trellis_as_the_desktop_and_the_overview() {
+    let out = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    let s = stdout(&out);
+    assert!(
+        s.contains("trellis          open the desktop window and print the overview"),
+        "{s}"
+    );
+    assert!(!s.contains("interactive session"), "{s}");
 }
 
 #[test]
@@ -2998,6 +3101,35 @@ fn the_model_listing_says_where_colibri_weights_come_from() {
 }
 
 #[test]
+fn model_pull_colibri_2_0_0_families_get_colibris_tooling_too() {
+    // #612: the list stopped at colibri 1.12.1's nine families, so
+    // `model pull "MiMo-V2.6 Flash"`, a family 2.0.0 serves, got the generic
+    // catalogue error, which reads as a typo of a GGUF entry. Matched as the
+    // registry spells it, in any case.
+    let d = repo("model-pull-colibri-2");
+    let data = scratch("model-pull-colibri-2-data");
+    std::fs::create_dir_all(models_dir_in(&data)).unwrap();
+    for name in ["MiMo-V2.6 Flash", "qwen3-coder-30b-a3b"] {
+        let out = run_with_data_dir(&d, &data, &["model", "pull", name]);
+        assert!(
+            !out.status.success(),
+            "{name}: a colibri family must not pull"
+        );
+        let err = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(
+            err.contains("is a colibri family") && err.contains("coli convert"),
+            "{name}: {err}"
+        );
+        assert!(
+            !err.contains("Known:"),
+            "{name}: not the generic error:\n{err}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&data);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn pull_a_colibri_family_names_colibris_tooling_and_other_names_keep_the_generic_error() {
     // ADR 0047 decision 11: `model pull` does not fetch colibri containers.
     // Someone who types a colibri family there should learn where its
@@ -3885,13 +4017,42 @@ fn trellis_out(args: &[&str]) -> std::process::Output {
 }
 
 #[test]
-fn interface_flag_web_says_it_is_not_built() {
-    // ADR 0050 section 1: the flag parses, and until its ticket lands it
-    // says so instead of appearing to start something.
-    let out = trellis_out(&["--web"]);
+fn interface_flag_web_with_no_desktop_beside_trellis_says_where_it_looked() {
+    // ADR 0050 section 5 (#375): `--web` is the desktop serving its page,
+    // so it is looked for beside the running trellis only, as `--dsk`
+    // looks, and nothing on PATH is started. Outside a repository it is
+    // not refused for the missing root (the desktop shows its overview).
+    let exe_name = format!("trellis{}", std::env::consts::EXE_SUFFIX);
+    let desktop_name = format!("trellis-desktop{}", std::env::consts::EXE_SUFFIX);
+    let bin = tempfile::tempdir().unwrap();
+    let on_path = tempfile::tempdir().unwrap();
+    let exe = bin.path().join(&exe_name);
+    std::fs::copy(env!("CARGO_BIN_EXE_trellis"), &exe).unwrap();
+    wait_until_executable(&exe);
+    std::fs::write(on_path.path().join(&desktop_name), b"").unwrap();
+    let out = Command::new(&exe)
+        .arg("--web")
+        .current_dir(bin.path())
+        .env("PATH", on_path.path())
+        .output()
+        .unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success(), "--web succeeded");
-    assert!(err.contains("the web view is not built yet"), "{err}");
+    assert!(!out.status.success(), "--web succeeded: {err}");
+    assert!(!err.contains("not built"), "{err}");
+    assert!(
+        !err.contains("cannot determine the repository root"),
+        "{err}"
+    );
+    assert!(err.contains(&desktop_name), "{err}");
+    assert!(err.contains("looked for"), "{err}");
+    assert!(
+        !err.contains(&on_path.path().display().to_string()),
+        "{err}"
+    );
+    assert!(
+        err.contains("cargo install --locked --path desktop"),
+        "{err}"
+    );
 }
 
 /// Runs the executable just written at `path` with `--version` until the
@@ -4495,6 +4656,30 @@ fn doctor_unreachable_runtime_says_it_could_not_be_reached_not_pass_model() {
     assert!(tier.contains(&addr.to_string()), "{tier}");
     assert!(tier.contains("start it, or check the port"), "{tier}");
     assert!(!tier.contains("pass --model"), "{tier}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn wait_line_doctor_names_the_address_it_probes_before_the_wait() {
+    // #650. The risk: every probe ran before any output, with a 30 s bound
+    // on the runtime's, so `doctor --model` against a runtime that does not
+    // answer was half a minute of blank terminal while a person diagnosed
+    // it. The line goes to stderr, and the report on stdout is unchanged.
+    let addr = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap()
+    };
+    let d = repo("doctor-wait-line");
+    let spec = format!("llamacpp:http://{addr}");
+    let out = run(&d, &["doctor", "--model", &spec]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.lines()
+            .any(|l| l == format!("probing {spec} (up to 30 s)")),
+        "{}",
+        combined(&out)
+    );
+    assert!(!stdout(&out).contains("probing "), "{}", combined(&out));
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -5214,6 +5399,32 @@ fn overview_lists_pull_requests_and_runs_from_a_gh_on_path() {
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&user);
     let _ = std::fs::remove_dir_all(scratch_path("overview-gh-gh"));
+}
+
+#[test]
+fn wait_line_overview_json_stdout_stays_one_json_object_while_gh_is_asked() {
+    // #650 says what bare `trellis` waits on, on stderr and only at a
+    // terminal. The risk is the desktop's `--json overview`: a line on its
+    // stdout would leave a body no client can parse.
+    let d = repo("overview-wait-line");
+    let user = scratch("overview-wait-line-user");
+    let o = overview_in(
+        "overview-wait-line",
+        &d,
+        &user,
+        GH_OK,
+        &["--json", "overview"],
+    );
+    let v = overview_json(&o);
+    assert_eq!(v["board"]["pr_ci"]["available"], true, "gh was asked: {v}");
+    assert!(
+        !String::from_utf8_lossy(&o.stderr).contains("asking gh"),
+        "stderr is a pipe here, so nothing is said: {}",
+        combined(&o)
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&user);
+    let _ = std::fs::remove_dir_all(scratch_path("overview-wait-line-gh"));
 }
 
 #[test]
