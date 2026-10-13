@@ -5,6 +5,8 @@
 # See docs/adr/0007-trail-format.md.
 .trellis/index.bin
 .trellis/work/
+# Replay recordings, one per run (ADR 0056); they ignore themselves too.
+.trellis/replays/
 
 # Benchmark corpora: cloned, pinned by SHA in docs/BENCHMARK_AND_EVAL.md.
 # Also holds the hand-audit working directories, which are inputs to the

@@ -32,6 +32,7 @@ mod orchestrate; // `agents` and `routines` (ADR 0026)
 mod output; // where output goes, and the JSONL framing of `--json` and `rpc`
 mod overview; // `overview` (ADR 0050 §3)
 mod process_agent; // process agents and the carry-back of what they wrote
+mod replay; // the replay recording every run writes (ADR 0056)
 mod rpc; // `rpc`: JSONL commands on stdin
 mod run_cmd; // `run` and `resume`, and the trail a run writes
 mod services; // services an agent profile declares (ADR 0026 §12)
