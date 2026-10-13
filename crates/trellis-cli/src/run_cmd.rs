@@ -904,7 +904,8 @@ fn run_body(
         Driver::Hosted(_) => {
             match hosted::resolve_from(&spec, &cfg, model_from_user, model_source)? {
                 Some(r) => {
-                    let tier = probe_rt.block_on(hosted::colibri_tier(&r))?;
+                    let tier =
+                        probe_rt.block_on(hosted::colibri_tier(&r, !extras.images.is_empty()))?;
                     // Before `preflight` can refuse on it: a tools refusal
                     // is the tier this run decided, and rpc's `get_state`
                     // reports it (#269).

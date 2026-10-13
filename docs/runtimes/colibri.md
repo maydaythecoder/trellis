@@ -12,14 +12,24 @@ appear. No colibri server has been run against TRELLIS (ADR 0047, What is not
 built): every TRELLIS behaviour here is tested against stubs that answer with
 bodies transcribed from colibri's source.
 
+**colibri 2.0.0.** colibri 2.0.0 (bf24429, 2026-10-06; `c/version.py:3`,
+`CHANGELOG.md:6`) changed some of those facts: KV slots, which families take
+tools, image blocks on the Anthropic route, the decision API, and new chat
+checkpoints. Each is corrected below with its path at bf24429, read for
+#612 (inventory, Re-inventory at 2.0.0). What TRELLIS reads still parses at
+2.0.0: `owned_by: "colibri"` on `/v1/models` (`c/openai_server.py:5997`), the
+error envelope (`:97-99`) and the `/health` fields doctor prints. Anything not
+marked as 2.0.0 was not re-read and is as it was at ce370e8.
+
 ## Weights
 
 TRELLIS fetches no colibri weights. Its catalogue is one pinned GGUF file per
 entry (ADR 0044), and a colibri container is a set of shards of 20 GB to
 1.6 TB (inventory, open question 6) that colibri downloads, converts and
 verifies itself (ADR 0047 decision 11). `trellis model` says so under its
-listing, and `trellis model pull` given one of the nine family names below
-(as ADR 0047's table spells them, any case) refuses with a line pointing here.
+listing, and `trellis model pull` given one of the chat family or checkpoint
+names in the families table below (as colibri's registry spells them, any
+case) refuses with a line pointing here.
 You run colibri's own commands:
 
 ```text
@@ -88,9 +98,14 @@ What each setting is for:
   cannot be raised to 8,192; set `[model] context_bytes` for it (below).
   The 3.5 ratio was measured on no colibri tokenizer; COL-12 (#277) may
   recompute it.
-- `--kv-slots`: 1 to 16, and above 1 only on GLM-5.2/5.3 and GLM-5.3-Flash
-  (COL-ENG-29). TRELLIS reads the count from `/health` as the server's
-  batching (below).
+- `--kv-slots`: 1 to 16 on every chat family in colibri 2.0.0 (#1955,
+  `CHANGELOG.md:20-28`; `max_kv_slots` is 16 in each chat family's
+  `FamilyLimits`, `c/family_registry.py:1279-1651`), and 1 unless set
+  (`COLI_KV_SLOTS`, else 1, `c/coli:3576`); a count above the family's
+  maximum is refused (`c/coli:3003-3004`). With more than one slot colibri
+  drafts nothing and keeps its dense chain off (`CHANGELOG.md:27-28`). In
+  1.12.1 only GLM-5.2/5.3 and GLM-5.3-Flash took more than one (COL-ENG-29).
+  TRELLIS reads the count from `/health` as the server's batching (below).
 - `--temp 0`: with no `temperature` in a request colibri samples at
   `COLI_TEMP`, else 0.7 (ADR 0047 finding 4; inventory finding 7). TRELLIS
   sends `temperature: 0` to an identified colibri itself (below), but a server
@@ -119,8 +134,11 @@ Tier 1, native tool calls, through colibri's OpenAI chat route:
 openai-chat:http://127.0.0.1:8000/v1#qwen3.8-flash-next
 ```
 
-Tier 1 through the Anthropic Messages route, which takes no image
-(ADR 0047 decision 2; COL-ENG-20):
+Tier 1 through the Anthropic Messages route (ADR 0047 decision 2;
+COL-ENG-20). In colibri 2.0.0 it takes an `image` block with a base64
+source in a user message, the form TRELLIS sends (#1791,
+`CHANGELOG.md:190-192`; `_anthropic_image_part` and `anthropic_messages`,
+`c/openai_server.py:3646-3665` and `:7864`); in 1.12.1 it took none:
 
 ```text
 anthropic:http://127.0.0.1:8000#qwen3.8-flash-next
@@ -141,7 +159,9 @@ vllm:http://127.0.0.1:8000#qwen3.8-flash-next
 ```
 
 The other way past a tools refusal is to restart colibri with
-`COLI_TOOL_FALLBACK=1`, which only OLMoE and Qwen3.6 accept (table below).
+`COLI_TOOL_FALLBACK=1`, which in colibri 2.0.0 only OLMoE accepts
+(`c/openai_server.py:1735-1738`; table below). Qwen3.6 took it in 1.12.1, and
+in 2.0.0 renders tools itself.
 colibri's grammar never constrains sampling, so colibri is never tier 2
 (ADR 0047 finding 1).
 
@@ -185,24 +205,39 @@ key_env = "COLI_API_KEY"
   otherwise every tier-4 request gets 401. When a run refuses on a tools
   refusal having sent a key, its message says this too (`preflight`).
 
-## The nine families
+## The families
 
-The tier each gives TRELLIS, from ADR 0047's table (`c/family_registry.py`,
-`FamilyCapabilities` and `FamilyLimits`) and the tools refusals
-(COL-ENG-48, COL-ENG-53, COL-ENG-54). Contexts are colibri's default and
-maximum, in tokens.
+The tier each gives TRELLIS in colibri 2.0.0, from its family registry
+(`c/family_registry.py:1242-1790` at bf24429, `FamilyCapabilities` and
+`FamilyLimits`) and the tools refusals in its gateway. Contexts are colibri's
+default and maximum, in tokens. Every family here takes up to 16 KV slots in
+2.0.0 (`--kv-slots` above). The qwen36 rows after the first and the MiMo-V2.6
+Pro row are checkpoints of one family (`DisplayVariant`,
+`c/family_registry.py:1458-1474` and `:1622-1628`), and share its limits;
+these are the names `trellis model pull` recognises.
 
 | Family | Tier for TRELLIS | Context, default / max | Notes |
 |---|---|---|---|
-| GLM-5.2/5.3 | 1 | 4,096 / 1,048,576 | raise `--ctx` to 8,192 or more; up to 16 KV slots; GLM-5.3 thinks (below) |
-| GLM-5.3-Flash | 1 | 8,192 / 1,048,576 | up to 16 KV slots; vision; thinks (below) |
+| GLM-5.2/5.3 | 1 | 4,096 / 1,048,576 | raise `--ctx` to 8,192 or more; GLM-5.3 thinks (below) |
+| GLM-5.3-Flash | 1 | 8,192 / 1,048,576 | vision; thinks (below) |
 | Kimi K3 | 1 | 8,192 / 1,048,576 | |
 | DeepSeek V4 Flash | 1 | 4,096 / 1,048,576 | raise `--ctx` to 8,192 or more |
 | DeepSeek V4.1 Flash | 1 | 4,096 / 1,048,576 | raise `--ctx` to 8,192 or more; vision |
 | Qwen3.8-Flash-Next | 1 | 8,192 / 262,144 | vision; the configuration COL-12 (#277) measures |
-| Qwen3.6-35B-A3B | tools refused; tier 1 only with `COLI_TOOL_FALLBACK=1`, else tier 4 (`vllm:`) | 8,192 / 262,144 | |
-| Inkling | tools refused, with no fallback: tier 4 (`vllm:`) only | 8,192 / 1,048,576 | |
-| OLMoE | tools refused; tier 1 only with `COLI_TOOL_FALLBACK=1`, else tier 4 (`vllm:`) | 4,096 / 4,096 | its maximum is 4,096 tokens: set `[model] context_bytes` |
+| Qwen3.6-35B-A3B | 1: 2.0.0 renders tools in Qwen3.6's own template (#1794, `CHANGELOG.md:185-186`; `render_chat_qwen`, `c/openai_server.py:1779-1800`, chosen at `:3485-3487`) | 8,192 / 262,144 | vision when the checkpoint has a vision tower (`c/openai_server.py:7841`); in 1.12.1 tools were refused unless `COLI_TOOL_FALLBACK=1` |
+| Qwen3.8-27B | 1, as Qwen3.6, or through Qwen3.8's template when the checkpoint ships it (`c/openai_server.py:1103-1118`, `:3480-3482`) | 8,192 / 262,144 | new in 2.0.0, dense (`c/family_registry.py:1447-1449`) |
+| Qwen3-Coder-30B-A3B | 1: its own template, tools included (`render_chat_qwen3_coder`, `c/openai_server.py:2042`, chosen at `:3483-3484`) | 8,192 / 262,144 | new in 2.0.0; no thinking (`:2043-2044`) |
+| Qwen3-Coder-REAP-25B-A3B | 1, as Qwen3-Coder-30B-A3B | 8,192 / 262,144 | new in 2.0.0, a REAP prune of it (`c/family_registry.py:1450-1451`) |
+| Qwen3.8-2.4T-A95B | 1, as Qwen3.8-27B | 8,192 / 262,144 | |
+| MiMo-V2.6 Flash | 1: its template takes tools (`render_chat_mimo`, `c/openai_server.py:2261`, chosen at `:3504`) | 8,192 / 1,048,576 | new in 2.0.0; vision (`c/family_registry.py:1654`) |
+| MiMo-V2.6 Pro | 1, as MiMo-V2.6 Flash | 8,192 / 1,048,576 | new in 2.0.0 |
+| Inkling | tools refused, with no fallback: tier 4 (`vllm:`) only (`c/openai_server.py:2522-2524`) | 8,192 / 1,048,576 | |
+| OLMoE | tools refused; tier 1 only with `COLI_TOOL_FALLBACK=1`, else tier 4 (`vllm:`) (`c/openai_server.py:1735-1738`) | 4,096 / 4,096 | its maximum is 4,096 tokens: set `[model] context_bytes` |
+
+colibri 2.0.0 also serves an image model (Qwen-Image-2.1) and decision models
+(Laya, GLiNER2.5-Decide) that answer `POST /v1/systemone` and generate no text
+(`c/family_registry.py:1663-1790`; `decision=True` at `:1736` and `:1783`).
+None is a chat runtime for TRELLIS.
 
 GLM-5.3 and GLM-5.3-Flash think at `Reasoning Effort: Low` even with
 `[model] thinking = "off"`: their template opens a thinking block whatever the
@@ -214,10 +249,12 @@ sends `enable_thinking: false` for `off`, which these two do not honour.
 `trellis run --image` attaches each image to every request, its base64 counted
 against the run's byte budget (`image_input::fits`,
 crates/trellis-cli/src/image_input.rs). colibri takes one image per request,
-on its vision families only (COL-ENG-82), so pass `--image` once. TRELLIS does
-not enforce the one-image limit itself. Once a run has identified colibri it
-checks the images again against colibri's smaller default budget, before the
-snapshot (#527). The `anthropic:` route takes no image.
+on its vision families only (COL-ENG-82; still so in 2.0.0,
+`c/openai_server.py:7851`), so pass `--image` once. TRELLIS does not enforce
+the one-image limit itself. Once a run has identified colibri it checks the
+images again against colibri's smaller default budget, before the snapshot
+(#527). The `anthropic:` route takes an image too in colibri 2.0.0 (The
+specs, above); in 1.12.1 it took none.
 
 ## What TRELLIS reads, and when
 
@@ -332,6 +369,8 @@ The other forms:
 - Streaming replies from colibri (#280, #281).
 - The floor measurement of Qwen3.8-Flash-Next at tier 1 (COL-12, #277), which
   may recompute the 3.5 bytes per token.
-- `/v1/brio` for `trellis ask` (#276).
+- A `POST /v1/systemone` client for `trellis ask` (#276). colibri 2.0.0
+  removed `/v1/brio`; `/v1/systemone` is its one decision API (#1856,
+  `CHANGELOG.md:133-134`; `docs/systemone.md:132-134`).
 - Reporting colibri's version, family or context window: colibri does not
   expose them over HTTP (ADR 0047, What is not built).
