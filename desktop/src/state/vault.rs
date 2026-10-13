@@ -1,5 +1,5 @@
 //! The vault notes view, from `vault_search` and `vault_graph` answers
-//! (#309).
+//! (#309), and `vault_check`'s report (#632).
 //!
 //! The vault is the repository's note tree (ADR 0022), and a run shows its
 //! notes to the model as data (ADR 0017); the desktop shows them the same
@@ -25,6 +25,7 @@ use serde_json::{Map, Value, json};
 
 pub const SEARCH: &str = "vault_search";
 pub const GRAPH: &str = "vault_graph";
+pub const CHECK: &str = "vault_check";
 
 /// What `trellis vault search` prints first when the index holds titles
 /// and paths only.
@@ -72,10 +73,110 @@ pub struct NoteGraph {
     pub issues: Vec<String>,
 }
 
+/// What `trellis vault check` prints (#632), each line as the CLI prints
+/// it. The gate answer is the run gate's vault validation (ADR 0022), not a
+/// verdict (ADR 0004): it is drawn in the vault view and never as a check
+/// row, which is why it lives here and not beside `state.rs`'s checks.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Check {
+    pub line: String,
+    pub issues: Vec<String>,
+    pub warnings: Vec<String>,
+    /// `run gate: accepts this vault (...)`, or `run gate: refuses this
+    /// vault, N violation(s):`.
+    pub gate: String,
+    /// Empty when the gate accepts.
+    pub violations: Vec<String>,
+}
+
+/// A `vault_check` answer's `data`, each line as the CLI prints it.
+pub fn check(data: &Value) -> Result<Check, String> {
+    let o = data.as_object().ok_or("it is not an object")?;
+    let strings = |k: &str| -> Result<Vec<String>, String> {
+        list(o, k)?
+            .iter()
+            .map(|s| {
+                s.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("an entry of {k} is not text"))
+            })
+            .collect()
+    };
+    let gate = o
+        .get("gate")
+        .and_then(Value::as_object)
+        .ok_or("it has no gate")?;
+    let (gate, violations) = match gate.get("accepts").and_then(Value::as_bool) {
+        Some(true) => {
+            let stats = gate
+                .get("stats")
+                .and_then(Value::as_object)
+                .ok_or("its gate has no stats")?;
+            let count = |k: &str| {
+                stats
+                    .get(k)
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| format!("its gate's stats.{k} is not a count"))
+            };
+            // `Stats`'s Display, as the CLI prints it.
+            (
+                format!(
+                    "run gate: accepts this vault (notes={} parentless={} connected={} \
+                     manifest_missing={} manifest_extra={})",
+                    count("notes")?,
+                    count("parentless")?,
+                    count("connected")?,
+                    count("manifest_missing")?,
+                    count("manifest_extra")?
+                ),
+                Vec::new(),
+            )
+        }
+        Some(false) => {
+            let violations = list(gate, "violations")?
+                .iter()
+                .map(|s| {
+                    s.as_str()
+                        .map(str::to_string)
+                        .ok_or("an entry of violations is not text".to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            (
+                format!(
+                    "run gate: refuses this vault, {} violation(s):",
+                    violations.len()
+                ),
+                violations,
+            )
+        }
+        None => return Err("its gate.accepts is not true or false".into()),
+    };
+    Ok(Check {
+        line: text(o, "line", "it")?,
+        issues: strings("issues")?,
+        warnings: strings("warnings")?,
+        gate,
+        violations,
+    })
+}
+
+impl Check {
+    fn to_json(&self) -> Value {
+        json!({
+            "line": self.line,
+            "issues": self.issues,
+            "warnings": self.warnings,
+            "gate": self.gate,
+            "violations": self.violations,
+        })
+    }
+}
+
 /// A well-formed answer, by the command it answers.
 enum Read {
     Search(Option<String>, Vec<Hit>),
     Graph(NoteGraph),
+    Check(Check),
 }
 
 /// The vault view.
@@ -85,6 +186,11 @@ pub struct Vault {
     /// refused or bad data; empty for a search that matched nothing.
     hits: Option<Vec<Hit>>,
     reduced: Option<String>,
+    /// The hits are a browse list, not a ranking (#629): the answer to an
+    /// empty query, which Apex lists by title and `search_results` scores
+    /// 0 for every note, where a note a query matched always scores above
+    /// 0. Marked here so the page draws no score and computes nothing.
+    browse: bool,
     graph: Option<NoteGraph>,
     /// trellis's refusal, or the reason the last answer was bad data.
     error: Option<String>,
@@ -99,6 +205,11 @@ pub struct Vault {
     /// however late, is not shown beside the new ones. The next
     /// `vault_graph` asked clears it.
     graph_superseded: bool,
+    /// The last `vault_check` answer: the report, or trellis's refusal or
+    /// why the answer was bad data. `None` until one. A search does not
+    /// start it over: the report is the vault's, not a query's.
+    check: Option<Result<Check, String>>,
+    asked_check: Option<String>,
 }
 
 fn text(o: &Map<String, Value>, k: &str, what: &str) -> Result<String, String> {
@@ -262,6 +373,7 @@ impl Vault {
                 self.asked_graph = id;
                 self.graph_superseded = false;
             }
+            CHECK => self.asked_check = id,
             _ => {}
         }
     }
@@ -271,13 +383,13 @@ impl Vault {
     /// a question asked before the last one, changes nothing.
     pub fn answer(&mut self, r: &Response) -> bool {
         let command = match r.command.as_deref() {
-            Some(c @ (SEARCH | GRAPH)) => c,
+            Some(c @ (SEARCH | GRAPH | CHECK)) => c,
             _ => return false,
         };
-        let asked = if command == SEARCH {
-            &self.asked_search
-        } else {
-            &self.asked_graph
+        let asked = match command {
+            SEARCH => &self.asked_search,
+            GRAPH => &self.asked_graph,
+            _ => &self.asked_check,
         };
         if asked.is_some() && r.id != *asked {
             return false;
@@ -293,10 +405,10 @@ impl Vault {
                 let bad = |why: String| {
                     format!("{command} answered with bad data, so nothing from it is shown: {why}")
                 };
-                if command == SEARCH {
-                    search(data).map(|(reduced, hits)| Read::Search(reduced, hits))
-                } else {
-                    graph(data).map(Read::Graph)
+                match command {
+                    SEARCH => search(data).map(|(reduced, hits)| Read::Search(reduced, hits)),
+                    GRAPH => graph(data).map(Read::Graph),
+                    _ => check(data).map(Read::Check),
                 }
                 .map_err(bad)
             }
@@ -309,15 +421,23 @@ impl Vault {
                 .unwrap_or_else(|| format!("{command} was refused, and trellis gave no reason"))),
         };
         match read {
+            // The report is the vault's, not a query's: it sits beside the
+            // hits and the note, and a refused check says so in its place.
+            Ok(Read::Check(c)) => self.check = Some(Ok(c)),
+            Err(why) if command == CHECK => self.check = Some(Err(why)),
             // A search starts over: the note shown was picked from the
             // last search's hits.
             Ok(Read::Search(reduced, hits)) => {
+                let browse = !hits.is_empty() && hits.iter().all(|h| h.score == "0.0000");
                 *self = Self {
                     hits: Some(hits),
                     reduced,
+                    browse,
                     asked_search: self.asked_search.take(),
                     asked_graph: self.asked_graph.take(),
                     graph_superseded: superseded,
+                    check: self.check.take(),
+                    asked_check: self.asked_check.take(),
                     ..Self::default()
                 };
             }
@@ -334,6 +454,8 @@ impl Vault {
                     asked_search: self.asked_search.take(),
                     asked_graph: self.asked_graph.take(),
                     graph_superseded: superseded || self.graph_superseded,
+                    check: self.check.take(),
+                    asked_check: self.asked_check.take(),
                     ..Self::default()
                 };
             }
@@ -345,12 +467,18 @@ impl Vault {
         json!({
             "error": self.error,
             "reduced": self.reduced,
+            "browse": self.browse,
             "hits": self.hits.as_ref().map(|hs| {
                 hs.iter()
                     .map(|h| json!({"path": h.path, "title": h.title, "score": h.score}))
                     .collect::<Vec<_>>()
             }),
             "graph": self.graph.as_ref().map(NoteGraph::to_json),
+            "check": match &self.check {
+                None => Value::Null,
+                Some(Ok(c)) => c.to_json(),
+                Some(Err(why)) => json!({"error": why}),
+            },
         })
     }
 }
@@ -441,6 +569,47 @@ mod tests {
         // Before any answer there are no hits at all, which is not an
         // empty answer.
         assert_eq!(view_of(&Vault::default())["hits"], Value::Null);
+    }
+
+    #[test]
+    fn vault_browse_list_is_marked_and_kept_in_trellis_s_title_order() {
+        // The risk (#629): the empty query's list, which Apex orders by
+        // title and trellis scores 0 throughout, drawn as a ranking with
+        // a score of 0.0000 beside every note, or re-sorted by the page;
+        // or a real search's hits marked as a browse, hiding their scores.
+        let mut v = Vault::default();
+        let listed = hits(
+            (true, true),
+            json!([
+                {"path": "child.md", "title": "Child", "score": 0.0},
+                {"path": "orphan.md", "title": "Orphan", "score": 0},
+                {"path": "root.md", "title": "Root", "score": 0.0},
+            ]),
+        );
+        assert!(v.answer(&response(SEARCH, "s1", listed)));
+        let j = view_of(&v);
+        assert_eq!(j["browse"], true, "{j}");
+        assert_eq!(
+            j["hits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|h| h["path"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["child.md", "orphan.md", "root.md"]
+        );
+        // A match scores above 0, so a ranking is never a browse, nor is
+        // an empty answer, which lists nothing to browse.
+        let ranked = hits(
+            (true, true),
+            json!([{"path": "a.md", "title": "A", "score": 0.0001},
+                   {"path": "b.md", "title": "B", "score": 0}]),
+        );
+        assert!(v.answer(&response(SEARCH, "s2", ranked)));
+        assert_eq!(view_of(&v)["browse"], false);
+        assert!(v.answer(&response(SEARCH, "s3", hits((true, true), json!([])))));
+        assert_eq!(view_of(&v)["browse"], false);
+        assert_eq!(view_of(&Vault::default())["browse"], false);
     }
 
     #[test]
@@ -621,6 +790,131 @@ mod tests {
         let mut before = before;
         before.as_object_mut().unwrap().remove("vault");
         assert_eq!(after, before, "the run panes are as they were");
+    }
+
+    /// A `vault_check` answer as `check_json` writes one for a vault the
+    /// gate refuses.
+    fn a_refusing_check() -> Value {
+        json!({
+            "line": "notes=3 parentless=1 connected=2 manifest_missing=0 manifest_extra=0 fixes=[]",
+            "issues": ["missing-parent: orphan.md: Orphan has a missing parent [[gone]]",
+                       "disconnected: orphan.md has no parent and no children"],
+            "warnings": ["large note: big.md is 3000000 bytes (Apex warns at 2 MiB)"],
+            "gate": {"accepts": false,
+                     "violations": ["orphan.md: parent [[gone]] does not resolve to any note"]},
+        })
+    }
+
+    #[test]
+    fn vault_check_report_is_shown_as_the_cli_prints_it_and_never_as_a_check_row() {
+        // The risk (#632): the gate answer drawn as a verdict (ADR 0004,
+        // ADR 0048 section 8), when it is vault validation; or the report
+        // reworded, so what the desktop says differs from what `trellis
+        // vault check` prints.
+        use crate::state::{Changed, DesktopState};
+        let mut s = DesktopState::default();
+        let r = json!({"type": "response", "command": "vault_check", "success": true,
+                       "id": "desktop-vault-check-1", "data": a_refusing_check()});
+        let c = s.update(parse_stdout(&r.to_string()));
+        let v = s.view(c);
+        assert_eq!(
+            v.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["vault"],
+            "only the vault view: {v}"
+        );
+        let check = &v["vault"]["check"];
+        assert_eq!(
+            check["line"],
+            "notes=3 parentless=1 connected=2 manifest_missing=0 manifest_extra=0 fixes=[]"
+        );
+        assert_eq!(check["issues"].as_array().unwrap().len(), 2, "{check}");
+        assert_eq!(check["warnings"].as_array().unwrap().len(), 1, "{check}");
+        assert_eq!(
+            check["gate"],
+            "run gate: refuses this vault, 1 violation(s):"
+        );
+        assert_eq!(
+            check["violations"],
+            json!(["orphan.md: parent [[gone]] does not resolve to any note"])
+        );
+        assert_eq!(
+            s.view(Changed::everything())["checks"],
+            json!([]),
+            "the checks pane is untouched"
+        );
+
+        // An accepting gate: the CLI's line, stats as it prints them.
+        let mut v = Vault::default();
+        let ok = json!({"line": "notes=2 parentless=0 connected=2 manifest_missing=0 manifest_extra=0 fixes=[]",
+                        "issues": [], "warnings": [],
+                        "gate": {"accepts": true, "stats": {"notes": 2, "parentless": 0,
+                                 "connected": 2, "manifest_missing": 0, "manifest_extra": 0}}});
+        assert!(v.answer(&response(CHECK, "c", ok)));
+        let check = &view_of(&v)["check"];
+        assert_eq!(
+            check["gate"],
+            "run gate: accepts this vault (notes=2 parentless=0 connected=2 manifest_missing=0 manifest_extra=0)"
+        );
+        assert_eq!(check["violations"], json!([]));
+    }
+
+    #[test]
+    fn vault_check_report_outlives_a_search_and_a_refusal_is_said_in_its_place() {
+        // The risk: a search starting the view over and dropping the
+        // report, which is the vault's and not the query's; a refused or
+        // malformed check shown as the search's error, or as a report; or a
+        // stale check answer taken over the one last asked.
+        let mut v = Vault::default();
+        v.asked(CHECK, Some("c1"));
+        v.asked(CHECK, Some("c2"));
+        assert!(
+            !v.answer(&response(CHECK, "c1", a_refusing_check())),
+            "stale"
+        );
+        assert_eq!(view_of(&v)["check"], Value::Null);
+        assert!(v.answer(&response(CHECK, "c2", a_refusing_check())));
+        assert!(v.answer(&response(
+            SEARCH,
+            "s",
+            hits(
+                (true, true),
+                json!([{"path": "a.md", "title": "A", "score": 1}])
+            )
+        )));
+        let j = view_of(&v);
+        assert_eq!(j["hits"][0]["path"], "a.md");
+        assert!(j["check"]["line"].is_string(), "the report stays: {j}");
+        assert!(v.answer(&refused(SEARCH, "no vault")));
+        assert!(
+            view_of(&v)["check"]["line"].is_string(),
+            "and after a refused search"
+        );
+
+        // A refusal with another question's id is not this question's.
+        assert!(!v.answer(&refused(CHECK, "no vault: pass --vault <dir>")));
+        let mut r = refused(CHECK, "no vault: pass --vault <dir>");
+        r.id = Some("c2".into());
+        assert!(v.answer(&r));
+        let j = view_of(&v);
+        assert_eq!(j["check"], json!({"error": "no vault: pass --vault <dir>"}));
+        assert_eq!(
+            j["error"], "no vault",
+            "the search's own error is untouched"
+        );
+
+        let mut bad = a_refusing_check();
+        bad["gate"] = json!({"accepts": "yes"});
+        assert!(v.answer(&response(CHECK, "c2", bad)));
+        let why = view_of(&v)["check"]["error"].as_str().unwrap().to_string();
+        assert!(
+            why.contains("bad data") && why.contains("gate.accepts"),
+            "{why}"
+        );
+        let mut bad = a_refusing_check();
+        bad["gate"] = json!({"accepts": true});
+        assert!(v.answer(&response(CHECK, "c2", bad)));
+        let why = view_of(&v)["check"]["error"].as_str().unwrap().to_string();
+        assert!(why.contains("stats"), "{why}");
     }
 
     #[test]

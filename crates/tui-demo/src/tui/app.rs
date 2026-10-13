@@ -13,6 +13,10 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 /// without bound on a long one.
 const TRANSCRIPT_CAP: usize = 2000;
 
+/// How many rows PgUp and PgDn move the transcript (#660). The arrows move
+/// one, and the start of a capped run was hundreds of presses away.
+const TRANSCRIPT_PAGE: u16 = 10;
+
 /// How many `@` path candidates are offered at once.
 ///
 /// The list is drawn under the input line, and every row it takes comes out
@@ -35,7 +39,8 @@ pub struct AppState {
     pub submitted: Option<String>,
     /// Lines typed while a run is in flight, to be sent to it as steers
     /// (#115), with a [`SteerOut::TaskFollows`] wherever a task was
-    /// submitted between them. Drained by the event loop like `submitted`.
+    /// submitted between them and a [`SteerOut::Stop`] where leaving was
+    /// asked for mid-run (#634). Drained by the event loop like `submitted`.
     /// A `Vec`, in typing order, because one batch of keys can carry
     /// several Enters, and the order is what tells a driver which run a
     /// steer was typed for.
@@ -77,7 +82,13 @@ pub struct AppState {
     pub scroll_back: u16,
     /// How the last run ended, until the next one starts.
     pub outcome: Option<String>,
+    /// Whether the last run put the worktree back, as its outcome said;
+    /// `None` until one says, and again once the next task starts (#636).
+    pub restored: Option<bool>,
     pub should_quit: bool,
+    /// Leaving was asked for while a run was in flight: the run has been
+    /// asked to stop, and the view leaves once it reports finished (#634).
+    leaving: bool,
     /// Repository paths `@` completion may offer, supplied by the driver.
     ///
     /// Filled from outside rather than read here: `update` does no IO, so
@@ -121,9 +132,16 @@ pub struct Radius {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Budget {
+    /// Turns are counted from 1, so 0 is "no turn reported yet" and is
+    /// drawn as that, never as "iteration 0" (#641).
     pub iteration: u32,
-    pub prompt_bytes: u64,
-    pub elapsed_secs: u64,
+    /// The last turn's prompt size, `None` when the turn did not report
+    /// one (#641). It was a plain integer, and an unreported size drew as
+    /// "0 B prompt", which the desktop's never-0 rule forbids.
+    pub prompt_bytes: Option<u64>,
+    /// Seconds since the run began, from the last turn or the driver's
+    /// clock (`Message::Elapsed`); `None` until a run has reported any.
+    pub elapsed_secs: Option<u64>,
     /// The last turn's output tokens, model wall time and queue wait, each
     /// `None` when that turn did not report it (#257).
     pub completion_tokens: Option<u64>,
@@ -140,9 +158,35 @@ struct QueuedSteer {
     delivered: Option<usize>,
 }
 
+/// How far PgUp and PgDn move the approval modal. Ten of the twelve rows
+/// the box has at 80×24, so a page keeps two lines of the last one.
+const MODAL_PAGE: usize = 10;
+
 #[derive(Debug, Clone)]
 pub enum Modal {
-    Approval { diff: String },
+    /// `scroll` is the first line of `diff` in view (#640). Held below the
+    /// line count here; the view stops short of it once the rest fits, since
+    /// how much fits is layout and the state holds none (as `scroll_back`).
+    Approval {
+        question: String,
+        diff: String,
+        scroll: usize,
+    },
+}
+
+/// What the status bar says about the worktree (#636).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Worktree {
+    /// Nothing this task wrote is in the tree.
+    Clean,
+    /// The run in flight has written this many times.
+    Pending(usize),
+    /// The last run put the tree back.
+    Restored,
+    /// The last run left this many files changed for the person to review:
+    /// a converged run, or one whose ending did not say the tree was put
+    /// back.
+    LeftForReview(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +200,7 @@ impl AppState {
     pub fn update(&mut self, msg: Message) {
         match msg {
             Message::Key(k) => self.handle_key(k),
+            Message::Paste(text) => self.paste(&text),
             Message::AgentToken(t) => self.push_transcript(t),
             Message::EditProposed { path } => self.edits.push(Edit {
                 path,
@@ -194,7 +239,7 @@ impl AppState {
                 self.budget = Budget {
                     iteration,
                     prompt_bytes,
-                    elapsed_secs,
+                    elapsed_secs: Some(elapsed_secs),
                     completion_tokens,
                     model_ms,
                     queue_wait_ms,
@@ -208,12 +253,57 @@ impl AppState {
                     ..Budget::default()
                 }
             }
-            Message::ApprovalRequested { diff } => self.modal = Some(Modal::Approval { diff }),
-            Message::Quit => self.should_quit = true,
+            // The driver's clock, sent every second while a run is in
+            // flight so a long model call is seen to be passing (#641). One
+            // that lands after the run ended is not applied: the run's time
+            // stopped with it.
+            Message::Elapsed(secs) => {
+                if self.running {
+                    self.budget.elapsed_secs = Some(secs);
+                }
+            }
+            // Not while stopping: the driver drops a question once the run
+            // has taken the stop path, so a modal opened now would ask
+            // something nobody is waiting to hear.
+            Message::ApprovalRequested { question, diff } if !self.leaving => {
+                self.modal = Some(Modal::Approval {
+                    question,
+                    diff,
+                    scroll: 0,
+                })
+            }
+            Message::ApprovalRequested { .. } => {}
+            Message::Quit => self.leave(),
             Message::SteerDelivered { nth, turn } => self.steer_delivered(nth, turn),
-            Message::RunOutcome(line) => self.outcome = Some(line),
+            Message::RunOutcome { line, restored } => {
+                self.outcome = Some(line);
+                self.restored = restored;
+            }
             Message::RunFinished => self.run_finished(),
             Message::Tick | Message::Resize(..) => {}
+        }
+    }
+
+    /// The worktree's state, from this task's writes and how its run ended.
+    ///
+    /// The edits pane holds one entry per write (`EditProposed` is sent only
+    /// for a write that happened), so a run in flight counts writes and a
+    /// finished one counts the files they touched.
+    pub fn worktree(&self) -> Worktree {
+        if self.running {
+            return match self.edits.len() {
+                0 => Worktree::Clean,
+                n => Worktree::Pending(n),
+            };
+        }
+        if self.restored == Some(true) {
+            return Worktree::Restored;
+        }
+        let files: std::collections::BTreeSet<&str> =
+            self.edits.iter().map(|e| e.path.as_str()).collect();
+        match files.len() {
+            0 => Worktree::Clean,
+            n => Worktree::LeftForReview(n),
         }
     }
 
@@ -254,6 +344,37 @@ impl AppState {
         for text in undelivered {
             self.push_line(format!("· not delivered: {text}"));
         }
+        // The stopped run has rolled back and written its trail; the leave
+        // asked for during it happens now.
+        if std::mem::take(&mut self.leaving) {
+            self.should_quit = true;
+        }
+    }
+
+    /// Ctrl-C, or Esc on an empty line: leave, stopping a run in flight
+    /// first.
+    ///
+    /// Mid-run the view used to leave at once, and the run went on editing
+    /// the tree with nobody watching while /help said it was stopped (#634).
+    /// Now it asks the run to stop, which rolls it back, and leaves when the
+    /// run reports finished. A second press asks nothing more: one stop per
+    /// run.
+    fn leave(&mut self) {
+        if !self.running {
+            self.should_quit = true;
+            return;
+        }
+        if self.leaving {
+            return;
+        }
+        self.leaving = true;
+        // Withdrawn rather than answered: the driver drops the question once
+        // the run has taken the stop path, and a dropped reply is a no (ADR
+        // 0018). A key pressed on it now would answer what the run no longer
+        // asks.
+        self.modal = None;
+        self.push_line("· stopping: trellis rolls the run back".into());
+        self.steered.push(SteerOut::Stop);
     }
 
     /// Appends a token, keeping the transcript bounded.
@@ -382,6 +503,20 @@ impl AppState {
         self.cap_transcript();
     }
 
+    /// The `scroll_back` that shows the transcript's first row (#660).
+    ///
+    /// Every row the transcript takes at the narrowest pane the view draws,
+    /// where it wraps to the most, so at any size it reaches the top and the
+    /// view stops there. State holds no layout (#244), so this overshoots by
+    /// the pane's own height, and by the rows a wider pane saves; the first
+    /// PgDn after it can land on the same page.
+    fn transcript_top(&self) -> u16 {
+        crate::tui::view::wrapped_rows(
+            &self.transcript.join("\n"),
+            crate::tui::view::MIN_TRANSCRIPT_WIDTH,
+        )
+    }
+
     /// Only `Press`.
     ///
     /// Windows also reports `Release` and `Repeat`, and without this filter
@@ -393,25 +528,36 @@ impl AppState {
         }
         // The modal is answered first: while it is up, the keys underneath
         // it are not the ones on screen.
+        //
+        // The answer touches no edit (#635). The loop asks before a call
+        // runs and reports an edit after it has written, so every row in
+        // `edits` is already in the tree when the question arrives, and the
+        // answer is to the *next* call. Marking rows applied or rejected
+        // here painted that answer onto files that were written either way;
+        // the decline itself is a transcript line the driver writes.
         if self.modal.is_some() {
             match k.code {
                 KeyCode::Char('y') => {
-                    for e in &mut self.edits {
-                        if e.status == EditStatus::Proposed {
-                            e.status = EditStatus::Applied;
-                        }
-                    }
                     self.modal = None;
                     self.answered = Some(true);
                 }
                 KeyCode::Char('n') => {
-                    for e in &mut self.edits {
-                        if e.status == EditStatus::Proposed {
-                            e.status = EditStatus::Rejected;
-                        }
-                    }
                     self.modal = None;
                     self.answered = Some(false);
+                }
+                // Scrolling, so a long diff is read whole before it is
+                // answered (#640). Every other key is still ignored.
+                KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
+                    if let Some(Modal::Approval { diff, scroll, .. }) = &mut self.modal {
+                        let last = diff.lines().count().saturating_sub(1);
+                        *scroll = match k.code {
+                            KeyCode::Up => scroll.saturating_sub(1),
+                            KeyCode::Down => scroll.saturating_add(1),
+                            KeyCode::PageUp => scroll.saturating_sub(MODAL_PAGE),
+                            _ => scroll.saturating_add(MODAL_PAGE),
+                        }
+                        .min(last);
+                    }
                 }
                 _ => {}
             }
@@ -421,7 +567,8 @@ impl AppState {
             // Esc on an empty line leaves; Esc with text clears it. `q` is a
             // letter now that there is somewhere to type, so it cannot also
             // be the way out — Ctrl-C does that too, handled in the loop.
-            KeyCode::Esc if self.input.is_empty() => self.should_quit = true,
+            // Both stop a run in flight before leaving (#634).
+            KeyCode::Esc if self.input.is_empty() => self.leave(),
             KeyCode::Esc => self.input.clear(),
             KeyCode::Enter => self.submit(),
             KeyCode::Tab => self.complete_at_file(),
@@ -431,8 +578,36 @@ impl AppState {
             KeyCode::Char(c) => self.input.push(c),
             KeyCode::Up => self.scroll_back = self.scroll_back.saturating_add(1),
             KeyCode::Down => self.scroll_back = self.scroll_back.saturating_sub(1),
+            // Held at the top, so PgDn after it moves at once rather than
+            // first spending presses on rows above the first.
+            KeyCode::PageUp => {
+                self.scroll_back = self
+                    .scroll_back
+                    .saturating_add(TRANSCRIPT_PAGE)
+                    .min(self.transcript_top())
+            }
+            KeyCode::PageDown => {
+                self.scroll_back = self.scroll_back.saturating_sub(TRANSCRIPT_PAGE)
+            }
+            KeyCode::Home => self.scroll_back = self.transcript_top(),
+            KeyCode::End => self.scroll_back = 0,
             _ => {}
         }
+    }
+
+    /// Appends a paste to the input, line breaks as spaces (#639).
+    ///
+    /// Never submits: a paste's line breaks are not Enters. Fed through the
+    /// key path a multi-line task started a run on its first line and
+    /// queued the rest as steers — a snapshot, a model call and a trail for
+    /// a task the user had not finished entering. Ignored while the modal
+    /// is up, as typing is.
+    fn paste(&mut self, text: &str) {
+        if self.modal.is_some() {
+            return;
+        }
+        let flat = text.replace("\r\n", " ").replace(['\r', '\n'], " ");
+        self.input.push_str(&flat);
     }
 
     /// Hands the typed line to whatever is driving runs.
@@ -488,6 +663,15 @@ impl AppState {
 
         self.running = true;
         self.outcome = None;
+        self.restored = None;
+        // The panes describe this task. Kept from earlier ones, the bar read
+        // "N edit(s) pending" at the start of every later run, when a run
+        // starts only from a clean tree, and listed files a rollback had
+        // already put back (#636).
+        self.actions.clear();
+        self.edits.clear();
+        self.checks.clear();
+        self.radius = Radius::default();
         // A new run is followed from its start, wherever the view was.
         self.scroll_back = 0;
         self.push_line(format!("> {task}"));
@@ -535,9 +719,10 @@ impl AppState {
                 "  /help     this".into(),
                 "  @<text>   repository paths containing it; tab inserts the first".into(),
                 "  esc       clear the line; again to leave".into(),
-                "  ^c        leave; a run in flight is stopped".into(),
+                "  ^c        leave; a run in flight is stopped and rolled back first".into(),
                 "  enter during a run queues the line as a steer for its next turn".into(),
                 "  ↑ ↓       scroll the transcript".into(),
+                "  PgUp PgDn ten lines at a time; Home to the start, End back to following".into(),
                 String::new(),
                 "  Anything else is a task: it snapshots the worktree, drives the".into(),
                 "  model, runs the repository's own checks and rolls back if it".into(),
@@ -960,13 +1145,13 @@ mod tests {
             path: "a.rs".into(),
         });
         s.update(Message::ApprovalRequested {
+            question: "edit a.py (+1 -1)".into(),
             diff: "--- a\n+++ b".into(),
         });
         assert!(s.modal.is_some());
 
         s.update(press(KeyCode::Char('y')));
         assert!(s.modal.is_none(), "y must clear the modal");
-        assert_eq!(s.edits[0].status, EditStatus::Applied);
         assert_eq!(
             s.answered,
             Some(true),
@@ -978,12 +1163,105 @@ mod tests {
             path: "a.rs".into(),
         });
         s.update(Message::ApprovalRequested {
+            question: "edit a.py (+1 -1)".into(),
             diff: String::new(),
         });
         s.update(press(KeyCode::Char('n')));
         assert!(s.modal.is_none(), "n must clear the modal");
-        assert_eq!(s.edits[0].status, EditStatus::Rejected);
         assert_eq!(s.answered, Some(false));
+    }
+
+    #[test]
+    fn approval_answer_keeps_edits_as_reported_on_n() {
+        // #635: the bridge reports an edit after it has written and the loop
+        // asks before the next call, so `a.py` is in the tree whatever the
+        // answer. Marking it rejected told an approve-mode user a written
+        // file was not there to review.
+        let mut s = AppState::default();
+        s.update(Message::EditProposed {
+            path: "a.py".into(),
+        });
+        s.update(Message::ApprovalRequested {
+            question: "edit a.py (+1 -1)".into(),
+            diff: "apply the edit?".into(),
+        });
+        s.update(press(KeyCode::Char('n')));
+        assert_eq!(s.edits.len(), 1);
+        assert_eq!(s.edits[0].path, "a.py");
+        assert_eq!(s.edits[0].status, EditStatus::Proposed);
+        assert_eq!(s.answered, Some(false));
+    }
+
+    #[test]
+    fn approval_answer_keeps_edits_as_reported_on_y() {
+        // The same for `y`: an approval is an answer about the next call,
+        // not a claim that the rows already shown were applied by it.
+        let mut s = AppState::default();
+        s.update(Message::EditProposed {
+            path: "a.py".into(),
+        });
+        s.update(Message::ApprovalRequested {
+            question: "edit a.py (+1 -1)".into(),
+            diff: "apply the edit?".into(),
+        });
+        s.update(press(KeyCode::Char('y')));
+        assert_eq!(s.edits[0].status, EditStatus::Proposed);
+        assert_eq!(s.answered, Some(true));
+    }
+
+    #[test]
+    fn budget_unreported_elapsed_follows_the_drivers_clock_while_running() {
+        // #641: between turns nothing on screen moved, and QA read a long
+        // model call as a hang. The driver's tick keeps elapsed current;
+        // one arriving after the run ended does not restart its clock.
+        let mut s = AppState::default().with_running(true);
+        assert_eq!(s.budget.elapsed_secs, None, "nothing reported yet");
+        s.update(Message::Elapsed(75));
+        assert_eq!(s.budget.elapsed_secs, Some(75));
+        s.update(Message::RunFinished);
+        s.update(Message::Elapsed(90));
+        assert_eq!(s.budget.elapsed_secs, Some(75));
+    }
+
+    #[test]
+    fn budget_unreported_prompt_size_stays_none_through_a_turn_without_one() {
+        // A turn that did not report its prompt size is not a 0-byte prompt.
+        let mut s = AppState::default();
+        s.update(Message::BudgetUpdated {
+            iteration: 1,
+            prompt_bytes: None,
+            elapsed_secs: 4,
+            completion_tokens: None,
+            model_ms: None,
+            queue_wait_ms: None,
+        });
+        assert_eq!(s.budget.prompt_bytes, None);
+        assert_eq!(s.budget.elapsed_secs, Some(4));
+    }
+
+    #[test]
+    fn approval_modal_scroll_stays_inside_the_diff_and_other_keys_do_nothing() {
+        let mut s = AppState::default();
+        s.update(Message::ApprovalRequested {
+            question: "edit a.py (+3 -0)".into(),
+            diff: "+ a\n+ b\n+ c".into(),
+        });
+        let scroll = |s: &AppState| match &s.modal {
+            Some(Modal::Approval { scroll, .. }) => *scroll,
+            None => panic!("the modal closed"),
+        };
+        s.update(press(KeyCode::Up));
+        s.update(press(KeyCode::PageUp));
+        assert_eq!(scroll(&s), 0, "nothing above the first line");
+        s.update(press(KeyCode::PageDown));
+        s.update(press(KeyCode::Down));
+        assert_eq!(scroll(&s), 2, "the last line is as far as it goes");
+        for code in [KeyCode::Char('q'), KeyCode::Esc, KeyCode::Enter] {
+            s.update(press(code));
+        }
+        assert!(!s.should_quit, "the keys on screen are the modal's");
+        assert_eq!(s.answered, None, "and only y or n answers it");
+        assert_eq!(scroll(&s), 2);
     }
 
     #[test]
@@ -992,11 +1270,100 @@ mod tests {
         // pending approval would discard the decision silently.
         let mut s = AppState::default();
         s.update(Message::ApprovalRequested {
+            question: "edit a.py (+1 -1)".into(),
             diff: String::new(),
         });
         s.update(press(KeyCode::Char('q')));
         assert!(!s.should_quit);
         assert!(s.modal.is_some());
+    }
+
+    /// A transcript of `n` numbered lines, following its end.
+    fn numbered(n: usize) -> AppState {
+        let mut s = AppState::default();
+        for i in 0..n {
+            s.push_line(format!("line {i:03}"));
+        }
+        s
+    }
+
+    /// The transcript as drawn at 80×24, one string.
+    fn drawn(s: &AppState) -> String {
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        t.draw(|f| crate::tui::view::render(s, f)).unwrap();
+        t.backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
+    #[test]
+    fn page_keys_page_up_moves_ten_rows_back() {
+        // #660: the arrows move one row, and the start of a long run was
+        // hundreds of presses away.
+        let mut s = numbered(200);
+        s.update(press(KeyCode::PageUp));
+        assert_eq!(s.scroll_back, 10);
+        s.update(press(KeyCode::PageUp));
+        assert_eq!(s.scroll_back, 20);
+        assert!(drawn(&s).contains("line 179"), "twenty rows above the end");
+    }
+
+    #[test]
+    fn page_keys_page_down_moves_ten_rows_forward_and_stops_at_the_end() {
+        let mut s = numbered(200);
+        s.scroll_back = 25;
+        s.update(press(KeyCode::PageDown));
+        assert_eq!(s.scroll_back, 15);
+        s.update(press(KeyCode::PageDown));
+        s.update(press(KeyCode::PageDown));
+        assert_eq!(s.scroll_back, 0, "saturating at the end: following again");
+    }
+
+    #[test]
+    fn page_keys_home_shows_the_first_line_and_page_up_stops_there() {
+        // Lines long enough to wrap in the pane, so a count of lines alone
+        // would stop short of the top.
+        let mut s = AppState::default();
+        for i in 0..120 {
+            s.push_line(format!("line {i:03} {}", "wrapped words ".repeat(5)));
+        }
+        assert!(!drawn(&s).contains("line 000"), "it starts at the end");
+        s.update(press(KeyCode::Home));
+        assert!(drawn(&s).contains("line 000"), "{}", drawn(&s));
+        let top = s.scroll_back;
+        s.update(press(KeyCode::PageUp));
+        assert_eq!(s.scroll_back, top, "nothing above the top to page to");
+    }
+
+    #[test]
+    fn page_keys_end_follows_the_end_again() {
+        let mut s = numbered(200);
+        s.update(press(KeyCode::Home));
+        assert!(s.scroll_back > 0);
+        s.update(press(KeyCode::End));
+        assert_eq!(s.scroll_back, 0);
+        // Following: a line that arrives now is in view.
+        s.push_line("THE NEWEST".into());
+        assert!(drawn(&s).contains("THE NEWEST"));
+    }
+
+    #[test]
+    fn page_keys_are_listed_in_help() {
+        let mut s = AppState {
+            input: "/help".into(),
+            ..Default::default()
+        };
+        s.update(press(KeyCode::Enter));
+        let help = s.transcript.join("\n");
+        assert!(
+            help.contains(
+                "PgUp PgDn ten lines at a time; Home to the start, End back to following"
+            ),
+            "{help}"
+        );
     }
 
     #[test]
@@ -1018,9 +1385,10 @@ mod tests {
     #[test]
     fn transcript_outcome_is_held_until_the_next_run_starts() {
         let mut s = AppState::default().with_running(true);
-        s.update(Message::RunOutcome(
-            "did not converge; worktree restored: true".into(),
-        ));
+        s.update(Message::RunOutcome {
+            line: "did not converge; worktree restored: true".into(),
+            restored: Some(true),
+        });
         s.update(Message::RunFinished);
         assert_eq!(
             s.outcome.as_deref(),
@@ -1043,7 +1411,7 @@ mod tests {
         });
         s.update(Message::BudgetUpdated {
             iteration: 2,
-            prompt_bytes: 8400,
+            prompt_bytes: Some(8400),
             elapsed_secs: 18,
             completion_tokens: None,
             model_ms: None,
@@ -1054,7 +1422,7 @@ mod tests {
             passed: true,
         });
         assert_eq!(s.radius.resolved, 47);
-        assert_eq!(s.budget.prompt_bytes, 8400);
+        assert_eq!(s.budget.prompt_bytes, Some(8400));
         assert!(s.checks[0].passed);
 
         // Ticks, resizes and RunFinished are accepted and change nothing.
@@ -1062,7 +1430,7 @@ mod tests {
         s.update(Message::Resize(10, 10));
         s.update(Message::RunFinished);
         assert_eq!(s.radius.resolved, 47);
-        assert_eq!(s.budget.prompt_bytes, 8400);
+        assert_eq!(s.budget.prompt_bytes, Some(8400));
     }
 }
 
@@ -1184,6 +1552,30 @@ mod input_tests {
     }
 
     #[test]
+    fn paste_lands_in_the_input_and_submits_nothing() {
+        // #639: one paste made N submissions. The paste is one input and
+        // the run starts only on Enter.
+        let mut s = AppState::default();
+        s.update(Message::Paste("a\nb".into()));
+        assert_eq!(s.input, "a b");
+        assert_eq!(s.submitted, None);
+        assert!(!s.running);
+        assert!(s.steered.is_empty());
+        s.update(press(KeyCode::Enter));
+        assert_eq!(s.submitted.as_deref(), Some("a b"));
+    }
+
+    #[test]
+    fn paste_with_crlf_breaks_is_one_space_per_break() {
+        // Terminals send a pasted break as CR, LF or both; each is one word
+        // boundary, not two.
+        let mut s = AppState::default();
+        type_in(&mut s, "x ");
+        s.update(Message::Paste("a\r\nb\rc\n".into()));
+        assert_eq!(s.input, "x a b c ");
+    }
+
+    #[test]
     fn typing_then_enter_submits_the_line() {
         let mut s = AppState::default();
         type_in(&mut s, "fix the type error");
@@ -1218,6 +1610,162 @@ mod input_tests {
 
         s.update(press(KeyCode::Esc));
         assert!(s.should_quit, "Esc on an empty line leaves");
+    }
+
+    /// One run's worth of pane traffic: two writes to a.py, one to b.py.
+    fn worked(s: &mut AppState) {
+        for path in ["a.py", "a.py", "b.py"] {
+            s.update(Message::ActionTaken {
+                tool: "edit".into(),
+                target: path.into(),
+                wrote: true,
+            });
+            s.update(Message::EditProposed { path: path.into() });
+        }
+        s.update(Message::CheckFinished {
+            name: "pytest".into(),
+            passed: false,
+        });
+        s.update(Message::RadiusUpdated {
+            resolved: 4,
+            candidates: 1,
+            unresolved: 2,
+        });
+    }
+
+    #[test]
+    fn worktree_state_a_second_task_clears_the_four_panes() {
+        // #636: nothing cleared them, so the second run's panes listed the
+        // first run's edits and checks beside its own.
+        let mut s = AppState::default();
+        type_in(&mut s, "first");
+        s.update(press(KeyCode::Enter));
+        worked(&mut s);
+        s.update(Message::RunOutcome {
+            line: "did not converge; worktree restored: true".into(),
+            restored: Some(true),
+        });
+        s.update(Message::RunFinished);
+
+        type_in(&mut s, "second");
+        s.update(press(KeyCode::Enter));
+        assert!(s.actions.is_empty(), "{:?}", s.actions);
+        assert!(s.edits.is_empty());
+        assert!(s.checks.is_empty());
+        let r = s.radius;
+        assert_eq!((r.resolved, r.candidates, r.unresolved), (0, 0, 0));
+        assert_eq!(s.restored, None, "the last run's ending is not this one's");
+        assert_eq!(
+            s.worktree(),
+            Worktree::Clean,
+            "a run starts from a clean tree"
+        );
+    }
+
+    #[test]
+    fn worktree_state_follows_how_the_run_ended() {
+        let mut s = AppState::default();
+        type_in(&mut s, "change it");
+        s.update(press(KeyCode::Enter));
+        worked(&mut s);
+        assert_eq!(s.worktree(), Worktree::Pending(3), "three writes so far");
+
+        s.update(Message::RunOutcome {
+            line: "did not converge; worktree restored: true".into(),
+            restored: Some(true),
+        });
+        s.update(Message::RunFinished);
+        assert_eq!(s.worktree(), Worktree::Restored, "not 3 edit(s) pending");
+
+        // A converged run leaves its changes in the tree for review, counted
+        // as files rather than as writes.
+        type_in(&mut s, "change it again");
+        s.update(press(KeyCode::Enter));
+        worked(&mut s);
+        s.update(Message::RunOutcome {
+            line: "converged".into(),
+            restored: None,
+        });
+        s.update(Message::RunFinished);
+        assert_eq!(s.worktree(), Worktree::LeftForReview(2));
+    }
+
+    #[test]
+    fn ctrl_c_mid_run_asks_the_run_to_stop_and_leaves_once_it_has_finished() {
+        // #634: the view used to leave at once and the run went on editing
+        // the tree with nobody watching. Now a quit mid-run is a stop
+        // request, said on screen, and the leave waits for the run's end,
+        // which comes after its rollback.
+        let mut s = AppState::default().with_running(true);
+        s.update(Message::Quit);
+        assert!(!s.should_quit, "the run is still in flight");
+        assert_eq!(s.steered, vec![SteerOut::Stop]);
+        assert_eq!(
+            s.transcript.last().unwrap(),
+            "· stopping: trellis rolls the run back"
+        );
+
+        s.steered.clear();
+        s.update(Message::Quit);
+        assert!(s.steered.is_empty(), "a second press asks nothing more");
+        assert!(!s.should_quit);
+
+        s.update(Message::RunFinished);
+        assert!(s.should_quit, "the view leaves once the run has finished");
+    }
+
+    #[test]
+    fn ctrl_c_mid_run_no_longer_applies_after_run_finished() {
+        let mut s = AppState::default().with_running(true);
+        s.update(Message::RunFinished);
+        assert!(!s.should_quit, "a run ending by itself does not leave");
+        s.update(Message::Quit);
+        assert!(s.should_quit);
+        assert!(s.steered.is_empty(), "nothing to stop");
+    }
+
+    #[test]
+    fn ctrl_c_mid_run_esc_on_an_empty_line_stops_the_same_way() {
+        let mut s = AppState::default().with_running(true);
+        type_in(&mut s, "half a steer");
+        s.update(press(KeyCode::Esc));
+        assert!(s.input.is_empty(), "Esc with text clears the line");
+        assert!(s.steered.is_empty(), "and stops nothing");
+
+        s.update(press(KeyCode::Esc));
+        assert!(!s.should_quit);
+        assert_eq!(s.steered, vec![SteerOut::Stop]);
+
+        s.update(Message::RunFinished);
+        assert!(s.should_quit);
+
+        let mut s = AppState::default();
+        s.update(press(KeyCode::Esc));
+        assert!(s.should_quit, "with no run, Esc on an empty line leaves");
+    }
+
+    #[test]
+    fn ctrl_c_mid_run_withdraws_an_open_question_without_answering_it() {
+        // Ctrl-C reaches `update` as `Quit`, past the modal. An answer here
+        // would reach the gate before the run took the stop path and let it
+        // carry on; no answer at all, and the driver drops the question once
+        // the run has stopped, which is a no (ADR 0018).
+        let mut s = AppState::default().with_running(true);
+        s.update(Message::ApprovalRequested {
+            question: "edit a.py (+1 -1)".into(),
+            diff: "- a\n+ b".into(),
+        });
+        s.update(Message::Quit);
+        assert!(s.modal.is_none());
+        assert_eq!(s.answered, None);
+
+        // A question still on its way when the stop was asked for is not
+        // shown: nobody is waiting for its answer.
+        s.update(Message::ApprovalRequested {
+            question: "edit a.py (+1 -1)".into(),
+            diff: "- c\n+ d".into(),
+        });
+        assert!(s.modal.is_none());
     }
 
     #[test]
@@ -1301,6 +1849,7 @@ mod input_tests {
         // an answer the person believes they gave.
         let mut s = AppState::default().with_running(true);
         s.update(Message::ApprovalRequested {
+            question: "edit a.py (+1 -1)".into(),
             diff: String::new(),
         });
         type_in(&mut s, "y");
@@ -1312,6 +1861,7 @@ mod input_tests {
         assert!(!s.transcript.iter().any(|l| l.contains("queued")));
 
         s.update(Message::ApprovalRequested {
+            question: "edit a.py (+1 -1)".into(),
             diff: String::new(),
         });
         type_in(&mut s, "n");
@@ -1390,6 +1940,7 @@ mod input_tests {
     fn the_modal_takes_the_keys_while_it_is_up() {
         let mut s = AppState::default();
         s.update(Message::ApprovalRequested {
+            question: "edit a.py (+1 -1)".into(),
             diff: String::new(),
         });
 
