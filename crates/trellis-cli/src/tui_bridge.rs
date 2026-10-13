@@ -277,7 +277,9 @@ impl<S: tracing::Subscriber> Layer<S> for LoopLayer {
         if let Some(turn) = f.turn {
             self.emit(Message::BudgetUpdated {
                 iteration: turn as u32,
-                prompt_bytes: f.prompt_bytes.unwrap_or(0),
+                // Passed through as reported: a turn without a size is not
+                // a 0-byte prompt, and the view names it unreported (#641).
+                prompt_bytes: f.prompt_bytes,
                 elapsed_secs: self.started.elapsed().as_secs(),
                 completion_tokens: f.completion_tokens,
                 model_ms: f.model_ms,
@@ -352,8 +354,29 @@ mod tests {
         else {
             panic!("no budget update in {got:?}");
         };
-        assert_eq!((*iteration, *prompt_bytes), (3, 9800));
+        assert_eq!((*iteration, *prompt_bytes), (3, Some(9800)));
         assert!(*elapsed_secs >= 2, "elapsed from the run's start, not 0");
+    }
+
+    #[test]
+    fn budget_unreported_prompt_size_is_none_not_zero() {
+        // #641: `unwrap_or(0)` here drew "0 B prompt" for a turn whose
+        // event carried no `prompt_bytes`, a figure nothing measured.
+        let got = capture(|| {
+            tracing::info!(
+                turn = 3u64,
+                call = "read_file a.py",
+                observation = "...",
+                "turn"
+            );
+        });
+        let Some(Message::BudgetUpdated { prompt_bytes, .. }) = got
+            .iter()
+            .find(|m| matches!(m, Message::BudgetUpdated { .. }))
+        else {
+            panic!("no BudgetUpdated among {got:?}");
+        };
+        assert_eq!(*prompt_bytes, None);
     }
 
     #[test]

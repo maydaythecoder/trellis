@@ -108,9 +108,13 @@ fn list_models() -> Result<()> {
     Ok(())
 }
 
-/// The nine families colibri serves, spelled as ADR 0047's table spells them
-/// (and the "nine families" table in docs/runtimes/colibri.md).
-const COLIBRI_FAMILIES: [&str; 9] = [
+/// The chat checkpoints colibri serves, under the display names of its family
+/// registry: the nine families ADR 0047's table names, then what colibri
+/// 2.0.0 added (#612): the MiMo-V2.6 family and its Pro variant, and the
+/// variants of the qwen36 family (c/family_registry.py:1446-1474 and
+/// :1615-1628 at bf24429). The same names head the families table in
+/// docs/runtimes/colibri.md. Image and decision models are not listed.
+const COLIBRI_FAMILIES: [&str; 15] = [
     "GLM-5.2/5.3",
     "GLM-5.3-Flash",
     "Kimi K3",
@@ -120,6 +124,12 @@ const COLIBRI_FAMILIES: [&str; 9] = [
     "Qwen3.6-35B-A3B",
     "Inkling",
     "OLMoE",
+    "MiMo-V2.6 Flash",
+    "MiMo-V2.6 Pro",
+    "Qwen3.8-27B",
+    "Qwen3-Coder-30B-A3B",
+    "Qwen3-Coder-REAP-25B-A3B",
+    "Qwen3.8-2.4T-A95B",
 ];
 
 fn pull_model(name: Option<&str>) -> Result<()> {

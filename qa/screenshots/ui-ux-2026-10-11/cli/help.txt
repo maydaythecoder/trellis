@@ -1,0 +1,56 @@
+$ (cd demo) <scratch>/bin/trellis --help
+An agent harness for Python repositories: blast radius mapped, checks executed, decisions recorded.
+
+Usage: trellis [OPTIONS] [COMMAND]
+
+Start:
+  trellis          open the desktop window and print the overview
+  trellis --tui    open the terminal interface
+  trellis --dsk    open the desktop window only
+  trellis --web    serve the desktop's page on 127.0.0.1
+
+Commands:
+  index       Build or refresh the index; print coverage
+  radius      Blast radius for a symbol, with its confidence breakdown
+  run         Run the agent loop against a task
+  session     The line-based session: one command at a time, scrollback kept
+  init        Scaffold `.trellis/` and report what is missing before it bites
+  tui         Watch a run happen: actions, transcript, edits, checks, radius, budget
+  resume      Continue from the last trail entry, or from a named run
+  check       Run the grounded checks standalone
+  doctor      Probe model, runtime, adapter tier, type checker, and tests
+  partitions  Dry run: which symbols may be worked on in parallel, and why not
+  log         One line per recorded run: task, outcome, integrity
+  overview    Recent repositories' last outcomes and, inside one, its last run, codebase and board, printed once. Reads only; never indexes
+  why         What past runs did to a symbol or file, from the committed trail
+  model       List, fetch, or locate the models TRELLIS knows about
+  queue       Add, list, change, approve and export tasks for `trellis work` (ADR 0020, ADR 0026)
+  work        Run queued tasks one at a time, oldest first, through `trellis run`
+  vault       Check, search, inspect and edit an Apex-format note vault (ADR 0022)
+  trust       Show what this repository's hooks, custom tools and bash settings would execute, and trust them (ADR 0023)
+  install     Copy skills and prompt templates from a package source into the user config directory's packages/ (ADR 0039)
+  agents      Agent profiles in .trellis/agents/: list, show, pause, resume (ADR 0026)
+  routines    Scheduled tasks in .trellis/routines/: list, or fire one now (ADR 0026). `work` fires them when due
+  rpc         JSONL commands on stdin, responses and events on stdout (ADR 0025 §5)
+  help        Print this message or the help of the given subcommand(s)
+
+Options:
+      --root <ROOT>
+          Repository root. Defaults to the current directory
+
+      --log-json <PATH>
+          Also write every tracing event as one JSON object per line to this file, appending. For `run` and `work` left unattended (ADR 0020 §7).
+          
+          A second formatter on the one subscriber, not a second telemetry path (ADR 0008). Global so it reaches `run` and `work` without adding a field to either.
+
+      --json
+          Write JSONL to stdout: the same events `--log-json` writes, between a `run_start` and a `run_end` record. Human text goes to stderr. For `run`, `work` and `log` (ADR 0025 §4).
+          
+          Global for the reason `--log-json` is: it reaches `work` without a field in its arguments. Refused by name on any other command.
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+[exit 0]

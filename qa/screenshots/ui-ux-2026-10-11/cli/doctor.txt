@@ -1,0 +1,34 @@
+$ (cd demo) <scratch>/bin/trellis doctor --model vllm:http://127.0.0.1:1#x
+model:      x (named in the spec)
+runtime:    VllmOpenAi at http://127.0.0.1:1
+tier:       unknown, the probe could not reach the runtime at 127.0.0.1:1; start it, or check the port
+batching:   continuous, concurrency not reported; multi-agent mode is not built, so `--agents` accepts only 1
+typecheck:  NOT FOUND — no typecheck verdict can be produced, so no run can converge.
+            Install it, or set [checks] typecheck in .trellis/config.toml to the command you use.
+tests:      NOT FOUND — the grounding contract has nothing to ground on.
+            Install it, or set [checks] tests in .trellis/config.toml. A repository
+            without a test suite is a stated v1.0 non-goal.
+floor:      unknown for this model. Four configurations measured for S7: three repaired no
+            task, and the floor is located only at tier 4 (qwen3:8b Q4_K_M via ollama
+            repaired 5/20), not under constrained decoding. See BENCHMARK_AND_EVAL.md §5.7.
+index:      6 definitions across 5 files · 5 first-party call sites bound of 5 non-excluded call sites
+            (100.0% — a lower bound on recall, NOT recall; only the hand audit is
+            comparable to the gate. See CLAUDE.md) · 1 ms
+worktree:   clean
+skills:     none under .trellis/skills
+control:    auto
+budget:     Local — 6 iterations / 300 s / 2000000 tokens
+user cfg:   <scratch>/cfg/config.toml — not present; the repository's config alone
+context:    no context files and no system files
+user skills: none (the user's own; loaded without repository trust)
+trust:      nothing declared needs trust (no hooks, custom tools or bash)
+agents:     0 profile(s), 0 routine(s)
+services:   no recorded service outlived its task
+tz data:    TimeZoneDatabase(ZoneInfo(/usr/share/zoneinfo)) — IANA names in routine schedules
+vault:      not configured
+root:       <scratch>/demo
+
+Could not probe the runtime: cannot reach the runtime at 127.0.0.1:1: Connection refused (os error 111)
+
+This runtime batches continuously, so multi-agent mode is supported in principle. The concurrency it will grant is its scheduler's decision and is not reported, so `--agents` runs one agent, whatever N it is given. 
+[exit 0]
