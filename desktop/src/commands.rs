@@ -2099,9 +2099,19 @@ mod tests {
             "an Atlas read raised the page's alert"
         );
         finish(&core).unwrap();
-        assert!(
-            !repo.join(".trellis").exists(),
-            "an Atlas read wrote under the repository"
+        // The Atlas's worktree get_codebase saves the index where the
+        // overview reads it (#654, ADR 0048 section 10 amended
+        // 2026-10-12); that writer's own .gitignore beside it, and nothing
+        // else, is written.
+        let mut written: Vec<String> = std::fs::read_dir(repo.join(".trellis"))
+            .expect("get_codebase saved the index")
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        written.sort();
+        assert_eq!(
+            written,
+            [".gitignore", "index.bin"],
+            "an Atlas read wrote something besides the index"
         );
         for d in [&repo, &config] {
             let _ = std::fs::remove_dir_all(d);
