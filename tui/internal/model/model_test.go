@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -391,3 +392,62 @@ const (
 )
 
 func keyType(k tea.KeyType) tea.KeyMsg { return tea.KeyMsg{Type: k} }
+
+// #639: one paste made one submission per line in the ratatui TUI. A
+// paste is one input: its breaks are spaces, one per break whether the
+// terminal sent CR, LF or both, and nothing is sent until Enter.
+func TestModelPasteIsOneInputAndSubmitsNothing(t *testing.T) {
+	m := fresh(t)
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a\nb"), Paste: true})
+	if m.Input != "a b" {
+		t.Fatalf("input %q", m.Input)
+	}
+	if out := m.TakeOutbox(); len(out) != 0 || m.Running {
+		t.Fatalf("a paste sent %v", out)
+	}
+	enter(m)
+	out := m.TakeOutbox()
+	if len(out) != 1 || out[0].Cmd["task"] != "a b" {
+		t.Fatalf("enter sent %v", out)
+	}
+
+	m = fresh(t)
+	typeLine(m, "x ")
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a\r\nb\rc\n\x1b[2J"), Paste: true})
+	if m.Input != "x a b c [2J" {
+		t.Fatalf("CR, LF and CRLF are one space each, and no control character is kept: %q", m.Input)
+	}
+}
+
+// pasteProbe records the keys a real Bubble Tea program delivers.
+type pasteProbe struct{ keys []tea.KeyMsg }
+
+func (p *pasteProbe) Init() tea.Cmd { return nil }
+func (p *pasteProbe) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if k, ok := msg.(tea.KeyMsg); ok {
+		p.keys = append(p.keys, k)
+		return p, tea.Quit
+	}
+	return p, nil
+}
+func (p *pasteProbe) View() string { return "" }
+
+// The terminal half (events.rs's paste_event_becomes_one_paste_message):
+// a bracketed paste reaches Update as one key carrying the whole text,
+// breaks included, not as keystrokes with an Enter per line. trellis-tui
+// starts its program without WithoutBracketedPaste, so this is the path.
+func TestModelPasteArrivesAsOneKey(t *testing.T) {
+	probe := &pasteProbe{}
+	in := strings.NewReader("\x1b[200~a\nb\x1b[201~")
+	p := tea.NewProgram(probe, tea.WithInput(in), tea.WithOutput(io.Discard), tea.WithoutSignals())
+	if _, err := p.Run(); err != nil {
+		t.Fatalf("program: %v", err)
+	}
+	if len(probe.keys) != 1 {
+		t.Fatalf("got %d keys, want one: %v", len(probe.keys), probe.keys)
+	}
+	k := probe.keys[0]
+	if !k.Paste || string(k.Runes) != "a\nb" {
+		t.Fatalf("got %+v", k)
+	}
+}

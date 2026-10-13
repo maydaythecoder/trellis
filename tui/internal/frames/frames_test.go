@@ -64,13 +64,15 @@ var numeric = map[string]bool{
 	"turn": true, "resolved": true, "candidates": true, "unresolved": true,
 	"prompt_bytes": true, "model_ms": true, "completion_tokens": true,
 	"queue_wait_ms": true, "max_iterations": true, "after_step": true,
-	"version": true, "exit": true,
+	"version": true, "exit": true, "kv_slots": true, "tiers_vram": true,
+	"tiers_ram": true, "tiers_disk": true,
 }
 
 var kindOf = map[string]Kind{
 	"turn": Turn, "run budget": RunBudget, "steer delivered": SteerDelivered,
 	"run_start": RunStart, "run_end": RunEnd, "response": Response,
-	"approval_request": ApprovalRequest,
+	"approval_request": ApprovalRequest, "model call": ModelCall,
+	"runtime identified": RuntimeIdentified,
 }
 
 // The risk (ADR 0048 section 6): trellis keeps a field the contract
@@ -227,5 +229,34 @@ func TestFramesWarningCarriesItsMessage(t *testing.T) {
 	b, _ := json.Marshal(map[string]any{"level": "WARN", "fields": map[string]any{"message": "no progress; stopping"}})
 	if fr := parse(t, string(b)); fr.Kind != Warning || fr.Text != "no progress; stopping" {
 		t.Fatalf("warning: %+v", fr)
+	}
+}
+
+// The two events batch 46 added to the contract (#614, #627), as
+// desktop/src/frames.rs reads them. The risk: a model call with no turn,
+// or a runtime report with no served model, read as naming something, and
+// a count colibri did not report drawn as 0.
+func TestFramesModelCallAndRuntimeIdentifiedNeedTheirKey(t *testing.T) {
+	fr := parse(t, event("model call", map[string]any{"turn": 4}))
+	if fr.Kind != ModelCall || fr.ModelCallTurn == nil || *fr.ModelCallTurn != 4 {
+		t.Fatalf("model call: %+v", fr)
+	}
+	if fr := parse(t, event("model call", nil)); fr.Kind != Ignored {
+		t.Fatalf("a model call with no turn: %+v", fr)
+	}
+	if fr := parse(t, event("model call", map[string]any{"turn": "4"})); fr.Kind != Ignored {
+		t.Fatalf("a model call with a string turn: %+v", fr)
+	}
+
+	fr = parse(t, event("runtime identified", map[string]any{"runtime": "colibri", "served": "qwen3-8b"}))
+	if fr.Kind != RuntimeIdentified || fr.Runtime.Served != "qwen3-8b" {
+		t.Fatalf("runtime identified: %+v", fr)
+	}
+	r := fr.Runtime
+	if r.KVSlots != nil || r.TiersVRAM != nil || r.TiersRAM != nil || r.TiersDisk != nil {
+		t.Fatalf("counts colibri did not report were read as something: %+v", r)
+	}
+	if fr := parse(t, event("runtime identified", map[string]any{"runtime": "colibri", "kv_slots": 4})); fr.Kind != Ignored {
+		t.Fatalf("a runtime report with no served model: %+v", fr)
 	}
 }

@@ -154,13 +154,9 @@ func TestSteerLineIsShownWhileRunning(t *testing.T) {
 }
 
 // Esc clears a line and leaves an empty one; on an empty line with no run
-// in flight it quits; mid-run it does not.
+// in flight it quits (mid-run, TestModelStopMidRun).
 func TestModelEscClearsTheLineThenQuitsWhenIdle(t *testing.T) {
 	m := running(t)
-	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if m.Quitting {
-		t.Fatal("esc on an empty line quit mid-run")
-	}
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
 	m.TakeOutbox()
 	typeLine(m, "abc")

@@ -1,6 +1,8 @@
 package model
 
 import (
+	"time"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/maydaythecoder/trellis/tui/internal/frames"
@@ -34,10 +36,17 @@ type (
 // NewApp joins a model to a running child.
 func NewApp(m *Model, c Client) *App { return &App{M: m, C: c} }
 
-// Init sends what New queued and starts reading the child.
+// Init sends what New queued, starts reading the child and starts the
+// clock.
 func (a *App) Init() tea.Cmd {
 	a.flush()
-	return a.waitLine()
+	return tea.Batch(a.waitLine(), tick())
+}
+
+// tick is the program's clock: a TickMsg each second, for as long as the
+// program runs.
+func tick() tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg { return TickMsg{} })
 }
 
 // Update applies one message to the model, then sends what it queued.
@@ -50,6 +59,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case linesEndedMsg:
 		// stdout closed: the child is exiting. Wait for it, never kill it.
 		next = a.waitExit()
+	case TickMsg:
+		a.M.Update(msg)
+		next = tick()
 	default:
 		a.M.Update(msg)
 	}
