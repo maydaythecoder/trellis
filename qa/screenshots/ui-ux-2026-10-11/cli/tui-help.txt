@@ -1,0 +1,31 @@
+$ (cd demo) <scratch>/bin/trellis tui --help
+Watch a run happen: actions, transcript, edits, checks, radius, budget.
+
+The line-based session stays the default. This is the surface for watching one run rather than issuing a sequence of commands, and it renders the same `AppState` the standalone `tui_demo` binary does — only the source of events differs.
+
+Usage: trellis tui [OPTIONS] [TASK]
+
+Arguments:
+  [TASK]
+          A task to start immediately. Omit it to open idle and type one
+
+Options:
+      --model <MODEL>
+          Override the configured model, same spec as `trellis run --model`
+
+      --root <ROOT>
+          Repository root. Defaults to the current directory
+
+      --log-json <PATH>
+          Also write every tracing event as one JSON object per line to this file, appending. For `run` and `work` left unattended (ADR 0020 §7).
+          
+          A second formatter on the one subscriber, not a second telemetry path (ADR 0008). Global so it reaches `run` and `work` without adding a field to either.
+
+      --json
+          Write JSONL to stdout: the same events `--log-json` writes, between a `run_start` and a `run_end` record. Human text goes to stderr. For `run`, `work` and `log` (ADR 0025 §4).
+          
+          Global for the reason `--log-json` is: it reaches `work` without a field in its arguments. Refused by name on any other command.
+
+  -h, --help
+          Print help (see a summary with '-h')
+[exit 0]

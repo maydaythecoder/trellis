@@ -14,6 +14,10 @@
 //
 // Each function takes the document it draws into, so the module has no
 // global state and can be driven by a test document.
+//
+// The actions log follows its end only while the reader is there (#643):
+// a reader who scrolled back is not pulled down at each turn, and a button
+// offers the end instead. main.js wires that button through `wireLog`.
 
 import { drawGraph } from "./graph.js";
 
@@ -42,12 +46,57 @@ function fill(doc, pane, children, empty, emptyTag = "li") {
   }
 }
 
-// The actions log: the transcript, as the TUI's, one line per element.
-// Kept scrolled to its end, as a log is read.
+// How far from a log's end still counts as at it, in px: a fractional
+// scroll position or a zoom level can leave the end a pixel short. A pane
+// that is not laid out (its section hidden) measures 0 and 0, and is at it.
+const AT_END_SLACK = 2;
+
+// Whether `pane` is scrolled to its end, read before it is redrawn so a
+// reader who scrolled back keeps their place (#643). dialogs.js uses it for
+// the messages pane, so the two logs follow by one rule.
+export function atEnd(pane) {
+  return pane.scrollHeight - pane.clientHeight - pane.scrollTop <= AT_END_SLACK;
+}
+
+// The actions log: the transcript, as the TUI's, one line per element. It
+// follows its end only while the reader is there (#643, as the TUI has
+// since #244); otherwise their place is kept and the jump button under the
+// log says new lines arrived. The view carries the whole transcript each
+// turn, but only the lines beyond those drawn are appended: replacing every
+// child of a role="log" region may have a screen reader read the whole log
+// again. A list that does not extend the drawn one (the cap dropped its
+// oldest lines, or the transcript was cleared) is drawn afresh.
 function transcript(doc, pane, lines) {
-  const rows = (Array.isArray(lines) ? lines : []).map((l) => el(doc, "div", String(l)));
-  fill(doc, pane, rows, "Nothing has run yet.", "div");
-  pane.scrollTop = pane.scrollHeight;
+  const list = (Array.isArray(lines) ? lines : []).map(String);
+  const follow = atEnd(pane);
+  const drawn = [...pane.children].filter((c) => c.className !== "empty");
+  const grows = list.length >= drawn.length && drawn.every((c, i) => c.textContent === list[i]);
+  const rows = (grows ? list.slice(drawn.length) : list).map((l) => el(doc, "div", l));
+  if (grows && drawn.length > 0) pane.append(...rows);
+  else fill(doc, pane, rows, "Nothing has run yet.", "div");
+  const jump = doc.getElementById("log-jump");
+  if (follow) {
+    pane.scrollTop = pane.scrollHeight;
+    jump.hidden = true;
+  } else if (rows.length > 0) {
+    jump.hidden = false;
+  }
+}
+
+// Wires the actions log once: the jump button takes the reader to the end,
+// and scrolling there by hand puts the button away, since what it offered
+// is done.
+export function wireLog(doc) {
+  const pane = doc.getElementById("pane-transcript");
+  const jump = doc.getElementById("log-jump");
+  jump.addEventListener("click", () => {
+    pane.scrollTop = pane.scrollHeight;
+    jump.hidden = true;
+    pane.focus();
+  });
+  pane.addEventListener("scroll", () => {
+    if (atEnd(pane)) jump.hidden = true;
+  });
 }
 
 // One row per turn: the tool, its target, and its own figures, each with
@@ -189,6 +238,32 @@ function sessionTokens(doc, pane, t) {
   fill(doc, pane, rows, "No run of this trellis rpc has ended yet.");
 }
 
+// colibri's self-report for this run (`runtime identified`, #628): what
+// it serves, its KV slots and its experts per tier, each as colibri sent
+// it. A count it did not report is "not reported", never 0, and the three
+// tier counts are drawn apart: nothing here adds them or takes a share
+// (ADR 0048 §8). Only a run against colibri sends the event, so before
+// one the pane says so.
+function runtime(doc, pane, r) {
+  if (r === null || typeof r !== "object") {
+    fill(doc, pane, [], "Not reported: no runtime has identified itself for this run.", "p");
+    return;
+  }
+  const dl = el(doc, "dl");
+  const count = (v) => (isCount(v) ? String(v) : "not reported");
+  for (const [label, value] of [
+    ["runtime", str(r.runtime) ?? "not reported"],
+    ["served", str(r.served) ?? "not reported"],
+    ["KV slots", count(r.kv_slots)],
+    ["experts in VRAM", count(r.tiers_vram)],
+    ["experts in RAM", count(r.tiers_ram)],
+    ["experts on disk", count(r.tiers_disk)],
+  ]) {
+    dl.append(el(doc, "dt", label), el(doc, "dd", value));
+  }
+  pane.replaceChildren(dl);
+}
+
 // The tier `get_state` last reported, as trellis labels it; a status bar
 // writes `tier ` before the label (client_contract.json). Null means no run
 // of this rpc process has decided one, and it is never guessed.
@@ -233,6 +308,7 @@ const PANES = {
   radius: ["pane-radius", radius],
   budget: ["pane-budget", (doc, pane, b) => (pane.textContent = budgetLine(b))],
   tier: ["pane-tier", tier],
+  runtime: ["pane-runtime", runtime],
   running: ["pane-running", running],
   outcome: ["pane-outcome", outcome],
   session_tokens: ["pane-session-tokens", sessionTokens],

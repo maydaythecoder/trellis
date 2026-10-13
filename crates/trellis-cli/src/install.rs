@@ -54,6 +54,96 @@ pub(crate) struct Entry {
     pub reference: String,
     /// What the ref resolved to when the package was installed.
     pub commit: String,
+    /// The sha256 of each file as installed, by package path (#617).
+    /// Informational, never a trust decision (ADR 0039 §9). Absent from a
+    /// manifest written before it was recorded, which `--list` reports as
+    /// "not recorded" rather than as unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<Digest>,
+}
+
+/// `path -> sha256` for every file an install wrote. Per file, not one hash
+/// over all of them, so a change can be named by path.
+pub(crate) type Digest = std::collections::BTreeMap<String, String>;
+
+/// How a package's files on disk compare with the digest its entry records.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DigestCheck {
+    /// Every recorded file is there with its recorded bytes, and nothing
+    /// else is.
+    Ok,
+    /// Paths whose bytes differ, that are missing, or that were added.
+    Modified(Vec<String>),
+    /// The entry predates #617.
+    NotRecorded,
+}
+
+impl std::fmt::Display for DigestCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ok => write!(f, "digest ok"),
+            Self::Modified(paths) => write!(f, "modified: {}", paths.join(", ")),
+            Self::NotRecorded => write!(f, "not recorded"),
+        }
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Compares the files under `dir` with `entry`'s recorded digest. A file
+/// that cannot be read, or is not a plain file (a link put there since),
+/// counts as modified: "digest ok" is a claim about bytes, so anything
+/// short of reading them is not it.
+pub(crate) fn check_digest(dir: &Path, entry: &Entry) -> DigestCheck {
+    let Some(recorded) = &entry.digest else {
+        return DigestCheck::NotRecorded;
+    };
+    let mut on_disk = std::collections::BTreeSet::new();
+    walk_files(dir, dir, &mut on_disk);
+    let mut modified = Vec::new();
+    for (path, sha) in recorded {
+        let file = dir.join(path);
+        let is_plain = std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file());
+        match std::fs::read(&file) {
+            Ok(bytes) if is_plain && sha256_hex(&bytes) == *sha => {}
+            Ok(_) => modified.push(plain(path)),
+            Err(_) => modified.push(format!("{} (missing)", plain(path))),
+        }
+    }
+    for path in on_disk {
+        if !recorded.contains_key(&path) {
+            modified.push(format!("{} (added)", plain(&path)));
+        }
+    }
+    if modified.is_empty() {
+        DigestCheck::Ok
+    } else {
+        DigestCheck::Modified(modified)
+    }
+}
+
+/// Every entry under `dir` that is not a directory, as a `/`-separated path
+/// relative to `base`. Links are not followed: one is listed as an entry
+/// and read (or not) by `check_digest`. A directory that cannot be read
+/// lists nothing, which the recorded paths then report as missing.
+fn walk_files(base: &Path, dir: &Path, out: &mut std::collections::BTreeSet<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if std::fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir()) {
+            walk_files(base, &p, out);
+        } else if let Ok(rel) = p.strip_prefix(base) {
+            out.insert(rel.to_string_lossy().replace('\\', "/"));
+        }
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -63,17 +153,27 @@ struct Manifest {
 }
 
 /// `trellis install`, dispatched from `main`.
-pub(crate) fn run(source: Option<String>, list: bool, remove: Option<String>) -> Result<()> {
+pub(crate) fn run(
+    source: Option<String>,
+    list: bool,
+    remove: Option<String>,
+    upgrade: Option<String>,
+    dry_run: bool,
+) -> Result<()> {
     let config = crate::user_config::dir().context(
         "no user config directory to install into: set TRELLIS_CONFIG_DIR, APPDATA, \
          XDG_CONFIG_HOME or HOME (ADR 0025 §7)",
     )?;
     let mut out = std::io::stdout().lock();
-    match (source, list, remove) {
-        (_, true, _) => list_packages(&config, &mut out),
-        (_, _, Some(name)) => remove_package(&config, &name, &mut out),
-        (Some(spec), false, None) => install(&config, &spec, &mut out).map(|_| ()),
-        (None, false, None) => bail!("name a source as <git-url|path>@<ref>, or pass --list"),
+    match (source, list, remove, upgrade) {
+        (_, true, _, _) => list_packages(&config, &mut out),
+        (_, _, Some(name), _) => remove_package(&config, &name, &mut out),
+        (_, _, _, Some(name)) => upgrade_package(&config, &name, &mut out),
+        (Some(spec), false, None, None) if dry_run => install_dry_run(&config, &spec, &mut out),
+        (Some(spec), false, None, None) => install(&config, &spec, &mut out).map(|_| ()),
+        (None, false, None, None) => {
+            bail!("name a source as <git-url|path>@<ref>, or pass --list")
+        }
     }
 }
 
@@ -106,6 +206,110 @@ pub(crate) fn installed_dirs(config: &Path) -> Result<Vec<PathBuf>> {
 
 /// Installs `spec` (`<git-url|path>@<ref>`) under `<config>/packages/<name>/`.
 pub(crate) fn install(config: &Path, spec: &str, out: &mut dyn Write) -> Result<Entry> {
+    let dir = packages_dir(config);
+    let Prepared {
+        name,
+        source,
+        reference,
+        target,
+        mut manifest,
+    } = prepare(&dir, spec)?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
+
+    let staging = Staging::new(&dir)?;
+    let bare = staging.path.join("clone");
+    clone_bare(&source, &bare)?;
+    let commit = resolve_ref(&bare, &reference)?;
+    let plan = plan_for(&bare, &source, &commit)?;
+    let tree = staging.path.join("package");
+    let digest = stage(&bare, &plan, &tree)?;
+    std::fs::rename(&tree, &target)
+        .with_context(|| format!("cannot move the package into {}", target.display()))?;
+
+    let entry = Entry {
+        name: name.clone(),
+        source,
+        reference,
+        commit,
+        digest: Some(digest),
+    };
+    manifest.packages.push(entry.clone());
+    if let Err(e) = save(&dir, &manifest) {
+        // A directory the manifest does not name could never be listed or
+        // removed by name, so it goes too.
+        let _ = remove_tree(&target);
+        return Err(e);
+    }
+
+    writeln!(
+        out,
+        "installed {name} from {} @ {} (commit {}): {} in {}",
+        plain(&entry.source),
+        plain(&entry.reference),
+        entry.commit,
+        summary(&plan),
+        target.display()
+    )?;
+    report_skipped(&plan, out)?;
+    writeln!(
+        out,
+        "note: runs read it after the repository's own skills and templates, which win a \
+         name; a skill in <user config dir>/skills also wins over it (ADR 0039)."
+    )?;
+    Ok(entry)
+}
+
+/// `--dry-run` (#619): every check an install makes, the clone under 6's
+/// hardening and the listing under 8's bounds, then what would be copied
+/// and what skipped, and nothing written. The staging directory goes under
+/// the system temporary directory, not `packages/`: there is no rename
+/// into place to keep on one filesystem, and `packages/` and the manifest
+/// are left exactly as found, down to a `packages/` that does not exist.
+pub(crate) fn install_dry_run(config: &Path, spec: &str, out: &mut dyn Write) -> Result<()> {
+    let Prepared {
+        name,
+        source,
+        reference,
+        target,
+        ..
+    } = prepare(&packages_dir(config), spec)?;
+    let staging = Staging::new(&std::env::temp_dir())?;
+    let bare = staging.path.join("clone");
+    clone_bare(&source, &bare)?;
+    let commit = resolve_ref(&bare, &reference)?;
+    let plan = plan_for(&bare, &source, &commit)?;
+    writeln!(
+        out,
+        "dry run: {name} from {} @ {} (commit {commit}) would put {} in {}",
+        plain(&source),
+        plain(&reference),
+        summary(&plan),
+        target.display()
+    )?;
+    for f in &plan.copy {
+        writeln!(out, "  {}", plain(&f.path))?;
+    }
+    report_skipped(&plan, out)?;
+    let (skills, prompts) = counts(&plan);
+    writeln!(
+        out,
+        "would install {skills} skill(s), {prompts} prompt(s); nothing was written"
+    )?;
+    Ok(())
+}
+
+/// What `install` and `--dry-run` share before anything is fetched: the
+/// spec checked and split, the name derived, and the manifest and target
+/// found free. Creates nothing: a refused spec leaves no `packages/`.
+struct Prepared {
+    name: String,
+    source: String,
+    reference: String,
+    target: PathBuf,
+    manifest: Manifest,
+}
+
+fn prepare(dir: &Path, spec: &str) -> Result<Prepared> {
     // `<helper>::<address>` makes git run `git-remote-<helper>` from PATH,
     // so the source string would pick which installed program runs.
     // `protocol.allow=never` in `git()` refuses it too; refusing here says
@@ -138,9 +342,7 @@ pub(crate) fn install(config: &Path, spec: &str, out: &mut dyn Write) -> Result<
         source.to_string()
     };
 
-    let dir = packages_dir(config);
-    std::fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
-    let mut manifest = load(&dir)?;
+    let manifest = load(dir)?;
     if let Some(e) = manifest
         .packages
         .iter()
@@ -160,28 +362,166 @@ pub(crate) fn install(config: &Path, spec: &str, out: &mut dyn Write) -> Result<
             target.display()
         );
     }
+    Ok(Prepared {
+        name,
+        source,
+        reference: reference.to_string(),
+        target,
+        manifest,
+    })
+}
+
+/// `--upgrade <name>` (#618): the recorded ref re-resolved against the
+/// recorded source, its current commit staged under the same bounds as an
+/// install, and swapped over the old copy. The manifest entry's `commit`
+/// and `digest` are rewritten only once the swap has happened, so the
+/// manifest never names a commit the directory does not hold.
+///
+/// A copy whose files differ from the recorded digest is refused with the
+/// paths named, and there is no flag to overwrite them: the edits are the
+/// user's and an upgrade that lost them would be a removal nobody asked
+/// for. An entry with no digest (installed before #617) is refused too,
+/// since nothing can say whether it was edited; `--remove` then install is
+/// the way past, as it was before.
+pub(crate) fn upgrade_package(config: &Path, name: &str, out: &mut dyn Write) -> Result<()> {
+    // Before any path is built from it, as `--remove` does.
+    if let Some(why) = bad_name(name) {
+        bail!("{why}");
+    }
+    let dir = packages_dir(config);
+    let mut manifest = load(&dir)?;
+    let Some(i) = manifest.packages.iter().position(|e| e.name == name) else {
+        let known: Vec<String> = manifest.packages.iter().map(|e| plain(&e.name)).collect();
+        bail!(
+            "no package named {name} is installed{}",
+            if known.is_empty() {
+                String::new()
+            } else {
+                format!(" (installed: {})", known.join(", "))
+            }
+        );
+    };
+    let target = dir.join(name);
+    match check_digest(&target, &manifest.packages[i]) {
+        DigestCheck::Ok => {}
+        DigestCheck::Modified(paths) => bail!(
+            "{name} has been modified since it was installed; an upgrade would overwrite \
+             these: {}. `trellis install --remove {name}` and install again to discard \
+             them",
+            paths.join(", ")
+        ),
+        DigestCheck::NotRecorded => bail!(
+            "{name} was installed before its digest was recorded, so nothing can say \
+             whether it was edited; `trellis install --remove {name}` and install again"
+        ),
+    }
+    // The recorded source was checked when it was recorded, but the
+    // manifest is a file the user can edit, so it is checked again before
+    // it reaches git.
+    let (source, reference) = (
+        manifest.packages[i].source.clone(),
+        manifest.packages[i].reference.clone(),
+    );
+    if let Some(helper) = remote_helper(&source) {
+        bail!(
+            "{MANIFEST}: the source of {name} names the git remote helper `{}`",
+            plain(helper)
+        );
+    }
+    if let Some(why) = unacceptable_source(&source) {
+        bail!("{MANIFEST}: {why}");
+    }
+    if reference.starts_with('-') || reference.chars().any(|c| c.is_control() || c == ' ') {
+        bail!(
+            "{MANIFEST}: ref `{}` of {name} is not a ref name",
+            plain(&reference)
+        );
+    }
 
     let staging = Staging::new(&dir)?;
     let bare = staging.path.join("clone");
     clone_bare(&source, &bare)?;
-    let commit = resolve_ref(&bare, reference)?;
-    let listing = ls_tree(&bare, &commit)?;
+    let commit = resolve_ref(&bare, &reference)?;
+    let old = manifest.packages[i].commit.clone();
+    if commit == old {
+        writeln!(
+            out,
+            "{name} is already at commit {commit} ({} @ {}); nothing to do",
+            plain(&source),
+            plain(&reference)
+        )?;
+        return Ok(());
+    }
+    let plan = plan_for(&bare, &source, &commit)?;
+    let tree = staging.path.join("package");
+    let digest = stage(&bare, &plan, &tree)?;
+
+    // The old copy moves into the staging directory, so it is removed with
+    // the clone once the swap has gone through, and moves back if it does
+    // not.
+    let previous = staging.path.join("previous");
+    std::fs::rename(&target, &previous)
+        .with_context(|| format!("cannot move the old copy of {name} aside"))?;
+    if let Err(e) = std::fs::rename(&tree, &target) {
+        let restored = std::fs::rename(&previous, &target);
+        return Err(e).with_context(|| {
+            format!(
+                "cannot move the upgraded package into {}{}",
+                target.display(),
+                match restored {
+                    Ok(()) => "; the old copy is back in place".to_string(),
+                    Err(e) => format!("; the old copy is in {} ({e})", previous.display()),
+                }
+            )
+        });
+    }
+    manifest.packages[i].commit = commit.clone();
+    manifest.packages[i].digest = Some(digest);
+    if let Err(e) = save(&dir, &manifest) {
+        // The manifest still names the old commit; put its copy back so
+        // the two agree, rather than leave a directory the entry misdescribes.
+        let _ = remove_tree(&target);
+        let _ = std::fs::rename(&previous, &target);
+        return Err(e);
+    }
+    writeln!(
+        out,
+        "upgraded {name} from {} @ {}: commit {old} -> {commit}: {} in {}",
+        plain(&source),
+        plain(&reference),
+        summary(&plan),
+        target.display()
+    )?;
+    report_skipped(&plan, out)
+}
+
+/// What `commit` of the bare clone would put on disk, refused when it holds
+/// nothing to install or exceeds the bounds (ADR 0039 §5, §8).
+fn plan_for(bare: &Path, source: &str, commit: &str) -> Result<Plan> {
+    let listing = ls_tree(bare, commit)?;
     let plan = select(&listing);
     if plan.copy.is_empty() {
         bail!(
             "{} at {commit} has no skills/<name>/SKILL.md and no prompts/<name>.md; \
              nothing to install",
-            plain(&source)
+            plain(source)
         );
     }
     check_bounds(&plan.copy)?;
+    Ok(plan)
+}
 
-    let tree = staging.path.join("package");
+/// Writes the plan's files under `tree` and returns their digest.
+fn stage(bare: &Path, plan: &Plan, tree: &Path) -> Result<Digest> {
+    let mut digest = Digest::new();
     for f in &plan.copy {
-        let bytes = blob(&bare, &f.blob)?;
+        let bytes = blob(bare, &f.blob)?;
         if bytes.len() as u64 != f.size {
             bail!("{} changed size while it was read", f.path);
         }
+        // Over the bytes written, not git's blob id: the blob id is of
+        // git's object, and what `--list` compares later is the file.
+        digest.insert(f.path.clone(), sha256_hex(&bytes));
         let dest = tree.join(&f.path);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)
@@ -203,23 +543,21 @@ pub(crate) fn install(config: &Path, spec: &str, out: &mut dyn Write) -> Result<
         file.write_all(&bytes)
             .with_context(|| format!("cannot write {}", dest.display()))?;
     }
-    std::fs::rename(&tree, &target)
-        .with_context(|| format!("cannot move the package into {}", target.display()))?;
+    Ok(digest)
+}
 
-    let entry = Entry {
-        name: name.clone(),
-        source,
-        reference: reference.to_string(),
-        commit,
-    };
-    manifest.packages.push(entry.clone());
-    if let Err(e) = save(&dir, &manifest) {
-        // A directory the manifest does not name could never be listed or
-        // removed by name, so it goes too.
-        let _ = remove_tree(&target);
-        return Err(e);
-    }
+/// `N skill(s), M prompt template(s), K file(s)`.
+fn summary(plan: &Plan) -> String {
+    let (skills, prompts) = counts(plan);
+    format!(
+        "{skills} skill(s), {prompts} prompt template(s), {} file(s)",
+        plan.copy.len()
+    )
+}
 
+/// Skills (a `skills/<name>/SKILL.md` one level deep) and prompt templates
+/// the plan copies.
+fn counts(plan: &Plan) -> (usize, usize) {
     let skills = plan
         .copy
         .iter()
@@ -235,16 +573,10 @@ pub(crate) fn install(config: &Path, spec: &str, out: &mut dyn Write) -> Result<
         .iter()
         .filter(|f| f.path.starts_with("prompts/"))
         .count();
-    writeln!(
-        out,
-        "installed {name} from {} @ {} (commit {}): {skills} skill(s), {prompts} prompt \
-         template(s), {} file(s) in {}",
-        plain(&entry.source),
-        plain(&entry.reference),
-        entry.commit,
-        plan.copy.len(),
-        target.display()
-    )?;
+    (skills, prompts)
+}
+
+fn report_skipped(plan: &Plan, out: &mut dyn Write) -> Result<()> {
     if !plan.skipped.is_empty() {
         writeln!(
             out,
@@ -259,12 +591,7 @@ pub(crate) fn install(config: &Path, spec: &str, out: &mut dyn Write) -> Result<
             writeln!(out, "  {}: {why}", plain(path))?;
         }
     }
-    writeln!(
-        out,
-        "note: runs read it after the repository's own skills and templates, which win a \
-         name; a skill in <user config dir>/skills also wins over it (ADR 0039)."
-    )?;
-    Ok(entry)
+    Ok(())
 }
 
 /// `--list`.
@@ -276,13 +603,19 @@ pub(crate) fn list_packages(config: &Path, out: &mut dyn Write) -> Result<()> {
         return Ok(());
     }
     for e in &manifest.packages {
+        // The manifest is a file the user can edit, and a name becomes a
+        // path before the digest is checked.
+        if let Some(why) = bad_name(&e.name) {
+            bail!("{}: {why}", dir.join(MANIFEST).display());
+        }
         writeln!(
             out,
-            "{}  source {}  ref {}  commit {}",
+            "{}  source {}  ref {}  commit {}  {}",
             plain(&e.name),
             plain(&e.source),
             plain(&e.reference),
-            plain(&e.commit)
+            plain(&e.commit),
+            check_digest(&dir.join(&e.name), e)
         )?;
     }
     Ok(())
@@ -1180,6 +1513,436 @@ mod tests {
         // A second install of the same name is refused, not merged.
         let e = install(&cfg, &spec(&src, "v1"), &mut Vec::new()).unwrap_err();
         assert!(format!("{e:#}").contains("already installed"), "{e:#}");
+    }
+
+    #[test]
+    fn install_digest_is_recorded_per_file_and_list_says_ok_while_the_files_match() {
+        // The risk: `--list` answers "is this what I installed" from the
+        // manifest alone, which says nothing about the bytes on disk; the
+        // digest is over the files as written (ADR 0044's rule), one per
+        // path, so a later edit can be named.
+        let d = tempfile::tempdir().unwrap();
+        let src = source(d.path());
+        let cfg = d.path().join("cfg");
+        let entry = install(&cfg, &spec(&src, "v1"), &mut Vec::new()).unwrap();
+        let digest = entry
+            .digest
+            .as_ref()
+            .expect("an install records its digest");
+        let paths: Vec<&str> = digest.keys().map(String::as_str).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "prompts/review.md",
+                "skills/alpha/SKILL.md",
+                "skills/alpha/references/notes.md",
+                "skills/beta/SKILL.md",
+            ]
+        );
+        assert_eq!(
+            digest["skills/alpha/SKILL.md"],
+            sha256_hex(b"---\nname: alpha\n---\nA\n")
+        );
+        // Round-tripped through the manifest, not only held in memory.
+        let loaded = load(&cfg.join("packages")).unwrap();
+        assert_eq!(loaded.packages[0].digest.as_ref(), Some(digest));
+        let mut out = Vec::new();
+        list_packages(&cfg, &mut out).unwrap();
+        let said = String::from_utf8(out).unwrap();
+        assert!(said.trim_end().ends_with("  digest ok"), "{said}");
+    }
+
+    #[test]
+    fn install_digest_names_every_edited_missing_and_added_path() {
+        // The risk: one hash over the whole package can say "changed" but
+        // not what, and a check that skips a file it cannot read, or reads
+        // a link put in place of one, reports it as the bytes installed.
+        let d = tempfile::tempdir().unwrap();
+        let src = source(d.path());
+        let cfg = d.path().join("cfg");
+        install(&cfg, &spec(&src, "v1"), &mut Vec::new()).unwrap();
+        let pkg = cfg.join("packages/pkg-src");
+        std::fs::write(pkg.join("skills/alpha/SKILL.md"), "edited\n").unwrap();
+        std::fs::remove_file(pkg.join("prompts/review.md")).unwrap();
+        std::fs::write(pkg.join("skills/beta/extra.md"), "added\n").unwrap();
+        let mut out = Vec::new();
+        list_packages(&cfg, &mut out).unwrap();
+        let said = String::from_utf8(out).unwrap();
+        assert!(
+            said.contains(
+                "  modified: prompts/review.md (missing), skills/alpha/SKILL.md, \
+                 skills/beta/extra.md (added)"
+            ),
+            "{said}"
+        );
+        assert!(!said.contains("digest ok"), "{said}");
+        // The whole directory gone: every recorded path is missing, and the
+        // check is still a report, not an error.
+        std::fs::remove_dir_all(&pkg).unwrap();
+        let entry = &load(&cfg.join("packages")).unwrap().packages[0];
+        match check_digest(&pkg, entry) {
+            DigestCheck::Modified(paths) => {
+                assert_eq!(paths.len(), 4, "{paths:?}");
+                assert!(paths.iter().all(|p| p.ends_with(" (missing)")), "{paths:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn install_digest_absent_from_an_older_manifest_loads_and_reads_not_recorded() {
+        // The risk: a manifest written before the digest was recorded fails
+        // to parse (and with it every run that reads installed skills), or
+        // an entry with no digest is reported as unchanged.
+        let d = tempfile::tempdir().unwrap();
+        let src = source(d.path());
+        let cfg = d.path().join("cfg");
+        install(&cfg, &spec(&src, "v1"), &mut Vec::new()).unwrap();
+        let packages = cfg.join("packages");
+        let commit = git_in(&src, &["rev-parse", "v1^{commit}"]);
+        let older = format!(
+            "[[package]]\nname = \"pkg-src\"\nsource = \"{}\"\nref = \"v1\"\ncommit = \"{commit}\"\n",
+            std::path::absolute(&src)
+                .unwrap()
+                .display()
+                .to_string()
+                .replace('\\', "/")
+        );
+        std::fs::write(packages.join(MANIFEST), older).unwrap();
+        let m = load(&packages).unwrap();
+        assert_eq!(m.packages.len(), 1);
+        assert_eq!(m.packages[0].digest, None);
+        assert_eq!(
+            installed_dirs(&cfg).unwrap(),
+            vec![packages.join("pkg-src")]
+        );
+        let mut out = Vec::new();
+        list_packages(&cfg, &mut out).unwrap();
+        let said = String::from_utf8(out).unwrap();
+        assert!(said.trim_end().ends_with("  not recorded"), "{said}");
+        assert!(!said.contains("digest ok"), "{said}");
+        // Saved again, the entry stays without one: nothing invents a digest
+        // for files it did not write.
+        save(&packages, &m).unwrap();
+        assert!(
+            !std::fs::read_to_string(packages.join(MANIFEST))
+                .unwrap()
+                .contains("digest"),
+            "{said}"
+        );
+    }
+
+    /// Commits a second version of the source on branch `release`: alpha's
+    /// SKILL.md changes, beta is dropped, a new skill and a hook appear.
+    fn advance(src: &Path) {
+        write(src, "skills/alpha/SKILL.md", "---\nname: alpha\n---\nA2\n");
+        std::fs::remove_dir_all(src.join("skills/beta")).unwrap();
+        write(src, "skills/delta/SKILL.md", "---\nname: delta\n---\nD\n");
+        write(src, "hooks/new.sh", "#!/bin/sh\n");
+        git_in(src, &["add", "-A"]);
+        git_in(src, &["commit", "-q", "-m", "v2"]);
+    }
+
+    #[test]
+    fn install_upgrade_installs_the_ref_s_current_commit_and_rewrites_the_entry_after_the_swap() {
+        // The risk: remove-then-install loses the package for the window
+        // between the two and records nothing of the old commit; an upgrade
+        // must leave the directory at the new commit with the manifest's
+        // `commit` and `digest` describing exactly it, and nothing of the
+        // old copy or the staging behind.
+        let d = tempfile::tempdir().unwrap();
+        let src = source(d.path());
+        git_in(&src, &["branch", "release"]);
+        git_in(&src, &["checkout", "-q", "release"]);
+        let cfg = d.path().join("cfg");
+        install(&cfg, &spec(&src, "release"), &mut Vec::new()).unwrap();
+        let old = git_in(&src, &["rev-parse", "release^{commit}"]);
+        advance(&src);
+        let new = git_in(&src, &["rev-parse", "release^{commit}"]);
+        assert_ne!(old, new);
+
+        let mut out = Vec::new();
+        upgrade_package(&cfg, "pkg-src", &mut out).unwrap();
+        let said = String::from_utf8(out).unwrap();
+        assert!(said.starts_with("upgraded pkg-src from "), "{said}");
+        assert!(
+            said.contains(&format!(
+                "commit {old} -> {new}: 2 skill(s), 1 prompt template(s), 5 file(s)"
+            )),
+            "{said}"
+        );
+        assert!(said.contains("hooks/new.sh: outside"), "{said}");
+        let pkg = cfg.join("packages/pkg-src");
+        // `advance` re-added the tree from the worktree, where tool.md is a
+        // plain file and the index-only link does not exist, so one more
+        // text file is copied and the link is gone.
+        assert_eq!(
+            files_under(&pkg),
+            vec![
+                "prompts/review.md",
+                "skills/alpha/SKILL.md",
+                "skills/alpha/references/notes.md",
+                "skills/alpha/tool.md",
+                "skills/delta/SKILL.md",
+            ]
+        );
+        assert_eq!(
+            std::fs::read_to_string(pkg.join("skills/alpha/SKILL.md")).unwrap(),
+            "---\nname: alpha\n---\nA2\n"
+        );
+        let m = load(&cfg.join("packages")).unwrap();
+        assert_eq!(m.packages.len(), 1);
+        assert_eq!(m.packages[0].commit, new);
+        assert_eq!(m.packages[0].reference, "release");
+        assert_eq!(check_digest(&pkg, &m.packages[0]), DigestCheck::Ok);
+        let mut left: Vec<String> = std::fs::read_dir(cfg.join("packages"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, vec!["packages.toml", "pkg-src"]);
+    }
+
+    #[test]
+    fn install_upgrade_refuses_a_modified_copy_and_names_the_paths() {
+        // The risk: an upgrade overwrites edits the user made to an
+        // installed skill, which is a removal nobody asked for (ClawHub's
+        // `--force` is the part not copied). An entry with no digest is
+        // refused for the same reason: nothing can say it was not edited.
+        let d = tempfile::tempdir().unwrap();
+        let src = source(d.path());
+        git_in(&src, &["branch", "release"]);
+        let cfg = d.path().join("cfg");
+        install(&cfg, &spec(&src, "release"), &mut Vec::new()).unwrap();
+        git_in(&src, &["checkout", "-q", "release"]);
+        advance(&src);
+        let pkg = cfg.join("packages/pkg-src");
+        std::fs::write(pkg.join("skills/beta/SKILL.md"), "mine\n").unwrap();
+        std::fs::write(pkg.join("prompts/extra.md"), "mine too\n").unwrap();
+        let manifest_before = std::fs::read(cfg.join("packages").join(MANIFEST)).unwrap();
+
+        let mut out = Vec::new();
+        let e = upgrade_package(&cfg, "pkg-src", &mut out).unwrap_err();
+        let msg = format!("{e:#}");
+        assert!(msg.contains("modified since it was installed"), "{msg}");
+        assert!(msg.contains("skills/beta/SKILL.md"), "{msg}");
+        assert!(msg.contains("prompts/extra.md (added)"), "{msg}");
+        assert!(msg.contains("--remove pkg-src"), "{msg}");
+        assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
+        assert_eq!(
+            std::fs::read_to_string(pkg.join("skills/beta/SKILL.md")).unwrap(),
+            "mine\n"
+        );
+        assert_eq!(
+            std::fs::read(cfg.join("packages").join(MANIFEST)).unwrap(),
+            manifest_before
+        );
+        // Nothing was fetched: no staging directory came and went.
+        let mut left: Vec<String> = std::fs::read_dir(cfg.join("packages"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, vec!["packages.toml", "pkg-src"]);
+
+        // No digest recorded (an install from before #617): refused, not
+        // read as unmodified.
+        let mut m = load(&cfg.join("packages")).unwrap();
+        m.packages[0].digest = None;
+        save(&cfg.join("packages"), &m).unwrap();
+        let e = upgrade_package(&cfg, "pkg-src", &mut Vec::new()).unwrap_err();
+        assert!(
+            format!("{e:#}").contains("before its digest was recorded"),
+            "{e:#}"
+        );
+    }
+
+    #[test]
+    fn install_upgrade_of_an_unknown_name_is_refused_and_touches_nothing() {
+        // The risk: `--upgrade` joins its argument onto a path and hands
+        // the entry's source to git, so a name that is not a package, `..`
+        // above all, must be refused before either.
+        let d = tempfile::tempdir().unwrap();
+        let src = source(d.path());
+        let cfg = d.path().join("cfg");
+        install(&cfg, &spec(&src, "v1"), &mut Vec::new()).unwrap();
+        let manifest_before = std::fs::read(cfg.join("packages").join(MANIFEST)).unwrap();
+        for name in ["nope", "..", "../cfg", "packages.toml", "PKG-SRC"] {
+            let mut out = Vec::new();
+            let e = upgrade_package(&cfg, name, &mut out).unwrap_err();
+            let msg = format!("{e:#}");
+            assert!(
+                msg.contains("no package named") || msg.contains("package name"),
+                "{name}: {msg}"
+            );
+            assert!(out.is_empty(), "{name}: {}", String::from_utf8_lossy(&out));
+        }
+        let e = upgrade_package(&cfg, "nope", &mut Vec::new()).unwrap_err();
+        assert!(format!("{e:#}").contains("installed: pkg-src"), "{e:#}");
+        assert_eq!(
+            std::fs::read(cfg.join("packages").join(MANIFEST)).unwrap(),
+            manifest_before
+        );
+        assert!(cfg.join("packages/pkg-src/skills/alpha/SKILL.md").is_file());
+    }
+
+    #[test]
+    fn install_upgrade_at_the_same_commit_is_a_no_op_that_says_so() {
+        // The risk: a tag or commit ref re-resolves to what is installed,
+        // and an "upgrade" to it rewrote the directory and manifest for
+        // nothing, or said "upgraded" of a package that did not change.
+        let d = tempfile::tempdir().unwrap();
+        let src = source(d.path());
+        let cfg = d.path().join("cfg");
+        install(&cfg, &spec(&src, "v1"), &mut Vec::new()).unwrap();
+        // The source moves on, but `v1` does not.
+        advance(&src);
+        let packages = cfg.join("packages");
+        let manifest_before = std::fs::read(packages.join(MANIFEST)).unwrap();
+        let pkg = packages.join("pkg-src");
+        let files_before = files_under(&pkg);
+        let commit = git_in(&src, &["rev-parse", "v1^{commit}"]);
+
+        let mut out = Vec::new();
+        upgrade_package(&cfg, "pkg-src", &mut out).unwrap();
+        let said = String::from_utf8(out).unwrap();
+        assert!(
+            said.starts_with(&format!("pkg-src is already at commit {commit}")),
+            "{said}"
+        );
+        assert!(said.contains("nothing to do"), "{said}");
+        assert!(!said.contains("upgraded"), "{said}");
+        assert_eq!(
+            std::fs::read(packages.join(MANIFEST)).unwrap(),
+            manifest_before
+        );
+        assert_eq!(files_under(&pkg), files_before);
+        assert_eq!(
+            std::fs::read_to_string(pkg.join("skills/alpha/SKILL.md")).unwrap(),
+            "---\nname: alpha\n---\nA\n"
+        );
+        let mut left: Vec<String> = std::fs::read_dir(&packages)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, vec!["packages.toml", "pkg-src"]);
+    }
+
+    /// Every path under `root` with its bytes, or `None` when `root` is
+    /// not there: the whole state a dry run must leave as it found it.
+    fn snapshot(root: &Path) -> Option<Vec<(String, Vec<u8>)>> {
+        if !root.exists() {
+            return None;
+        }
+        Some(
+            files_under(root)
+                .into_iter()
+                .map(|rel| {
+                    let bytes = std::fs::read(root.join(&rel)).unwrap();
+                    (rel, bytes)
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn install_dry_run_lists_what_would_be_copied_and_skipped_and_writes_nothing() {
+        // The risk: the only way to learn what a package would put under
+        // `packages/` was to install it; and a dry run that leaves a
+        // staging clone, a manifest, or even an empty `packages/` behind
+        // is not one. Checked against a config with no `packages/` at all
+        // and against one holding another package.
+        let d = tempfile::tempdir().unwrap();
+        let src = source(d.path());
+        let cfg = d.path().join("cfg");
+        assert_eq!(snapshot(&cfg.join("packages")), None);
+        let mut out = Vec::new();
+        install_dry_run(&cfg, &spec(&src, "v1"), &mut out).unwrap();
+        let said = String::from_utf8(out).unwrap();
+        assert!(said.starts_with("dry run: pkg-src from "), "{said}");
+        assert!(
+            said.contains("would put 2 skill(s), 1 prompt template(s), 4 file(s) in "),
+            "{said}"
+        );
+        for copied in [
+            "  prompts/review.md\n",
+            "  skills/alpha/SKILL.md\n",
+            "  skills/alpha/references/notes.md\n",
+            "  skills/beta/SKILL.md\n",
+        ] {
+            assert!(said.contains(copied), "{copied:?} not listed in:\n{said}");
+        }
+        // The skipped block is the install's, every path on its own line.
+        assert!(
+            said.contains("skipped 9 path(s): a package carries"),
+            "{said}"
+        );
+        for skipped in [
+            "  hooks/after_run.sh: outside",
+            "  skills/alpha/tool.md: executable",
+            "  skills/alpha/link.md: symbolic link",
+        ] {
+            assert!(said.contains(skipped), "{skipped} not named in:\n{said}");
+        }
+        assert!(
+            said.trim_end()
+                .ends_with("would install 2 skill(s), 1 prompt(s); nothing was written"),
+            "{said}"
+        );
+        assert!(!said.contains("installed pkg-src"), "{said}");
+        assert_eq!(
+            snapshot(&cfg.join("packages")),
+            None,
+            "a dry run created packages/"
+        );
+        assert!(!cfg.exists(), "a dry run created the config directory");
+
+        // With another package installed, the manifest and its files are
+        // byte-identical after, and the dry-run package is not installed.
+        let other = d.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        git_in(&other, &["init", "-q"]);
+        write(&other, "prompts/one.md", "one\n");
+        git_in(&other, &["add", "-A"]);
+        git_in(&other, &["commit", "-q", "-m", "other"]);
+        git_in(&other, &["tag", "v1"]);
+        install(&cfg, &spec(&other, "v1"), &mut Vec::new()).unwrap();
+        let before = snapshot(&cfg.join("packages"));
+        assert!(before.is_some());
+        install_dry_run(&cfg, &spec(&src, "v1"), &mut Vec::new()).unwrap();
+        assert_eq!(snapshot(&cfg.join("packages")), before);
+        assert_eq!(load(&cfg.join("packages")).unwrap().packages.len(), 1);
+        // A dry run of what is already installed is refused as an install
+        // would be, since the install it describes could not happen.
+        let e = install_dry_run(&cfg, &spec(&other, "v1"), &mut Vec::new()).unwrap_err();
+        assert!(format!("{e:#}").contains("already installed"), "{e:#}");
+        assert_eq!(snapshot(&cfg.join("packages")), before);
+    }
+
+    #[test]
+    fn install_dry_run_reports_a_bounds_refusal_as_an_install_would_and_writes_nothing() {
+        // The risk: a dry run that lists a package the install would refuse
+        // says it would install; or one that skips the listing bound holds
+        // an unbounded tree in memory to describe it (#200).
+        let d = tempfile::tempdir().unwrap();
+        let src = wide_source(d.path(), MAX_TREE_ENTRIES + 1);
+        let cfg = d.path().join("cfg");
+        let mut out = Vec::new();
+        let e = install_dry_run(&cfg, &spec(&src, "v1"), &mut out).unwrap_err();
+        let dry = format!("{e:#}");
+        assert!(
+            dry.contains(&format!("the limit is {MAX_TREE_ENTRIES}")),
+            "{dry}"
+        );
+        assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
+        assert!(
+            !cfg.exists(),
+            "a refused dry run wrote under the config directory"
+        );
+        // Word for word what the install says.
+        let e = install(&cfg, &spec(&src, "v1"), &mut Vec::new()).unwrap_err();
+        assert_eq!(dry, format!("{e:#}"));
     }
 
     #[test]

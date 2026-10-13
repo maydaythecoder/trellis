@@ -8,6 +8,13 @@ released is in `docs/BUILD_SYSTEM.md`, under "Branches".
 
 ## [Unreleased]
 
+### Interfaces
+
+- `trellis --web` (ADR 0050 §5, #375): the desktop serves its page and its
+  four commands over HTTP on 127.0.0.1 behind a per-launch token, with a
+  Host guard against DNS rebinding; `trellis --web` prints and opens the
+  URL and stops the server on Ctrl-C, waiting for its rpc child to quit.
+
 ## [0.1.0]
 
 What `main` holds when the owner tags it `v0.1.0`: PR #1 (the v0.1 resolver,

@@ -15,21 +15,46 @@ pub(crate) fn cmd_log(root: &Path, limit: usize, actions: bool) -> Result<()> {
         let f = &e.trail.factual;
         println!("{}  {}", plain(&e.run_id()), e.outcome());
         println!("    {}", plain(&e.trail.task));
+        // "passed" and "failed" as words (#651): a `+`/`-` suffix read as
+        // a mark on the check rather than as what an executed process said.
+        // The kind is the trail's, lowercased for the sentence.
         let checks: Vec<String> = f
             .check_outcomes
             .iter()
-            .map(|c| format!("{}{}", c.kind, if c.passed { "+" } else { "-" }))
+            .map(|c| {
+                format!(
+                    "{} {}",
+                    plain(&c.kind).to_lowercase(),
+                    if c.passed { "passed" } else { "failed" }
+                )
+            })
             .collect();
         println!(
-            "    {} file(s) proposed, {} reached, checks: {}",
+            "    {} file(s) proposed; recorded checks: {}",
             f.proposed.len(),
-            f.radius.reached_resolved + f.radius.reached_ambiguous,
             if checks.is_empty() {
                 "none".into()
             } else {
-                checks.join(" ")
+                checks.join(", ")
             }
         );
+        // Three figures, never one sum (CLAUDE.md rule 3): the resolved and
+        // ambiguous reach are summed over the run's queries, and the unbound
+        // count is the widest single query's, so adding any two of them
+        // produces a number about nothing. "N reached" was such a number.
+        let r = f.radius;
+        if r.radius_queries == 0 {
+            println!("    radius: no query recorded");
+        } else {
+            println!(
+                "    radius: {} resolved, {} ambiguous reached; {} unbound in touched files \
+                 (widest single query, of {})",
+                r.reached_resolved,
+                r.reached_ambiguous,
+                r.widest_unbound_in_touched_files,
+                r.radius_queries
+            );
+        }
         // Integrity is printed only when it is not the ordinary case, so a
         // long listing stays readable and the one line that matters stands
         // out rather than blending into a column of "ok".

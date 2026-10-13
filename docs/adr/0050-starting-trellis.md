@@ -1,6 +1,6 @@
 # ADR 0050 — Starting trellis: plain `trellis`, or `--tui`, `--dsk`, `--web`
 
-**Status:** Accepted (owner-directed). Not built (story S19, #377).
+**Status:** Accepted (owner-directed). Built (story S19, #377): sections 1–4 by #370–#374, #553, #555, #556, #558 and #561; section 5 by #375. The handoff to `trellis-tui` (section 1, amended) is #514's and is not built.
 **Date:** 2026-10-04
 **Decided by:** the owner's request of 2026-10-04 ("make the startup more
 intuitive, limited flags; start with just `trellis`, with `--tui`, `--dsk`,
@@ -166,6 +166,41 @@ is read. It serves the same static page and the same rpc-backed view-models
 as the desktop, so it adds no path around the orchestrator (ADR 0048
 sections 2, 5 and 10), and every trellis- or model-supplied string reaches
 the DOM through `textContent`.
+*As built 2026-10-11 (#375):* `trellis --web` starts `trellis-desktop
+--web` from beside `current_exe()` only, as `--dsk` does (#374), with
+`--root` only for a root found, in its own process group, its stdin and
+stdout piped and its stderr the terminal's. The desktop binds 127.0.0.1:0
+(`desktop/src/web.rs`) and prints `{"url": "http://127.0.0.1:<port>/?t=<token>"}`
+once on stdout; trellis prints the URL, opens it through the platform's
+opener (`xdg-open`, `open`, or `rundll32 url.dll,FileProtocolHandler`,
+each scrubbed of the key variables) and says so when the opener is
+missing. The token is 32 bytes from the OS's random source, through std's
+`RandomState` on a fresh thread so no crate is added, as 64 hex
+characters. `GET /?t=<token>` redirects to `/<token>/`, the page's root, so
+the page's relative imports and fetches carry the token on their own and
+the page is served byte for byte: `ui/web.js`, loaded first and the one
+module that fetches, defines `window.__TAURI__` over `fetch` and
+`EventSource` when Tauri has not, so every other module is unchanged. The
+four commands are `POST /<token>/invoke/<name>` and the core's events are
+one server-sent event stream at `/<token>/events`, whose first connection
+runs startup as the window's page load does. A request whose path lacks
+the token or whose Host is not `127.0.0.1:<port>` or `localhost:<port>` is
+refused with 403 before its body is read, with one answer for both. Every
+answer, a refusal too, then shuts the write side and reads and throws away
+what the client sent that was not read, until the client closes, 200 ms
+have passed or 64 KiB have come, before the socket is dropped: a socket
+closed with input unread sends a reset, and on Windows the reset discards
+the 403 the browser had already received (#666's Windows CI, 2026-10-12).
+The discarded bytes are not parsed, so a refusal is still decided on the
+request line and headers alone. Every response carries a
+Content-Security-Policy as strict as the window's (`connect-src 'self'`,
+nothing inline, `frame-ancestors 'none'`). The server stops when its stdin
+ends: trellis closes it on the first Ctrl-C, says so, and waits for the
+desktop, which sends its rpc child `quit` and waits (ADR 0048 section 9);
+a second Ctrl-C stops waiting. Tests whose names start with `web_` in
+`desktop/src/web.rs` hold the bind address, the token, the Host guard, the
+close, the policy, the file set, the commands and the stream; `launch_web_`
+tests in `crates/trellis-cli/src/launch.rs` hold the launch.
 
 ## Alternatives rejected
 
