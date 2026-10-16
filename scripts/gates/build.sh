@@ -5,4 +5,12 @@
 source "$(dirname "$0")/lib.sh"
 cargo build --workspace --all-targets
 cargo build -p trellis-cli --no-default-features
-echo "OK: workspace (all targets) and the local-only trellis-cli build"
+# Go branch (ADR 0052, #504): tui/ builds from its committed go.sum.
+if go_module_present; then
+  go_require
+  (cd tui && go build ./...)
+  gomsg="; tui/ (go build)"
+else
+  gomsg="; Go branch skipped: tui/ is absent"
+fi
+echo "OK: workspace (all targets) and the local-only trellis-cli build$gomsg"

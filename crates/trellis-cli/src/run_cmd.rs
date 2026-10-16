@@ -72,9 +72,13 @@ enum Driver {
     Hosted(Box<trellis_loop::HostedModel>),
 }
 
-/// A driver that remembers the `done` summary it handed the loop.
+/// A driver that remembers the `done` summary it handed the loop, and
+/// every step, for the run's replay recording (#620, ADR 0056).
 ///
 /// `Outcome` does not carry the summary, and the session's `/copy` wants it.
+/// The transcript does not carry a `done` step, and a model's step that a
+/// gate refused is still the model's, so the steps are taken here, as the
+/// driver handed them over, rather than from the transcript.
 /// Observing it on the way past keeps that inside the binary: the loop's
 /// types stay as they are, and every method the loop reads passes straight
 /// through, so the budget, the context figures, the compactions and the
@@ -91,6 +95,7 @@ enum Driver {
 struct SeesDone<'a, M> {
     inner: &'a mut M,
     done: &'a mut Option<String>,
+    steps: &'a mut Vec<trellis_loop::Step>,
 }
 
 impl<M: trellis_loop::Model + Send> trellis_loop::Model for SeesDone<'_, M> {
@@ -101,6 +106,9 @@ impl<M: trellis_loop::Model + Send> trellis_loop::Model for SeesDone<'_, M> {
         let step = self.inner.next_step(t).await;
         if let Ok(trellis_loop::Step::Done { summary }) = &step {
             *self.done = Some(summary.clone());
+        }
+        if let Ok(s) = &step {
+            self.steps.push(s.clone());
         }
         step
     }
@@ -311,6 +319,12 @@ pub(crate) struct RunSeeding<'a> {
     /// actions: that each ran, never its output (ADR 0026 §12). Empty for
     /// every caller but `work`.
     pub(crate) services: &'a [trellis_trail::Action],
+    /// The repository whose trust entry this run is held to, when it is
+    /// not `root`: a queued task's run in its own worktree is looked up
+    /// under the worktree `work` started in, and its trusted code must
+    /// fingerprint-match that entry (ADR 0053 decision 3). `None` for every
+    /// caller but `work`.
+    pub(crate) trust_root: Option<&'a Path>,
 }
 
 /// Who answers an approval question in approve mode (ADR 0018).
@@ -547,7 +561,16 @@ pub(crate) fn cmd_run_with(
     out: &mut (dyn std::io::Write + Send),
 ) -> Result<RunExit> {
     output::framed(root, task, model.spec, &extras, || {
-        run_body(root, task, model, seeding, control, &extras, out)
+        // Written after the body on every path, once the tree is disposed
+        // of; see `replay::finish`.
+        let mut rec = trellis_loop::Recording::default();
+        let sinks = RunSinks {
+            out: &mut *out,
+            rec: &mut rec,
+        };
+        let r = run_body(root, task, model, seeding, control, &extras, sinks);
+        crate::replay::finish(root, &rec, out);
+        r
     })
 }
 
@@ -610,6 +633,13 @@ fn record_tier(extras: &output::RunExtras, label: String) {
     }
 }
 
+/// Where a run's record goes as it runs: the lines it prints, and the steps
+/// for its replay recording (ADR 0056), which its caller writes afterwards.
+struct RunSinks<'a> {
+    out: &'a mut (dyn std::io::Write + Send),
+    rec: &'a mut trellis_loop::Recording,
+}
+
 /// The body of a run; see `cmd_run`.
 fn run_body(
     root: &Path,
@@ -618,8 +648,9 @@ fn run_body(
     seeding: RunSeeding<'_>,
     control: RunControl,
     extras: &output::RunExtras,
-    out: &mut (dyn std::io::Write + Send),
+    sinks: RunSinks<'_>,
 ) -> Result<RunExit> {
+    let RunSinks { out, rec } = sinks;
     let ModelChoice {
         spec: model_spec,
         unconstrained,
@@ -632,6 +663,7 @@ fn run_body(
         model_source,
         queued,
         services,
+        trust_root,
     } = seeding;
     let cfg = config::RepoConfig::load(root)?;
 
@@ -673,7 +705,8 @@ fn run_body(
     // file this run writes.
     let stamp = trellis_trail::now();
     let run_id = format!("{}-{}", stamp.0, trellis_trail::slugify(task));
-    let mut tooling = tooling::prepare(root, &cfg, &run_id, model_spec)?;
+    let mut tooling =
+        tooling::prepare_as(root, trust_root.unwrap_or(root), &cfg, &run_id, model_spec)?;
     // Before the profile narrows the set, so a profile with a `tools` list
     // keeps the question only by naming it, as with any other tool.
     if queued {
@@ -1077,6 +1110,12 @@ fn run_body(
         &skill_dirs,
     )?;
 
+    // A recording git tracks would be reset by a rollback and rewritten by
+    // this run (ADR 0056). Before the snapshot, so the refusal costs nothing.
+    crate::replay::refuse_if_tracked(root)?;
+    rec.run_id = run_id.clone();
+    rec.task = task.to_string();
+
     // `input` (ADR 0023 §5): the last thing before the snapshot, so a task
     // it refuses costs nothing and leaves no trail. It is handed the task
     // and can only refuse it; nothing it prints becomes the task. It runs
@@ -1115,6 +1154,7 @@ fn run_body(
                 label: extras.label.clone(),
                 abort: extras.abort.clone(),
                 human: control.human,
+                rec,
             },
             out,
         );
@@ -1126,6 +1166,7 @@ fn run_body(
     let snapshot =
         trellis_vcs::snapshot(root).context("a clean git worktree is required before a run")?;
     let _ = writeln!(out, "snapshot at {}", snapshot.head);
+    rec.base_commit = snapshot.head.to_string();
     // `git status` does not see ignored files and the rollback's `git clean
     // -fd` does not remove them, so a writer that can reach any path could
     // leave `.venv/.../sitecustomize.py` behind a rollback for a later check
@@ -1258,6 +1299,9 @@ fn run_body(
     let panic_in_run = PANIC_IN_RUN.with(std::cell::Cell::get);
     #[cfg(test)]
     let polled_on = std::sync::OnceLock::<Option<String>>::new();
+    // Every step the driver hands the loop, for the replay recording. Kept
+    // when the race drops the loop too: an interrupted run's steps so far.
+    let mut recorded = Vec::new();
     let (outcome, transcript, gate_log) = on_run_stack(|| {
         rt.block_on(async {
         #[cfg(test)]
@@ -1316,6 +1360,7 @@ fn run_body(
         let raced = tokio::select! {
             out = async {
                 let done = &mut done_summary;
+                let steps = &mut recorded;
                 // Each driver behind `Watched`, which tells RPC's port which
                 // steers each request carried (with no port it only forwards),
                 // and that behind `SeesDone`, which keeps the `done` summary.
@@ -1323,17 +1368,17 @@ fn run_body(
                 match &mut driver {
                     Driver::Scripted(m) => {
                         let mut w = rpc::Watched::new(m, port);
-                        let mut m = SeesDone { inner: &mut w, done };
+                        let mut m = SeesDone { inner: &mut w, done, steps };
                         trellis_loop::run_seeded(task, &mut m, &handle, &cfg.budget(), seed).await
                     }
                     Driver::Runtime(m) => {
                         let mut w = rpc::Watched::new(m, port);
-                        let mut m = SeesDone { inner: &mut w, done };
+                        let mut m = SeesDone { inner: &mut w, done, steps };
                         trellis_loop::run_seeded(task, &mut m, &handle, &cfg.budget(), seed).await
                     }
                     Driver::Hosted(m) => {
                         let mut w = rpc::Watched::new(&mut **m, port);
-                        let mut m = SeesDone { inner: &mut w, done };
+                        let mut m = SeesDone { inner: &mut w, done, steps };
                         trellis_loop::run_seeded(task, &mut m, &handle, &cfg.budget(), seed)
                             .await
                     }
@@ -1481,6 +1526,7 @@ fn run_body(
     // is still on the blocking pool, and dropping a runtime waits for that
     // pool — so an interrupted run would hang until someone pressed Enter.
     rt.shutdown_background();
+    rec.steps = recorded;
 
     // Completion tokens as the adapter counted them (ADR 0026 §8). A
     // scripted driver has no count, which is `None`, not a free run.
@@ -1847,6 +1893,10 @@ fn repo_context(
         skills.valid.retain(|s| pol.check(&s.name).is_ok());
     }
     let disclosed = skills.disclosed();
+    // Whether `bash`, a custom tool or a hook runs under an OS sandbox or
+    // only in its clone (ADR 0055), on every run: a missing or failing
+    // sandbox is a warning, and this line is where it is given.
+    let sandbox = trellis_loop::OsSandbox::detected().label();
     if !governance.is_empty()
         || vault_refusal.is_some()
         || notes.is_some()
@@ -1858,7 +1908,7 @@ fn repo_context(
     {
         let _ = writeln!(
             out,
-            "repo:     {} write rule(s){}{}{}{}{}{}",
+            "repo:     {} write rule(s), sandbox: {sandbox}{}{}{}{}{}{}",
             governance.rules().len(),
             // `rules()` is `deny_write` only; the vault's refusal is said
             // apart, naming the setting that put it there.
@@ -1924,6 +1974,10 @@ fn repo_context(
                 .map(|r| format!(", {r}"))
                 .collect::<String>(),
         );
+    } else {
+        // Nothing else to say about the repository, and no "0 write
+        // rule(s)" to teach the reader to skip this line.
+        let _ = writeln!(out, "repo:     sandbox: {sandbox}");
     }
 
     // Configured and silently unused is the failure this line prevents: a
@@ -2158,6 +2212,8 @@ struct Partitioned<'a> {
     label: Option<String>,
     abort: Option<std::sync::Arc<output::Abort>>,
     human: Human,
+    /// The run's replay recording: one `targets` section per agent.
+    rec: &'a mut trellis_loop::Recording,
 }
 
 /// What one partition's agent left behind, for the trail. Filled by the
@@ -2171,6 +2227,8 @@ struct PartitionRun {
     prompt_tokens: Option<u64>,
     compactions: Vec<trellis_loop::Compacted>,
     requested: Vec<trellis_loop::RequestedCompaction>,
+    /// Every step its driver gave, for the replay recording (ADR 0056).
+    steps: Vec<trellis_loop::Step>,
 }
 
 /// The task one partition's agent is given: the run's task, and which of
@@ -2247,6 +2305,7 @@ fn run_partitioned(p: Partitioned<'_>, out: &mut (dyn std::io::Write + Send)) ->
         label,
         abort,
         human,
+        rec,
     } = p;
     let plan = &fanout.plan;
     let count = plan.in_order().count();
@@ -2374,15 +2433,32 @@ fn run_partitioned(p: Partitioned<'_>, out: &mut (dyn std::io::Write + Send)) ->
             };
             let (handle, join) = orchestrator.spawn();
             let budget = &part.budget;
+            // Behind `SeesDone` for its steps; the summary is not used here.
+            let (mut done, mut steps) = (None, Vec::new());
             let (outcome, transcript) = match &mut driver {
                 Driver::Scripted(m) => {
-                    trellis_loop::run_seeded(&text, m, &handle, budget, seed).await
+                    let mut m = SeesDone {
+                        inner: m,
+                        done: &mut done,
+                        steps: &mut steps,
+                    };
+                    trellis_loop::run_seeded(&text, &mut m, &handle, budget, seed).await
                 }
                 Driver::Runtime(m) => {
-                    trellis_loop::run_seeded(&text, m, &handle, budget, seed).await
+                    let mut m = SeesDone {
+                        inner: m,
+                        done: &mut done,
+                        steps: &mut steps,
+                    };
+                    trellis_loop::run_seeded(&text, &mut m, &handle, budget, seed).await
                 }
                 Driver::Hosted(m) => {
-                    trellis_loop::run_seeded(&text, &mut **m, &handle, budget, seed).await
+                    let mut m = SeesDone {
+                        inner: &mut **m,
+                        done: &mut done,
+                        steps: &mut steps,
+                    };
+                    trellis_loop::run_seeded(&text, &mut m, &handle, budget, seed).await
                 }
             };
             let touched = handle.touched().await;
@@ -2407,6 +2483,7 @@ fn run_partitioned(p: Partitioned<'_>, out: &mut (dyn std::io::Write + Send)) ->
                         prompt_tokens: driver.prompt_tokens(),
                         compactions: driver.compactions(),
                         requested: driver.requested_compactions(),
+                        steps,
                     },
                 );
             }
@@ -2472,18 +2549,33 @@ fn run_partitioned(p: Partitioned<'_>, out: &mut (dyn std::io::Write + Send)) ->
         _ => HashMap::new(),
     };
     let _ = writeln!(out);
+    // Nothing ran when the snapshot refused the tree, and there is nothing
+    // to record (ADR 0056).
+    let refused_at_snapshot = matches!(
+        &raced,
+        Some(Err(trellis_loop::SuperviseError::Vcs(
+            trellis_vcs::VcsError::DirtyWorktree(_) | trellis_vcs::VcsError::NotARepo(_)
+        )))
+    );
+    if !refused_at_snapshot {
+        rec.base_commit = base.clone();
+    }
     for part in plan.in_order() {
         let status = reports
             .get(&part.id)
             .cloned()
             .unwrap_or_else(|| "did not finish".to_string());
         let _ = writeln!(out, "partition {}: {status}", part.id.0);
-        trail.partition(
-            part.id,
-            fanout.names.get(&part.id).map(Vec::as_slice).unwrap_or(&[]),
-            &status,
-            results.remove(&part.id),
-        );
+        let names = fanout.names.get(&part.id).map(Vec::as_slice).unwrap_or(&[]);
+        let mut run = results.remove(&part.id);
+        // Keyed by the agent's first target: `ScriptedModel::from_json_for`
+        // gives an agent the one section among its targets, and refuses two.
+        // An agent that never finished left no steps to record.
+        if let (Some(r), Some(first)) = (&mut run, names.first()) {
+            rec.targets
+                .insert(first.clone(), std::mem::take(&mut r.steps));
+        }
+        trail.partition(part.id, names, &status, run);
     }
 
     let facts = |gaps, integrated, plan_actions| TrailFacts {
@@ -4258,10 +4350,11 @@ mod interrupt_tests {
         use trellis_loop::Model;
         let mut inner = crate::testutil::figures();
         let mut watched = crate::rpc::Watched::new(&mut inner, None);
-        let mut done = None;
+        let (mut done, mut steps) = (None, Vec::new());
         let m = SeesDone {
             inner: &mut watched,
             done: &mut done,
+            steps: &mut steps,
         };
         assert_eq!(m.tokens_used(), 7);
         assert_eq!(m.prompt_bytes(), Some(4321));
@@ -4277,10 +4370,11 @@ mod interrupt_tests {
         use trellis_loop::Model;
         let mut inner = crate::testutil::figures();
         let mut watched = crate::rpc::Watched::new(&mut inner, None);
-        let mut done = None;
+        let (mut done, mut steps) = (None, Vec::new());
         let m = SeesDone {
             inner: &mut watched,
             done: &mut done,
+            steps: &mut steps,
         };
         assert_eq!(
             m.step_usage(),

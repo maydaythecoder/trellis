@@ -52,16 +52,20 @@ and never inside the repository). A G2 failure also prints every
 | Gate | Script | Proves |
 |---|---|---|
 | G0 | `ticket-ready.sh <n>` | the issue is open, has `## Done when` and a fenced `## Verify`, is not blocked, needs-human, or split |
-| G1 | `build.sh` | workspace builds, all targets; `trellis-cli --no-default-features` builds |
-| G2 | `test.sh` | full workspace suite, and the local-only CLI suite; each `cargo test` fails after `GATE_TEST_TIMEOUT_S` seconds (default 2400) rather than hanging (#173); tests run at most 4 at a time (`RUST_TEST_THREADS=4`) so the gate's own load does not fail timing tests (#226) |
+| G1 | `build.sh` | workspace builds, all targets; `trellis-cli --no-default-features` builds. Go branch (#504): `go build ./...` in `tui/` |
+| G2 | `test.sh` | full workspace suite, and the local-only CLI suite; each `cargo test` fails after `GATE_TEST_TIMEOUT_S` seconds (default 2400) rather than hanging (#173); tests run at most 4 at a time (`RUST_TEST_THREADS=4`) so the gate's own load does not fail timing tests (#226). Go branch (#504): `go test -count=1 ./...` in `tui/`, under the same time limit |
 | G2b | `guards.sh` | `qa/run-guards.py` holds every guard against the fresh debug binary, and fails unless `trellis` resolves to it; needs Ollama at 127.0.0.1:11434. Before #158, on Windows, it ran whatever `trellis` was installed instead |
-| G3 | `lint.sh` | `cargo fmt --check`, `clippy -D warnings`, and no `#[allow(` added by this change; ADR numbers unique and held, also against the base (`scripts/checks/adr-numbers.sh`, #284), and the exit-gate check's self-test (`gate-checked.sh`); CI runs both, the tree half in the `guards` job and the base half in `supply-chain` (#532) |
-| G4 | `no-stubs.sh` | no `TODO`/`FIXME`/`todo!`/`unimplemented!`/mock markers in production lines this change added (test modules, `tests/`, `examples/` excluded) |
-| G5 | `security.sh` | `cargo deny --locked check` and `cargo audit` over the root, `fuzz/` and `desktop/` locks, the desktop's under `desktop/deny.toml` (ADR 0048 §7); `fuzz/Cargo.lock` is current (`scripts/checks/fuzz-lock-current.sh`, #197); Tauri stays out of the root lock, `desktop/Cargo.lock` is current, `desktop/deny.toml` is the root policy plus its `desktop-only` lines, no `audit.toml` exists, and the desktop's code stays inside ADR 0048's lines (`scripts/checks/desktop-guards.sh`, after its self-test, #290); `zizmor --min-severity medium .github/workflows/` is clean and every workflow cargo build/test/clippy/run passes `--locked` (`scripts/checks/workflows-locked.sh`, #215); trellis-cli's test fixtures spawn no bare `git` (`scripts/checks/no-bare-git-in-cli-tests.sh`, #240/#241); gitleaks finds nothing in `$GATE_BASE..HEAD` and fails when absent, after a self-test that plants a token built at run time in a throwaway repository (`scripts/checks/gitleaks-range.sh`, #236; CI's supply-chain job runs it with a release pinned by version and SHA-256); no CI job dropped (`ci-jobs-unchanged.sh`) and the pre-push, pre-commit and ci-local self-tests pass; no key-shaped literal or basic-auth URL added (`key-pattern.sh`, `no-auth-urls.sh`). CI's `supply-chain` job runs the cargo deny and cargo audit lines, the fuzz and desktop checks, `workflows-locked.sh`, gitleaks and `ci-jobs-unchanged.sh`; its `guards` job runs `no-auth-urls.sh` over the whole tracked tree, the bare-git check and the pre-push and pre-commit self-tests (#532), and `zizmor --min-severity medium .github/workflows/` from a hash-pinned install (`.github/requirements-zizmor.txt`, #534). Not in CI: the ci-local self-test (it needs PyYAML, which CI's hashed `qa/requirements-ci.txt` does not pin) and the key-shape scan (G5 applies it to added lines only; gitleaks covers the change's commits in CI) |
+| G3 | `lint.sh` | `cargo fmt --check`, `clippy -D warnings`, and no `#[allow(` added by this change; ADR numbers unique and held, also against the base (`scripts/checks/adr-numbers.sh`, #284), and the exit-gate check's self-test (`gate-checked.sh`); CI runs both, the tree half in the `guards` job and the base half in `supply-chain` (#532). Go branch (#504): `gofmt -l` prints nothing, `go vet ./...`, and no `//nolint` added |
+| G4 | `no-stubs.sh` | no `TODO`/`FIXME`/`todo!`/`unimplemented!`/mock markers in production lines this change added (test modules, `tests/`, `examples/` excluded). Go branch (#504): the same markers, and `panic("not `, in added non-test `*.go` lines under `tui/` |
+| G5 | `security.sh` | `cargo deny --locked check` and `cargo audit` over the root, `fuzz/` and `desktop/` locks, the desktop's under `desktop/deny.toml` (ADR 0048 §7); `fuzz/Cargo.lock` is current (`scripts/checks/fuzz-lock-current.sh`, #197); Tauri stays out of the root lock, `desktop/Cargo.lock` is current, `desktop/deny.toml` is the root policy plus its `desktop-only` lines, no `audit.toml` exists, and the desktop's code stays inside ADR 0048's lines (`scripts/checks/desktop-guards.sh`, after its self-test, #290); `zizmor --min-severity medium .github/workflows/` is clean and every workflow cargo build/test/clippy/run passes `--locked` (`scripts/checks/workflows-locked.sh`, #215); trellis-cli's test fixtures spawn no bare `git` (`scripts/checks/no-bare-git-in-cli-tests.sh`, #240/#241); gitleaks finds nothing in `$GATE_BASE..HEAD` and fails when absent, after a self-test that plants a token built at run time in a throwaway repository (`scripts/checks/gitleaks-range.sh`, #236; CI's supply-chain job runs it with a release pinned by version and SHA-256); no CI job dropped (`ci-jobs-unchanged.sh`) and the pre-push, pre-commit and ci-local self-tests pass; no key-shaped literal or basic-auth URL added (`key-pattern.sh`, `no-auth-urls.sh`). CI's `supply-chain` job runs the cargo deny and cargo audit lines, the fuzz and desktop checks, `workflows-locked.sh`, gitleaks and `ci-jobs-unchanged.sh`; its `guards` job runs `no-auth-urls.sh` over the whole tracked tree, the bare-git check and the pre-push and pre-commit self-tests (#532), and `zizmor --min-severity medium .github/workflows/` from a hash-pinned install (`.github/requirements-zizmor.txt`, #534). Not in CI: the ci-local self-test (it needs PyYAML, which CI's hashed `qa/requirements-ci.txt` does not pin) and the key-shape scan (G5 applies it to added lines only; gitleaks covers the change's commits in CI). Go branch (#504, ADR 0052): `scripts/checks/go-guards.sh --self-test` and then `go-guards.sh` (no `exec` outside `tui/internal/rpc/`, no `git` spawn, no environment change, no `replace` and a `toolchain` line in `tui/go.mod`); then `go mod verify`, `govulncheck ./...` and `go-licenses check` with `deny.toml`'s licence list, each tool absent failing the gate; `workflows-locked.sh` also holds every workflow `go build/test/vet/run/install` to `-mod=readonly` and every `go install` to an exact `@vX.Y.Z` |
 | G6 | `ticket-verify.sh <n>` | the ticket's own Verify command exits 0 |
 | G7 | in `run-all.sh` | exit 3 when the ticket is `risk:high` or `surface:public`: a person approves the merge |
 
 Every gate unsets provider keys before it runs anything (ADR 0024 §3).
+Each Go branch runs only when `tui/go.mod` exists, and its gate's OK line
+says it skipped otherwise. With `tui/` present, a missing `go` fails the
+gate, and every go command runs with `GOFLAGS=-mod=readonly` and
+`GOTOOLCHAIN=local` (ADR 0052 decision 2.4).
 G6 runs text from an issue body, so each line must start with `cargo`, `git`,
 `scripts/`, `py -3 qa/` or `python3 qa/`, and may not contain `..`, `$(`,
 backticks, pipes, `;`, `&` or redirection. `python3` and `py -3` both run as
@@ -362,6 +366,53 @@ remove` with a removal token, then `config --url
 https://github.com/maydaythecoder/trellis --token <token> --name trellis-win
 --labels self-hosted,Windows,X64 --unattended` as the new account, before
 running the scripts.
+
+### Go on the runners (#503)
+
+`tui/` is a Go module (ADR 0052). Each runner gets its own pinned Go from
+`scripts/runners/install-go.sh`, never the owner's install (`C:\Program
+Files\Go` on Windows is the owner's, not a pin) and never `actions/setup-go`
+(refused by `scripts/ci-local.py`).
+
+- **Pin:** Go 1.27.2. The script holds the version and the go.dev SHA-256 of
+  `go1.27.2.linux-amd64.tar.gz` and `go1.27.2.windows-amd64.zip`. It
+  refuses to unpack an archive whose hash differs, before anything is
+  written. Once they exist (#505), `tui/go.mod`'s `toolchain` line and CI's
+  `go version` check name the same pin.
+- **Where:** under the runner's own directory only. The script refuses a
+  target outside it, by path, `..` or symlink, a directory without a
+  `.runner` file, and a system path. GOROOT is
+  `<runner>/toolchains/go1.27.2/go`.
+- **Variables**, written into the runner's `.env`: `GOROOT`, `GOPATH`
+  (`<runner>/go-path`), `GOMODCACHE` (`<runner>/go-path/pkg/mod`),
+  `GOCACHE` (`<runner>/go-cache`), `GOTOOLCHAIN=local` (a `toolchain` line
+  in `go.mod` never downloads another toolchain) and `GOFLAGS=-mod=readonly`
+  (a build never rewrites `go.mod` or `go.sum`). The pinned Go's `bin` goes
+  first in `.path`. On Windows both files get Windows paths.
+- **Run** once per runner, after #219, with the runner stopped, then restart
+  it. Run again with the same pin, it changes nothing.
+
+```
+# WSL, from cmd or Git Bash (PowerShell has no `<`): as trellis-ci, which
+# owns the runner directory (mode 700). The script
+# is read from stdin because trellis-ci cannot read the owner's checkout.
+wsl.exe -d Ubuntu -u root -- sudo -u trellis-ci -H bash -s -- --runner-dir /home/trellis-ci/actions-runner --dry-run < scripts/runners/install-go.sh
+wsl.exe -d Ubuntu -u root -- sudo -u trellis-ci -H bash -s -- --runner-dir /home/trellis-ci/actions-runner < scripts/runners/install-go.sh
+# Windows: from an elevated Git Bash. trellis-ci-win is denied interactive
+# logon; the runner directory's ACL admits Administrators, and what the
+# script writes there inherits trellis-ci-win's access.
+bash scripts/runners/install-go.sh --runner-dir /c/actions-runner/win --dry-run
+bash scripts/runners/install-go.sh --runner-dir /c/actions-runner/win
+```
+
+`--runner-dir <dir>` names another runner directory; `--self-test` shows
+that a tampered archive and an outside target are refused.
+
+**Moving the pin** is one commit that changes `GO_VERSION` and both hashes
+in `install-go.sh`, copied from `https://go.dev/dl/?mode=json`, together
+with `tui/go.mod`'s `toolchain` line and CI's `go version` check. The owner
+then runs the script again on both runners; the old toolchain's `bin` is
+dropped from `.path`, and its directory can be deleted by hand.
 
 ### Mutation testing on CI (#248)
 

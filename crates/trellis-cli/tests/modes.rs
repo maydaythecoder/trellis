@@ -1159,7 +1159,8 @@ fn keys(v: &Value, out: &mut Vec<String>) {
 fn rpc_get_codebase_returns_the_graph_codebase_lines_prints() {
     // The risks: a client parsing human text because the graph has no data
     // form (ADR 0048 §2); coverage arriving as a ratio (CLAUDE.md rule 3);
-    // a read that writes the index cache or the worktree; an index build
+    // an index it built and did not save, so the overview says "not
+    // indexed" beside it (#654); a save that dirties the worktree; an index build
     // blocking the reader while a run waits on an approval; and data that
     // drifts from what `trellis index --graph` draws.
     let f = fixture("rpc-codebase");
@@ -1191,10 +1192,11 @@ fn rpc_get_codebase_returns_the_graph_codebase_lines_prints() {
             assert!(!k.contains(banned), "key `{k}` in {data}");
         }
     }
-    assert!(
-        !f.root.join(".trellis/index.bin").exists(),
-        "get_codebase wrote the index cache"
-    );
+    assert_eq!(data["index_saved"], true, "{data}");
+    let saved = std::fs::metadata(f.root.join(".trellis/index.bin"))
+        .expect("get_codebase saved the index cache")
+        .len();
+    assert_eq!(data["index_bytes"], saved, "{data}");
     let status = trellis_vcs::command()
         .args(["status", "--porcelain"])
         .current_dir(&f.root)

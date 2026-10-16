@@ -73,6 +73,14 @@ pub enum Request {
     /// nothing is not evidence of anything and must not inflate the count a
     /// user reads at the end of a run.
     HasRules { reply: oneshot::Sender<bool> },
+    /// After a failed audit: whether the model's summary names a
+    /// non-negotiable rule the audit did not find broken (ADR 0054). **Not
+    /// gated**, for the same reason as `Audit`, and it changes nothing: it
+    /// reads the rules and the files the audit read, and answers.
+    Conflict {
+        summary: String,
+        reply: oneshot::Sender<Option<crate::governance::ConflictEscalation>>,
+    },
     /// Denials by named gates, for the trail (ADR 0023 §7).
     GateLog {
         reply: oneshot::Sender<Vec<GateDenial>>,
@@ -307,6 +315,19 @@ impl Handle {
         !self.0.is_closed()
     }
 
+    /// The escalation for a governance audit that failed, given the model's
+    /// own summary (ADR 0054). `None` when there is nothing to escalate, and
+    /// when the orchestrator is gone: an escalation is shown beside an
+    /// outcome, never instead of one, so losing it changes no outcome.
+    pub async fn conflict_escalation(
+        &self,
+        summary: &str,
+    ) -> Option<crate::governance::ConflictEscalation> {
+        let summary = summary.to_string();
+        self.ask(|reply| Request::Conflict { summary, reply }, || None)
+            .await
+    }
+
     pub async fn has_governance_rules(&self) -> bool {
         self.ask(|reply| Request::HasRules { reply }, || false)
             .await
@@ -368,6 +389,9 @@ pub struct Orchestrator {
     /// (ADR 0032, "Hooks"): made at the first hook, refreshed before each
     /// later one, removed when the call ends.
     hook_clone: Option<crate::isolate::Sandbox>,
+    /// The OS sandbox `bash` and custom tools run under inside their clone
+    /// (ADR 0055): the machine's, detected once, unless a caller set one.
+    os: crate::os_sandbox::OsSandbox,
 }
 
 impl Orchestrator {
@@ -392,7 +416,16 @@ impl Orchestrator {
             changed: Vec::new(),
             guard: None,
             hook_clone: None,
+            os: crate::os_sandbox::OsSandbox::detected().clone(),
         }
+    }
+
+    /// The OS sandbox `bash` and custom tools run under, in place of the
+    /// one detected for this machine.
+    #[must_use]
+    pub fn with_os_sandbox(mut self, os: crate::os_sandbox::OsSandbox) -> Self {
+        self.os = os;
+        self
     }
 
     /// The trust guard for this run's trusted code: custom tools refuse to
@@ -522,6 +555,23 @@ impl Orchestrator {
                 }
                 Request::HasRules { reply } => {
                     let _ = reply.send(!self.rules.is_empty());
+                }
+                Request::Conflict { summary, reply } => {
+                    // The audit's own scope (`run_checks` with no paths), so
+                    // "broken" means what the audit that just failed found.
+                    // The actor serves one request at a time, so the tree
+                    // has not changed since that audit.
+                    let scan = trellis_checks::governance::violations(
+                        &self.root,
+                        &self.rules,
+                        &self.touched,
+                    );
+                    let _ = reply.send(crate::governance::conflict_escalation(
+                        &self.root,
+                        &self.rules,
+                        &scan.violations,
+                        &summary,
+                    ));
                 }
             }
         }
@@ -1041,6 +1091,7 @@ impl Orchestrator {
             cap: crate::exec::OUTPUT_CAP,
             head: false,
             whole: false,
+            os: Some(&self.os),
         })
         .await;
         // Off the runtime: every copied-in file is hashed again.
