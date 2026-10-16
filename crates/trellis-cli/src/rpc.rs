@@ -832,8 +832,11 @@ impl Server {
         }));
     }
 
-    /// `get_codebase`: the module graph as data, built in memory as the
-    /// interface's `/codebase` builds it; nothing is written.
+    /// `get_codebase`: the module graph as data, built as the interface's
+    /// `/codebase` builds it. The worktree's index is then saved to
+    /// `.trellis/index.bin` through the writer `trellis index` uses, so the
+    /// overview reads the index this answer drew (#654, the owner's
+    /// decision of 2026-10-12); nothing else is written.
     ///
     /// Answered from another thread, as `compact` is: indexing a large
     /// repository takes seconds, and on this thread it would hold up the
@@ -1971,6 +1974,7 @@ impl Chain {
                 model_source: crate::hosted::SpecSource::Repository,
                 queued: false,
                 services: &[],
+                trust_root: None,
             },
             RunControl {
                 flag: self.flag,

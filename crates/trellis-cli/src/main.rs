@@ -32,6 +32,7 @@ mod orchestrate; // `agents` and `routines` (ADR 0026)
 mod output; // where output goes, and the JSONL framing of `--json` and `rpc`
 mod overview; // `overview` (ADR 0050 §3)
 mod process_agent; // process agents and the carry-back of what they wrote
+mod replay; // the replay recording every run writes (ADR 0056)
 mod rpc; // `rpc`: JSONL commands on stdin
 mod run_cmd; // `run` and `resume`, and the trail a run writes
 mod services; // services an agent profile declares (ADR 0026 §12)
@@ -359,8 +360,9 @@ enum Command {
 
     /// Run queued tasks one at a time, oldest first, through `trellis run`.
     ///
-    /// Stops at the first converged change, which waits for review; never
-    /// claims a task while the worktree is dirty.
+    /// Each task runs in a worktree of its own on `trellis/task/<id>`, where
+    /// a converged change waits for review (ADR 0053); never claims a task
+    /// while the worktree is dirty.
     Work(work::WorkArgs),
 
     /// Check, search, inspect and edit an Apex-format note vault (ADR 0022).
@@ -823,6 +825,7 @@ fn main() -> Result<()> {
                     // `trellis run` has no task for a question to wait on.
                     queued: false,
                     services: &[],
+                    trust_root: None,
                 },
                 RunControl {
                     flag,

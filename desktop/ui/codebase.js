@@ -116,6 +116,12 @@ function summary(d) {
     `${n(d.bound_call_sites)} call sites bound across modules, ${n(d.ambiguous)} ambiguous, ` +
       `${n(d.unresolved)} unresolved: three counts, not a ratio`,
   );
+  // Whether trellis saved this index where the overview reads it (#654).
+  // Said only as trellis said it; an answer that said nothing says nothing.
+  if (d.index_saved === true) parts.push("saved to .trellis/index.bin");
+  else if (d.index_saved === false && typeof d.index_not_saved === "string") {
+    parts.push(`not saved: ${d.index_not_saved}`);
+  }
   return parts.join(" · ");
 }
 

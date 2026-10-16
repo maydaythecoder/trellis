@@ -185,7 +185,9 @@ function lastRun(doc, pane, o) {
 
 // codebase: the cached index's module count, and its call sites as three
 // counts with no ratio and no total (CLAUDE.md rule 3). With no current
-// cache, trellis's reason; the overview never indexes.
+// cache, trellis's reason; the overview never indexes. The cache is what
+// `trellis index` and the Codebase section save (#654), and the pane says
+// so, so a reader knows where the counts came from.
 function codebase(doc, pane, o) {
   if (!("root" in o)) {
     only(doc, pane, NO_ROOT_PANE);
@@ -204,6 +206,7 @@ function codebase(doc, pane, o) {
       ["unresolved", count(c.unresolved)],
     ]),
     muted(doc, "p", "Three counts from different populations; no share of one is drawn."),
+    muted(doc, "p", "From the saved index, .trellis/index.bin, which trellis index and the Codebase section save."),
   );
 }
 

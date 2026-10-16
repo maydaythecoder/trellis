@@ -78,7 +78,9 @@ pub(crate) enum Edges {
     All,
 }
 
-/// The codebase graph for `root` as data, for rpc's `get_codebase`.
+/// The codebase graph for `root` as data, for rpc's `get_codebase` at a
+/// commit, whose tree is copied out and never cached. The worktree's answer
+/// builds its index itself, since it saves it (`atlas::codebase`, #654).
 ///
 /// What `codebase_lines` draws for the same `limit`, field for field: the
 /// same modules, busiest first, and the same edges per module, with what was
@@ -868,6 +870,10 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
     for line in repo_lines(root, &repo_cfg) {
         println!("{line}");
     }
+    // Which binary confines the clone's command, or why none does (ADR
+    // 0055): a sandbox that is missing or fails is a warning, so this is
+    // where a person finds out before a run does.
+    println!("{}", trellis_loop::OsSandbox::detected().doctor_line());
     println!("root:       {}", root.display());
 
     if model_spec.is_none() {
