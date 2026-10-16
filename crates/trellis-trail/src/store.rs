@@ -124,15 +124,7 @@ pub fn write(root: &Path, trail: &Trail, timestamp: &str, slug: &str) -> std::io
     // `.trellis/runs` as a link to a directory outside itself, and the trail
     // would land wherever it points (#721, the shape `index.bin` had).
     // Checked before anything is created, as `replay.rs` does for its paths.
-    let dot = root.join(".trellis");
-    for p in [dot.clone(), dot.join("runs"), path.clone()] {
-        if std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink()) {
-            return Err(std::io::Error::other(format!(
-                "{} is a symbolic link; the trail is not written through a link",
-                p.display()
-            )));
-        }
-    }
+    trellis_core::links::refuse_links_below(root, Path::new(&rel), "the trail")?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
