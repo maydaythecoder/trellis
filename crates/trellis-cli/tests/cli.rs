@@ -7640,3 +7640,87 @@ fn cache_symlink_get_codebase_refuses_the_link_and_says_so() {
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&outside);
 }
+
+// ---------------------------------------------------------------------------
+// trellis init behind a link (#723)
+// ---------------------------------------------------------------------------
+
+/// A git repository with `.trellis/<rel>` made a link to `target`; `None`
+/// (the test skips) where the platform will not make one.
+fn init_repo_with_link(test: &str, rel: &str, target: &Path) -> Option<PathBuf> {
+    let d = scratch(test);
+    git(&d, &["init", "-q"]);
+    let link = d.join(".trellis").join(rel);
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    if let Err(why) = trellis_core::paths::symlink_for_test(target, &link) {
+        eprintln!("{why}");
+        let _ = std::fs::remove_dir_all(&d);
+        return None;
+    }
+    Some(d)
+}
+
+#[test]
+fn init_symlink_dangling_config_is_refused_and_nothing_is_created_anywhere() {
+    // #723: `exists()` follows a link, so a dangling `.trellis/config.toml`
+    // read as absent and `init` created the template at its target, outside
+    // the repository.
+    let outside = scratch("init-link-dangling-outside");
+    let target = outside.join("config-made-here.toml");
+    let Some(d) = init_repo_with_link("init-link-dangling", "config.toml", &target) else {
+        return;
+    };
+    let out = run(&d, &["init"]);
+    assert!(!out.status.success(), "{}", combined(&out));
+    assert!(
+        combined(&out).contains("symbolic link"),
+        "{}",
+        combined(&out)
+    );
+    assert!(combined(&out).contains("config.toml"), "{}", combined(&out));
+    assert!(
+        std::fs::symlink_metadata(&target).is_err(),
+        "written through the link"
+    );
+    // Refused before anything was written, the other two files included.
+    assert!(!d.join(".trellis/context.md").exists());
+    assert!(!d.join(".trellis/governance").exists());
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+#[test]
+fn init_symlink_linked_dot_trellis_is_refused_and_the_outside_directory_stays_empty() {
+    let outside = scratch("init-link-dot-outside");
+    let d = scratch("init-link-dot");
+    git(&d, &["init", "-q"]);
+    if let Err(why) = trellis_core::paths::symlink_for_test(&outside, &d.join(".trellis")) {
+        eprintln!("{why}");
+        return;
+    }
+    let out = run(&d, &["init"]);
+    assert!(!out.status.success(), "{}", combined(&out));
+    assert!(
+        combined(&out).contains("symbolic link"),
+        "{}",
+        combined(&out)
+    );
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+#[test]
+fn init_symlink_linked_governance_directory_is_refused() {
+    let outside = scratch("init-link-gov-outside");
+    let Some(d) = init_repo_with_link("init-link-gov", "governance", &outside) else {
+        return;
+    };
+    let out = run(&d, &["init"]);
+    assert!(!out.status.success(), "{}", combined(&out));
+    assert!(combined(&out).contains("governance"), "{}", combined(&out));
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    assert!(!d.join(".trellis/config.toml").exists(), "nothing written");
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&outside);
+}

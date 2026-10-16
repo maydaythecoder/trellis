@@ -316,6 +316,119 @@ fn shown(root: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 
+/// A write trellis refused because an entry on the way to it is a symbolic
+/// link (a junction on Windows).
+///
+/// A repository can commit `.trellis`, a directory under it or a file in it
+/// as a link to somewhere outside itself, and a writer that follows the link
+/// writes there instead (#721, #723, #724, #725). Carried inside the
+/// `io::Error` that [`create_new_file`] and [`replace_file`] return, so a
+/// caller that only prints the error names the link, and one that needs to
+/// tell it from a disk error can downcast to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkInTheWay {
+    pub path: PathBuf,
+}
+
+impl std::fmt::Display for LinkInTheWay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} is a symbolic link; trellis does not write through a link, so nothing \
+             was written",
+            self.path.display()
+        )
+    }
+}
+
+impl std::error::Error for LinkInTheWay {}
+
+/// `Err` when `path`, or any directory between `root` and it, is a link.
+///
+/// `root` itself is not looked at: the user chose it. Each entry is examined
+/// with `symlink_metadata`, so the link is seen rather than followed and a
+/// dangling one is caught. Entries that do not exist are fine: a writer
+/// creates them as plain directories and files. Only the link is refused
+/// here; any other error looking at an entry is left to the write that
+/// follows, which reports it.
+///
+/// `path` must be under `root` as written. One that is not is refused at
+/// itself, since nothing tells this function where its ancestors stop being
+/// the repository's.
+pub fn refuse_links_under(root: &Path, path: &Path) -> Result<(), LinkInTheWay> {
+    let is_link = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink());
+    let Ok(rel) = path.strip_prefix(root) else {
+        return if is_link(path) {
+            Err(LinkInTheWay {
+                path: path.to_path_buf(),
+            })
+        } else {
+            Ok(())
+        };
+    };
+    let mut at = root.to_path_buf();
+    for part in rel.components() {
+        at.push(part);
+        if is_link(&at) {
+            return Err(LinkInTheWay { path: at });
+        }
+    }
+    Ok(())
+}
+
+/// Creates the file `path`, which must not exist in any form, with `bytes`,
+/// and the directories on the way to it.
+///
+/// Refuses before creating anything when [`refuse_links_under`] does. The
+/// file is opened with `create_new` (`O_EXCL`), which fails on an existing
+/// entry, a link included, instead of following it, so a link planted
+/// after the check is not followed either.
+pub fn create_new_file(root: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    refuse_links_under(root, path).map_err(std::io::Error::other)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    f.write_all(bytes)?;
+    f.flush()
+}
+
+/// Writes `bytes` to `path`, replacing a file already there, and creates
+/// the directories on the way to it.
+///
+/// Refuses, before anything is created, a link at `path` or on the way to
+/// it ([`refuse_links_under`]). The bytes go to a fresh temporary file
+/// beside `path`, made by [`create_new_file`], and are renamed over it. A
+/// rename replaces the directory entry and never writes through one, and an
+/// interrupted write leaves the old file or none, never half of one.
+pub fn replace_file(root: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    refuse_links_under(root, path).map_err(std::io::Error::other)?;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_file_name(format!(".{name}.{}.{n}.tmp", std::process::id()));
+    if let Err(e) = create_new_file(root, &tmp, bytes).and_then(|()| std::fs::rename(&tmp, path)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// The [`LinkInTheWay`] inside an error from [`create_new_file`] or
+/// [`replace_file`], when that is what stopped the write.
+pub fn link_in_the_way(e: &std::io::Error) -> Option<&LinkInTheWay> {
+    e.get_ref()
+        .and_then(|inner| inner.downcast_ref::<LinkInTheWay>())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,5 +532,86 @@ mod tests {
             resolve_repo_path(&d.0.join("no-such-root"), "a"),
             Err(RepoInputError::RootUnresolved { .. })
         ));
+    }
+
+    #[test]
+    fn link_refusal_names_a_linked_directory_on_the_way_and_writes_nothing() {
+        // The risk (#723, #724, #725): a repository commits `.trellis` as a
+        // link to a directory outside itself, and a writer under it writes
+        // there instead.
+        let d = scratch("link-dir");
+        let (repo, outside) = (d.0.join("repo"), d.0.join("outside"));
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        if let Err(why) = symlink_for_test(&outside, &repo.join(".trellis")) {
+            eprintln!("{why}");
+            return;
+        }
+        let file = repo.join(".trellis/agents/a.toml");
+        for e in [
+            create_new_file(&repo, &file, b"x").unwrap_err(),
+            replace_file(&repo, &file, b"x").unwrap_err(),
+        ] {
+            assert_eq!(
+                link_in_the_way(&e).map(|l| l.path.clone()),
+                Some(repo.join(".trellis")),
+                "{e}"
+            );
+            assert!(e.to_string().contains("nothing was written"), "{e}");
+        }
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn link_refusal_catches_a_dangling_link_at_the_file_itself() {
+        // `exists()` follows a link, so a dangling one reads as absent and
+        // the write creates a file at its target (#721's second shape).
+        let d = scratch("link-dangling");
+        let repo = d.0.join("repo");
+        std::fs::create_dir_all(repo.join(".trellis")).unwrap();
+        let target = d.0.join("made-outside.toml");
+        if let Err(why) = symlink_for_test(&target, &repo.join(".trellis/config.toml")) {
+            eprintln!("{why}");
+            return;
+        }
+        let e = create_new_file(&repo, &repo.join(".trellis/config.toml"), b"x").unwrap_err();
+        assert_eq!(
+            link_in_the_way(&e).map(|l| l.path.clone()),
+            Some(repo.join(".trellis/config.toml"))
+        );
+        assert!(
+            std::fs::symlink_metadata(&target).is_err(),
+            "created through the link"
+        );
+    }
+
+    #[test]
+    fn link_refusal_leaves_plain_paths_alone_and_replace_overwrites_a_file() {
+        let d = scratch("link-plain");
+        let file = d.0.join(".trellis/routines/r.toml");
+        create_new_file(&d.0, &file, b"one").unwrap();
+        assert!(create_new_file(&d.0, &file, b"two").is_err(), "create_new");
+        replace_file(&d.0, &file, b"two").unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"two");
+        let left: Vec<_> = std::fs::read_dir(file.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["r.toml"], "no temporary file left behind");
+    }
+
+    #[test]
+    fn link_refusal_does_not_look_above_the_root() {
+        // The user chose the root; a link to it, or above it, is theirs.
+        let d = scratch("link-root");
+        let real = d.0.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let alias = d.0.join("alias");
+        if let Err(why) = symlink_for_test(&real, &alias) {
+            eprintln!("{why}");
+            return;
+        }
+        create_new_file(&alias, &alias.join(".trellis/x"), b"x").unwrap();
+        assert!(real.join(".trellis/x").is_file());
     }
 }

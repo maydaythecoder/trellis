@@ -912,23 +912,29 @@ pub(crate) fn cmd_init(root: &Path) -> Result<()> {
     }
 
     let dir = root.join(".trellis");
-    let mut wrote = Vec::new();
-    let mut kept = Vec::new();
-    for (rel, body) in [
+    let files = [
         ("config.toml", CONFIG_TEMPLATE),
         ("context.md", CONTEXT_TEMPLATE),
         ("governance/README.md", GOVERNANCE_TEMPLATE),
-    ] {
+    ];
+    // Every path first, so a link at any of them refuses before anything is
+    // written (#723): a repository can commit `.trellis`, `.trellis/governance`
+    // or one of these files as a link, and `exists()` follows a link, so a
+    // dangling one read as absent and the template was created at its target.
+    for (rel, _) in &files {
+        trellis_core::paths::refuse_links_under(root, &dir.join(rel))?;
+    }
+    let mut wrote = Vec::new();
+    let mut kept = Vec::new();
+    for (rel, body) in files {
         let path = dir.join(rel);
-        if path.exists() {
+        // `symlink_metadata`: an entry of any kind is the user's and is kept.
+        if std::fs::symlink_metadata(&path).is_ok() {
             kept.push(rel);
             continue;
         }
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
-        }
-        std::fs::write(&path, body).with_context(|| format!("writing {}", path.display()))?;
+        trellis_core::paths::create_new_file(root, &path, body.as_bytes())
+            .with_context(|| format!("writing {}", path.display()))?;
         wrote.push(rel);
     }
 
