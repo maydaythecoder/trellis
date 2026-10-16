@@ -133,6 +133,47 @@ fn temp_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{name}.{}.{n}.tmp", std::process::id()))
 }
 
+/// Whether `name` is a temporary file [`replace_file`] makes for `of`:
+/// `.<of>.<digits>.<digits>.tmp`, as `temp_path` names it. Exact, so a
+/// file a person put beside `of` is never taken for one.
+pub fn is_temp_name(name: &str, of: &str) -> bool {
+    let Some(rest) = name
+        .strip_prefix('.')
+        .and_then(|n| n.strip_prefix(of))
+        .and_then(|n| n.strip_prefix('.'))
+        .and_then(|n| n.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    let digits =
+        |p: Option<&str>| p.is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    let mut parts = rest.split('.');
+    digits(parts.next()) && digits(parts.next()) && parts.next().is_none()
+}
+
+/// Removes the temporary files an interrupted [`replace_file`] left beside
+/// `path` (#726). One that stays is untracked, and an untracked file makes
+/// the worktree dirty and refuses the next run (ADR 0009).
+///
+/// Only names [`is_temp_name`] accepts are touched, and `remove_file` on a
+/// link removes the link, never its target. A write to `path` running at
+/// the same moment in another process would lose its temporary file and
+/// report the rename's error; two `trellis` processes writing one file at
+/// once is not a case anything else here supports either.
+pub fn remove_leftover_temps(path: &Path) -> std::io::Result<()> {
+    let (Some(dir), Some(of)) = (path.parent(), path.file_name()) else {
+        return Ok(());
+    };
+    let of = of.to_string_lossy();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if is_temp_name(&entry.file_name().to_string_lossy(), &of) {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,5 +251,26 @@ mod tests {
         let names: Vec<_> = std::fs::read_dir(&d).unwrap().collect();
         assert_eq!(names.len(), 1, "{names:?}");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn temp_names_are_recognised_exactly() {
+        // The cleanup and the naming must agree, or a leftover is never
+        // removed (#726); and a person's file must never match.
+        let made = temp_path(Path::new(".trellis/index.bin"));
+        assert!(is_temp_name(
+            &made.file_name().unwrap().to_string_lossy(),
+            "index.bin"
+        ));
+        for not in [
+            ".index.bin.notes.tmp",
+            "index.bin.1.2.tmp",
+            ".index.bin.1.2.3.tmp",
+            ".index.bin.1.tmp",
+            ".index.bin..2.tmp",
+            ".other.1.2.tmp",
+        ] {
+            assert!(!is_temp_name(not, "index.bin"), "{not}");
+        }
     }
 }
