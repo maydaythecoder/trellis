@@ -21,6 +21,9 @@ toml.workspace = true
 # For the git directory, by shelling out to `git` as trellis-vcs does for
 # everything else. git2 was cut from the build deliberately (6b5db2a).
 trellis-vcs.workspace = true
+# The link refusal every writer under .trellis/ shares (#725). An edge to a
+# workspace crate trellis-vcs already depends on, not a new package.
+trellis-core.workspace = true
 # IANA zone names in routine schedules, through `jiff::tz::db()` (ADR 0026
 # §7, amended for #47). Already in the tree through trellis-cli, so a new
 # edge and not a new package. Only the features the zone database needs: the
