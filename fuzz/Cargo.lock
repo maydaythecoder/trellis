@@ -625,6 +625,7 @@ dependencies = [
  "sha2",
  "tracing",
  "trellis-checks",
+ "trellis-core",
 ]
 
 [[package]]
