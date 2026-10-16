@@ -3,6 +3,7 @@ package rpc
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -182,5 +183,46 @@ func TestRPCParseLineKeepsNonObjectsAsText(t *testing.T) {
 	}
 	if l := ParseLine("{\"type\":\"turn\"}\r\n"); l.Type() != "turn" {
 		t.Errorf("CRLF object not parsed: %q", l.Text)
+	}
+}
+
+// readFrom runs readStdout over what write produces, and returns the
+// lines delivered.
+func readFrom(t *testing.T, write func(w io.Writer)) []string {
+	t.Helper()
+	pr, pw := io.Pipe()
+	c := &Client{lines: make(chan Line, 16)}
+	go func() {
+		write(pw)
+		pw.Close()
+	}()
+	c.readStdout(pr)
+	var got []string
+	for l := range c.lines {
+		got = append(got, l.Text)
+	}
+	return got
+}
+
+// A line split across writes arrives as one line, not two halves
+// (tui_run.rs's narration rule, for the child's stdout).
+func TestRPCLineSplitAcrossWritesIsOneLine(t *testing.T) {
+	got := readFrom(t, func(w io.Writer) {
+		io.WriteString(w, `{"type":"res`)
+		io.WriteString(w, `ponse"}`+"\n")
+	})
+	if len(got) != 1 || got[0] != `{"type":"response"}` {
+		t.Fatalf("got %q", got)
+	}
+}
+
+// Several lines in one write arrive separately, and a final line without a
+// newline is delivered rather than swallowed.
+func TestRPCSeveralLinesAndAnUnterminatedLastOne(t *testing.T) {
+	got := readFrom(t, func(w io.Writer) {
+		io.WriteString(w, "one\ntwo\nthree")
+	})
+	if strings.Join(got, "|") != "one|two|three" {
+		t.Fatalf("got %q", got)
 	}
 }

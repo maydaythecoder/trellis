@@ -4,10 +4,11 @@
 // against Bubble Tea v1.3.10 and Lip Gloss v1.1.0, the versions go.mod
 // requires.
 //
-// Until a screen imports them (#508), these blank imports are what keep
-// `go mod tidy` from dropping the set from go.mod and go.sum, so the
-// supply-chain checks (go mod verify, govulncheck, go-licenses) read the
-// tree the TUI will be built from.
+// The screen imports Bubble Tea (internal/model) and Lip Gloss
+// (internal/view), not Bubbles; these blank imports keep `go mod tidy` from
+// dropping any of the set from go.mod and go.sum, so the supply-chain
+// checks (go mod verify, govulncheck, go-licenses) read the whole set the
+// TUI is pinned to.
 package charmset
 
 import (
