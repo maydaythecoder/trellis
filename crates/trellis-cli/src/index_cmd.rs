@@ -614,4 +614,40 @@ mod tests {
             serde_json::json!({"path": "m.py", "line": 4, "certain": true})
         );
     }
+
+    #[test]
+    fn cache_tmp_left_by_an_interrupted_save_does_not_dirty_the_tree() {
+        // The risk (#726), against git rather than against the text: a
+        // leftover `.index.bin.<pid>.<n>.tmp` made `git status` dirty, and a
+        // dirty tree refuses the next run (ADR 0009). Under the current
+        // `.gitignore` it is ignored; under one written before #726 (never
+        // rewritten) it shows until the next save removes it.
+        use crate::testutil::{git_commit_all, git_init, git_stdout, scratch};
+        let root = scratch("index-cache-tmp");
+        git_init(&root);
+        std::fs::write(root.join("m.py"), "def f():\n    return 1\n").unwrap();
+        git_commit_all(&root, "init");
+        let index = trellis_index::build_from_sources(&trellis_index::read_sources(&root));
+        let dot = root.join(".trellis");
+        let leftover = dot.join(".index.bin.31337.0.tmp");
+
+        save_index(&root, &index).unwrap();
+        std::fs::write(&leftover, b"half").unwrap();
+        assert_eq!(git_stdout(&root, &["status", "--porcelain"]), "");
+
+        std::fs::write(
+            dot.join(".gitignore"),
+            trellis_index::cache::IGNORE_EARLIER[0],
+        )
+        .unwrap();
+        assert!(
+            git_stdout(&root, &["status", "--porcelain", "--untracked-files=all"])
+                .contains(".trellis/.index.bin.31337.0.tmp"),
+            "the earlier text does not ignore it, which is why the save removes it"
+        );
+        save_index(&root, &index).unwrap();
+        assert!(!leftover.exists());
+        assert_eq!(git_stdout(&root, &["status", "--porcelain"]), "");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

@@ -133,6 +133,7 @@ pub fn save(index: &Index, path: &Path) -> std::io::Result<usize> {
         std::fs::create_dir_all(parent)?;
         ignore_the_blob(parent)?;
     }
+    remove_leftover_temps(path)?;
     let tmp = temp_path(path);
     if let Err(e) = write_new(&tmp, &bytes).and_then(|()| std::fs::rename(&tmp, path)) {
         let _ = std::fs::remove_file(&tmp);
@@ -153,6 +154,73 @@ fn temp_path(path: &Path) -> std::path::PathBuf {
         .unwrap_or_default();
     let n = N.fetch_add(1, Ordering::Relaxed);
     path.with_file_name(format!(".{name}.{}.{n}.tmp", std::process::id()))
+}
+
+/// Whether `file` is a name [`temp_path`] makes for a target named `name`:
+/// `.<name>.<digits>.<digits>.tmp`, exactly, so a file a person named
+/// `.index.bin.notes.tmp` is not taken for one.
+fn is_temp_name(file: &str, name: &str) -> bool {
+    let Some(rest) = file
+        .strip_prefix('.')
+        .and_then(|f| f.strip_prefix(name))
+        .and_then(|f| f.strip_prefix('.'))
+        .and_then(|f| f.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    rest.split_once('.')
+        .is_some_and(|(pid, n)| digits(pid) && digits(n))
+}
+
+/// Removes temporary files an interrupted save left beside `path` (#726).
+///
+/// A crash between the write and the rename leaves one behind. A
+/// `.gitignore` written since #726 ignores them, but one written before is
+/// never rewritten (`ignore_the_blob`), and there the leftover is untracked,
+/// the tree is dirty and the next run is refused (ADR 0009). It is also a
+/// file under `.trellis/` the trust digest covers, so until it goes the
+/// repository reads as changed since it was trusted (ADR 0023 §4). Removing
+/// it here clears both at the next `trellis index` or cached build.
+///
+/// Only regular files with exactly the temporary name shape are removed.
+/// `symlink_metadata`, so a link with that name is not followed, and it is
+/// left alone with any directory of that name: `save` makes neither.
+///
+/// Not decided here: a save running at the same moment in another process
+/// has a temporary file of the same shape, and removing it makes that
+/// save's rename fail. That save returns the error and the blob on disk is
+/// this one's, whole, since a rename never leaves half a file.
+fn remove_leftover_temps(path: &Path) -> std::io::Result<()> {
+    let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+        return Ok(());
+    };
+    let dir = match path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        Some(d) => d.to_path_buf(),
+        None => std::path::PathBuf::from("."),
+    };
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let file = entry.file_name();
+        if !is_temp_name(&file.to_string_lossy(), &name) {
+            continue;
+        }
+        let p = entry.path();
+        if std::fs::symlink_metadata(&p)?.file_type().is_file() {
+            match std::fs::remove_file(&p) {
+                Ok(()) => {}
+                // Gone already: another save removed it, or renamed it.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Creates `p`, which must not exist in any form, and writes `bytes` to it.
@@ -205,9 +273,48 @@ fn ignore_the_blob(dir: &Path) -> std::io::Result<()> {
     write_new(&p, IGNORE.as_bytes())
 }
 
-/// The `.gitignore` trellis writes unasked. Public so the trust digest can
-/// tell this file from one a person wrote (ADR 0023 §4).
+/// The `.gitignore` trellis writes unasked. Public so `trellis work` can
+/// write the same file where no index save has yet.
+///
+/// Changing this text changes what a fresh repository gets, never what an
+/// existing one has: `ignore_the_blob` does not rewrite the file. Every
+/// earlier text goes into [`IGNORE_EARLIER`], so the trust digest still
+/// takes a repository's older file for trellis's own and nobody is asked to
+/// trust again (ADR 0023 §4).
 pub const IGNORE: &str = r#"# Written by TRELLIS. The index is derived state: keyed by a fingerprint of
+# the file set and discarded on any mismatch, so committing it would cost
+# every merge to save a rebuild of about 120 ms.
+#
+# This file ignores itself. TRELLIS writes it unasked, and a file the tool
+# creates on its own must not be the reason `git status` is dirty — a dirty
+# worktree blocks the next run (ADR 0009), so that would be a wall built by
+# the thing that then refuses to walk through it. Delete the line below if
+# you would rather commit it; TRELLIS will not rewrite this file.
+#
+# work/ is the same kind of thing: v1.1 puts one git worktree per partition
+# under it, and a linked worktree inside the repository shows up in
+# `git status` as untracked. A run that creates partitions would then leave
+# the tree dirty and the *next* run would refuse to start (ADR 0009) — the
+# same wall as above, built by a different file.
+#
+# .index.bin.<pid>.<n>.tmp is where the index is written before it is
+# renamed into place. A crash between the two leaves one behind; the next
+# save removes it, and until then this line keeps it from dirtying the tree.
+#
+# Nothing else here is ignored. runs/, config.toml, context.md and
+# governance/ are meant to be committed — the trail is the point.
+index.bin
+.index.bin.*.tmp
+.gitignore
+work/
+"#;
+
+/// Every text [`IGNORE`] has had before, which repositories still hold
+/// because the file is never rewritten. Oldest first; append the current
+/// text here whenever it changes.
+pub const IGNORE_EARLIER: &[&str] = &[
+    // Until #726, which added the `.index.bin.*.tmp` line.
+    r#"# Written by TRELLIS. The index is derived state: keyed by a fingerprint of
 # the file set and discarded on any mismatch, so committing it would cost
 # every merge to save a rebuild of about 120 ms.
 #
@@ -228,7 +335,17 @@ pub const IGNORE: &str = r#"# Written by TRELLIS. The index is derived state: ke
 index.bin
 .gitignore
 work/
-"#;
+"#,
+];
+
+/// Whether `text` is a `.gitignore` trellis wrote: [`IGNORE`] or one of
+/// [`IGNORE_EARLIER`], line endings aside (git may check the file out with
+/// CRLF). The trust digest leaves such a file out and covers any other, so
+/// a file a person edited is theirs (ADR 0023 §4).
+pub fn is_generated_ignore(text: &str) -> bool {
+    let text = text.replace("\r\n", "\n");
+    text == IGNORE || IGNORE_EARLIER.contains(&text.as_str())
+}
 
 /// Reads the index, but only when it matches the current file set.
 ///
@@ -320,8 +437,11 @@ mod tests {
             .collect();
         assert_eq!(
             rules,
-            ["index.bin", ".gitignore", "work/"],
-            "everything TRELLIS writes unasked, and nothing else: the blob,              this file itself, and the per-partition worktrees. None may be              the reason the worktree is dirty. The trail stays committable."
+            ["index.bin", ".index.bin.*.tmp", ".gitignore", "work/"],
+            "everything TRELLIS writes unasked, and nothing else: the blob, the \
+             temporary file an interrupted save leaves (#726), this file itself, \
+             and the per-partition worktrees. None may be the reason the worktree \
+             is dirty. The trail stays committable."
         );
         // C-010, and it is a list that had to grow *before* the feature that
         // needs it. `Worktree::create` puts a git worktree at
@@ -652,5 +772,118 @@ mod tests {
         assert!(load(&path, fingerprint(&src)).is_some());
         assert_eq!(names(&dot), [".gitignore", "index.bin"]);
         let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+    }
+
+    #[test]
+    fn cache_tmp_leftover_from_an_interrupted_save_is_removed_at_the_next_save() {
+        // The risk (#726): a crash between the write and the rename leaves
+        // `.index.bin.<pid>.<n>.tmp`, which a `.gitignore` written before
+        // #726 does not ignore, so the tree stays dirty and every run is
+        // refused (ADR 0009) until a person finds and deletes it.
+        let (repo, _) = link_scratch("tmp-leftover");
+        let dot = repo.join(".trellis");
+        let path = dot.join("index.bin");
+        let index = crate::build_from_sources(&sources());
+        save(&index, &path).expect("first save");
+        std::fs::write(dot.join(".index.bin.4242.7.tmp"), b"half a blob").unwrap();
+        // Not the shape `save` makes, so not trellis's to remove.
+        for name in [
+            ".index.bin.notes.tmp",
+            ".index.bin.1.tmp",
+            "index.bin.1.2.tmp",
+        ] {
+            std::fs::write(dot.join(name), b"mine").unwrap();
+        }
+        std::fs::create_dir(dot.join(".index.bin.5.6.tmp")).unwrap();
+
+        save(&index, &path).expect("second save");
+
+        assert_eq!(
+            names(&dot),
+            [
+                ".gitignore",
+                ".index.bin.1.tmp",
+                ".index.bin.5.6.tmp",
+                ".index.bin.notes.tmp",
+                "index.bin",
+                "index.bin.1.2.tmp",
+            ],
+            "the leftover is gone and nothing else is"
+        );
+        assert!(dot.join(".index.bin.5.6.tmp").is_dir());
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+    }
+
+    #[test]
+    fn cache_tmp_an_existing_gitignore_from_before_is_never_rewritten() {
+        // The new line reaches fresh repositories only: the file is in the
+        // person's repository, and rewriting it would discard their rules
+        // as readily as trellis's old text. The leftover still goes.
+        let (repo, _) = link_scratch("tmp-old-ignore");
+        let dot = repo.join(".trellis");
+        std::fs::create_dir_all(&dot).unwrap();
+        let old = IGNORE_EARLIER[0];
+        std::fs::write(dot.join(".gitignore"), old).unwrap();
+        std::fs::write(dot.join(".index.bin.1.0.tmp"), b"x").unwrap();
+
+        save(
+            &crate::build_from_sources(&sources()),
+            &dot.join("index.bin"),
+        )
+        .expect("save");
+
+        assert_eq!(
+            std::fs::read_to_string(dot.join(".gitignore")).unwrap(),
+            old
+        );
+        assert_eq!(names(&dot), [".gitignore", "index.bin"]);
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+    }
+
+    #[test]
+    fn cache_tmp_every_generated_ignore_text_is_recognised_and_an_edit_is_not() {
+        // The trust digest leaves trellis's own `.gitignore` out by this
+        // test. Recognising only today's text would untrust every
+        // repository that has yesterday's (ADR 0023 §4).
+        assert!(is_generated_ignore(IGNORE));
+        assert!(IGNORE.contains("\n.index.bin.*.tmp\n"));
+        assert!(
+            !IGNORE_EARLIER.contains(&IGNORE),
+            "the current text is not listed as earlier"
+        );
+        for text in IGNORE_EARLIER.iter().copied().chain([IGNORE]) {
+            assert!(is_generated_ignore(text));
+            assert!(
+                is_generated_ignore(&text.replace('\n', "\r\n")),
+                "CRLF checkout"
+            );
+            assert!(
+                !is_generated_ignore(&format!("{text}secrets.env\n")),
+                "edited"
+            );
+            assert!(
+                !is_generated_ignore(&text.replace("work/\n", "")),
+                "a rule removed"
+            );
+        }
+        assert!(!is_generated_ignore(""));
+    }
+
+    #[test]
+    fn cache_tmp_name_shape_is_exactly_what_temp_path_makes() {
+        let made = temp_path(Path::new("/r/.trellis/index.bin"));
+        let made = made.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(is_temp_name(&made, "index.bin"), "{made}");
+        for not in [
+            ".index.bin.tmp",
+            ".index.bin..1.tmp",
+            ".index.bin.1..tmp",
+            ".index.bin.a.1.tmp",
+            ".index.bin.1.2.3.tmp",
+            ".index.bin.1.2.tmp.py",
+            ".other.bin.1.2.tmp",
+        ] {
+            assert!(!is_temp_name(not, "index.bin"), "{not}");
+        }
     }
 }

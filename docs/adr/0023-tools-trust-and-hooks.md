@@ -1536,3 +1536,37 @@ digest, and reads as changed.
 
 What reverses it: removing the skip from `dot_trellis_files`, after which
 kept task worktrees untrust the starting worktree again.
+
+## Amendment 2026-10-15: every `.gitignore` text trellis has written is its own (#726)
+
+Status: Accepted (owner-directed): the owner's default of 2026-10-15 on
+#726 (add the temporary file's pattern to the ignore text).
+
+`trellis_index::cache::save` writes `.trellis/.index.bin.<pid>.<n>.tmp`
+and renames it over `index.bin` (#721). An interrupted save leaves the
+temporary file, which the generated `.gitignore` did not ignore, so the
+tree was dirty and the next run refused (ADR 0009). `cache::IGNORE` now
+carries a `.index.bin.*.tmp` line.
+
+§4 skips `.trellis/.gitignore` "only while its bytes (ignoring line
+endings) are the file trellis writes, `trellis_index::cache::IGNORE`".
+The file is never rewritten, so every repository indexed before this
+holds the earlier text, and read literally the rule would hash it and
+untrust each one. The skip now holds while the bytes are any text trellis
+has written there: `IGNORE` or one of `cache::IGNORE_EARLIER`, compared by
+`cache::is_generated_ignore` (line endings aside, as before). One a person
+edited is still covered. No trust recorded before this changes, and the
+`.trellis/` item's shown text is unchanged, as for #620 and #718.
+
+The temporary file itself is not skipped: nothing under `.trellis/` is
+skipped by prefix (`index.bin.py` is hashed). A leftover one is covered,
+and the next save removes it, after which the digest is what it was.
+Evidence: `trust_generated_gitignore_old_and_new_text_both_leave_the_digest_as_it_was`
+and `trust_leftover_index_temp_file_is_covered_until_the_next_save_removes_it`
+in `crates/trellis-loop/src/trust.rs`; `cache_tmp_*` in
+`crates/trellis-index/src/cache.rs` and
+`crates/trellis-cli/src/index_cmd.rs`.
+
+What reverses it: dropping the line from `IGNORE`, with the text that
+had it added to `IGNORE_EARLIER`, so repositories given it stay
+recognised.

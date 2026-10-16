@@ -164,8 +164,9 @@ fn rel(root: &Path, full: &Path) -> String {
 /// what trellis itself writes there, which would otherwise make a repository
 /// untrusted after each run:
 /// - `index.bin`, the index cache
-/// - `.gitignore`, while it is byte for byte the one trellis writes
-///   (line endings aside); one a person edited is theirs and is covered
+/// - `.gitignore`, while it is byte for byte one trellis writes or has
+///   written (line endings aside, `cache::is_generated_ignore`); one a
+///   person edited is theirs and is covered
 /// - `runs/<name>.json`, the trails: regular files directly under `runs/`
 /// - `replays/<name>.json`, the replay recordings, and `replays/.gitignore`
 ///   while it is the one trellis writes (ADR 0023 §4, amended 2026-10-12).
@@ -227,8 +228,11 @@ fn dot_trellis_files(root: &Path, cache: &HashCache) -> Result<Vec<(String, Stri
             let inner = inner.to_string_lossy().replace('\\', "/");
             match inner.as_str() {
                 "index.bin" => true,
+                // Any text trellis has written there, not only today's: the
+                // file is never rewritten, so a repository keeps the one it
+                // was given, and changing `IGNORE` (#726) must not untrust it.
                 ".gitignore" => std::fs::read_to_string(real)
-                    .is_ok_and(|t| t.replace("\r\n", "\n") == trellis_index::cache::IGNORE),
+                    .is_ok_and(|t| trellis_index::cache::is_generated_ignore(&t)),
                 // Replay recordings (ADR 0023 §4, amended 2026-10-12): every
                 // run writes one, so hashing them would untrust the
                 // repository after each run, as trails would.
@@ -2460,5 +2464,61 @@ mod tests {
         ])];
         assert!(package_code(Some(&pkgs), repo.path(), &items).is_none());
         assert!(package_code(None, repo.path(), &items).is_none());
+    }
+
+    #[test]
+    fn trust_generated_gitignore_old_and_new_text_both_leave_the_digest_as_it_was() {
+        // The risk (#726): `cache::IGNORE` gained a line, and the digest
+        // recognised only the current text, so every repository holding the
+        // earlier file (which is never rewritten) would read as changed
+        // since it was trusted and be asked to trust again.
+        let repo = tempfile::tempdir().unwrap();
+        let dot = repo.path().join(".trellis");
+        std::fs::create_dir_all(&dot).unwrap();
+        let h = hooks(&["python", "-m", "gate"]);
+        let digest = || Fingerprint::of(repo.path(), &h, &[], None).sha256;
+        let none = digest();
+        let ignore = dot.join(".gitignore");
+
+        let earlier = trellis_index::cache::IGNORE_EARLIER;
+        assert!(!earlier.is_empty());
+        for text in earlier
+            .iter()
+            .copied()
+            .chain([trellis_index::cache::IGNORE])
+        {
+            std::fs::write(&ignore, text).unwrap();
+            assert_eq!(digest(), none, "trellis's own text:\n{text}");
+            std::fs::write(&ignore, text.replace('\n', "\r\n")).unwrap();
+            assert_eq!(digest(), none, "the same, checked out with CRLF");
+            std::fs::write(&ignore, format!("{text}!gate.py\n")).unwrap();
+            assert_ne!(digest(), none, "a person's edit is theirs and is covered");
+        }
+    }
+
+    #[test]
+    fn trust_leftover_index_temp_file_is_covered_until_the_next_save_removes_it() {
+        // Guard on the other half of #726: the temporary file is not
+        // skipped by name. Nothing under `.trellis/` is skipped by prefix
+        // (`index.bin.py` is code), and the next save removes the leftover.
+        let repo = tempfile::tempdir().unwrap();
+        let dot = repo.path().join(".trellis");
+        std::fs::create_dir_all(&dot).unwrap();
+        std::fs::write(dot.join(".gitignore"), trellis_index::cache::IGNORE).unwrap();
+        let h = hooks(&["python", "-m", "gate"]);
+        let digest = || Fingerprint::of(repo.path(), &h, &[], None).sha256;
+        let before = digest();
+        std::fs::write(dot.join(".index.bin.12.0.tmp"), [0u8, 1]).unwrap();
+        assert_ne!(digest(), before);
+        let index = trellis_index::build_from_sources(&[(
+            "m.py".to_string(),
+            "def f():\n    return 1\n".to_string(),
+        )]);
+        trellis_index::cache::save(&index, &dot.join("index.bin")).unwrap();
+        assert_eq!(
+            digest(),
+            before,
+            "the save removed it, and index.bin is skipped"
+        );
     }
 }
