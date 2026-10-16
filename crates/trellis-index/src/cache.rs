@@ -14,6 +14,7 @@
 
 use crate::graph::Index;
 use std::path::Path;
+use trellis_core::links::{LinkRefused, create_new, refuse_link};
 
 /// Bumped whenever the serialized shape changes. An older blob is discarded,
 /// not migrated: it is derived state, so rebuilding is always correct and
@@ -64,42 +65,16 @@ pub fn fingerprint(sources: &[(String, String)]) -> u64 {
     h.finish()
 }
 
-/// A path `save` will not write through: a symbolic link (a junction on
-/// Windows) at `.trellis`, `.trellis/index.bin` or `.trellis/.gitignore`.
+/// What a refusal names when `save` meets a link (a junction on Windows)
+/// at `.trellis`, `.trellis/index.bin` or `.trellis/.gitignore`.
 ///
 /// A repository can commit any of the three as a link to a file outside
 /// itself, and every command that indexes would then overwrite that file
-/// with the blob (#721). Carried inside the `io::Error` `save` returns, so
-/// callers that only print the error name the link, and a caller that needs
-/// to tell this refusal from a disk error can downcast to it.
-#[derive(Debug)]
-pub struct LinkRefused {
-    pub path: std::path::PathBuf,
-}
-
-impl std::fmt::Display for LinkRefused {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} is a symbolic link; the index cache is not written through a link, \
-             so nothing was written (#721)",
-            self.path.display()
-        )
-    }
-}
-
-impl std::error::Error for LinkRefused {}
-
-/// `Err` when `p` is a link. `symlink_metadata`, so the link itself is
-/// examined and a dangling one is caught rather than followed to nothing.
-fn refuse_link(p: &Path) -> std::io::Result<()> {
-    match std::fs::symlink_metadata(p) {
-        Ok(m) if m.file_type().is_symlink() => Err(std::io::Error::other(LinkRefused {
-            path: p.to_path_buf(),
-        })),
-        _ => Ok(()),
-    }
-}
+/// with the blob (#721). The refusal is `trellis_core::links::LinkRefused`,
+/// carried inside the `io::Error` `save` returns, so callers that only
+/// print the error name the link, and a caller that needs to tell this
+/// refusal from a disk error can downcast to it.
+const WHAT: &str = "the index cache";
 
 /// Writes the index, creating the parent directory if needed.
 ///
@@ -116,10 +91,10 @@ fn refuse_link(p: &Path) -> std::io::Result<()> {
 pub fn save(index: &Index, path: &Path) -> std::io::Result<usize> {
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
     if let Some(parent) = parent {
-        refuse_link(parent)?;
-        refuse_link(&parent.join(".gitignore"))?;
+        refuse_link(parent, WHAT)?;
+        refuse_link(&parent.join(".gitignore"), WHAT)?;
     }
-    refuse_link(path)?;
+    refuse_link(path, WHAT)?;
 
     let blob = BlobRef {
         version: FORMAT_VERSION,
@@ -133,37 +108,8 @@ pub fn save(index: &Index, path: &Path) -> std::io::Result<usize> {
         std::fs::create_dir_all(parent)?;
         ignore_the_blob(parent)?;
     }
-    let tmp = temp_path(path);
-    if let Err(e) = write_new(&tmp, &bytes).and_then(|()| std::fs::rename(&tmp, path)) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e);
-    }
+    trellis_core::links::replace_file(path, &bytes)?;
     Ok(bytes.len())
-}
-
-/// `.index.bin.<pid>.<n>.tmp` beside `path`. Unique per process and per
-/// call, so a temporary file a crash left behind never makes `create_new`
-/// fail on the next save, and two saves in one process never share one.
-fn temp_path(path: &Path) -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let n = N.fetch_add(1, Ordering::Relaxed);
-    path.with_file_name(format!(".{name}.{}.{n}.tmp", std::process::id()))
-}
-
-/// Creates `p`, which must not exist in any form, and writes `bytes` to it.
-fn write_new(p: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(p)?;
-    f.write_all(bytes)?;
-    f.flush()
 }
 
 /// Writes `.trellis/.gitignore` so the blob does not dirty the worktree.
@@ -191,7 +137,10 @@ fn ignore_the_blob(dir: &Path) -> std::io::Result<()> {
     // on its own.
     match std::fs::symlink_metadata(&p) {
         Ok(m) if m.file_type().is_symlink() => {
-            return Err(std::io::Error::other(LinkRefused { path: p }));
+            return Err(std::io::Error::other(LinkRefused {
+                path: p,
+                what: WHAT,
+            }));
         }
         Ok(_) => return Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -202,7 +151,7 @@ fn ignore_the_blob(dir: &Path) -> std::io::Result<()> {
     // into the content, which this project has now shipped six times.
     // `create_new`, so a link planted between the check above and here is
     // not followed either.
-    write_new(&p, IGNORE.as_bytes())
+    create_new(&p, IGNORE.as_bytes())
 }
 
 /// The `.gitignore` trellis writes unasked. Public so the trust digest can

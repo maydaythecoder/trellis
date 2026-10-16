@@ -2746,6 +2746,7 @@ dependencies = [
  "tempfile",
  "tracing",
  "trellis-checks",
+ "trellis-core",
 ]
 
 [[package]]
