@@ -1239,7 +1239,16 @@ impl CliRunner<'_> {
 /// one. The ignore is the `.trellis/.gitignore` an index save writes; a
 /// repository that has never been indexed here has none yet, so it is
 /// written now, under the same rule: never over an existing file.
+///
+/// Before anything is asked or written, `.trellis`, `.trellis/work`,
+/// `.trellis/work/task` and `.trellis/.gitignore` are checked for a
+/// symbolic link, the check `TaskWorktree::create_with` makes (#724): a
+/// committed `.trellis` link would otherwise have the `.gitignore` written
+/// at its target, outside the repository.
 fn ignore_task_worktrees(root: &Path) -> std::result::Result<(), String> {
+    for rel in [".trellis/work/task", ".trellis/.gitignore"] {
+        trellis_vcs::refuse_links_below(root, Path::new(rel)).map_err(|e| e.to_string())?;
+    }
     let ignored = || -> std::result::Result<bool, String> {
         let out = trellis_vcs::command()
             .args(["check-ignore", "-q", ".trellis/work/task/x/"])
@@ -1262,8 +1271,17 @@ fn ignore_task_worktrees(root: &Path) -> std::result::Result<(), String> {
     let dot = root.join(".trellis");
     let file = dot.join(".gitignore");
     if std::fs::symlink_metadata(&file).is_err() {
+        // `create_new` (`O_EXCL`), so a link planted at `.gitignore` after
+        // the check above is not followed: the open fails on it instead.
         std::fs::create_dir_all(&dot)
-            .and_then(|()| std::fs::write(&file, trellis_index::cache::IGNORE))
+            .and_then(|()| {
+                use std::io::Write;
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&file)?
+                    .write_all(trellis_index::cache::IGNORE.as_bytes())
+            })
             .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
         if ignored()? {
             return Ok(());
@@ -2865,5 +2883,117 @@ mod task_worktree_tests {
             trellis_index::cache::IGNORE
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Runs `work` once over one queued task and returns the task id and
+    /// how `work` stopped.
+    fn work_once(root: &Path, q: &Queue) -> (String, Stop) {
+        let id = add(q, "one");
+        let mut r = FakeRun {
+            inner: test_runner(root, q.clone(), trusted),
+            end: || RunEnd::Converged { run_id: None },
+        };
+        let mut out = Vec::new();
+        let (_, stop) = trellis_queue::work(q, &mut r, WorkOptions::default(), &mut out).unwrap();
+        (id, stop)
+    }
+
+    /// What every refusal below must leave: the task back in `pending/`,
+    /// no task branch, no worktree registered beside the starting one, and
+    /// the starting worktree clean.
+    fn nothing_created(root: &Path, q: &Queue, id: &str, stop: &Stop) {
+        assert!(
+            matches!(stop, Stop::Refused { why, .. } if why.contains("is a symbolic link")),
+            "{stop:?}"
+        );
+        assert_eq!(q.find(id).unwrap().0, State::Pending);
+        assert_eq!(
+            git_stdout(root, &["branch", "--list", "trellis/task/*"]),
+            "",
+            "no task branch"
+        );
+        assert_eq!(
+            git_stdout(root, &["worktree", "list", "--porcelain"])
+                .lines()
+                .filter(|l| l.starts_with("worktree "))
+                .count(),
+            1,
+            "no linked worktree registered"
+        );
+        assert_eq!(git_stdout(root, &["status", "--porcelain"]), "");
+    }
+
+    #[test]
+    fn worktree_symlink_committed_dot_trellis_out_of_the_repository_is_refused_and_nothing_written()
+    {
+        // The risk (#724): a repository commits `.trellis -> <elsewhere>`,
+        // and `work` writes `.gitignore` there and has `git worktree add`
+        // check the repository out there, outside the repository.
+        let (root, q) = repo("tw-link-dot-trellis");
+        let outside = scratch("tw-link-dot-trellis-target");
+        if !crate::testutil::link(&outside, &root.join(".trellis")) {
+            return;
+        }
+        git_commit_all(&root, "link");
+
+        let (id, stop) = work_once(&root, &q);
+
+        nothing_created(&root, &q, &id, &stop);
+        assert!(
+            std::fs::read_dir(&outside).unwrap().next().is_none(),
+            "something was written through the link"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn worktree_symlink_committed_dot_trellis_work_inside_the_repository_is_refused() {
+        // The same, one level down and pointing inside the repository: a
+        // task checkout under `src/` is a second copy of the code in the
+        // tree the next index and the next clean check read.
+        let (root, q) = repo("tw-link-work");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/m.py"), "y = 1\n").unwrap();
+        std::fs::create_dir_all(root.join(".trellis")).unwrap();
+        std::fs::write(
+            root.join(".trellis/.gitignore"),
+            trellis_index::cache::IGNORE,
+        )
+        .unwrap();
+        if !crate::testutil::link(Path::new("../src"), &root.join(".trellis/work")) {
+            return;
+        }
+        git_commit_all(&root, "link");
+
+        let (id, stop) = work_once(&root, &q);
+
+        nothing_created(&root, &q, &id, &stop);
+        let src: Vec<_> = std::fs::read_dir(root.join("src"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(src, ["m.py"], "nothing created under the link's target");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn worktree_symlink_at_dot_trellis_gitignore_is_refused_and_its_target_not_written() {
+        // Guard: a dangling `.trellis/.gitignore` link already stopped the
+        // write (it read as existing), but only by the shape of the
+        // existence test; the refusal now names the link.
+        let (root, _q) = repo("tw-link-gitignore");
+        let outside = scratch("tw-link-gitignore-target");
+        std::fs::create_dir_all(root.join(".trellis")).unwrap();
+        let target = outside.join("written");
+        if !crate::testutil::link(&target, &root.join(".trellis/.gitignore")) {
+            return;
+        }
+        let e = ignore_task_worktrees(&root).unwrap_err();
+        assert!(e.contains("is a symbolic link"), "{e}");
+        assert!(e.contains(".gitignore"), "{e}");
+        assert!(!target.exists());
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 }
