@@ -75,6 +75,10 @@ pub enum QueueError {
     Locked(PathBuf),
     #[error("{0}")]
     Invalid(String),
+    /// A write under `.trellis/` refused because a path on the way is a
+    /// link (#725).
+    #[error(transparent)]
+    LinkInTheWay(#[from] trellis_core::paths::LinkInTheWay),
 }
 
 /// Which directory a task file is in.
