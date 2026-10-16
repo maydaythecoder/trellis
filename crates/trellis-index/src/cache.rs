@@ -64,12 +64,63 @@ pub fn fingerprint(sources: &[(String, String)]) -> u64 {
     h.finish()
 }
 
-/// Writes the index, creating the parent directory if needed.
-pub fn save(index: &Index, path: &Path) -> std::io::Result<usize> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-        ignore_the_blob(parent)?;
+/// A path `save` will not write through: a symbolic link (a junction on
+/// Windows) at `.trellis`, `.trellis/index.bin` or `.trellis/.gitignore`.
+///
+/// A repository can commit any of the three as a link to a file outside
+/// itself, and every command that indexes would then overwrite that file
+/// with the blob (#721). Carried inside the `io::Error` `save` returns, so
+/// callers that only print the error name the link, and a caller that needs
+/// to tell this refusal from a disk error can downcast to it.
+#[derive(Debug)]
+pub struct LinkRefused {
+    pub path: std::path::PathBuf,
+}
+
+impl std::fmt::Display for LinkRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} is a symbolic link; the index cache is not written through a link, \
+             so nothing was written (#721)",
+            self.path.display()
+        )
     }
+}
+
+impl std::error::Error for LinkRefused {}
+
+/// `Err` when `p` is a link. `symlink_metadata`, so the link itself is
+/// examined and a dangling one is caught rather than followed to nothing.
+fn refuse_link(p: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(p) {
+        Ok(m) if m.file_type().is_symlink() => Err(std::io::Error::other(LinkRefused {
+            path: p.to_path_buf(),
+        })),
+        _ => Ok(()),
+    }
+}
+
+/// Writes the index, creating the parent directory if needed.
+///
+/// The one writer of `.trellis/index.bin`: `trellis index`, `build_cached`
+/// and rpc's `get_codebase` all come here, so the refusals below hold for
+/// each of them. Every path it touches is checked for a link *before*
+/// anything is created, so a refusal leaves the disk as it was.
+///
+/// The blob goes to a fresh temporary file beside the target, opened with
+/// `create_new` (`O_EXCL`, which fails on any existing entry, a link
+/// included, instead of following it), and is renamed over the target. A
+/// rename replaces the directory entry and never writes through one, and an
+/// interrupted save leaves the old blob or none, never half of one.
+pub fn save(index: &Index, path: &Path) -> std::io::Result<usize> {
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+    if let Some(parent) = parent {
+        refuse_link(parent)?;
+        refuse_link(&parent.join(".gitignore"))?;
+    }
+    refuse_link(path)?;
+
     let blob = BlobRef {
         version: FORMAT_VERSION,
         fingerprint: index.fingerprint,
@@ -77,8 +128,42 @@ pub fn save(index: &Index, path: &Path) -> std::io::Result<usize> {
     };
     let bytes = postcard::to_stdvec(&blob)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(path, &bytes)?;
+
+    if let Some(parent) = parent {
+        std::fs::create_dir_all(parent)?;
+        ignore_the_blob(parent)?;
+    }
+    let tmp = temp_path(path);
+    if let Err(e) = write_new(&tmp, &bytes).and_then(|()| std::fs::rename(&tmp, path)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
     Ok(bytes.len())
+}
+
+/// `.index.bin.<pid>.<n>.tmp` beside `path`. Unique per process and per
+/// call, so a temporary file a crash left behind never makes `create_new`
+/// fail on the next save, and two saves in one process never share one.
+fn temp_path(path: &Path) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    path.with_file_name(format!(".{name}.{}.{n}.tmp", std::process::id()))
+}
+
+/// Creates `p`, which must not exist in any form, and writes `bytes` to it.
+fn write_new(p: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(p)?;
+    f.write_all(bytes)?;
+    f.flush()
 }
 
 /// Writes `.trellis/.gitignore` so the blob does not dirty the worktree.
@@ -99,14 +184,25 @@ pub fn save(index: &Index, path: &Path) -> std::io::Result<usize> {
 fn ignore_the_blob(dir: &Path) -> std::io::Result<()> {
     let p = dir.join(".gitignore");
     // Never overwrite: a user may have added their own rules here, and this
-    // file is in their repository, not ours.
-    if p.exists() {
-        return Ok(());
+    // file is in their repository, not ours. `symlink_metadata`, not
+    // `exists()`: `exists()` follows a link, so a dangling one read as
+    // absent and the write below created a file at its target (#721).
+    // `save` has already refused a link here; this keeps the function safe
+    // on its own.
+    match std::fs::symlink_metadata(&p) {
+        Ok(m) if m.file_type().is_symlink() => {
+            return Err(std::io::Error::other(LinkRefused { path: p }));
+        }
+        Ok(_) => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
     }
     // A raw string, so the text is exactly what lands in the user's
     // repository. Continuation-escaped literals fold their source indentation
     // into the content, which this project has now shipped six times.
-    std::fs::write(&p, IGNORE)
+    // `create_new`, so a link planted between the check above and here is
+    // not followed either.
+    write_new(&p, IGNORE.as_bytes())
 }
 
 /// The `.gitignore` trellis writes unasked. Public so the trust digest can
@@ -346,5 +442,215 @@ mod tests {
         assert!(load(&path, fingerprint(&src)).is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A fresh directory for one `cache_symlink_*` test: `repo/` and
+    /// `outside/` side by side, as the reproduction in #721 lays them out.
+    fn link_scratch(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let base = std::env::temp_dir().join(format!(
+            "trellis-cache-symlink-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let repo = base.join("repo");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        (repo, outside)
+    }
+
+    /// Makes `link` a link to the file `target`; false (and the test skips)
+    /// where the platform will not, as Windows without developer mode won't.
+    fn link_file(target: &Path, link: &Path) -> bool {
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(target, link);
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(target, link);
+        if let Err(e) = &made {
+            eprintln!("skipped: cannot create a file symlink here: {e}");
+        }
+        made.is_ok()
+    }
+
+    fn link_dir(target: &Path, link: &Path) -> bool {
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_dir(target, link);
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(target, link);
+        if let Err(e) = &made {
+            eprintln!("skipped: cannot create a directory symlink here: {e}");
+        }
+        made.is_ok()
+    }
+
+    /// The refusal `save` returned, as the named error and not some disk
+    /// error that happened to stop the write.
+    fn refused_at(e: &std::io::Error) -> std::path::PathBuf {
+        e.get_ref()
+            .and_then(|inner| inner.downcast_ref::<LinkRefused>())
+            .unwrap_or_else(|| panic!("expected LinkRefused, got {e:?}"))
+            .path
+            .clone()
+    }
+
+    /// The names in `dir`, sorted; empty when it does not exist.
+    fn names(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir)
+            .map(|rd| {
+                rd.filter_map(Result::ok)
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn cache_symlink_index_bin_to_an_outside_file_is_refused_and_the_file_untouched() {
+        // #721's reproduction: a repository commits `.trellis/index.bin` as a
+        // link to a file beside the clone, and indexing overwrote that file
+        // with a blob a crafted file name makes runnable as a script.
+        let (repo, outside) = link_scratch("outside-file");
+        let target = outside.join("rc.sh");
+        std::fs::write(&target, "echo original\n").unwrap();
+        let dot = repo.join(".trellis");
+        std::fs::create_dir_all(&dot).unwrap();
+        let link = dot.join("index.bin");
+        if !link_file(&target, &link) {
+            return;
+        }
+
+        let e = save(&crate::build_from_sources(&sources()), &link).unwrap_err();
+        assert_eq!(refused_at(&e), link);
+        assert!(e.to_string().contains("symbolic link"), "{e}");
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "echo original\n",
+            "the file the link points at must be left as it was"
+        );
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link itself is not replaced either: nothing is written"
+        );
+        assert_eq!(names(&dot), ["index.bin"], "no .gitignore, no temp file");
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+    }
+
+    #[test]
+    fn cache_symlink_dangling_index_bin_creates_nothing() {
+        // A dangling link reads as absent to `exists()` and `fs::write`
+        // creates its target. Nothing may appear at the target.
+        let (repo, outside) = link_scratch("dangling-bin");
+        let target = outside.join("planted");
+        let dot = repo.join(".trellis");
+        std::fs::create_dir_all(&dot).unwrap();
+        let link = dot.join("index.bin");
+        if !link_file(&target, &link) {
+            return;
+        }
+
+        let e = save(&crate::build_from_sources(&sources()), &link).unwrap_err();
+        assert_eq!(refused_at(&e), link);
+        assert!(
+            std::fs::symlink_metadata(&target).is_err(),
+            "a dangling link was followed and its target created"
+        );
+        assert!(names(&outside).is_empty());
+        assert_eq!(names(&dot), ["index.bin"]);
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+    }
+
+    #[test]
+    fn cache_symlink_dangling_gitignore_creates_nothing() {
+        // `ignore_the_blob` checked `.gitignore` with `exists()`, so a
+        // dangling link there created a file at its target. Refused before
+        // anything is written, the blob included.
+        let (repo, outside) = link_scratch("dangling-ignore");
+        let target = outside.join("planted");
+        let dot = repo.join(".trellis");
+        std::fs::create_dir_all(&dot).unwrap();
+        let link = dot.join(".gitignore");
+        if !link_file(&target, &link) {
+            return;
+        }
+
+        let e = save(
+            &crate::build_from_sources(&sources()),
+            &dot.join("index.bin"),
+        )
+        .unwrap_err();
+        assert_eq!(refused_at(&e), link);
+        assert!(std::fs::symlink_metadata(&target).is_err());
+        assert!(names(&outside).is_empty());
+        assert_eq!(names(&dot), [".gitignore"], "no blob written beside it");
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+    }
+
+    #[test]
+    fn cache_symlink_gitignore_to_an_outside_file_is_refused() {
+        // A live link is not overwritten (it never was), but writing the
+        // blob beside a `.gitignore` that is someone else's file would leave
+        // the blob unignored on the strength of rules trellis cannot see.
+        let (repo, outside) = link_scratch("outside-ignore");
+        let target = outside.join("rules");
+        std::fs::write(&target, "theirs\n").unwrap();
+        let dot = repo.join(".trellis");
+        std::fs::create_dir_all(&dot).unwrap();
+        let link = dot.join(".gitignore");
+        if !link_file(&target, &link) {
+            return;
+        }
+
+        let e = save(
+            &crate::build_from_sources(&sources()),
+            &dot.join("index.bin"),
+        )
+        .unwrap_err();
+        assert_eq!(refused_at(&e), link);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "theirs\n");
+        assert_eq!(names(&dot), [".gitignore"]);
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+    }
+
+    #[test]
+    fn cache_symlink_dot_trellis_to_an_outside_directory_is_refused() {
+        // A linked `.trellis` puts both files wherever it points.
+        let (repo, outside) = link_scratch("dot-dir");
+        let dot = repo.join(".trellis");
+        if !link_dir(&outside, &dot) {
+            return;
+        }
+
+        let e = save(
+            &crate::build_from_sources(&sources()),
+            &dot.join("index.bin"),
+        )
+        .unwrap_err();
+        assert_eq!(refused_at(&e), dot);
+        assert!(names(&outside).is_empty(), "{:?}", names(&outside));
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+    }
+
+    #[test]
+    fn cache_symlink_free_save_replaces_the_blob_and_leaves_no_temp_file() {
+        // The write goes through a temporary file and a rename. The risk on
+        // the plain path: a temporary file left beside the blob is untracked
+        // and not ignored, so it would dirty the worktree and block the next
+        // run (ADR 0009).
+        let (repo, _) = link_scratch("plain");
+        let dot = repo.join(".trellis");
+        let path = dot.join("index.bin");
+        let src = sources();
+        let index = crate::build_from_sources(&src);
+        save(&index, &path).expect("first save");
+        std::fs::write(&path, b"stale").unwrap();
+        save(&index, &path).expect("a regular file is replaced");
+        assert!(load(&path, fingerprint(&src)).is_some());
+        assert_eq!(names(&dot), [".gitignore", "index.bin"]);
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap());
     }
 }
