@@ -781,7 +781,14 @@ mod tests {
                     assert!(stderr.contains(&tree), "{stderr}");
                 }
                 ("exit status", Err(HistoryError::Vcs(VcsError::GitFailed { stderr, .. }))) => {
-                    assert!(stderr.contains("not a git repository"), "{stderr}");
+                    // The wording is git's and has two forms: "not a git
+                    // repository" and, from 2.56 for a dangling gitfile,
+                    // "gitfile does not point to a valid repository".
+                    assert!(
+                        stderr.contains("not a git repository")
+                            || stderr.contains("does not point to a valid repository"),
+                        "{stderr}"
+                    );
                 }
                 _ => panic!("{what}: {got:?}"),
             }
