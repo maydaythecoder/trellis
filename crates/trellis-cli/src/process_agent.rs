@@ -1266,7 +1266,9 @@ mod tests {
             std::fs::write(root.join("app/old.cfg"), "[x]\n\ty = 1\n").unwrap();
             std::fs::write(root.join("app/gone.cfg"), "[x]\n\ty = 1\n").unwrap();
             let cmd = if name == "proc-ignored-gone" {
-                let gone = root.join("app/gone.cfg").display().to_string();
+                // Joined component by component: `del` reads a `/` in its
+                // argument as a switch, so a path with one deletes nothing.
+                let gone = root.join("app").join("gone.cfg").display().to_string();
                 if cfg!(windows) {
                     format!("['cmd', '/C', 'del {gone}']")
                 } else {

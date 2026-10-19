@@ -2694,7 +2694,10 @@ mod task_worktree_tests {
         let said = String::from_utf8_lossy(&out);
         assert_eq!((n, stop), (2, Stop::Empty), "{said}");
         for id in [&a, &b] {
-            let wt = root.join(".trellis/work/task").join(id);
+            // Built component by component, as `TaskWorktree` builds it: the
+            // outcome's `worktree` is compared as a string below, and on
+            // Windows a joined "a/b" keeps its slash beside the backslashes.
+            let wt = root.join(".trellis").join("work").join("task").join(id);
             assert_eq!(std::fs::read_to_string(wt.join("a.py")).unwrap(), "x = 2\n");
             assert_eq!(
                 git_stdout(&wt, &["branch", "--show-current"]).trim(),

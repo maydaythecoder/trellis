@@ -1640,6 +1640,10 @@ mod tests {
         write(src, "skills/delta/SKILL.md", "---\nname: delta\n---\nD\n");
         write(src, "hooks/new.sh", "#!/bin/sh\n");
         git_in(src, &["add", "-A"]);
+        // On unix `add -A` already records tool.md's worktree mode, a plain
+        // file; with core.filemode off (Windows) the index keeps the +x
+        // `source` set, so say it explicitly and the two agree.
+        git_in(src, &["update-index", "--chmod=-x", "skills/alpha/tool.md"]);
         git_in(src, &["commit", "-q", "-m", "v2"]);
     }
 
