@@ -374,7 +374,10 @@ repeat is a ~9% event, not a 20% one, and no code shipped for it.
 
 Every run against ollama printed `tier 2, schema enforced by the runtime —
 degradation: none for correctness`. Ollama does not implement `guided_json`;
-that is vLLM's parameter, and ollama accepts and ignores it. Measured: the same
+that is vLLM's parameter, and ollama accepts and ignores it. (vLLM itself
+removed `guided_json` in 0.12.0 and reads `structured_outputs.json` since, so
+the vLLM dialect now sends `structured_outputs: {"json": <schema>}` with
+`guided_json` beside it for servers older than 0.12.0; #610.) Measured: the same
 prompt three times with and without the schema returned byte-identical text and
 an identical completion-token count, which a schema that changed sampling could
 not produce.
@@ -1694,6 +1697,18 @@ attributed, with the harness declining to rule on it. That needs a model
 capable of saying so, and no measured configuration passes at a constrained
 tier (one repairs 5 of 20 at tier 4, #144). Left
 open rather than built against nothing and tested with a fixture that agrees.
+
+*2026-10-12 (#11, ADR 0054, proposed):* the owner lifted the block on the
+model floor, and that shape is built. When the convergence audit fails a
+non-negotiable rule and the model's `done` summary contains the exact name of
+another loaded non-negotiable rule the audit did not find broken, the failure
+is followed by `conflicting non-negotiable rules; trellis does not arbitrate
+between them` and every such rule's name, source file and description,
+verbatim. The outcome and rollback are unchanged. The four
+`conflict_escalation_` tests drive it with a scripted model; no measured
+model has yet been shown to produce such a summary, so how often a real run
+escalates is pending, and no ticket measures it yet. What remains open is the half no mechanism can
+do: whether the conflict the summary claims is real.
 
 ### What running the wedge found
 

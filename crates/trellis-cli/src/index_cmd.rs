@@ -363,6 +363,22 @@ pub(crate) fn radius_json(
     }))
 }
 
+/// Where `root`'s index cache lives, as every reader and writer names it.
+pub(crate) const INDEX_BIN: &str = ".trellis/index.bin";
+
+/// Saves `index` as `root`'s `.trellis/index.bin`, through the index crate's
+/// one writer (`cache::save`, which also writes the self-ignoring
+/// `.trellis/.gitignore` so the cache never dirties the tree, ADR 0009).
+///
+/// `trellis index` and rpc's `get_codebase` both save here (#654, the
+/// owner's decision of 2026-10-12): one function, so the two cannot come to
+/// disagree about where the cache goes or what it refuses. Each caller has
+/// already refused a root with no `.git` entry, or resolved one through
+/// `root_from`, before it builds anything.
+pub(crate) fn save_index(root: &Path, index: &trellis_index::Index) -> std::io::Result<usize> {
+    trellis_index::cache::save(index, &root.join(INDEX_BIN))
+}
+
 /// Builds the whole index and reports coverage.
 ///
 /// The coverage line is the product's honesty mechanism, so it is printed
@@ -380,8 +396,7 @@ pub(crate) fn cmd_index(root: &Path, graph: bool, limit: usize) -> Result<()> {
     let index = trellis_index::build_from_sources(&sources);
     let elapsed = started.elapsed();
 
-    let cache_path = root.join(".trellis").join("index.bin");
-    let cache_note = match trellis_index::cache::save(&index, &cache_path) {
+    let cache_note = match save_index(root, &index) {
         Ok(bytes) => format!("{:.1} KiB", bytes as f64 / 1024.0),
         Err(e) => format!("not written ({e})"),
     };

@@ -522,6 +522,7 @@ mod tests {
             check_outcomes: vec![crate::CheckOutcome {
                 kind: "Tests".into(),
                 passed: true,
+                duration_ms: None,
             }],
             approved_by: crate::Approval::Human,
             mode_counts: crate::ModeCounts::default(),

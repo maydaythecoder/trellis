@@ -78,7 +78,9 @@ pub(crate) enum Edges {
     All,
 }
 
-/// The codebase graph for `root` as data, for rpc's `get_codebase`.
+/// The codebase graph for `root` as data, for rpc's `get_codebase` at a
+/// commit, whose tree is copied out and never cached. The worktree's answer
+/// builds its index itself, since it saves it (`atlas::codebase`, #654).
 ///
 /// What `codebase_lines` draws for the same `limit`, field for field: the
 /// same modules, busiest first, and the same edges per module, with what was
@@ -163,6 +165,23 @@ pub(crate) fn truncate_module(m: &str, width: usize) -> String {
 /// A hosted spec on this machine may be colibri (ADR 0047 decision 3), whose
 /// `/health` reports its KV slots; that count is the capability here, as in
 /// `doctor`, through [`hosted_batching`].
+/// How long each request `doctor` sends a serving runtime may take: the
+/// constraint probe and the slot read. One constant, so the line said
+/// before the wait and the wait agree.
+const RUNTIME_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Says on stderr what `doctor` is about to wait on, and for how long at
+/// most (#650).
+///
+/// Every probe runs before the report prints, so a runtime that does not
+/// answer was up to half a minute of blank terminal, at the moment a person
+/// is diagnosing it. Stderr, so stdout stays the report. Said whether or not
+/// stderr is a terminal: a captured log of a slow `doctor` should say what
+/// it waited on too.
+fn say_waiting(what: &str, bound: std::time::Duration) {
+    eprintln!("{what} (up to {} s)", bound.as_secs());
+}
+
 pub(crate) fn probe_batching(
     spec: &trellis_model::ModelSpec,
     cfg: &config::RepoConfig,
@@ -185,7 +204,7 @@ pub(crate) fn probe_batching(
         return Ok(BatchingCapability::Unknown);
     };
     let client = trellis_model::RuntimeClient::new(base, *dialect, model.clone())?
-        .with_timeout(std::time::Duration::from_secs(30));
+        .with_timeout(RUNTIME_PROBE_TIMEOUT);
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -302,6 +321,44 @@ fn colibri_context_line(budget: usize) -> String {
     )
 }
 
+/// `doctor`'s lines for the model card colibri 2.0.0 puts on `/v1/models`
+/// (#626): what the run's preflight refuses on. None for a body without
+/// the lists, which decides nothing. Every entry is the server's, cut and
+/// passed through [`plain`].
+fn colibri_card_lines(card: &trellis_model::colibri::Card) -> Vec<String> {
+    let show = |list: &[String]| -> String {
+        list.iter()
+            .take(8)
+            .map(|s| plain(&s.chars().take(40).collect::<String>()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut out = Vec::new();
+    if let Some(c) = &card.capabilities {
+        out.push(format!(
+            "card:       capabilities {}; {}; as reported by colibri",
+            show(c),
+            if card.chats() == Some(true) {
+                "a run can chat with it"
+            } else {
+                "it does not chat, so `trellis run` refuses it before the snapshot"
+            }
+        ));
+    }
+    if let Some(m) = &card.input_modalities {
+        out.push(format!(
+            "card:       input modalities {}; {}; as reported by colibri",
+            show(m),
+            if card.takes_images() == Some(true) {
+                "--image is accepted"
+            } else {
+                "--image is refused before the snapshot"
+            }
+        ));
+    }
+    out
+}
+
 /// `doctor`'s lines for what colibri's `/health` reported, each marked as
 /// colibri's own report (ADR 0047 decision 7). Every string is the
 /// server's, so each goes through [`plain`].
@@ -337,6 +394,91 @@ fn colibri_health_lines(h: &Health) -> Vec<String> {
         None => "host:       colibri has not reported its host yet".to_string(),
     });
     out
+}
+
+/// `doctor`'s `placement:` lines from Ollama's `/api/ps` body (#633), the
+/// Ollama counterpart of ADR 0047 decision 7: what Ollama reports, labelled
+/// as its report. `None` when the body is not a `/api/ps` answer, so a
+/// server that is not Ollama adds no line.
+///
+/// A model split between VRAM and RAM runs several times slower than one
+/// resident in VRAM, and nothing else in doctor says which it is. The two
+/// byte counts are printed as Ollama gives them, and the one comparison made
+/// is between them; no fit score, since that would be a figure without a
+/// method. With `model` named, only that model's entry is reported; an
+/// entry's strings come off the network and go through [`plain`].
+fn ollama_placement_lines(body: &str, model: Option<&str>) -> Option<Vec<String>> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let models = v.get("models")?.as_array()?;
+    if models.is_empty() {
+        return Some(vec![
+            "placement:  not loaded; placement unknown until a run".to_string(),
+        ]);
+    }
+    let name_of = |m: &serde_json::Value| -> String {
+        m.get("name")
+            .or_else(|| m.get("model"))
+            .and_then(|n| n.as_str())
+            .map_or_else(
+                || "(unnamed)".to_string(),
+                |n| plain(&n.chars().take(256).collect::<String>()),
+            )
+    };
+    let chosen: Vec<&serde_json::Value> = match model {
+        Some(wanted) => models
+            .iter()
+            .filter(|m| {
+                ["name", "model"]
+                    .iter()
+                    .any(|f| m.get(f).and_then(|n| n.as_str()) == Some(wanted))
+            })
+            .collect(),
+        None => models.iter().collect(),
+    };
+    if chosen.is_empty() {
+        let loaded: Vec<String> = models.iter().map(name_of).collect();
+        return Some(vec![format!(
+            "placement:  {} is not loaded (ollama has {} loaded); placement unknown until a run",
+            plain(model.unwrap_or("")),
+            loaded.join(", ")
+        )]);
+    }
+    Some(
+        chosen
+            .into_iter()
+            .map(|m| {
+                let quant = m
+                    .get("details")
+                    .and_then(|d| d.get("quantization_level"))
+                    .and_then(|q| q.as_str())
+                    .map_or_else(
+                        || "quantization not reported".to_string(),
+                        |q| plain(&q.chars().take(64).collect::<String>()),
+                    );
+                let size = m.get("size").and_then(|s| s.as_u64());
+                let vram = m.get("size_vram").and_then(|s| s.as_u64());
+                let bytes = match (size, vram) {
+                    (Some(s), Some(v)) => {
+                        let where_ = if v >= s {
+                            "all of it in VRAM"
+                        } else if v == 0 {
+                            "none of it in VRAM"
+                        } else {
+                            "split between VRAM and RAM"
+                        };
+                        format!("{s} bytes, {v} bytes in VRAM ({where_})")
+                    }
+                    (Some(s), None) => format!("{s} bytes, bytes in VRAM not reported"),
+                    (None, Some(v)) => format!("size not reported, {v} bytes in VRAM"),
+                    (None, None) => "size and bytes in VRAM not reported".to_string(),
+                };
+                format!(
+                    "placement:  {}: {quant}, {bytes}; as reported by ollama",
+                    name_of(m)
+                )
+            })
+            .collect(),
+    )
 }
 
 /// `doctor`'s `tier:` line for an identified colibri, from the tools probe
@@ -458,6 +600,9 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
     let mut notes: Vec<String> = Vec::new();
     // What colibri reported, printed after the probe's own lines.
     let mut colibri_lines: Vec<String> = Vec::new();
+    // What Ollama reported about where the model sits (#633), printed
+    // there too; empty when the endpoint did not answer `/api/ps`.
+    let mut placement_lines: Vec<String> = Vec::new();
     // A hosted endpoint's batching, from the same read as its colibri lines.
     let mut hosted_seen: Option<Result<BatchingCapability, String>> = None;
     // A `tier:` line in place of the one `Probe::report` would give: colibri's
@@ -490,11 +635,12 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
             tier = Some(AdapterTier::Native);
             match &seen {
                 Ok(ColibriSeen {
-                    identity: Identity::Identified { id },
+                    identity: Identity::Identified { id, card },
                     health,
                 }) => {
                     runtime = colibri_runtime(&h.base, &h.model, id);
                     colibri_lines.push("version:    not reported over HTTP".to_string());
+                    colibri_lines.extend(colibri_card_lines(card));
                     colibri_lines.push(colibri_context_line(hosted::hosted_context_bytes(
                         &h, &repo_cfg, true,
                     )?));
@@ -574,8 +720,10 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
                 );
             };
             let client = trellis_model::RuntimeClient::new(base, *dialect, model.clone())?
-                .with_timeout(std::time::Duration::from_secs(30));
+                .with_timeout(RUNTIME_PROBE_TIMEOUT);
             runtime = format!("{dialect:?} at {base}");
+            // The spec can come from repository config, so it is shown plain.
+            let probed = plain(&spec.to_string());
             // True of llama.cpp, which serves what it was started with and is
             // never told. Not true once the spec names a weight — saying it
             // anyway would report ignorance the harness does not have, on the
@@ -595,13 +743,19 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
                 // unprompted would claim a tier it does not have. A `vllm:`
                 // spec carries no key (it is not hosted), and so neither
                 // does this read.
-                if *dialect == trellis_model::Dialect::VllmOpenAi
-                    && let Ok(Identity::Identified { id }) = colibri::identify(base, None).await
-                {
-                    tier = Some(AdapterTier::ValidateAndRetry);
-                    notes.push(colibri_vllm_note(base, &id));
-                    return;
+                if *dialect == trellis_model::Dialect::VllmOpenAi {
+                    say_waiting(
+                        &format!("asking {probed} whether it is colibri"),
+                        colibri::READ_TIMEOUT,
+                    );
+                    if let Ok(Identity::Identified { id, .. }) = colibri::identify(base, None).await
+                    {
+                        tier = Some(AdapterTier::ValidateAndRetry);
+                        notes.push(colibri_vllm_note(base, &id));
+                        return;
+                    }
                 }
+                say_waiting(&format!("probing {probed}"), RUNTIME_PROBE_TIMEOUT);
                 match client.probe_constraint().await {
                     Ok(true) => {
                         tier = Some(AdapterTier::RuntimeConstrained);
@@ -636,6 +790,16 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
                     }
                 }
             });
+            // Ollama is reached as a `vllm:` spec (the picker writes one, ADR
+            // 0050 §2), so that dialect on this machine is asked `/api/ps`.
+            // No answer, or an answer in another shape, is another server
+            // and adds nothing; the lines are Ollama's own (#633).
+            if *dialect == trellis_model::Dialect::VllmOpenAi
+                && let Ok(body) = crate::first_run::ollama_ps(base, crate::first_run::BOUND)
+                && let Some(lines) = ollama_placement_lines(&body, model.as_deref())
+            {
+                placement_lines = lines;
+            }
         }
 
         // After the constraint probe, so its note still reads first. A hosted
@@ -644,6 +808,19 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
         // restart differently. A hosted endpoint's batching comes from the
         // read above, through the mapping `probe_batching` uses too, so the
         // endpoint is not read twice; a failed read is already a note.
+        // Only llama.cpp is asked: vLLM and SGLang report no slot count.
+        if hosted_seen.is_none()
+            && let trellis_model::ModelSpec::Runtime {
+                dialect: trellis_model::Dialect::LlamaCpp,
+                base,
+                ..
+            } = &spec
+        {
+            say_waiting(
+                &format!("reading the slot count from {}", plain(base)),
+                RUNTIME_PROBE_TIMEOUT,
+            );
+        }
         match hosted_seen {
             Some(b) => batching = b.unwrap_or(BatchingCapability::Unknown),
             None => match probe_batching(&spec, &repo_cfg, from_user) {
@@ -672,7 +849,7 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
         .iter()
         .position(|l| l.starts_with("batching:"))
         .map_or(lines.len(), |i| i + 1);
-    lines.splice(at..at, colibri_lines);
+    lines.splice(at..at, colibri_lines.into_iter().chain(placement_lines));
     if let Some(t) = tier_line
         && let Some(l) = lines.iter_mut().find(|l| l.starts_with("tier:"))
     {
@@ -693,6 +870,10 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
     for line in repo_lines(root, &repo_cfg) {
         println!("{line}");
     }
+    // Which binary confines the clone's command, or why none does (ADR
+    // 0055): a sandbox that is missing or fails is a warning, so this is
+    // where a person finds out before a run does.
+    println!("{}", trellis_loop::OsSandbox::detected().doctor_line());
     println!("root:       {}", root.display());
 
     if model_spec.is_none() {
@@ -731,15 +912,29 @@ pub(crate) fn cmd_init(root: &Path) -> Result<()> {
     }
 
     let dir = root.join(".trellis");
-    let mut wrote = Vec::new();
-    let mut kept = Vec::new();
-    for (rel, body) in [
+    let files = [
         ("config.toml", CONFIG_TEMPLATE),
         ("context.md", CONTEXT_TEMPLATE),
         ("governance/README.md", GOVERNANCE_TEMPLATE),
-    ] {
+    ];
+    // A repository can commit `.trellis`, `.trellis/governance` or any of
+    // these files as a link, and a dangling one reads as absent to
+    // `exists()`, so the template was written at the link's target outside
+    // the repository (#723). Every entry is checked before anything is
+    // created, so a refusal leaves the disk as it was.
+    for (rel, _) in &files {
+        trellis_core::links::refuse_links_below(
+            root,
+            &Path::new(".trellis").join(rel),
+            "`trellis init`'s scaffold",
+        )?;
+    }
+    let mut wrote = Vec::new();
+    let mut kept = Vec::new();
+    for (rel, body) in files {
         let path = dir.join(rel);
-        if path.exists() {
+        // `symlink_metadata`, not `exists()`, for the reason above.
+        if std::fs::symlink_metadata(&path).is_ok() {
             kept.push(rel);
             continue;
         }
@@ -747,7 +942,10 @@ pub(crate) fn cmd_init(root: &Path) -> Result<()> {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
-        std::fs::write(&path, body).with_context(|| format!("writing {}", path.display()))?;
+        // `create_new`: a link planted after the check above is not
+        // followed, and an existing entry is never overwritten.
+        trellis_core::links::create_new(&path, body.as_bytes())
+            .with_context(|| format!("writing {}", path.display()))?;
         wrote.push(rel);
     }
 
@@ -1202,6 +1400,38 @@ mod doctor_tests {
 
     /// The milestone mockup prints `Index  48,102 symbols · 91.3% resolved ✓`.
     /// CLAUDE.md forbids exactly that: what the resolver bound is a lower
+    #[test]
+    fn doctor_placement_names_a_model_that_is_not_the_loaded_one_and_another_server_adds_nothing() {
+        // #633: the spec names qwen3:8b and Ollama has something else
+        // loaded; reporting the other model's placement under this name
+        // would describe the wrong weights. And a body in another shape
+        // (a server that is not Ollama answering 200) adds no line.
+        let body = r#"{"models":[{"name":"llama3:8b","size":10,"size_vram":10,
+            "details":{"quantization_level":"Q8_0"}}]}"#;
+        let lines = ollama_placement_lines(body, Some("qwen3:8b")).unwrap();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("qwen3:8b is not loaded (ollama has llama3:8b loaded)"),
+            "{lines:?}"
+        );
+        assert!(!lines[0].contains("Q8_0"), "{lines:?}");
+        // With no model named, every loaded entry is reported, and an ESC
+        // byte in a name cannot repaint the terminal.
+        let lines = ollama_placement_lines(
+            r#"{"models":[{"name":"a\u001b[2Jb","size":10,"size_vram":0}]}"#,
+            None,
+        )
+        .unwrap();
+        assert!(lines[0].contains("a\\u{1b}[2Jb"), "{lines:?}");
+        assert!(lines[0].contains("none of it in VRAM"), "{lines:?}");
+        assert!(lines[0].contains("quantization not reported"), "{lines:?}");
+        assert_eq!(
+            ollama_placement_lines(r#"{"choices":[{"text":""}]}"#, Some("x")),
+            None
+        );
+        assert_eq!(ollama_placement_lines("not json", None), None);
+    }
+
     /// bound on recall, and comparing it to the gate thresholds is the error
     /// ADR 0014 already fixed once in `radius`, which printed "3.7% resolved"
     /// for a resolver audited at 72%.
@@ -1459,6 +1689,7 @@ mod init_tests {
             human: None,
             may_have_changed_tree: false,
             changed: Vec::new(),
+            duration_ms: 0,
         }
     }
 

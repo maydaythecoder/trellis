@@ -19,8 +19,14 @@
 use crate::budget::{Budget, Exhaustion, Spend};
 use crate::orchestrator::Handle;
 use crate::tools::ToolResult;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use trellis_checks::CheckKind;
+
+/// A duration as the whole milliseconds the trail records; saturating,
+/// as `model_ms` is.
+fn millis(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
 
 /// How many identical call-and-result pairs in a row mean the run is stuck.
 ///
@@ -196,6 +202,13 @@ pub struct Turn {
     /// ([`crate::orchestrator::Dispatched::changed`]). Empty for every other
     /// tool. Whole here; the trail cuts it to its cap and keeps the count.
     pub changed: Vec<String>,
+    /// How long the call took, in milliseconds, by the monotonic clock
+    /// (`Instant`, never the wall clock, ADR 0046), with any wait on a
+    /// person in approve mode taken out, so it is the tool's own time
+    /// (#622). Timed here around the orchestrator's call, never inside
+    /// `trellis-checks` (rule 1): for a check it is the check call's time
+    /// as the loop saw it. The trail records it per action and per check.
+    pub duration_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,6 +237,11 @@ pub enum NotConverged {
     /// different: the code is correct and not allowed.
     GovernanceViolation {
         detail: String,
+        /// Shown beside the failure when the model's summary names another
+        /// non-negotiable rule (ADR 0054). It changes nothing about the
+        /// outcome: the run does not converge and rolls back the same way
+        /// with or without it, and no `Verdict` is touched.
+        conflict: Option<crate::governance::ConflictEscalation>,
     },
     /// A check passed, and then something that may have changed the tree
     /// ran: an edit, a created file, `bash`, a custom tool, or a hook. The
@@ -345,13 +363,22 @@ impl NotConverged {
                 ),
                 detail
             ),
-            NotConverged::GovernanceViolation { detail } => format!(
-                concat!(
-                    "the checks passed and a project rule was broken, so the ",
-                    "run did not converge and nothing was accepted:\n{}"
-                ),
-                detail
-            ),
+            NotConverged::GovernanceViolation { detail, conflict } => {
+                let mut s = format!(
+                    concat!(
+                        "the checks passed and a project rule was broken, so the ",
+                        "run did not converge and nothing was accepted:\n{}"
+                    ),
+                    detail
+                );
+                if let Some(c) = conflict {
+                    if !s.ends_with('\n') {
+                        s.push('\n');
+                    }
+                    s.push_str(&c.to_string());
+                }
+                s
+            }
             NotConverged::NoProgress { repeated, times } => format!(
                 concat!(
                     "no progress: the same call was made {} times with the same ",
@@ -851,11 +878,19 @@ pub async fn run_seeded<M: Model>(
         // earlier one, and a steer can never land between a call and the
         // observation of its result.
         t.steering.drain(&mut steering, t.turns.len(), false);
+        // Replies are not streamed (ADR 0024), so on a slow local model a
+        // client hears nothing between one `turn` and the next and reads
+        // the run as hung. Said before the wait, under the number the
+        // `turn` it produces will carry. No `prompt_bytes`: the driver
+        // builds the prompt inside `next_step`, so here its size is not
+        // yet measured, and `prompt_bytes()` would be the previous call's
+        // (ADR 0025 §4).
+        tracing::info!(turn = iterations + 1, "model call");
         // `Instant`, not the wall clock: a host's clock can step mid-call,
         // and a model time that went backwards would be an invented figure.
         let asked = Instant::now();
         let step = model.next_step(&t).await;
-        let model_ms = u64::try_from(asked.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let model_ms = millis(asked.elapsed());
         let step = match step {
             Ok(s) => s,
             Err(e) => {
@@ -888,10 +923,12 @@ pub async fn run_seeded<M: Model>(
                     // would fall through to `Converged` with no rule
                     // enforced. Asked after both answers, so an actor that
                     // died before or between them is caught.
+                    let audit_started = Instant::now();
                     let gate = match orch.has_governance_rules().await {
                         true => Some(orch.audit_governance().await),
                         false => None,
                     };
+                    let audit_ms = millis(audit_started.elapsed());
                     if !orch.is_alive() || matches!(gate, Some(ToolResult::Error(_))) {
                         tracing::error!("the orchestrator task is gone; stopping");
                         break 'run Outcome::NotConverged {
@@ -933,11 +970,17 @@ pub async fn run_seeded<M: Model>(
                             human: None,
                             may_have_changed_tree: false,
                             changed: Vec::new(),
+                            duration_ms: audit_ms,
                         });
                         if !v.passed() {
+                            // Asked only now, after the outcome is settled:
+                            // whatever comes back is shown beside it, and
+                            // nothing here can make the run converge.
+                            let conflict = orch.conflict_escalation(&summary).await;
                             break 'run Outcome::NotConverged {
                                 reason: NotConverged::GovernanceViolation {
                                     detail: detail.stdout.clone(),
+                                    conflict,
                                 },
                                 iterations,
                             };
@@ -963,6 +1006,7 @@ pub async fn run_seeded<M: Model>(
                 // this call, not the next one.
                 let prompt_bytes = model.prompt_bytes();
                 let usage = model.step_usage();
+                let called = Instant::now();
                 let crate::orchestrator::Dispatched {
                     result,
                     radius_sites,
@@ -982,6 +1026,13 @@ pub async fn run_seeded<M: Model>(
                             .saturating_sub(started.elapsed().saturating_sub(waited_on_human)),
                     )
                     .await;
+                // The tool's time: a person's deliberation in approve mode
+                // is taken out, as it is from the wall-clock budget.
+                let duration_ms = millis(
+                    called
+                        .elapsed()
+                        .saturating_sub(human.as_ref().map_or(Duration::ZERO, |h| h.waited)),
+                );
                 if let Some(h) = human {
                     waited_on_human += h.waited;
                 }
@@ -1078,6 +1129,7 @@ pub async fn run_seeded<M: Model>(
                     model_ms = model_ms,
                     completion_tokens = usage.completion_tokens,
                     queue_wait_ms = usage.queue_wait_ms,
+                    duration_ms = duration_ms,
                     "turn"
                 );
 
@@ -1092,6 +1144,7 @@ pub async fn run_seeded<M: Model>(
                     human,
                     may_have_changed_tree,
                     changed,
+                    duration_ms,
                 });
 
                 // After the turn is recorded, so the trail shows the call
@@ -1940,7 +1993,7 @@ rank = \"non-negotiable\"
         let (outcome, t) = run("fix it", &mut m, &h, &budget()).await;
         match outcome {
             Outcome::NotConverged {
-                reason: NotConverged::GovernanceViolation { detail },
+                reason: NotConverged::GovernanceViolation { detail, .. },
                 ..
             } => {
                 assert!(detail.contains("psycopg2.connect"), "{detail}");
@@ -2864,6 +2917,7 @@ rank = \"non-negotiable\"
                     human: None,
                     may_have_changed_tree: false,
                     changed: Vec::new(),
+                    duration_ms: 0,
                 },
                 Turn {
                     call: ToolCall::ReadFile { path: "b".into() },
@@ -2876,6 +2930,7 @@ rank = \"non-negotiable\"
                     human: None,
                     may_have_changed_tree: false,
                     changed: Vec::new(),
+                    duration_ms: 0,
                 },
             ],
             final_notice: false,
@@ -3208,6 +3263,189 @@ rank = \"non-negotiable\"
         );
     }
 
+    // ---- conflicting non-negotiable rules (ADR 0054) ----
+
+    const DB_DESCRIPTION: &str = "Go through app.db.\nA direct connection skips the pool.";
+    const MIGRATIONS_DESCRIPTION: &str = "The schema is released; a migration needs a DBA.";
+
+    /// Two non-negotiable rules and one nice-to-have, each in its own file.
+    /// Only "No direct DB" can be broken by the scripted edit.
+    fn conflicting_rules(root: &std::path::Path) {
+        let g = root.join(".trellis").join("governance");
+        std::fs::create_dir_all(&g).unwrap();
+        let rule = |file: &str, body: String| std::fs::write(g.join(file), body).unwrap();
+        rule(
+            "a-db.toml",
+            format!(
+                "name = \"No direct DB\"\nrank = \"non-negotiable\"\n\
+                 description = {DB_DESCRIPTION:?}\n\
+                 forbid = {{ pattern = \"psycopg2.connect\" }}\n"
+            ),
+        );
+        rule(
+            "b-migrations.toml",
+            format!(
+                "name = \"Migrations are frozen\"\nrank = \"non-negotiable\"\n\
+                 description = {MIGRATIONS_DESCRIPTION:?}\n\
+                 deny-write = {{ paths = [\"migrations/\"] }}\n"
+            ),
+        );
+        rule(
+            "c-orm.toml",
+            "name = \"Use the ORM\"\nrank = \"nice-to-have\"\n\
+             description = \"Raw SQL is harder to review.\"\n\
+             forbid = { pattern = \"cursor.execute\" }\n"
+                .to_string(),
+        );
+    }
+
+    /// A run that breaks "No direct DB", passes its typecheck, and stops
+    /// with `summary`.
+    async fn run_breaking_the_db_rule(summary: &str) -> (Outcome, Transcript) {
+        let d = repo();
+        conflicting_rules(d.path());
+        let rules = trellis_checks::governance::load(d.path()).unwrap();
+        let (h, _j) = Orchestrator::new(d.path(), checker(0))
+            .with_rules(rules)
+            .spawn();
+        let mut m = Scripted::new(vec![
+            Step::Call(ToolCall::Edit {
+                path: "app/util.py".into(),
+                old: "return 1".into(),
+                new: "return psycopg2.connect('s')".into(),
+            }),
+            Step::Call(ToolCall::RunChecks {
+                paths: vec!["app/util.py".into()],
+                kinds: vec![CheckKind::Typecheck],
+            }),
+            Step::Done {
+                summary: summary.into(),
+            },
+        ]);
+        run("fix it", &mut m, &h, &budget()).await
+    }
+
+    /// The failure's detail, iteration count and escalation, or a panic
+    /// naming the outcome that was not a governance violation.
+    fn governance_failure(
+        outcome: &Outcome,
+    ) -> (&str, u32, Option<&crate::governance::ConflictEscalation>) {
+        match outcome {
+            Outcome::NotConverged {
+                reason: NotConverged::GovernanceViolation { detail, conflict },
+                iterations,
+            } => (detail.as_str(), *iterations, conflict.as_ref()),
+            other => panic!("a broken non-negotiable must not converge, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn conflict_escalation_shows_both_rules_verbatim_and_rules_on_neither() {
+        // The risk: the harness arbitrating between rules the user declared
+        // equally inviolable — by naming one the winner, by ordering them as
+        // a repair plan, or by letting the escalation soften the failure.
+        let (outcome, t) = run_breaking_the_db_rule(
+            "I could not satisfy No direct DB without breaking Migrations are frozen",
+        )
+        .await;
+        let (detail, iterations, conflict) = governance_failure(&outcome);
+        let c = conflict.expect("the summary names a second non-negotiable rule");
+        assert_eq!(
+            c.rules,
+            vec![
+                crate::governance::EscalatedRule {
+                    name: "No direct DB".into(),
+                    source: Some(".trellis/governance/a-db.toml".into()),
+                    description: DB_DESCRIPTION.into(),
+                },
+                crate::governance::EscalatedRule {
+                    name: "Migrations are frozen".into(),
+                    source: Some(".trellis/governance/b-migrations.toml".into()),
+                    description: MIGRATIONS_DESCRIPTION.into(),
+                },
+            ],
+            "both rules, attributed, in file order and in the user's words"
+        );
+
+        let shown = c.to_string();
+        assert!(
+            shown.starts_with(&format!("{}\n", crate::governance::CONFLICT_LINE)),
+            "{shown}"
+        );
+        for word in ["winner", "prefer", "first", "fix", "should", "instead"] {
+            assert!(
+                !shown.to_lowercase().contains(word),
+                "the escalation must not rank the rules ({word:?}): {shown}"
+            );
+        }
+        let Outcome::NotConverged { reason, .. } = &outcome else {
+            unreachable!("checked by governance_failure");
+        };
+        let explained = reason.explain();
+        assert!(
+            explained.contains(crate::governance::CONFLICT_LINE),
+            "{explained}"
+        );
+        for line in [
+            "  rule: No direct DB",
+            "  source: .trellis/governance/a-db.toml",
+            "  description: Go through app.db.\nA direct connection skips the pool.",
+            "  rule: Migrations are frozen",
+            "  source: .trellis/governance/b-migrations.toml",
+            "  description: The schema is released; a migration needs a DBA.",
+        ] {
+            assert!(explained.contains(line), "missing {line:?} in {explained}");
+        }
+
+        // The outcome is the one a single non-negotiable failure has: the
+        // same variant, detail, iteration count and recorded turns as a run
+        // whose summary names nothing. Rollback is decided by the outcome,
+        // so it is the same rollback.
+        let (plain, plain_t) = run_breaking_the_db_rule("fixed it").await;
+        let (plain_detail, plain_iterations, plain_conflict) = governance_failure(&plain);
+        assert!(plain_conflict.is_none());
+        assert_eq!(detail, plain_detail);
+        assert_eq!(iterations, plain_iterations);
+        let verdicts =
+            |t: &Transcript| t.turns.iter().map(|x| x.verdict_passed).collect::<Vec<_>>();
+        assert_eq!(verdicts(&t), verdicts(&plain_t));
+        assert_eq!(t.turns.last().map(|x| x.verdict_passed), Some(Some(false)));
+    }
+
+    #[tokio::test]
+    async fn conflict_escalation_is_not_shown_when_the_summary_names_only_the_broken_rule() {
+        // Naming the rule that failed is a model describing its failure, not
+        // a second rule it could not satisfy.
+        let (outcome, _) =
+            run_breaking_the_db_rule("No direct DB was in the way, so I left it").await;
+        let (_, _, conflict) = governance_failure(&outcome);
+        assert_eq!(conflict, None);
+    }
+
+    #[tokio::test]
+    async fn conflict_escalation_is_not_shown_when_the_summary_names_a_nice_to_have_rule() {
+        // A nice-to-have cannot fail the audit, so there is no inviolable
+        // rule on the other side of the conflict.
+        let (outcome, _) =
+            run_breaking_the_db_rule("I could not satisfy No direct DB and Use the ORM together")
+                .await;
+        let (_, _, conflict) = governance_failure(&outcome);
+        assert_eq!(conflict, None);
+    }
+
+    #[tokio::test]
+    async fn conflict_escalation_is_not_shown_when_the_summary_names_no_rule() {
+        let (outcome, _) = run_breaking_the_db_rule("fixed it").await;
+        let (_, _, conflict) = governance_failure(&outcome);
+        assert_eq!(conflict, None);
+        // Case-sensitive, as the rule is matched by its exact name: a
+        // summary that only resembles a name names nothing.
+        let (outcome, _) =
+            run_breaking_the_db_rule("no direct db versus migrations are frozen").await;
+        let (_, _, conflict) = governance_failure(&outcome);
+        assert_eq!(conflict, None);
+    }
+
     // ---- skills (ADR 0019) ----
 
     fn write_skill(root: &std::path::Path, name: &str, description: &str, body: &str) {
@@ -3490,6 +3728,57 @@ rank = \"non-negotiable\"
             "and must not trigger the escalation turn"
         );
         assert_eq!(t.turns[0].human, Some(true));
+    }
+
+    #[tokio::test]
+    async fn a_trail_records_duration_of_each_call_timed_by_the_loop_without_the_person_s_wait() {
+        // The risk (#622): a duration taken inside `trellis-checks` or from
+        // the wall clock, or one that charges a person's deliberation in
+        // approve mode to the tool. The check here sleeps for a second and
+        // the read is instant; the person takes 300 ms before each, which
+        // neither duration includes.
+        let d = repo();
+        let sleeper = if cfg!(windows) {
+            vec![
+                "cmd".into(),
+                "/C".into(),
+                "ping -n 2 127.0.0.1 >NUL & rem".into(),
+            ]
+        } else {
+            vec!["sh".into(), "-c".into(), "sleep 1".into()]
+        };
+        let cfg = CheckConfig {
+            typecheck: sleeper,
+            ..CheckConfig::default()
+        };
+        let (h, _j) = Orchestrator::new(d.path(), cfg)
+            .with_gate(Box::new(SlowPerson(std::time::Duration::from_millis(300))))
+            .spawn();
+        let mut m = Scripted::new(vec![
+            Step::Call(ToolCall::ReadFile {
+                path: "app/util.py".into(),
+            }),
+            typecheck_now(),
+            Step::Done {
+                summary: "checked".into(),
+            },
+        ]);
+        let (_, t) = run("time it", &mut m, &h, &budget()).await;
+        assert_eq!(t.turns.len(), 2, "{:?}", t.turns);
+        let read = &t.turns[0];
+        let check = &t.turns[1];
+        assert_eq!(read.human, Some(true));
+        assert!(
+            read.duration_ms < 300,
+            "the person's 300 ms is not the read's: {} ms",
+            read.duration_ms
+        );
+        assert_eq!(check.verdict_passed, Some(true));
+        assert!(
+            (900..10_000).contains(&check.duration_ms),
+            "the check slept about a second: {} ms",
+            check.duration_ms
+        );
     }
 
     fn typecheck_now() -> Step {
@@ -4006,6 +4295,119 @@ rank = \"non-negotiable\"
             .parse()
             .unwrap();
         assert!(ms >= 40, "{ms}");
+    }
+
+    /// `(message, turn)` of each kept event, in stream order.
+    fn message_and_turn(events: &[crate::testutil::TurnFields]) -> Vec<(String, u32)> {
+        events
+            .iter()
+            .map(|f| {
+                (
+                    f["message"].clone(),
+                    f["turn"].parse().unwrap_or_else(|e| panic!("{e}: {f:?}")),
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_model_call_event_precedes_each_turn_under_the_turn_s_own_number() {
+        // The risk: replies are not streamed, so between two `turn` events a
+        // client hears nothing and reads a slow local model as a hang. The
+        // event has to come before the wait and carry the number the turn
+        // it produces will carry, or a client cannot pair them. The call
+        // that answers `done` is a call too, and has one.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), checker(0)).spawn();
+        let mut m = Scripted::new(vec![
+            Step::Call(ToolCall::ReadFile {
+                path: "app/util.py".into(),
+            }),
+            Step::Call(ToolCall::ReadFile {
+                path: "app/util.py".into(),
+            }),
+            Step::Done {
+                summary: "read it".into(),
+            },
+        ]);
+        let events = crate::testutil::TurnEvents::default();
+        let guard = events.install();
+        run("read", &mut m, &h, &budget()).await;
+        drop(guard);
+        let got = message_and_turn(&events.taken_in_order());
+        assert_eq!(
+            got,
+            vec![
+                ("model call".to_string(), 1),
+                ("turn".to_string(), 1),
+                ("model call".to_string(), 2),
+                ("turn".to_string(), 2),
+                ("model call".to_string(), 3),
+            ]
+        );
+        // The prompt is built inside `next_step`, so its size is not yet
+        // measured here; an absent field, never a stale or invented one.
+        for f in events.taken_in_order() {
+            if f["message"] == "model call" {
+                assert!(!f.contains_key("prompt_bytes"), "{f:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_model_call_event_precedes_no_governance_audit_turn() {
+        // The risk: the audit at convergence is a `turn` event the loop
+        // emits without calling the model. A `model call` announced for it
+        // would make a client wait on a reply that is never coming.
+        let d = repo();
+        forbid_rule(d.path(), "psycopg2.connect");
+        let rules = trellis_checks::governance::load(d.path()).unwrap();
+        let (h, _j) = Orchestrator::new(d.path(), checker(0))
+            .with_rules(rules)
+            .spawn();
+        let mut m = Scripted::new(vec![
+            Step::Call(ToolCall::Edit {
+                path: "app/util.py".into(),
+                old: "return 1".into(),
+                new: "return psycopg2.connect('s')".into(),
+            }),
+            Step::Call(ToolCall::RunChecks {
+                paths: vec!["app/util.py".into()],
+                kinds: vec![CheckKind::Typecheck],
+            }),
+            Step::Done {
+                summary: "fixed it".into(),
+            },
+        ]);
+        let events = crate::testutil::TurnEvents::default();
+        let guard = events.install();
+        let (outcome, _) = run("fix it", &mut m, &h, &budget()).await;
+        drop(guard);
+        assert!(
+            matches!(
+                outcome,
+                Outcome::NotConverged {
+                    reason: NotConverged::GovernanceViolation { .. },
+                    ..
+                }
+            ),
+            "the fixture must reach the audit: {outcome:?}"
+        );
+        let got = message_and_turn(&events.taken_in_order());
+        // Three calls, three `model call`s; the audit's `turn` (numbered
+        // after the last call, like the loop numbers it) follows the third
+        // with no `model call` of its own.
+        assert_eq!(
+            got,
+            vec![
+                ("model call".to_string(), 1),
+                ("turn".to_string(), 1),
+                ("model call".to_string(), 2),
+                ("turn".to_string(), 2),
+                ("model call".to_string(), 3),
+                ("turn".to_string(), 2),
+            ]
+        );
     }
 }
 

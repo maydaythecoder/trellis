@@ -45,4 +45,14 @@ bounded() {
 
 bounded cargo test --workspace --no-fail-fast
 bounded cargo test -p trellis-cli --no-default-features --no-fail-fast
-echo "OK: workspace tests and the local-only trellis-cli tests"
+# Go branch (ADR 0052, #504): every package in tui/, under the same time
+# limit. tui/'s rpc tests spawn target/debug/trellis, which the cargo runs
+# above have built.
+if go_module_present; then
+  go_require
+  (cd tui && bounded go test -count=1 ./...)
+  gomsg="; tui/ (go test)"
+else
+  gomsg="; Go branch skipped: tui/ is absent"
+fi
+echo "OK: workspace tests and the local-only trellis-cli tests$gomsg"

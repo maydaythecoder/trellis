@@ -121,6 +121,13 @@ This isolates a writer that edits where it stands. It does not isolate
 one that goes looking for the repository or for anything else on the
 machine. Stated so they are not assumed closed:
 
+*Amended by ADR 0055 (#621):* where the run's `repo:` line says `sandbox:
+bwrap` or `sandbox: sandbox-exec`, the first two items below no longer
+hold (no network; the home directory hidden) and the third is narrowed to
+the system's temporary directory. Where it says `sandbox: none (...)`,
+all of them hold as written. ADR 0055 "Limits" lists what the sandbox
+leaves.
+
 - **No network isolation.** The command can open any connection the user
   can, and send anything it can read.
 - **Reads outside the clone.** The home directory, credentials files,
@@ -302,6 +309,11 @@ Tests, in `crates/trellis-loop/src/isolate.rs`:
 - **Containers, a micro-VM or an OS sandbox**, for network isolation and
   reads outside the repository. Later, per the owner's decision; ADR 0021
   rows 1.6 and 13.3 stay deferred for that step.
+  *Amended by ADR 0055 (#621):* an OS sandbox is built around the clone's
+  command: `bwrap` on Linux, `sandbox-exec` on macOS, when present and
+  working, and a warning (`sandbox: none (<reason>)` on the `repo:` line
+  and in `trellis doctor`) when not. Containers and a micro-VM stay
+  unbuilt.
 
 ## Process agents (amendment, #175)
 

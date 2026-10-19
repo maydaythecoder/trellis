@@ -115,20 +115,27 @@ fn argv_candidates(argv: &[String]) -> impl Iterator<Item = &str> {
 }
 
 /// `(repository-relative path, sha256)` when `arg` names a regular file
-/// inside `root`: a relative path with no `..`, or an absolute one under
+/// inside `root`: a path with no `..`, relative, or absolute and under
 /// `root`. A program found on `PATH` is not repository code and is not
 /// hashed; a script the repository ships is.
+///
+/// `..` is refused in the absolute case too. `root/x/../y` passes
+/// `starts_with(root)` by text while naming whatever `..` reaches, and on
+/// Windows `is_file` resolves `..` lexically, so `root/.git/worktrees/no-
+/// such-dir/../../config` read as `.git/config` there and was hashed into
+/// the digest; `work` then saw a changed fingerprint when a command wrote
+/// that file, instead of the restored-tree report it tests for.
 fn repo_file(root: &Path, arg: &str, cache: &HashCache) -> Option<(String, String)> {
     let p = Path::new(arg);
+    if arg.is_empty() || p.components().any(|c| c.as_os_str() == "..") {
+        return None;
+    }
     let full = if p.is_absolute() {
         if !p.starts_with(root) {
             return None;
         }
         p.to_path_buf()
     } else {
-        if arg.is_empty() || p.components().any(|c| c.as_os_str() == "..") {
-            return None;
-        }
         root.join(p)
     };
     if !full.is_file() {
@@ -167,6 +174,15 @@ fn rel(root: &Path, full: &Path) -> String {
 /// - `.gitignore`, while it is byte for byte the one trellis writes
 ///   (line endings aside); one a person edited is theirs and is covered
 /// - `runs/<name>.json`, the trails: regular files directly under `runs/`
+/// - `replays/<name>.json`, the replay recordings, and `replays/.gitignore`
+///   while it is the one trellis writes (ADR 0023 §4, amended 2026-10-12).
+///   The item's shown text below does not name them: it is part of the
+///   digest, and changing it would untrust every repository trusted before.
+/// - a linked worktree registered in this repository, strictly under
+///   `work/` and reached there with no link on the way: the task
+///   worktrees `trellis work` keeps (ADR 0053). A checkout of the
+///   repository, not code trusted under `.trellis/`; registration is
+///   checked both ways (ADR 0023 §4, amended 2026-10-13)
 ///
 /// Nothing is skipped by prefix: `index.bin.py` and `runs/gate.py` are
 /// hashed. Hook and tool code kept under `.trellis/` is covered by this
@@ -197,6 +213,13 @@ fn dot_trellis_files(root: &Path, cache: &HashCache) -> Result<Vec<(String, Stri
         real_root: PathBuf,
         real_dot: PathBuf,
         real_git: Option<PathBuf>,
+        /// The `.trellis/` the walk started from, as given (not canonical),
+        /// so a directory's path as walked can be compared with its real
+        /// one.
+        dot: PathBuf,
+        /// The repository's common git directory, canonical, read from
+        /// disk; `None` skips no worktree.
+        common: Option<PathBuf>,
         /// Canonical directories already walked, so a link cycle ends.
         seen: std::collections::HashSet<PathBuf>,
         out: BTreeMap<String, String>,
@@ -211,12 +234,45 @@ fn dot_trellis_files(root: &Path, cache: &HashCache) -> Result<Vec<(String, Stri
             let inner = inner.to_string_lossy().replace('\\', "/");
             match inner.as_str() {
                 "index.bin" => true,
+                // Any version trellis wrote, so changing the text (#726)
+                // does not untrust a repository that has the old one.
                 ".gitignore" => std::fs::read_to_string(real)
-                    .is_ok_and(|t| t.replace("\r\n", "\n") == trellis_index::cache::IGNORE),
-                _ => inner
-                    .strip_prefix("runs/")
-                    .is_some_and(|n| !n.contains('/') && n.ends_with(".json")),
+                    .is_ok_and(|t| trellis_index::cache::is_trellis_gitignore(&t)),
+                // Replay recordings (ADR 0023 §4, amended 2026-10-12): every
+                // run writes one, so hashing them would untrust the
+                // repository after each run, as trails would.
+                "replays/.gitignore" => std::fs::read_to_string(real)
+                    .is_ok_and(|t| t.replace("\r\n", "\n") == crate::scripted::REPLAY_IGNORE),
+                _ => ["runs/", "replays/"].iter().any(|dir| {
+                    inner
+                        .strip_prefix(dir)
+                        .is_some_and(|n| !n.contains('/') && n.ends_with(".json"))
+                }),
             }
+        }
+
+        /// Whether the directory reached at `path`, whose real path is
+        /// `real`, is a linked worktree to leave out (ADR 0023 §4, amended
+        /// 2026-10-13): strictly under the real `.trellis/work/`, reached
+        /// at that same place with no link on the way (an alias of one is
+        /// walked like any directory, so its files are hashed), and
+        /// registered in this repository
+        /// (`trellis_vcs::is_registered_linked_worktree`).
+        fn linked_worktree(&self, path: &Path, real: &Path) -> bool {
+            let Some(common) = &self.common else {
+                return false;
+            };
+            let Ok(inner) = real.strip_prefix(self.real_dot.join("work")) else {
+                return false;
+            };
+            if inner.as_os_str().is_empty() {
+                return false;
+            }
+            let as_walked = path.strip_prefix(&self.dot).ok();
+            if as_walked != real.strip_prefix(&self.real_dot).ok() {
+                return false;
+            }
+            trellis_vcs::is_registered_linked_worktree(real, common)
         }
 
         /// Why a link resolving to `real` (or failing to) cannot be followed.
@@ -273,7 +329,11 @@ fn dot_trellis_files(root: &Path, cache: &HashCache) -> Result<Vec<(String, Stri
                     continue;
                 };
                 if md.is_dir() {
-                    self.dir(&path)?;
+                    // A link to a worktree is walked: only the directory
+                    // itself, at its own place, is left out.
+                    if linked || !self.linked_worktree(&path, &real) {
+                        self.dir(&path)?;
+                    }
                     continue;
                 }
                 let key = rel(&self.real_root, &real);
@@ -303,9 +363,12 @@ fn dot_trellis_files(root: &Path, cache: &HashCache) -> Result<Vec<(String, Stri
             plain(&real_dot.display().to_string())
         ));
     }
+    let common = trellis_vcs::common_git_dir_on_disk(root);
     let mut w = Walk {
         cache,
         real_git,
+        dot: dot.clone(),
+        common,
         real_root,
         real_dot,
         seen: Default::default(),
@@ -467,6 +530,69 @@ fn outside_code(root: &Path, items: &[TrustItem]) -> Option<String> {
     })
 }
 
+/// The registered linked worktree under the real `.trellis/work/` that the
+/// canonical path `real` is inside, if any.
+fn enclosing_linked_worktree(real: &Path, real_dot: &Path, common: &Path) -> Option<PathBuf> {
+    let work = real_dot.join("work");
+    real.ancestors()
+        .take_while(|a| a.starts_with(&work) && *a != work.as_path())
+        .find(|a| trellis_vcs::is_registered_linked_worktree(a, common))
+        .map(Path::to_path_buf)
+}
+
+/// The refusal for a hook or custom tool whose argv names a file inside a
+/// linked worktree under `.trellis/work/` (ADR 0023 §4, amended
+/// 2026-10-13). The digest leaves those worktrees out, and a run rooted in
+/// a task worktree edits its files, so code there is neither covered nor
+/// out of a run's reach: the two reasons [`outside_code`] refuses code
+/// outside `.trellis/`. Decided on the canonical path, so a link such as
+/// `.trellis/hooks -> work/task/1` is refused when a file is named through
+/// it.
+fn worktree_code(root: &Path, items: &[TrustItem]) -> Option<String> {
+    let common = trellis_vcs::common_git_dir_on_disk(root)?;
+    let real_root = std::fs::canonicalize(root).ok()?;
+    let real_dot = std::fs::canonicalize(root.join(".trellis")).ok()?;
+    let mut why: Vec<String> = Vec::new();
+    for item in items {
+        for tok in argv_candidates(&item.argv) {
+            if tok.is_empty() {
+                continue;
+            }
+            let p = Path::new(tok);
+            let Ok(real) = std::fs::canonicalize(if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                root.join(p)
+            }) else {
+                continue;
+            };
+            if !real.is_file() {
+                continue;
+            }
+            let Some(wt) = enclosing_linked_worktree(&real, &real_dot, &common) else {
+                continue;
+            };
+            let line = format!(
+                "{} names `{}`, which is in the linked worktree `{}`",
+                plain(&item.label),
+                plain(tok),
+                plain(&rel(&real_root, &wt))
+            );
+            if !why.contains(&line) {
+                why.push(line);
+            }
+        }
+    }
+    (!why.is_empty()).then(|| {
+        format!(
+            "{}. Linked worktrees under .trellis/work/ are left out of the trust digest, and \
+             a run in one edits its files: move the code to .trellis/hooks/ (or \
+             .trellis/tools/) and name it there",
+            why.join(", ")
+        )
+    })
+}
+
 /// `path` as reached, with its parent made canonical, for naming a link in
 /// a message: the link itself, not what it resolves to.
 fn path_for_message(real_root: &Path, path: &Path) -> PathBuf {
@@ -554,13 +680,14 @@ impl Fingerprint {
         }
         // Hooks and custom tools only, taken before `bash` and the extras
         // are added: the rule is about where their code lives.
-        let outside = match (
+        let outside = [
             outside_code(root, &items),
+            worktree_code(root, &items),
             package_code(user_packages_dir().as_deref(), root, &items),
-        ) {
-            (Some(a), Some(b)) => Some(format!("{a}; {b}")),
-            (a, b) => a.or(b),
-        };
+        ]
+        .into_iter()
+        .flatten()
+        .reduce(|a, b| format!("{a}; {b}"));
         if let Some((shell, settings)) = bash {
             items.push(TrustItem::command_cached(
                 root,
@@ -1590,6 +1717,234 @@ mod tests {
 
     /// A directory symlink, or `None` where the platform refuses to make one
     /// (Windows without developer mode), in which case the test says so.
+    /// A committed repository with a hook under `.trellis/hooks/`, the
+    /// `.gitignore` trellis writes (which ignores `work/`), and one task
+    /// worktree at `.trellis/work/task/1/` added through `trellis_vcs`, as
+    /// `trellis work` adds one.
+    fn repo_with_task_worktree() -> (tempfile::TempDir, trellis_vcs::TaskWorktree) {
+        use crate::testutil::git;
+        let repo = tempfile::tempdir().unwrap();
+        let r = repo.path();
+        git(r, &["init", "-q"]);
+        git(r, &["config", "user.email", "t@example.invalid"]);
+        git(r, &["config", "user.name", "t"]);
+        std::fs::create_dir_all(r.join(".trellis/hooks")).unwrap();
+        std::fs::write(r.join(".trellis/hooks/gate.py"), "print('ok')\n").unwrap();
+        std::fs::write(r.join(".trellis/.gitignore"), trellis_index::cache::IGNORE).unwrap();
+        std::fs::write(r.join("app.py"), "x = 1\n").unwrap();
+        git(r, &["add", "-A"]);
+        git(r, &["commit", "-qm", "init"]);
+        let wt = trellis_vcs::TaskWorktree::create(r, "1", "HEAD").unwrap();
+        (repo, wt)
+    }
+
+    fn digest_paths(root: &Path) -> Vec<String> {
+        dot_trellis_files(root, &HashCache::default())
+            .unwrap()
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect()
+    }
+
+    #[test]
+    fn trust_linked_worktree_registered_under_work_is_left_out_of_the_digest() {
+        // The risk (#718): a kept task worktree (ADR 0053) holds a checkout
+        // of the repository under `.trellis/work/`, so the starting
+        // worktree's `.trellis/` digest changed the moment one was kept,
+        // and every later trust check there read "changed since it was
+        // trusted"; and changed again with every edit a run made in it.
+        let (repo, wt) = repo_with_task_worktree();
+        let r = repo.path();
+        std::fs::remove_dir_all(&wt.path).unwrap();
+        crate::testutil::git(r, &["worktree", "prune"]);
+        let h = hooks(&["python", "-m", "gate"]);
+        let before = Fingerprint::of(r, &h, &[], None).sha256;
+
+        let wt = trellis_vcs::TaskWorktree::create(r, "2", "HEAD").unwrap();
+        assert!(wt.path.join(".trellis/hooks/gate.py").is_file());
+        assert_eq!(
+            Fingerprint::of(r, &h, &[], None).sha256,
+            before,
+            "a registered worktree under .trellis/work/ is not repository code to trust"
+        );
+        std::fs::write(wt.path.join(".trellis/hooks/gate.py"), "import os\n").unwrap();
+        std::fs::write(wt.path.join("app.py"), "x = 2\n").unwrap();
+        assert_eq!(Fingerprint::of(r, &h, &[], None).sha256, before);
+        assert!(
+            !digest_paths(r).iter().any(|p| p.contains("work/")),
+            "{:?}",
+            digest_paths(r)
+        );
+
+        // Pointers written relative (`worktree.useRelativePaths`), with `..`
+        // in them, are resolved before they are compared.
+        std::fs::write(
+            wt.path.join(".git"),
+            "gitdir: ../../../../.git/worktrees/../worktrees/2\n",
+        )
+        .unwrap();
+        std::fs::write(
+            r.join(".git/worktrees/2/gitdir"),
+            "../../../.trellis/work/task/2/.git\n",
+        )
+        .unwrap();
+        assert_eq!(Fingerprint::of(r, &h, &[], None).sha256, before);
+
+        // Everything else under `.trellis/` is still covered.
+        std::fs::write(r.join(".trellis/hooks/gate.py"), "import sys\n").unwrap();
+        assert_ne!(Fingerprint::of(r, &h, &[], None).sha256, before);
+    }
+
+    #[test]
+    fn trust_linked_worktree_forged_or_unregistered_is_still_fingerprinted() {
+        // The risk (#718's security review): the skip keyed on something a
+        // directory can claim for itself, so a planted directory under
+        // `.trellis/work/` hides code from the digest. Each case below
+        // plants `gate.py` in a directory that is not a registered linked
+        // worktree at its own place, and the file must be in the digest.
+        let (repo, wt) = repo_with_task_worktree();
+        let r = repo.path();
+        let real_root = std::fs::canonicalize(r).unwrap();
+        let admin = real_root.join(".git/worktrees/1");
+        let plant = |name: &str, dotgit: Option<&str>| {
+            let d = r.join(".trellis/work").join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("gate.py"), "print('planted')\n").unwrap();
+            if let Some(text) = dotgit {
+                std::fs::write(d.join(".git"), text).unwrap();
+            }
+            format!(".trellis/work/{name}/gate.py")
+        };
+        let mut expected = vec![
+            // No `.git` at all.
+            plant("bare", None),
+            // Points somewhere that is not a worktree's directory.
+            plant("elsewhere", Some("gitdir: /nonexistent/worktrees/x\n")),
+            // Points at the repository's own git directory.
+            plant(
+                "common",
+                Some(&format!("gitdir: {}\n", real_root.join(".git").display())),
+            ),
+            // Points at a registered worktree's directory, which names
+            // task/1 back, not this one; `..` does not change that.
+            plant(
+                "borrowed",
+                Some(&format!("gitdir: {}/../1\n", admin.display())),
+            ),
+            // Not in git's format.
+            plant("garbled", Some(&format!("{}\n", admin.display()))),
+        ];
+        // A `.git` directory, not a file: a nested repository.
+        let nested = r.join(".trellis/work/nested");
+        std::fs::create_dir_all(nested.join(".git")).unwrap();
+        expected.push(plant("nested", None));
+
+        // A `.git` that is a symbolic link to a well-formed `.git` file.
+        let linked = plant("linked", None);
+        let link_target = r.join(".trellis/work/linked-gitfile");
+        std::fs::write(&link_target, format!("gitdir: {}\n", admin.display())).unwrap();
+        let have_links = trellis_core::paths::symlink_for_test(
+            &link_target,
+            &r.join(".trellis/work/linked/.git"),
+        )
+        .is_ok();
+        expected.push(linked);
+        expected.push(".trellis/work/linked-gitfile".into());
+
+        // Registered once, then its registration removed (pruned).
+        let gone = trellis_vcs::TaskWorktree::create(r, "3", "HEAD").unwrap();
+        std::fs::write(gone.path.join("gate.py"), "print('pruned')\n").unwrap();
+        std::fs::remove_dir_all(real_root.join(".git/worktrees/3")).unwrap();
+        expected.push(".trellis/work/task/3/gate.py".into());
+
+        let got = digest_paths(r);
+        for path in &expected {
+            assert!(got.contains(path), "{path} left out: {got:?}");
+        }
+        assert!(
+            !got.iter().any(|p| p.starts_with(".trellis/work/task/1/")),
+            "the registered one is still left out: {got:?}"
+        );
+
+        // A link under `.trellis/work/` to the registered worktree: an
+        // alias is walked, so its files are covered under their real path.
+        if have_links {
+            symlink_dir(&wt.path, &r.join(".trellis/work/alias")).unwrap();
+            let got = digest_paths(r);
+            assert!(
+                got.contains(&".trellis/work/task/1/.trellis/hooks/gate.py".to_string()),
+                "{got:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn trust_linked_worktree_outside_work_is_still_fingerprinted() {
+        // The risk: the skip reaching beyond `.trellis/work/`, so a person's
+        // own `git worktree add .trellis/hooks-wt` hid hook code.
+        let (repo, _wt) = repo_with_task_worktree();
+        let r = repo.path();
+        crate::testutil::git(
+            r,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "other",
+                ".trellis/elsewhere",
+                "HEAD",
+            ],
+        );
+        let got = digest_paths(r);
+        assert!(
+            got.contains(&".trellis/elsewhere/.trellis/hooks/gate.py".to_string()),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn trust_linked_worktree_code_named_by_a_hook_is_refused() {
+        // The risk: the digest leaves a task worktree out, and a run rooted
+        // there edits it, so a hook naming a script in one (directly, or
+        // through a link under `.trellis/`) would run code that is neither
+        // hashed as `.trellis/` is nor out of a run's reach.
+        let (repo, wt) = repo_with_task_worktree();
+        let r = repo.path();
+        let named = Fingerprint::of(
+            r,
+            &hooks(&["python", ".trellis/work/task/1/.trellis/hooks/gate.py"]),
+            &[],
+            None,
+        );
+        let why = named.refused.as_deref().expect("refused");
+        assert!(
+            why.contains("linked worktree `.trellis/work/task/1`"),
+            "{why}"
+        );
+        assert!(why.contains(".trellis/hooks/"), "names the fix: {why}");
+
+        if symlink_dir(
+            &wt.path.join(".trellis/hooks"),
+            &r.join(".trellis/wt-hooks"),
+        )
+        .is_some()
+        {
+            let through = Fingerprint::of(
+                r,
+                &hooks(&["python", ".trellis/wt-hooks/gate.py"]),
+                &[],
+                None,
+            );
+            let why = through.refused.as_deref().expect("refused through a link");
+            assert!(why.contains("linked worktree"), "{why}");
+        }
+
+        // The starting worktree's own hook is not affected.
+        let own = Fingerprint::of(r, &hooks(&["python", ".trellis/hooks/gate.py"]), &[], None);
+        assert_eq!(own.refused, None);
+    }
+
     fn symlink_dir(target: &Path, link: &Path) -> Option<()> {
         match trellis_core::paths::symlink_for_test(target, link) {
             Ok(()) => Some(()),
@@ -1598,6 +1953,34 @@ mod tests {
                 None
             }
         }
+    }
+
+    #[test]
+    fn trust_generated_gitignore_of_any_version_is_trellis_own_and_an_edited_one_is_not() {
+        // The risk (#726): trellis changes the text of the `.gitignore` it
+        // writes, and a repository that has the old text, which is never
+        // rewritten, is asked to re-trust for a file nobody touched. The
+        // other side: a person's edit to that file is taken for trellis's
+        // and left out of the digest.
+        let repo = tempfile::tempdir().unwrap();
+        let dot = repo.path().join(".trellis");
+        std::fs::create_dir_all(&dot).unwrap();
+        let h = hooks(&["python", "-m", "gate"]);
+        let digest = || Fingerprint::of(repo.path(), &h, &[], None).sha256;
+        let base = digest();
+        for text in [trellis_index::cache::IGNORE]
+            .into_iter()
+            .chain(trellis_index::cache::EARLIER_IGNORES.iter().copied())
+        {
+            std::fs::write(dot.join(".gitignore"), text).unwrap();
+            assert_eq!(base, digest(), "{text}");
+        }
+        std::fs::write(
+            dot.join(".gitignore"),
+            format!("{}mine\n", trellis_index::cache::EARLIER_IGNORES[0]),
+        )
+        .unwrap();
+        assert_ne!(base, digest(), "an edited .gitignore is the person's");
     }
 
     #[test]
@@ -1617,6 +2000,14 @@ mod tests {
         std::fs::write(dot.join("index.bin"), [0u8, 1]).unwrap();
         std::fs::write(dot.join("runs/20260101-x.json"), "{}").unwrap();
         std::fs::write(dot.join(".gitignore"), trellis_index::cache::IGNORE).unwrap();
+        // And replay recordings with their own .gitignore (#620).
+        std::fs::create_dir_all(dot.join("replays")).unwrap();
+        std::fs::write(dot.join("replays/20260101-x.json"), "{}").unwrap();
+        std::fs::write(
+            dot.join("replays/.gitignore"),
+            crate::scripted::REPLAY_IGNORE,
+        )
+        .unwrap();
         assert_eq!(
             base,
             digest(),
@@ -1639,9 +2030,21 @@ mod tests {
                 "import os
 ",
             ),
+            (
+                "replays/gate.py",
+                "import os
+",
+            ),
+            (
+                "replays/sub/x.json",
+                "{}
+",
+            ),
         ] {
             let before = digest();
-            std::fs::write(dot.join(name), body).unwrap();
+            let path = dot.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
             assert_ne!(before, digest(), "`.trellis/{name}` is not covered");
         }
         // A .gitignore a person wrote is theirs, and it is covered.
@@ -1654,6 +2057,13 @@ mod tests {
         )
         .unwrap();
         assert_ne!(before, digest(), "an edited .gitignore is not covered");
+        let before = digest();
+        std::fs::write(dot.join("replays/.gitignore"), "!gate.py\n").unwrap();
+        assert_ne!(
+            before,
+            digest(),
+            "an edited replays/.gitignore is not covered"
+        );
     }
 
     #[test]
