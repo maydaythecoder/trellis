@@ -147,6 +147,13 @@ pub(crate) struct Offer {
     pub(crate) model: String,
     pub(crate) runtime: &'static str,
     pub(crate) addr: SocketAddr,
+    /// `Some(base_url)` for a colibri (#625): the spec is
+    /// `provider:colibri#<model>`, which reaches the server at tier 1 only
+    /// through a `[[providers]]` entry named `colibri` at this base in the
+    /// user's own config, so choosing it writes that entry too
+    /// ([`crate::user_config::set_colibri_provider`]). `None` for every
+    /// other runtime, whose `vllm:` spec needs nothing else.
+    pub(crate) colibri_base: Option<String>,
 }
 
 impl Offer {
@@ -164,27 +171,72 @@ impl Offer {
 /// is empty, over-long, or carries a control character or whitespace is
 /// dropped, and every spec offered is one `ModelSpec` parses back to the
 /// same model.
+///
+/// A `/v1/models` list owned by colibri (`owned_by: "colibri"`, ADR 0047
+/// decision 3; `coli setup` serves on :8000 with no key, #625) is offered
+/// as `provider:colibri#<id>`, never as `vllm:`, which would run colibri at
+/// tier 4 with no chat template when tier 1 is there. A bare `openai-chat:`
+/// spec is never offered either: it would send the user's `OPENAI_API_KEY`
+/// to the server (ADR 0024 §3), where the provider entry names
+/// `COLI_API_KEY`. The list read is loopback by construction (the probe
+/// addresses are), so identifying it is the same claim `colibri::identify`
+/// reads, and it turns on nothing but which spec is offered.
 pub(crate) fn offers(probed: &[Probed]) -> Vec<Offer> {
     let mut out: Vec<Offer> = Vec::new();
     for p in probed {
         let Ok(body) = &p.answer else { continue };
+        let colibri = owned_by_colibri(p.runtime.api, body);
         for id in ids(p.runtime.api, body) {
-            let spec = format!("vllm:http://{}#{id}", p.runtime.addr);
-            let reaches = matches!(
-                spec.parse::<ModelSpec>(),
-                Ok(ModelSpec::Runtime { model: Some(m), .. }) if m == id
-            );
+            let (spec, runtime, colibri_base) = if colibri {
+                (
+                    format!("provider:{}#{id}", crate::user_config::COLIBRI_PROVIDER),
+                    "colibri",
+                    Some(format!("http://{}/v1", p.runtime.addr)),
+                )
+            } else {
+                (
+                    format!("vllm:http://{}#{id}", p.runtime.addr),
+                    p.runtime.name,
+                    None,
+                )
+            };
+            let reaches = match spec.parse::<ModelSpec>() {
+                Ok(ModelSpec::Runtime { model: Some(m), .. }) => !colibri && m == id,
+                Ok(ModelSpec::Provider { name, model }) => {
+                    colibri && name == crate::user_config::COLIBRI_PROVIDER && model == id
+                }
+                _ => false,
+            };
             if reaches && !out.iter().any(|o| o.spec == spec) {
                 out.push(Offer {
                     spec,
                     model: id,
-                    runtime: p.runtime.name,
+                    runtime,
                     addr: p.runtime.addr,
+                    colibri_base,
                 });
             }
         }
     }
     out
+}
+
+/// Whether an OpenAI-shaped model list says colibri serves it: its first
+/// entry's `owned_by`, as `colibri::identify` reads it (colibri lists the
+/// one id it serves). Ollama's `/api/tags` has no owner.
+fn owned_by_colibri(api: Api, body: &str) -> bool {
+    if api != Api::OpenAiModels {
+        return false;
+    }
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+    v.get("data")
+        .and_then(|l| l.as_array())
+        .and_then(|l| l.first())
+        .and_then(|m| m.get("owned_by"))
+        .and_then(|o| o.as_str())
+        == Some("colibri")
 }
 
 /// The specs alone, as rpc's `list_models` answers them.
@@ -306,6 +358,23 @@ pub(crate) fn choose(
     let Some(spec) = pick(&offered, config_file, input, out)? else {
         return Ok(None);
     };
+    // The provider entry before the spec, so a refused entry (one named
+    // `colibri` already, at another address) leaves no spec that names a
+    // provider pointing elsewhere.
+    if let Some(base) = offered
+        .iter()
+        .find(|o| o.spec == spec)
+        .and_then(|o| o.colibri_base.as_deref())
+        && crate::user_config::set_colibri_provider(config_file, base)?
+    {
+        writeln!(
+            out,
+            "Wrote [[providers]] {} at {base} (key from {}, sent only when set) to {}.",
+            crate::user_config::COLIBRI_PROVIDER,
+            crate::user_config::COLIBRI_KEY_ENV,
+            config_file.display()
+        )?;
+    }
     crate::user_config::set_model_spec(config_file, &spec)?;
     writeln!(out, "Wrote [model] spec to {}.", config_file.display())?;
     Ok(Some(spec))
@@ -434,6 +503,14 @@ mod tests {
 
     /// One connection on a loopback port: read the request, answer `body`.
     fn serve(body: &'static str) -> (SocketAddr, std::thread::JoinHandle<()>) {
+        serve_at("/api/tags", body)
+    }
+
+    /// [`serve`], asserting the request is `GET <path>`.
+    fn serve_at(
+        path: &'static str,
+        body: &'static str,
+    ) -> (SocketAddr, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = std::thread::spawn(move || {
@@ -447,7 +524,7 @@ mod tests {
                 req.push(b[0]);
             }
             assert!(
-                req.starts_with(b"GET /api/tags HTTP/1.0\r\n"),
+                req.starts_with(format!("GET {path} HTTP/1.0\r\n").as_bytes()),
                 "{}",
                 String::from_utf8_lossy(&req)
             );
@@ -707,11 +784,187 @@ mod tests {
             model: "a".to_string(),
             runtime: "Ollama",
             addr: SocketAddr::from(([127, 0, 0, 1], 11434)),
+            colibri_base: None,
         }];
         for input in ["q\n", ""] {
             let got = pick(&specs, &file, &mut input.as_bytes(), &mut Vec::new()).unwrap();
             assert_eq!(got, None, "{input:?}");
         }
         assert!(!file.exists());
+    }
+
+    // ---- #625: a colibri on :8000 is offered at tier 1 ----
+
+    /// bf244291 (v2.0.0), c/openai_server.py:5997 (`owned_by: "colibri"`),
+    /// one id, as colibri lists the one model it serves.
+    const COLIBRI_MODELS: &str = r#"{"object":"list","data":[{"id":"glm-5.2","object":"model","created":1758800000,"owned_by":"colibri"}]}"#;
+
+    /// The same shape owned by vLLM.
+    const VLLM_MODELS: &str = r#"{"object":"list","data":[{"id":"Qwen/Qwen3-8B","object":"model","created":1758800000,"owned_by":"vllm"}]}"#;
+
+    fn vllm_at(addr: SocketAddr) -> Runtime {
+        Runtime {
+            name: "vLLM",
+            addr,
+            api: Api::OpenAiModels,
+        }
+    }
+
+    /// A user config file under a temporary `TRELLIS_CONFIG_DIR`, holding
+    /// `text`, and a repository whose `.trellis/config.toml` must not change.
+    fn user_and_repo(text: &str) -> (tempfile::TempDir, std::path::PathBuf, tempfile::TempDir) {
+        let user = tempfile::tempdir().unwrap();
+        let file = crate::user_config::resolve(
+            &|k| (k == "TRELLIS_CONFIG_DIR").then(|| user.path().as_os_str().to_owned()),
+            cfg!(windows),
+        )
+        .unwrap()
+        .join("config.toml");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, text).unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let dot = repo.path().join(".trellis");
+        std::fs::create_dir_all(&dot).unwrap();
+        std::fs::write(dot.join("config.toml"), "[checks]\ntests = [\"pytest\"]\n").unwrap();
+        (user, file, repo)
+    }
+
+    #[test]
+    fn first_run_colibri_on_8000_is_offered_as_a_provider_spec_and_never_vllm() {
+        // The risk: colibri run at tier 4 with no chat template (the `vllm:`
+        // spec every runtime got) while tier 1 is there; or offered as a
+        // bare `openai-chat:` spec, which would send OPENAI_API_KEY to it.
+        let (addr, server) = serve_at("/v1/models", COLIBRI_MODELS);
+        let probed = probe(&[vllm_at(addr)], BOUND);
+        server.join().unwrap();
+        let got = offers(&probed);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].spec, "provider:colibri#glm-5.2");
+        assert_eq!(got[0].runtime, "colibri");
+        assert_eq!(
+            got[0].colibri_base.as_deref(),
+            Some(format!("http://{addr}/v1").as_str())
+        );
+        let specs = specs(&probed);
+        assert!(specs.iter().all(|s| !s.starts_with("vllm:")), "{specs:?}");
+        assert!(
+            specs.iter().all(|s| !s.starts_with("openai-chat:")),
+            "{specs:?}"
+        );
+    }
+
+    #[test]
+    fn first_run_colibri_a_vllm_owned_list_still_offers_vllm_specs() {
+        let (addr, server) = serve_at("/v1/models", VLLM_MODELS);
+        let probed = probe(&[vllm_at(addr)], BOUND);
+        server.join().unwrap();
+        let got = offers(&probed);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].spec, format!("vllm:http://{addr}#Qwen/Qwen3-8B"));
+        assert_eq!(got[0].runtime, "vLLM");
+        assert_eq!(got[0].colibri_base, None);
+    }
+
+    #[test]
+    fn first_run_colibri_choosing_it_writes_the_provider_entry_and_spec_to_the_user_config_only() {
+        // The risk (ADR 0024 §3): the key variable a `provider:` spec reads
+        // is the user's to name, so the entry must land in the user's file
+        // and the repository's `.trellis/` must not change; and the spec
+        // without its entry would resolve to nothing.
+        let (_user, file, repo) = user_and_repo("# mine\n[model]\nthinking = \"low\"\n");
+        let (addr, server) = serve_at("/v1/models", COLIBRI_MODELS);
+        let mut shown = Vec::new();
+        let chosen = choose(
+            &[vllm_at(addr)],
+            BOUND,
+            &file,
+            &mut "1\n".as_bytes(),
+            &mut shown,
+        )
+        .unwrap();
+        server.join().unwrap();
+        assert_eq!(chosen.as_deref(), Some("provider:colibri#glm-5.2"));
+        let shown = String::from_utf8(shown).unwrap();
+        assert!(shown.contains("glm-5.2 — colibri at"), "{shown}");
+        assert!(shown.contains("Wrote [[providers]] colibri"), "{shown}");
+
+        let written = std::fs::read_to_string(&file).unwrap();
+        assert!(written.starts_with("# mine\n"), "{written}");
+        let cfg = crate::config::RepoConfig::load_with_user(repo.path(), Some(&file)).unwrap();
+        assert_eq!(cfg.model().as_deref(), Some("provider:colibri#glm-5.2"));
+        let p = cfg.provider("colibri").unwrap();
+        assert_eq!(p.protocol, "openai");
+        assert_eq!(p.base_url, format!("http://{addr}/v1"));
+        assert_eq!(p.key_env, "COLI_API_KEY");
+        // The user's own entry, so a run resolves it as the user's choice.
+        assert_eq!(cfg.provenance.providers.len(), 1);
+
+        let dot = repo.path().join(".trellis");
+        assert_eq!(
+            std::fs::read_to_string(dot.join("config.toml")).unwrap(),
+            "[checks]\ntests = [\"pytest\"]\n"
+        );
+        let entries: Vec<_> = std::fs::read_dir(&dot)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, ["config.toml"]);
+    }
+
+    #[test]
+    fn first_run_colibri_an_existing_colibri_provider_at_another_base_is_not_overwritten() {
+        // The risk: replacing the entry moves where the user's COLI_API_KEY
+        // is sent. Nothing is written, the spec included, and the refusal
+        // names both addresses.
+        let mine = "[[providers]]\nname = \"colibri\"\nprotocol = \"openai\"\n\
+                    base_url = \"http://127.0.0.1:9000/v1\"\nkey_env = \"COLI_API_KEY\"\n";
+        let (_user, file, _repo) = user_and_repo(mine);
+        let (addr, server) = serve_at("/v1/models", COLIBRI_MODELS);
+        let err = choose(
+            &[vllm_at(addr)],
+            BOUND,
+            &file,
+            &mut "1\n".as_bytes(),
+            &mut Vec::new(),
+        )
+        .unwrap_err()
+        .to_string();
+        server.join().unwrap();
+        assert!(
+            err.contains("http://127.0.0.1:9000/v1") && err.contains(&format!("http://{addr}/v1")),
+            "{err}"
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), mine, "untouched");
+
+        // The same base already there: nothing to add, and the spec is
+        // written.
+        let (addr, server) = serve_at("/v1/models", COLIBRI_MODELS);
+        let same = format!(
+            "[[providers]]\nname = \"colibri\"\nprotocol = \"openai\"\n\
+             base_url = \"http://{addr}/v1\"\nkey_env = \"COLI_API_KEY\"\n"
+        );
+        std::fs::write(&file, &same).unwrap();
+        let mut shown = Vec::new();
+        let chosen = choose(
+            &[vllm_at(addr)],
+            BOUND,
+            &file,
+            &mut "1\n".as_bytes(),
+            &mut shown,
+        )
+        .unwrap();
+        server.join().unwrap();
+        assert_eq!(chosen.as_deref(), Some("provider:colibri#glm-5.2"));
+        let shown = String::from_utf8(shown).unwrap();
+        assert!(
+            !shown.contains("Wrote [[providers]]"),
+            "nothing added: {shown}"
+        );
+        let written = std::fs::read_to_string(&file).unwrap();
+        assert!(written.starts_with(&same), "{written}");
+        assert!(
+            written.contains("spec = \"provider:colibri#glm-5.2\""),
+            "{written}"
+        );
     }
 }

@@ -634,6 +634,125 @@ fn one_line_string_len(v: &str) -> Option<usize> {
 /// `text` as TOML with `[model] spec` taken out (and a `[model]` table left
 /// empty by that), so two versions compare equal when that is all that
 /// differs; `None` when it is not TOML.
+/// The name of the `[[providers]]` entry the first run writes for a colibri
+/// it found (#625, ADR 0047 decision 2), and the spec that reaches it:
+/// `provider:colibri#<id>`.
+pub(crate) const COLIBRI_PROVIDER: &str = "colibri";
+
+/// The variable that entry reads a key from: colibri's own, so a user's
+/// `OPENAI_API_KEY` is never sent to it (ADR 0047 decision 2). Unset, no
+/// key is sent, which is what a `coli setup` server with no `--api-key`
+/// wants.
+pub(crate) const COLIBRI_KEY_ENV: &str = "COLI_API_KEY";
+
+/// Writes the `[[providers]]` entry named [`COLIBRI_PROVIDER`] to the user's
+/// own config file, `file`, pointing at `base_url` with
+/// [`COLIBRI_KEY_ENV`] as its key variable (#625). The user's file and no
+/// other: a `key_env` is the user's to name, never a repository's (ADR 0024
+/// §3), and this is the one writer of one.
+///
+/// Appended as text, as [`set_model_spec`] edits, so every comment the user
+/// wrote survives. An entry already named `colibri` is never rewritten: the
+/// same `base_url` is left as it is, and another is refused with the file
+/// untouched, since replacing it would move where the user's `COLI_API_KEY`
+/// is sent. The result is parsed back before anything is written, and
+/// nothing is written unless the entry reads back as given and nothing else
+/// in the file reads differently. `Ok(false)` when the entry was already
+/// there and nothing was written.
+pub(crate) fn set_colibri_provider(file: &Path, base_url: &str) -> Result<bool> {
+    let old = match std::fs::read_to_string(file) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", file.display())),
+    };
+    let before: RepoConfig = toml::from_str(&old).with_context(|| {
+        format!(
+            "{} is not valid TOML; the file was not changed",
+            file.display()
+        )
+    })?;
+    if let Some(p) = before
+        .providers
+        .iter()
+        .flatten()
+        .find(|p| p.name == COLIBRI_PROVIDER)
+    {
+        if p.base_url == base_url {
+            return Ok(false);
+        }
+        anyhow::bail!(
+            "{} already defines [[providers]] `{COLIBRI_PROVIDER}` at {}, and the colibri found \
+             is at {base_url}. The entry was not changed: it decides where {} is sent, and \
+             that is yours to change by hand. The model was not written",
+            file.display(),
+            p.base_url,
+            if p.key_env.is_empty() {
+                "your OPENAI_API_KEY"
+            } else {
+                "your key"
+            }
+        );
+    }
+    let entry = format!(
+        "\n[[providers]]\nname = {}\nprotocol = \"openai\"\nbase_url = {}\nkey_env = {}\n",
+        toml::Value::String(COLIBRI_PROVIDER.to_string()),
+        toml::Value::String(base_url.to_string()),
+        toml::Value::String(COLIBRI_KEY_ENV.to_string()),
+    );
+    let mut out = old.clone();
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&entry);
+
+    let back: RepoConfig = toml::from_str(&out).with_context(|| {
+        format!(
+            "adding the colibri [[providers]] entry to {} would not leave valid TOML; the file \
+             was not changed. Add it by hand:{entry}",
+            file.display()
+        )
+    })?;
+    let read_back = back
+        .providers
+        .iter()
+        .flatten()
+        .find(|p| p.name == COLIBRI_PROVIDER);
+    if !read_back.is_some_and(|p| {
+        p.protocol == "openai" && p.base_url == base_url && p.key_env == COLIBRI_KEY_ENV
+    }) {
+        anyhow::bail!(
+            "the colibri [[providers]] entry added to {} did not read back as written; the \
+             file was not changed",
+            file.display()
+        );
+    }
+    if all_but_providers(&old) != all_but_providers(&out) {
+        anyhow::bail!(
+            "adding the colibri [[providers]] entry to {} would change more than that one \
+             entry; the file was not changed. Add it by hand:{entry}",
+            file.display()
+        );
+    }
+
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    // Written beside the file and renamed over it, as `set_model_spec` is.
+    let tmp = file.with_extension("toml.tmp");
+    std::fs::write(&tmp, &out).with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, file).with_context(|| format!("replacing {}", file.display()))?;
+    Ok(true)
+}
+
+/// The file's tables with `providers` removed, for the check that the
+/// provider edit changed nothing else.
+fn all_but_providers(text: &str) -> Option<toml::Table> {
+    let mut t: toml::Table = toml::from_str(text).ok()?;
+    t.remove("providers");
+    Some(t)
+}
+
 fn all_but_model_spec(text: &str) -> Option<toml::Table> {
     let mut t: toml::Table = toml::from_str(text).ok()?;
     if let Some(toml::Value::Table(m)) = t.get_mut("model") {
