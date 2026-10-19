@@ -51,9 +51,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-    # Self-hosted when the repository variables name runners (JSON label
-    # lists, e.g. ["self-hosted","Windows"]); GitHub-hosted when unset (#157).
-    runs-on: ${{ fromJSON(matrix.os == 'windows-latest' && (vars.WINDOWS_RUNNER || '"windows-latest"') || (vars.LINUX_RUNNER || '"ubuntu-latest"')) }}
+    # GitHub-hosted. The self-hosted path (#157: the LINUX_RUNNER and
+    # WINDOWS_RUNNER variables) is set aside as of 2026-10-19: the runner
+    # host stopped taking jobs on 2026-10-12 and every run since queued
+    # until the next push cancelled it. The variables are no longer read.
+    runs-on: ${{ matrix.os }}
     # Every job names a ceiling. Without one a job on an offline or stuck
     # runner waits GitHub's default 360 minutes, on a plan whose minutes ran
     # out once already (#156, #381). Test jobs get 45, the supply-chain job
@@ -96,9 +98,10 @@ jobs:
   # `trellis` on Linux, and the Tauri shell (#289) builds against WebView2
   # and MSVC on Windows and WebKitGTK on Linux (#297).
   #
-  # Tauri's Linux prerequisites are the runner's, not this job's: the owner
-  # installs them as root on the self-hosted runner, and the job never runs
-  # apt there (owner decision 2026-10-06). It checks for them instead.
+  # Tauri's Linux prerequisites: a GitHub-hosted image does not ship
+  # WebKitGTK, so the job installs them with apt there. On a self-hosted
+  # runner they are the owner's to install as root and the job only checks
+  # (owner decision 2026-10-06); the install step is skipped by its `if`.
   #
   # A cold Tauri build is long, and both self-hosted runners share one host,
   # so the job builds on two jobs and is given 120 minutes (#289).
@@ -107,7 +110,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ fromJSON(matrix.os == 'windows-latest' && (vars.WINDOWS_RUNNER || '"windows-latest"') || (vars.LINUX_RUNNER || '"ubuntu-latest"')) }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     env:
       CARGO_BUILD_JOBS: "2"
@@ -121,11 +124,19 @@ jobs:
           toolchain: "1.93.0"
           components: rustfmt, clippy
 
+      - name: Tauri prerequisites (Linux, GitHub-hosted)
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev pkg-config build-essential
+
       - name: WebKitGTK present (Linux)
         if: runner.os == 'Linux'
         run: |
           if ! pkg-config --exists webkit2gtk-4.1; then
-            echo "::error::webkit2gtk-4.1 not found: install libwebkit2gtk-4.1-dev, libxdo-dev and pkg-config on this runner (as root, once; this job never runs apt)"
+            echo "::error::webkit2gtk-4.1 not found: install libwebkit2gtk-4.1-dev, libxdo-dev and pkg-config on this runner (as root, once; this job runs apt only on a GitHub-hosted runner)"
             exit 1
           fi
 
@@ -172,7 +183,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ fromJSON(matrix.os == 'windows-latest' && (vars.WINDOWS_RUNNER || '"windows-latest"') || (vars.LINUX_RUNNER || '"ubuntu-latest"')) }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -201,7 +212,7 @@ jobs:
   # Called out as its own job so a failure names the gate condition rather
   # than appearing as one line in a list of 100 passing tests.
   rollback-gate:
-    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -246,7 +257,7 @@ jobs:
   # temporary directory. No model is involved: every guard either uses a
   # scripted model or is refused before one is called.
   guards:
-    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -359,7 +370,7 @@ jobs:
   # then the RustSec database again through cargo-audit. Its own job so a new
   # advisory reads as a supply-chain failure, not as a broken build.
   supply-chain:
-    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       # Full history: gitleaks scans every commit between the base and HEAD,
@@ -493,7 +504,7 @@ jobs:
   # The graph's two structural guarantees, likewise named so a regression is
   # legible without reading the log.
   index-invariants:
-    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -531,7 +542,7 @@ jobs:
   # a different sdist fails here rather than quietly moving every figure in
   # the documents.
   precision-gate:
-    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
