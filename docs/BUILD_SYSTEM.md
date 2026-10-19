@@ -185,12 +185,20 @@ crate inherits, and `version` in `desktop/Cargo.toml`; the two stay equal.
 3. **The owner tags `vX.Y.Z` on `main`** and pushes the tag. The pre-push
    hook refuses `v*` tags on purpose (ADR 0051 item 3): the push is the
    owner's act, not an agent's.
-4. `release.yml` builds and tests every platform, then its `publish` job
-   refuses unless the tag is `vX.Y.Z`, its commit is an ancestor of
-   `origin/main` and the Linux binary's `--version` is `trellis X.Y.Z`. Only
-   then does it create the GitHub release with one archive per target and a
-   `SHA256SUMS` over them. `publish` is the only job in any workflow with
-   `contents: write`.
+4. `release.yml` builds and tests Linux (`x86_64-unknown-linux-gnu`) and
+   Windows (`x86_64-pc-windows-msvc`) on the self-hosted runners, and
+   nothing else: macOS is dropped until a macOS runner exists (owner
+   decision 2026-10-06, ADR 0052 decision 2.5; #506). Each leg ships
+   `trellis` and the Go TUI `trellis-tui` side by side, `trellis-tui` built
+   from `tui/` with the runner's pinned Go (`CGO_ENABLED=0`, `-trimpath`,
+   `-buildvcs=false`, `-ldflags "-X main.version=X.Y.Z"`, or `dev` from
+   `workflow_dispatch`), and its `SHA256SUMS` lists both. Its `publish`
+   job, on the Linux runner, which needs `gh` and `zip`, refuses unless
+   the tag is `vX.Y.Z`, its commit is an ancestor of `origin/main`, and
+   the Linux `trellis --version` is `trellis X.Y.Z` and `trellis-tui
+   --version` is `trellis-tui X.Y.Z`. Only then does it create the GitHub
+   release with one archive per target and a `SHA256SUMS` over them.
+   `publish` is the only job in any workflow with `contents: write`.
 
 ## Where a person is needed
 
