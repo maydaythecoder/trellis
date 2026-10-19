@@ -609,6 +609,12 @@ mod tests {
         sh(&dir, &["config", "user.email", "t@example.invalid"]);
         sh(&dir, &["config", "user.name", "t"]);
         sh(&dir, &["config", "core.autocrlf", "false"]);
+        // No background maintenance: after a commit git may run gc or
+        // maintenance in the background and hold .git/objects/maintenance.lock
+        // for a moment, which a byte-for-byte snapshot of .git/ then sees as
+        // a change of its own (CI run 39287311845).
+        sh(&dir, &["config", "gc.auto", "0"]);
+        sh(&dir, &["config", "maintenance.auto", "false"]);
         std::fs::write(dir.join("a.py"), "def f():\n    return 1\n").unwrap();
         std::fs::write(dir.join("pkg/__init__.py"), "").unwrap();
         std::fs::write(dir.join("pkg/sub/deep.py"), "X = 'é'\r\n").unwrap();
