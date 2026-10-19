@@ -115,6 +115,25 @@ where a model is, and a local spec carries no key (ADR 0024 §3). Nothing is
 written without a choice. With nothing found, it names the addresses it
 tried and the exact `--model` form.
 
+*Amended 2026-10-12 (#625):* a `/v1/models` list on 127.0.0.1:8000 owned by
+colibri (`owned_by: "colibri"`, ADR 0047 decision 3; `coli setup` serves
+there with no key) is offered as `provider:colibri#<id>`, never as the
+`vllm:` spec, which would run colibri at tier 4 with no chat template while
+tier 1 is there, and never as a bare `openai-chat:` spec, which would send
+the user's `OPENAI_API_KEY` to it (ADR 0024 §3). Choosing it writes a
+`[[providers]]` entry named `colibri` (`protocol = "openai"`, the base the
+probe read with `/v1`, `key_env = "COLI_API_KEY"`, ADR 0047 decision 2)
+and then the spec, both to the user's own config file and never to
+`.trellis/`: a `key_env` is the user's to name, and this is the one writer
+of one. An entry named `colibri` already there at the same base is left as
+it is; at another base it is refused with the file untouched and nothing
+written, since replacing it would move where the user's key is sent. A
+list owned by anyone else is offered as before. The same list feeds rpc's
+`list_models` (ADR 0025 §5), and the desktop's model rule forwards a
+`provider:` spec (desktop/src/commands.rs, `check_model`), read and not
+changed. Evidence: the `first_run_colibri_` tests in
+crates/trellis-cli/src/first_run.rs and crates/trellis-cli/src/rpc.rs.
+
 ### 3. Outside a repository
 
 Bare `trellis` outside a git repository opens a start screen instead of
