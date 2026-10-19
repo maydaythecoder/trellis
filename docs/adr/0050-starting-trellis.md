@@ -84,6 +84,25 @@ are unchanged. The decision is `launch_route` in `main.rs`, beside
 `bare_route`, whose tests are unchanged. `trellis --help` lists `trellis` as
 the desktop and the overview, `--tui` as the terminal interface and `--dsk`
 as the desktop only.
+*As built 2026-10-12 (#514):* every path that opened the ratatui TUI now
+goes through `terminal_ui` in `main.rs`: `--tui`, `trellis tui [task]
+[--model <spec>]`, and bare `trellis`'s fall back to the terminal after a
+desktop it could not start. It looks for `trellis-tui` (`trellis-tui.exe`
+on Windows) beside `current_exe()` only, never on PATH (`launch::find_tui`).
+Found, first-run's picker still runs in Rust when no model is configured or
+given (it needs a terminal on both ends; without one the ratatui path's
+refusal is unchanged), and the terminal is handed to `trellis-tui --root
+<root> --trellis <current_exe> [--model <spec>] [-- <task>]`: on Unix by
+`exec`, replacing the process; on Windows by waiting for it and exiting
+with its status. `--model` is passed only when the user gave one, never a
+spec from the repository's configuration, so rpc does not take a
+repository's choice for the user's (ADR 0024 section 3); `trellis-tui`
+confirms the configured model itself. The environment passes unchanged,
+the `trellis-tui` entry of `INTERFACE_LAUNCHES` (ADR 0052, amendment of
+2026-10-07). Not found, one stderr line names the path looked at and says
+the ratatui TUI follows, which it then does, for one release (ADR 0052
+decision 2.2); #516 removes the fallback. Held by the `launch_` tests in
+`tests/cli.rs` and `launch.rs`.
 
 ### 2. A first run with no model
 

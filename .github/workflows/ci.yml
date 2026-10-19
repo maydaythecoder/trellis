@@ -174,6 +174,72 @@ jobs:
           scripts/checks/desktop-guards.sh --self-test
           scripts/checks/desktop-guards.sh
 
+  # The Go TUI, tui/ (ADR 0052 section 6, #505), on both platforms. Go is
+  # the pin in scripts/runners/install-go.sh (#503), never actions/setup-go:
+  # on a self-hosted runner it is the runner's own install, on a GitHub-hosted
+  # one scripts/runners/go-hosted.sh unpacks the same hash-checked archive
+  # under RUNNER_TEMP. Either way the job checks `go version` names the pin
+  # before anything runs. GOFLAGS keeps
+  # go.sum the pin, and GOTOOLCHAIN=local stops go.mod's toolchain line from
+  # downloading another toolchain (decision 2.4). The rpc tests spawn
+  # target/debug/trellis, so it is built first, as the desktop job does.
+  # `-race` needs cgo, so it runs on Linux only, and only where a C compiler
+  # lets CGO_ENABLED be 1 (section 5).
+  go:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      GOFLAGS: -mod=readonly
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head, resolved 2026-09-30
+        with:
+          toolchain: "1.93.0"
+
+      - name: Go, pinned, on a GitHub-hosted runner (scripts/runners/go-hosted.sh)
+        if: runner.environment == 'github-hosted'
+        shell: bash
+        run: |
+          scripts/runners/go-hosted.sh --self-test
+          scripts/runners/go-hosted.sh
+
+      - name: Go is the pinned toolchain (scripts/runners/install-go.sh)
+        shell: bash
+        run: |
+          v=$(go version)
+          echo "$v"
+          case "$v" in
+            "go version go1.27.2 "*) ;;
+            *) echo "::error::expected go1.27.2, the pin in scripts/runners/install-go.sh; run it on this runner (docs/BUILD_SYSTEM.md, Go on the runners)"; exit 1 ;;
+          esac
+
+      - name: Build trellis (the rpc tests spawn it)
+        run: cargo build --locked -p trellis-cli
+
+      - name: Go checks (tui/)
+        shell: bash
+        run: |
+          scripts/checks/go-test.sh --self-test
+          scripts/checks/go-test.sh
+
+      - name: Race detector (Linux, with cgo)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          if command -v gcc >/dev/null 2>&1 && [ "$(CGO_ENABLED=1 go env CGO_ENABLED)" = 1 ]; then
+            cd tui && CGO_ENABLED=1 go test -mod=readonly -race -count=1 ./...
+          else
+            echo "no C compiler on this runner, so cgo cannot be enabled; -race not run (ADR 0052 section 5)"
+          fi
+
   # `hosted` (TLS) is a default feature of trellis-cli (ADR 0024 §1), so
   # every other job builds with it on. This one turns it off, so a change
   # that only compiles with TLS present fails here instead of in the hands
@@ -500,6 +566,42 @@ jobs:
 
       - name: RustSec advisories (desktop/)
         run: cargo audit --file desktop/Cargo.lock
+
+      # tui/ (ADR 0052 section 5, #505): go.sum matches the modules fetched,
+      # govulncheck finds no known vulnerability (none is ever ignored;
+      # tui/VULN-EXCEPTIONS.md lists none), and every module's licence is on
+      # deny.toml's allow-list, read by the function G5 uses. Each tool at an
+      # exact version, installed under RUNNER_TEMP so nothing lands in the
+      # runner's own directories. The go guards first, self-test before them.
+      - name: Go, pinned, on a GitHub-hosted runner (scripts/runners/go-hosted.sh)
+        if: runner.environment == 'github-hosted'
+        shell: bash
+        run: |
+          scripts/runners/go-hosted.sh --self-test
+          scripts/runners/go-hosted.sh
+
+      - name: Go guards (ADR 0052)
+        run: |
+          scripts/checks/go-guards.sh --self-test
+          scripts/checks/go-guards.sh
+
+      - name: Go supply chain (tui/)
+        env:
+          GOFLAGS: -mod=readonly
+          GOTOOLCHAIN: local
+        run: |
+          set -euo pipefail
+          export GOBIN="$RUNNER_TEMP/gobin"
+          export PATH="$GOBIN:$PATH"
+          go install -mod=readonly golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          go install -mod=readonly github.com/google/go-licenses/v2@v2.0.1
+          GATE_BASE=HEAD
+          source scripts/gates/lib.sh
+          allowed=$(deny_allowed_licenses)
+          cd tui
+          go mod verify
+          govulncheck ./...
+          go-licenses check ./... --ignore github.com/maydaythecoder/trellis/tui --allowed_licenses="$allowed"
 
   # The graph's two structural guarantees, likewise named so a regression is
   # legible without reading the log.

@@ -47,8 +47,10 @@ scripts/checks/go-guards.sh
 # Then, once tui/ exists: go.sum matches what the module cache holds,
 # govulncheck finds no known vulnerability reachable from the code (none is
 # ever ignored; tui/VULN-EXCEPTIONS.md lists none), and every module's
-# licence is on deny.toml's allow-list. Each tool absent fails the gate, as
-# zizmor's does below.
+# licence is on deny.toml's allow-list. tui/'s own packages are skipped by
+# go-licenses: they are this repository's code, under its LICENSE, which
+# sits above the module root where go-licenses does not look. Each tool
+# absent fails the gate, as zizmor's does below.
 if go_module_present; then
   go_require
   gobin=$(go env GOPATH)/bin
@@ -64,7 +66,7 @@ if go_module_present; then
   [ -n "$allowed" ] || fail "could not read the licence allow-list from deny.toml"
   (cd tui && go mod verify) || fail "go mod verify failed in tui/: go.sum and the module cache disagree"
   (cd tui && govulncheck ./...) || fail "govulncheck found a vulnerability in tui/ (above); none is ignored (tui/VULN-EXCEPTIONS.md)"
-  (cd tui && go-licenses check ./... --allowed_licenses="$allowed") \
+  (cd tui && go-licenses check ./... --ignore github.com/maydaythecoder/trellis/tui --allowed_licenses="$allowed") \
     || fail "go-licenses: a module under tui/ has a licence outside deny.toml's allow-list (above)"
   gomsg="go-guards and its self-test; go mod verify, govulncheck and go-licenses over tui/"
 else
