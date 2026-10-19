@@ -203,6 +203,27 @@ The adapter's prompt opens with a role sentence, then a protocol:
   `tests/client_contract.json`, held by
   `client_contract_overview_lists_what_the_overview_object_carries` in
   `tests/cli.rs`.
+- *Added 2026-10-12 (#614).* A `model call` tracing event, with `turn`,
+  precedes each call the loop makes to the model, on `--json` and `rpc`
+  alike; `turn` is the number the `turn` event that call produces will
+  carry, and the governance audit's turn, which calls no model, has none.
+  Replies are not streamed (ADR 0024), so without it a client hears nothing
+  between two turns of a slow local model and reads the run as hung. It
+  carries no `prompt_bytes`: the driver builds the prompt inside
+  `next_step`, so before the call its size is not yet measured, and the
+  previous call's would be a stale figure under a new number. Listed in
+  `tests/client_contract.json`, with `prompt_bytes` as absent; held by
+  `rpc_and_run_json_announce_each_model_call_before_its_turn` in
+  `tests/modes.rs`.
+- *Added 2026-10-12 (#627).* The `runtime identified` tracing event, which
+  `--json` and `rpc` have carried since #272 for an endpoint identified as
+  colibri (ADR 0047 decision 13), is now listed in
+  `tests/client_contract.json`: `runtime` and `served` always; `kv_slots`,
+  `tiers_vram`, `tiers_ram` and `tiers_disk` only when `/health` reported
+  them, and absent, never 0, when it failed, was not colibri's shape, did
+  not answer in time, or answered liveness only. Once per run, before the
+  first model request; never in the trail. Held by the
+  `rpc_runtime_identified_*` tests in `tests/modes.rs`.
 
 ### 5. `trellis rpc`
 
@@ -233,6 +254,7 @@ on stderr.
     "list_paths" below*)
   - `vault_search {query, limit?}` and `vault_graph {note}` (*added
     2026-10-06, #295; see "vault_search and vault_graph" below*)
+  - `vault_check` (*added 2026-10-12, #631; see "vault_check" below*)
   - `get_session_stats` and `get_last_assistant_text` (*added 2026-10-06,
     #319; see "get_session_stats and get_last_assistant_text" below*)
   - `classify {text}` (*added 2026-10-07, #501, ADR 0052; see "classify"
@@ -432,6 +454,16 @@ on stderr.
     does not exist and the fixture's worktree is clean; it is answered while
     an approve-mode run waits on its question, before that run's `run_end`;
     and its modules and counts equal what `trellis index --graph` prints.
+  - *Amended 2026-10-12 (#654), owner-directed (the owner's decision of
+    2026-10-12):* the worktree's index is saved to `.trellis/index.bin`
+    after it is built, through `index_cmd::save_index`, the writer `trellis
+    index` uses, so the overview reads what this answer drew (ADR 0048
+    §10, ADR 0050 §3, both amended 2026-10-12). `data` gains
+    `index_saved`, with `index_bytes` when true and `index_not_saved` (why)
+    when false; a `ref` answer is never saved, and a failed save does not
+    fail the answer. Nothing else is written. Evidence: the same test now
+    asserts the blob exists, its size is `index_bytes` and the worktree is
+    clean; and the `overview_indexed_` tests in `tests/cli.rs`.
 - *Added 2026-10-05 (#293), owner-directed: the session's choice under the owner's 2026-10-04 delegation (ADR 0048 §10).*
   **`get_radius {symbol}`** answers with the blast radius `trellis radius
   <symbol>` prints, as data, so an rpc client never parses human output (ADR
@@ -551,6 +583,35 @@ on stderr.
     what `trellis vault search retry` or `trellis vault graph child` prints,
     scores to the four decimals printed. Each also checks the no-vault
     message, and `vault_graph` the missing-note message, against the CLI's.
+- *Added 2026-10-12 (#631).* **`vault_check`** answers with what `trellis
+  vault check` prints, without `--fix`, as data: `{line, issues, warnings,
+  gate}`, `line` the report line, `issues` and `warnings` the lines the CLI
+  prints under `issues:` and as `warning:`, and `gate` the run gate's answer,
+  `{accepts: true, stats: {notes, parentless, connected, manifest_missing,
+  manifest_extra}}` or `{accepts: false, violations}`. The gate answer is
+  vault validation (ADR 0022), not a `Verdict` (ADR 0004), and a client
+  never draws it as a check. It reads through `edit::check(dir, false)`,
+  which writes and touches nothing; the CLI's own path exits the process on
+  a refusing gate and is not reused. `--fix` has no rpc form: a `fix` field
+  of any value is refused by name, since ignored it would hand the client
+  the unrepaired report as the repaired one, and every vault write stays a
+  `trellis vault` command (#70). No vault configured answers `success`
+  false with the CLI's message. Evidence:
+  `rpc_vault_check_returns_what_vault_check_prints` and
+  `rpc_vault_check_refuses_a_fix_field_by_name_and_writes_nothing` in
+  `tests/modes.rs`, through the binary, over the same committed vault, whose
+  orphan the gate refuses, and over it with the orphan adopted, which it
+  accepts; the worktree is clean after each.
+- *Added 2026-10-12 (#629).* `vault_search` with `query: ""` (or only
+  whitespace) is a browse, not a search: the port keeps Apex's empty-query
+  branch (`search.rs`, `searchResults.ts:64-69`), so the answer is every
+  note, by title then path, `limit` applied, each with `score` 0, where a
+  note a query matched always scores above 0. Only a missing `query` is
+  refused, as before. The CLI's `trellis vault search` keeps its required
+  query argument. The desktop lists the vault through it before a query is
+  typed (ADR 0048 §10). Evidence:
+  `rpc_vault_search_empty_query_lists_every_note_in_title_order_and_writes_nothing`
+  in `tests/modes.rs`, through the binary, over the same committed vault.
 - *Added 2026-10-07 (#502), on ADR 0052 (its ticket plan's R4), accepted by
   the owner on #500.* **`list_paths {prefix}`** answers with the paths `@`
   completion offers, so the Go TUI and the desktop never list a
@@ -828,6 +889,14 @@ on stderr.
     config's `[[providers]]` by `name` and `key_variable`, the variable a
     key would be read from, never read, so no key value is in the answer.
     It writes nothing and runs on its own thread, as `get_queue` does.
+    *Amended 2026-10-12 (#625):* `local` holds `provider:colibri#<id>` for
+    a `/v1/models` list owned by colibri, as the first run offers it (ADR
+    0050 §2 as amended), and `set_model {model, save: true}` on a spec this
+    session's `list_models` offered that way writes the `[[providers]]`
+    `colibri` entry (`key_env = "COLI_API_KEY"`, at the base the probe
+    read) before the spec, to the user's config only, refusing as the
+    first run refuses when an entry of that name sits at another base.
+    `providers[].key_variable` then names `COLI_API_KEY` for it.
   - `tests/client_contract.json` lists both under `rpc.responses`. Held by
     the `rpc_model_select_` tests in `tests/modes.rs` and `rpc.rs`; every
     earlier test that sends a `prompt` now sends `set_model` first.

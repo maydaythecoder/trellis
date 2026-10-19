@@ -43,12 +43,14 @@ function status(doc, s) {
 
 const state = { rows: [], selected: null };
 
-// The filter reads the task text only. A line that is not a run has no
-// task, so it is listed only while the filter is empty.
+// The filter reads the task, outcome and label texts and the integrity word
+// (#649), so a user can pull out "altered" or "not_converged" runs the same
+// way as a task. A line that is not a run has none of these, so it is
+// listed only while the filter is empty.
 function matches(row, q) {
   if (q === "") return true;
-  const t = text(row.task);
-  return t !== null && t.toLowerCase().includes(q);
+  const fields = [text(row.task), text(row.outcome), text(row.label), typeof row.integrity === "string" ? row.integrity : null];
+  return fields.some((t) => t !== null && t.toLowerCase().includes(q));
 }
 
 function drawList(doc) {
@@ -75,8 +77,14 @@ function drawList(doc) {
       b.append(recorded(doc, "span", r.task, "task not recorded"));
       const meta = el(doc, "span");
       meta.className = "muted";
+      meta.append(" · ", recorded(doc, "span", r.started_at, "start not recorded"));
       meta.append(" · ", recorded(doc, "span", r.outcome, "outcome not recorded"));
-      meta.append(" · ", el(doc, "span", typeof r.integrity === "string" ? r.integrity : "integrity unknown"));
+      // Integrity is the one bare string in a row: trellis computed it from
+      // the digest, so "altered" may carry the failed colour, which no
+      // untrusted text gets.
+      const integrity = el(doc, "span", typeof r.integrity === "string" ? r.integrity : "integrity unknown");
+      if (r.integrity === "altered") integrity.className = "failed";
+      meta.append(" · ", integrity);
       if (text(r.label) !== null) meta.append(" · ", recorded(doc, "span", r.label, ""));
       b.append(meta);
     }
@@ -89,7 +97,7 @@ function drawList(doc) {
     return li;
   });
   if (items.length === 0) {
-    const li = el(doc, "li", state.rows.length === 0 ? "This repository has no trails yet." : "No task matches.");
+    const li = el(doc, "li", state.rows.length === 0 ? "This repository has no trails yet." : "No run matches.");
     li.className = "empty";
     items.push(li);
   }

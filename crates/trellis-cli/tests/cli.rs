@@ -687,6 +687,144 @@ fn log_actions_lists_each_recorded_action_and_only_the_outcomes_there_are() {
 }
 
 #[test]
+fn log_prints_ended_at_and_each_duration_a_run_recorded_and_nothing_for_an_older_trail() {
+    // The risk (#622): the timings written to the trail unread by the one
+    // command a person uses to see where a run's time went; or a trail from
+    // before the fields shown with an end of "" or a duration of 0, which
+    // reads as a measurement.
+    let d = repo_that_converges("log-durations", "def greet(name):\n    return \"hello\"\n");
+    let out = run(&d, &["run", "--model", "scripted:script.json", "tweak"]);
+    assert!(combined(&out).contains("CONVERGED"), "{}", combined(&out));
+    let runs = d.join(".trellis/runs");
+    let trail = std::fs::read_dir(&runs)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().is_some_and(|x| x == "json"))
+        .expect("the run wrote a trail");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&trail).unwrap()).unwrap();
+    assert!(v["ended_at"].is_string(), "{v}");
+    assert!(
+        v["factual"].get("ended_at").is_none(),
+        "outside the digest: {v}"
+    );
+    let actions = v["factual"]["actions"].as_array().unwrap();
+    assert!(!actions.is_empty());
+    assert!(
+        actions.iter().all(|a| a["duration_ms"].is_u64()),
+        "every loop action is timed: {actions:?}"
+    );
+    let checks = v["factual"]["check_outcomes"].as_array().unwrap();
+    assert!(!checks.is_empty());
+    assert!(
+        checks.iter().all(|c| c["duration_ms"].is_u64()),
+        "{checks:?}"
+    );
+
+    let s = stdout(&run(&d, &["log", "--actions"]));
+    let started = v["started_at"].as_str().unwrap();
+    let ended = v["ended_at"].as_str().unwrap();
+    assert!(
+        s.contains(&format!("started {started}; ended {ended}")),
+        "{s}"
+    );
+    assert!(
+        s.contains(" ms\n") || s.contains(" ms,"),
+        "a check's time: {s}"
+    );
+    assert!(s.contains(" ms)"), "an action's time: {s}");
+
+    // A trail written before the fields, beside it.
+    plant_log_fixture(
+        &d,
+        r#"[{"kind":"Tests","passed":true}]"#,
+        r#"{"reached_resolved":0,"reached_ambiguous":0,"widest_unbound_in_touched_files":0,"radius_queries":0}"#,
+    );
+    let s = stdout(&run(&d, &["log"]));
+    assert!(
+        s.contains("recorded checks: tests passed\n"),
+        "no time shown: {s}"
+    );
+    assert!(!s.contains("in 0 ms"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A trail whose factual section holds the given check outcomes and radius
+/// counts, planted under `.trellis/runs`.
+fn plant_log_fixture(d: &Path, checks: &str, radius: &str) {
+    let runs = d.join(".trellis/runs");
+    std::fs::create_dir_all(&runs).unwrap();
+    std::fs::write(
+        runs.join("r1.json"),
+        format!(
+            r#"{{"run_id":"r1","task":"t","factual":{{"proposed":["a.py"],
+                "check_outcomes":{checks},"radius":{radius},"actions":[]}}}}"#
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn log_words_checks_are_passed_or_failed_not_a_suffix() {
+    // #651: "checks: Tests+ Typecheck-" read as marks on the checks, and the
+    // one line of terminal history a person scans for a run's result
+    // carried its verdicts in a glyph. The word is what an executed
+    // process said; nothing else here is a verdict (ADR 0004).
+    let d = repo("log-words-checks");
+    plant_log_fixture(
+        &d,
+        r#"[{"kind":"Tests","passed":true},{"kind":"Typecheck","passed":false}]"#,
+        r#"{"reached_resolved":0,"reached_ambiguous":0,"widest_unbound_in_touched_files":0,"radius_queries":0}"#,
+    );
+    let s = stdout(&run(&d, &["log"]));
+    assert!(
+        s.contains("recorded checks: tests passed, typecheck failed"),
+        "{s}"
+    );
+    assert!(!s.contains("Tests+") && !s.contains("Typecheck-"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn log_words_radius_is_three_figures_and_never_one_sum() {
+    // #651: "15 reached" added the resolved and ambiguous reach, which rule
+    // 3 forbids as much as a ratio: the two reach counts are sums over the
+    // run's queries and the unbound count is one query's, so no arithmetic
+    // across them is a figure about anything. Each is printed by itself,
+    // and the doubt figure is printed beside the reach it qualifies.
+    let d = repo("log-words-radius");
+    plant_log_fixture(
+        &d,
+        "[]",
+        r#"{"reached_resolved":12,"reached_ambiguous":3,"widest_unbound_in_touched_files":4,"radius_queries":2}"#,
+    );
+    let s = stdout(&run(&d, &["log"]));
+    assert!(
+        s.contains(
+            "radius: 12 resolved, 3 ambiguous reached; 4 unbound in touched files \
+             (widest single query, of 2)"
+        ),
+        "{s}"
+    );
+    assert!(!s.contains("15 reached"), "{s}");
+    assert!(s.contains("recorded checks: none"), "{s}");
+
+    // A run that asked no radius has no counts to show: zeros here would
+    // read as a radius that found nothing rather than one never queried.
+    let d2 = repo("log-words-radius-none");
+    plant_log_fixture(
+        &d2,
+        "[]",
+        r#"{"reached_resolved":0,"reached_ambiguous":0,"widest_unbound_in_touched_files":0,"radius_queries":0}"#,
+    );
+    let s = stdout(&run(&d2, &["log"]));
+    assert!(s.contains("radius: no query recorded"), "{s}");
+    assert!(!s.contains("0 resolved"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&d2);
+}
+
+#[test]
 fn an_inferred_root_is_named_and_an_explicit_one_is_not() {
     // The risk (#248): acting on a tree found several levels up without
     // saying which, so a task runs against the wrong repository.
@@ -1023,6 +1161,34 @@ fn help_describes_the_commands_without_marketing_them() {
     for cmd in ["index", "radius", "run", "check", "doctor", "partitions"] {
         assert!(s.contains(cmd), "--help omits `{cmd}`");
     }
+}
+
+#[test]
+fn help_current_tui_help_does_not_call_the_session_the_default() {
+    // #662. The risk: help describing a default that changed. Bare
+    // `trellis` stopped opening the line session (ADR 0050 §1, #561), and
+    // `tui --help` still said "The line-based session stays the default".
+    let out = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .args(["tui", "--help"])
+        .output()
+        .unwrap();
+    let s = stdout(&out);
+    assert!(!s.contains("stays the default"), "{s}");
+    assert!(s.contains("`trellis --tui` opens it too"), "{s}");
+}
+
+#[test]
+fn help_current_describes_bare_trellis_as_the_desktop_and_the_overview() {
+    let out = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    let s = stdout(&out);
+    assert!(
+        s.contains("trellis          open the desktop window and print the overview"),
+        "{s}"
+    );
+    assert!(!s.contains("interactive session"), "{s}");
 }
 
 #[test]
@@ -2547,6 +2713,117 @@ fn a_run_under_governance_says_how_many_rules_it_is_under() {
 }
 
 #[test]
+fn sandbox_is_named_on_the_repo_line_and_by_doctor_alike() {
+    // ADR 0055 (#621). A sandbox that is missing, or present and failing,
+    // is a warning and not a refusal, so what trellis prints is the only
+    // place a person learns that `bash` ran unconfined. The risk: a run
+    // that says nothing, or names a sandbox doctor does not, or the
+    // reverse.
+    let d = repo("run-sandbox-line");
+    let script = script_that_stops(&d);
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "script"]);
+    let s = stdout(&run(&d, &["run", "--model", &script, "a task"]));
+    let label = s
+        .lines()
+        .find_map(|l| l.strip_prefix("repo:     sandbox: "))
+        .unwrap_or_else(|| panic!("no sandbox on the repo: line:\n{s}"))
+        .to_string();
+    let doctor = stdout(&run(&d, &["doctor"]));
+    let line = doctor
+        .lines()
+        .find(|l| l.starts_with("sandbox:"))
+        .unwrap_or_else(|| panic!("doctor names no sandbox:\n{doctor}"));
+    let expected = if cfg!(target_os = "linux") {
+        "bwrap"
+    } else if cfg!(target_os = "macos") {
+        "sandbox-exec"
+    } else {
+        "Windows"
+    };
+    if label.starts_with("none (") {
+        assert!(label.contains(expected), "{label}");
+        assert!(
+            line.starts_with(&format!("sandbox:    {label}")),
+            "{line}\n{label}"
+        );
+    } else {
+        assert_eq!(label, expected);
+        // The binary doctor found, by path.
+        assert!(
+            line.starts_with(&format!("sandbox:    {label} at /")),
+            "{line}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sandbox_missing_or_failing_is_a_warning_that_names_the_reason() {
+    // The owner's decision on #621: `bwrap` absent, or present and failing
+    // (Ubuntu 24.04's apparmor_restrict_unprivileged_userns refuses the
+    // user namespace), is a warning, never a refusal, and the reason is
+    // printed. A stand-in `bwrap` first on PATH fails as that one does.
+    use std::os::unix::fs::PermissionsExt;
+    let d = repo("run-sandbox-failing");
+    let script = script_that_stops(&d);
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "script"]);
+    let bin = d.with_extension("bin");
+    let _ = std::fs::remove_dir_all(&bin);
+    std::fs::create_dir_all(&bin).unwrap();
+    let fake = bin.join("bwrap");
+    std::fs::write(
+        &fake,
+        "#!/bin/sh\necho 'bwrap: setting up uid map: Permission denied' >&2\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let with_path = |args: &[&str], path: &str| {
+        Command::new(env!("CARGO_BIN_EXE_trellis"))
+            .args(args)
+            .current_dir(&d)
+            .env("NO_COLOR", "1")
+            .env(
+                "TRELLIS_CONFIG_DIR",
+                std::env::temp_dir().join("trellis-tests-no-user-config"),
+            )
+            .env("PATH", path)
+            .output()
+            .unwrap()
+    };
+    let failing = "none (bwrap failed: bwrap: setting up uid map: Permission denied)";
+    let doctor = stdout(&with_path(&["doctor"], &path));
+    assert!(
+        doctor.contains(&format!("sandbox:    {failing}")),
+        "{doctor}"
+    );
+    let out = with_path(&["run", "--model", &script, "a task"], &path);
+    let s = stdout(&out);
+    assert!(s.contains(&format!("repo:     sandbox: {failing}")), "{s}");
+    // Warned, not refused: the run went ahead to its end.
+    assert!(s.contains("NOT CONVERGED"), "{}", combined(&out));
+
+    let empty = d.with_extension("empty");
+    let _ = std::fs::remove_dir_all(&empty);
+    std::fs::create_dir_all(&empty).unwrap();
+    let doctor = stdout(&with_path(&["doctor"], &empty.display().to_string()));
+    assert!(
+        doctor.contains("sandbox:    none (bwrap not found)"),
+        "{doctor}"
+    );
+    for p in [&d, &bin, &empty] {
+        let _ = std::fs::remove_dir_all(p);
+    }
+}
+
+#[test]
 fn a_run_under_no_rules_does_not_announce_an_empty_rule_set() {
     // The other direction. "0 write rule(s)" on every ordinary run is a line
     // that teaches the reader to skip the place where the real one appears.
@@ -2991,6 +3268,35 @@ fn the_model_listing_says_where_colibri_weights_come_from() {
         assert!(
             line.contains(needle),
             "the colibri line must say `{needle}`:\n{line}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&data);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn model_pull_colibri_2_0_0_families_get_colibris_tooling_too() {
+    // #612: the list stopped at colibri 1.12.1's nine families, so
+    // `model pull "MiMo-V2.6 Flash"`, a family 2.0.0 serves, got the generic
+    // catalogue error, which reads as a typo of a GGUF entry. Matched as the
+    // registry spells it, in any case.
+    let d = repo("model-pull-colibri-2");
+    let data = scratch("model-pull-colibri-2-data");
+    std::fs::create_dir_all(models_dir_in(&data)).unwrap();
+    for name in ["MiMo-V2.6 Flash", "qwen3-coder-30b-a3b"] {
+        let out = run_with_data_dir(&d, &data, &["model", "pull", name]);
+        assert!(
+            !out.status.success(),
+            "{name}: a colibri family must not pull"
+        );
+        let err = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(
+            err.contains("is a colibri family") && err.contains("coli convert"),
+            "{name}: {err}"
+        );
+        assert!(
+            !err.contains("Known:"),
+            "{name}: not the generic error:\n{err}"
         );
     }
     let _ = std::fs::remove_dir_all(&data);
@@ -3885,13 +4191,42 @@ fn trellis_out(args: &[&str]) -> std::process::Output {
 }
 
 #[test]
-fn interface_flag_web_says_it_is_not_built() {
-    // ADR 0050 section 1: the flag parses, and until its ticket lands it
-    // says so instead of appearing to start something.
-    let out = trellis_out(&["--web"]);
+fn interface_flag_web_with_no_desktop_beside_trellis_says_where_it_looked() {
+    // ADR 0050 section 5 (#375): `--web` is the desktop serving its page,
+    // so it is looked for beside the running trellis only, as `--dsk`
+    // looks, and nothing on PATH is started. Outside a repository it is
+    // not refused for the missing root (the desktop shows its overview).
+    let exe_name = format!("trellis{}", std::env::consts::EXE_SUFFIX);
+    let desktop_name = format!("trellis-desktop{}", std::env::consts::EXE_SUFFIX);
+    let bin = tempfile::tempdir().unwrap();
+    let on_path = tempfile::tempdir().unwrap();
+    let exe = bin.path().join(&exe_name);
+    std::fs::copy(env!("CARGO_BIN_EXE_trellis"), &exe).unwrap();
+    wait_until_executable(&exe);
+    std::fs::write(on_path.path().join(&desktop_name), b"").unwrap();
+    let out = Command::new(&exe)
+        .arg("--web")
+        .current_dir(bin.path())
+        .env("PATH", on_path.path())
+        .output()
+        .unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success(), "--web succeeded");
-    assert!(err.contains("the web view is not built yet"), "{err}");
+    assert!(!out.status.success(), "--web succeeded: {err}");
+    assert!(!err.contains("not built"), "{err}");
+    assert!(
+        !err.contains("cannot determine the repository root"),
+        "{err}"
+    );
+    assert!(err.contains(&desktop_name), "{err}");
+    assert!(err.contains("looked for"), "{err}");
+    assert!(
+        !err.contains(&on_path.path().display().to_string()),
+        "{err}"
+    );
+    assert!(
+        err.contains("cargo install --locked --path desktop"),
+        "{err}"
+    );
 }
 
 /// Runs the executable just written at `path` with `--version` until the
@@ -4499,6 +4834,30 @@ fn doctor_unreachable_runtime_says_it_could_not_be_reached_not_pass_model() {
 }
 
 #[test]
+fn wait_line_doctor_names_the_address_it_probes_before_the_wait() {
+    // #650. The risk: every probe ran before any output, with a 30 s bound
+    // on the runtime's, so `doctor --model` against a runtime that does not
+    // answer was half a minute of blank terminal while a person diagnosed
+    // it. The line goes to stderr, and the report on stdout is unchanged.
+    let addr = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap()
+    };
+    let d = repo("doctor-wait-line");
+    let spec = format!("llamacpp:http://{addr}");
+    let out = run(&d, &["doctor", "--model", &spec]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.lines()
+            .any(|l| l == format!("probing {spec} (up to 30 s)")),
+        "{}",
+        combined(&out)
+    );
+    assert!(!stdout(&out).contains("probing "), "{}", combined(&out));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn a_repository_model_spec_with_esc_and_a_c1_control_never_reaches_the_banner() {
     // #492. The risk: a cloned repository chooses `[model] spec`, and the
     // banner's `model:` line echoed its model id raw, so ESC or a C1 CSI in
@@ -5032,6 +5391,176 @@ fn overview_reads_a_current_index_and_calls_a_changed_tree_stale() {
     let _ = std::fs::remove_dir_all(&user);
 }
 
+/// `get_codebase`'s answer in `d`, asked through rpc with `extra` merged
+/// into the command.
+fn get_codebase_in(d: &Path, extra: serde_json::Value) -> serde_json::Value {
+    let mut cmd = serde_json::json!({"id": "g", "type": "get_codebase"});
+    for (k, v) in extra.as_object().unwrap() {
+        cmd[k] = v.clone();
+    }
+    rpc_answer(&rpc_records(d, None, &[cmd]), "g").clone()
+}
+
+#[test]
+fn overview_indexed_by_get_codebase_shows_the_saved_index_not_run_trellis_index() {
+    // #654. The risk: the desktop's Codebase section draws the graph and
+    // the overview beside it says "not indexed; run trellis index" for the
+    // same root, two answers to one question in one window. The owner's
+    // decision of 2026-10-12: `get_codebase` saves `.trellis/index.bin`,
+    // and the overview, which still never indexes, reads it. The save must
+    // not dirty the worktree, or the next run refuses to start (ADR 0009).
+    let d = repo("overview-indexed");
+    let user = scratch("overview-indexed-user");
+    let args = ["--json", "overview"];
+    let before = overview_json(&overview_in(
+        "overview-indexed",
+        &d,
+        &user,
+        Gh::Absent,
+        &args,
+    ));
+    assert_eq!(
+        before["codebase_reason"], "not indexed; run trellis index",
+        "{before}"
+    );
+
+    let r = get_codebase_in(&d, serde_json::json!({}));
+    assert_eq!(r["success"], true, "{r}");
+    let data = &r["data"];
+    assert_eq!(data["index_saved"], true, "{data}");
+    assert!(data.get("index_not_saved").is_none(), "{data}");
+    let saved = std::fs::metadata(d.join(".trellis/index.bin"))
+        .expect("get_codebase saved the index")
+        .len();
+    assert_eq!(data["index_bytes"], saved, "{data}");
+    assert_eq!(porcelain_unlocked(&d), "", "the save dirtied the worktree");
+
+    let v = overview_json(&overview_in(
+        "overview-indexed",
+        &d,
+        &user,
+        Gh::Absent,
+        &args,
+    ));
+    assert!(v.get("codebase_reason").is_none_or(|r| r.is_null()), "{v}");
+    assert_eq!(
+        v["codebase"]["modules_indexed"], data["modules_indexed"],
+        "the overview reads the index get_codebase drew: {v}"
+    );
+    assert_eq!(
+        v["codebase"]["bound_call_sites"], data["bound_call_sites"],
+        "{v}"
+    );
+    let s = stdout(&overview_in(
+        "overview-indexed",
+        &d,
+        &user,
+        Gh::Absent,
+        &["overview"],
+    ));
+    assert!(!s.contains("run trellis index"), "{s}");
+    assert!(s.contains("module(s) indexed"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&user);
+}
+
+#[test]
+fn overview_indexed_by_get_codebase_replaces_a_stale_cache_with_a_current_one() {
+    // #654. The risk: a save that keeps the old blob, or writes one keyed
+    // to the wrong fingerprint, so the overview still calls the index
+    // stale after the desktop has drawn the tree as it now stands.
+    let d = repo("overview-indexed-stale");
+    let user = scratch("overview-indexed-stale-user");
+    let o = run(&d, &["index"]);
+    assert!(o.status.success(), "{}", combined(&o));
+    std::fs::write(
+        d.join("app/extra.py"),
+        "from app.core import greet
+
+def again(who):
+    return greet(who)
+",
+    )
+    .unwrap();
+    let args = ["--json", "overview"];
+    let v = overview_json(&overview_in(
+        "overview-indexed-stale",
+        &d,
+        &user,
+        Gh::Absent,
+        &args,
+    ));
+    assert_eq!(
+        v["codebase_reason"], "index is stale; run trellis index",
+        "{v}"
+    );
+
+    let r = get_codebase_in(&d, serde_json::json!({}));
+    assert_eq!(r["data"]["index_saved"], true, "{r}");
+    let v = overview_json(&overview_in(
+        "overview-indexed-stale",
+        &d,
+        &user,
+        Gh::Absent,
+        &args,
+    ));
+    assert!(v.get("codebase_reason").is_none_or(|r| r.is_null()), "{v}");
+    assert_eq!(
+        v["codebase"]["modules_indexed"], r["data"]["modules_indexed"],
+        "{v}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&user);
+}
+
+#[test]
+fn overview_indexed_is_never_a_commit_s_graph_saved_as_the_worktree_s() {
+    // #654. The risk: `get_codebase` at a `ref` (the Atlas's snapshot)
+    // saving that commit's index as `.trellis/index.bin`. Its fingerprint
+    // would not match the worktree, so nothing would show it, but a commit
+    // whose `.py` files equal the worktree's would be read as the current
+    // index of a tree it was never built from; and the answer must say
+    // nothing was saved rather than leave the client to guess.
+    let d = repo("overview-indexed-ref");
+    let r = get_codebase_in(&d, serde_json::json!({"ref": "HEAD"}));
+    assert_eq!(r["success"], true, "{r}");
+    assert_eq!(r["data"]["index_saved"], false, "{r}");
+    assert!(r["data"].get("index_bytes").is_none(), "{r}");
+    let why = r["data"]["index_not_saved"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{r}"));
+    assert!(why.contains(".trellis/index.bin"), "{why}");
+    assert!(
+        !d.join(".trellis").exists(),
+        "a ref's answer wrote under .trellis"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn overview_indexed_get_codebase_still_answers_its_graph_when_the_save_fails() {
+    // #654. The risk: a cache that cannot be written (here `.trellis` is a
+    // file, so its directory cannot be made) failing the graph the user
+    // asked for, or being reported as saved. The cache is derived state:
+    // the answer stands, and says why nothing was saved.
+    let d = repo("overview-indexed-unsaved");
+    std::fs::write(d.join(".trellis"), "not a directory\n").unwrap();
+    let r = get_codebase_in(&d, serde_json::json!({}));
+    assert_eq!(r["success"], true, "{r}");
+    assert!(module_in(&r["data"], "app.core").is_some(), "{r}");
+    assert_eq!(r["data"]["index_saved"], false, "{r}");
+    let why = r["data"]["index_not_saved"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{r}"));
+    assert!(why.starts_with(".trellis/index.bin not written: "), "{why}");
+    assert_eq!(
+        std::fs::read_to_string(d.join(".trellis")).unwrap(),
+        "not a directory\n",
+        "the file in the way was left as it was"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 #[test]
 fn overview_shows_a_listed_repository_s_last_outcome_and_the_current_last_run() {
     // The recent list carries each repository's last outcome (ADR 0021
@@ -5214,6 +5743,32 @@ fn overview_lists_pull_requests_and_runs_from_a_gh_on_path() {
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&user);
     let _ = std::fs::remove_dir_all(scratch_path("overview-gh-gh"));
+}
+
+#[test]
+fn wait_line_overview_json_stdout_stays_one_json_object_while_gh_is_asked() {
+    // #650 says what bare `trellis` waits on, on stderr and only at a
+    // terminal. The risk is the desktop's `--json overview`: a line on its
+    // stdout would leave a body no client can parse.
+    let d = repo("overview-wait-line");
+    let user = scratch("overview-wait-line-user");
+    let o = overview_in(
+        "overview-wait-line",
+        &d,
+        &user,
+        GH_OK,
+        &["--json", "overview"],
+    );
+    let v = overview_json(&o);
+    assert_eq!(v["board"]["pr_ci"]["available"], true, "gh was asked: {v}");
+    assert!(
+        !String::from_utf8_lossy(&o.stderr).contains("asking gh"),
+        "stderr is a pipe here, so nothing is said: {}",
+        combined(&o)
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&user);
+    let _ = std::fs::remove_dir_all(scratch_path("overview-wait-line-gh"));
 }
 
 #[test]
@@ -6181,13 +6736,20 @@ fn rpc_atlas_get_codebase_ref_answers_the_codebase_at_that_commit_and_writes_not
         &[
             serde_json::json!({"id": "r", "type": "get_codebase", "limit": 1000, "ref": "v1"}),
             serde_json::json!({"id": "c", "type": "get_codebase", "limit": 1000, "ref": v1}),
-            serde_json::json!({"id": "h", "type": "get_codebase", "limit": 1000}),
         ],
     );
     assert_eq!(bytes_under(&d), before, "the repository changed");
     assert_eq!(porcelain_unlocked(&d), "");
     let left: Vec<_> = std::fs::read_dir(&tmp).unwrap().collect();
     assert!(left.is_empty(), "left in the temporary directory: {left:?}");
+    // The worktree's answer, asked for after the check above: it saves
+    // `.trellis/index.bin` (#654), which a commit's never does.
+    let mut records = records;
+    records.extend(rpc_records(
+        &d,
+        None,
+        &[serde_json::json!({"id": "h", "type": "get_codebase", "limit": 1000})],
+    ));
 
     let r = rpc_answer(&records, "r");
     assert_eq!(r["success"], true, "{r}");
@@ -6891,8 +7453,12 @@ fn rpc_atlas_contract_lists_every_field_the_atlas_commands_answer() {
     let c = client_contract();
     let responses = &c["rpc"]["responses"];
     for (id, command, lists) in [
-        ("g", "get_codebase", &["always"][..]),
-        ("r", "get_codebase", &["always", "ref_only"][..]),
+        ("g", "get_codebase", &["always", "saved_only"][..]),
+        (
+            "r",
+            "get_codebase",
+            &["always", "ref_only", "not_saved_only"][..],
+        ),
         ("s", "get_symbols", &["always"][..]),
         ("x", "get_radius", &["always"][..]),
         ("h", "get_history", &["always", "head_only"][..]),
@@ -7004,4 +7570,467 @@ fn rpc_atlas_get_codebase_answers_its_modules_when_head_cannot_be_read() {
     assert_eq!(rpc_answer(&r, "r")["success"], false, "{r:?}");
     let _ = std::fs::remove_dir_all(&refused);
     let _ = std::fs::remove_dir_all(&unborn);
+}
+
+// ---------------------------------------------------------------------------
+// index.bin behind a link (#721)
+// ---------------------------------------------------------------------------
+
+/// A committed repository whose `.trellis/<name>` is a link to `target`,
+/// as a clone of a hostile repository arrives. `None` (the test skips)
+/// where the platform will not make a file link.
+fn repo_with_linked(test: &str, name: &str, target: &Path) -> Option<PathBuf> {
+    let d = repo(test);
+    std::fs::create_dir_all(d.join(".trellis")).unwrap();
+    let link = d.join(".trellis").join(name);
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_file(target, &link);
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, &link);
+    if let Err(e) = made {
+        eprintln!("skipped: cannot create a file symlink here: {e}");
+        let _ = std::fs::remove_dir_all(&d);
+        return None;
+    }
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "a linked .trellis entry"]);
+    Some(d)
+}
+
+fn is_link(p: &Path) -> bool {
+    std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink())
+}
+
+#[test]
+fn cache_symlink_trellis_index_leaves_the_linked_outside_file_untouched() {
+    // #721's reproduction: `.trellis/index.bin` committed as a link to
+    // `outside/rc.sh`. `trellis index` overwrote rc.sh with the blob, and a
+    // file name holding a shell command made the blob a runnable script.
+    let outside = scratch("cache-symlink-index-outside");
+    let target = outside.join("rc.sh");
+    std::fs::write(&target, "echo original\n").unwrap();
+    let Some(d) = repo_with_linked("cache-symlink-index", "index.bin", &target) else {
+        return;
+    };
+
+    let o = run(&d, &["index"]);
+    let all = combined(&o);
+    assert!(all.contains("not written"), "{all}");
+    assert!(
+        all.contains("symbolic link"),
+        "the refusal names why: {all}"
+    );
+    assert!(all.contains("index.bin"), "and names the path: {all}");
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "echo original\n",
+        "the file outside the repository was written through the link"
+    );
+    assert!(is_link(&d.join(".trellis/index.bin")));
+    assert!(
+        !d.join(".trellis/.gitignore").exists(),
+        "a refusal writes nothing, the .gitignore included"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+#[test]
+fn cache_symlink_dangling_index_bin_creates_nothing_through_index_or_radius() {
+    // A dangling link: `fs::write` would create its target. `radius` writes
+    // through `build_cached`, the second of the three writers.
+    let outside = scratch("cache-symlink-dangling-outside");
+    let target = outside.join("planted");
+    let Some(d) = repo_with_linked("cache-symlink-dangling", "index.bin", &target) else {
+        return;
+    };
+
+    let o = run(&d, &["index"]);
+    assert!(combined(&o).contains("symbolic link"), "{}", combined(&o));
+    let o = run(&d, &["radius", "app.core.greet"]);
+    assert!(o.status.success(), "{}", combined(&o));
+    assert!(
+        std::fs::symlink_metadata(&target).is_err(),
+        "the dangling link was followed and its target created"
+    );
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    assert!(is_link(&d.join(".trellis/index.bin")));
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+#[test]
+fn cache_symlink_dangling_gitignore_creates_nothing() {
+    // `ignore_the_blob` checked `.trellis/.gitignore` with `exists()`, which
+    // follows the link, so a dangling one created a file at its target.
+    let outside = scratch("cache-symlink-ignore-outside");
+    let target = outside.join("planted");
+    let Some(d) = repo_with_linked("cache-symlink-ignore", ".gitignore", &target) else {
+        return;
+    };
+
+    let o = run(&d, &["index"]);
+    assert!(combined(&o).contains("symbolic link"), "{}", combined(&o));
+    assert!(std::fs::symlink_metadata(&target).is_err());
+    assert!(
+        std::fs::symlink_metadata(d.join(".trellis/index.bin")).is_err(),
+        "nothing is written beside a refused .gitignore"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+#[test]
+fn cache_symlink_get_codebase_refuses_the_link_and_says_so() {
+    // The desktop's Codebase view saves the index through rpc's
+    // `get_codebase` (#654), the third writer. It must refuse the link as
+    // `trellis index` does, and still answer with the graph.
+    let outside = scratch("cache-symlink-rpc-outside");
+    let target = outside.join("rc.sh");
+    std::fs::write(&target, "echo original\n").unwrap();
+    let Some(d) = repo_with_linked("cache-symlink-rpc", "index.bin", &target) else {
+        return;
+    };
+
+    let r = get_codebase_in(&d, serde_json::json!({}));
+    assert_eq!(r["success"], true, "the graph is still drawn: {r}");
+    let data = &r["data"];
+    assert_eq!(data["index_saved"], false, "{data}");
+    let why = data["index_not_saved"].as_str().unwrap_or_default();
+    assert!(why.contains("symbolic link"), "{data}");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "echo original\n");
+    assert!(is_link(&d.join(".trellis/index.bin")));
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+// ---------------------------------------------------------------------------
+// trellis init behind a link (#723)
+// ---------------------------------------------------------------------------
+
+/// Makes `link` point at `target`; false (and the test skips, saying why)
+/// where the platform will not make one.
+fn link_or_skip(target: &Path, link: &Path) -> bool {
+    match trellis_core::paths::symlink_for_test(target, link) {
+        Ok(()) => true,
+        Err(why) => {
+            eprintln!("{why}");
+            false
+        }
+    }
+}
+
+/// The names in `dir`, sorted; empty when it does not exist.
+fn entries(dir: &Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.filter_map(Result::ok)
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+/// `trellis init` refused, naming the link and why.
+fn assert_init_refused(o: &Output, link: &str) {
+    let all = combined(o);
+    assert!(!o.status.success(), "init went ahead through a link: {all}");
+    assert!(all.contains("symbolic link"), "the refusal says why: {all}");
+    // The refusal prints the path as the OS spells it, so a `/` in `link`
+    // is a `\\` on Windows.
+    let native = link.replace('/', std::path::MAIN_SEPARATOR_STR);
+    assert!(
+        all.contains(link) || all.contains(&native),
+        "and names the path {link}: {all}"
+    );
+    assert!(all.contains("nothing was written"), "{all}");
+}
+
+#[test]
+fn init_symlink_dangling_file_links_create_nothing_outside() {
+    // #723's reproduction: `exists()` follows a link, so a dangling one read
+    // as absent and `fs::write` created the template at the link's target,
+    // outside the repository. One case per file init creates.
+    for rel in ["config.toml", "context.md", "governance/README.md"] {
+        let slug = rel.replace(['/', '.'], "-");
+        let outside = scratch(&format!("init-symlink-dangling-outside-{slug}"));
+        let d = empty_repo(&format!("init-symlink-dangling-{slug}"));
+        let link = d.join(".trellis").join(rel);
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        if !link_or_skip(&outside.join("planted"), &link) {
+            return;
+        }
+
+        let o = run(&d, &["init"]);
+        assert_init_refused(&o, rel);
+        assert!(
+            entries(&outside).is_empty(),
+            "{rel}: the dangling link's target was created: {:?}",
+            entries(&outside)
+        );
+        assert!(is_link(&link), "{rel}: the link itself is left as it was");
+        // Nothing beside it either: the check runs before any file is made.
+        let made: Vec<_> = ["config.toml", "context.md", "governance/README.md"]
+            .into_iter()
+            .filter(|f| *f != rel && std::fs::symlink_metadata(d.join(".trellis").join(f)).is_ok())
+            .collect();
+        assert!(made.is_empty(), "{rel}: a refusal still wrote {made:?}");
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+}
+
+#[test]
+fn init_symlink_config_toml_to_an_outside_file_leaves_it_untouched() {
+    // A live link: never overwritten before either, but kept as if it were
+    // the repository's own file, so `doctor` and every run read a config
+    // trellis cannot see the source of. Refused, and the target is as it was.
+    let outside = scratch("init-symlink-live-outside");
+    let target = outside.join("rc.sh");
+    std::fs::write(&target, "echo original\n").unwrap();
+    let d = empty_repo("init-symlink-live");
+    std::fs::create_dir_all(d.join(".trellis")).unwrap();
+    let link = d.join(".trellis/config.toml");
+    if !link_or_skip(&target, &link) {
+        return;
+    }
+
+    let o = run(&d, &["init"]);
+    assert_init_refused(&o, "config.toml");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "echo original\n");
+    assert_eq!(entries(&outside), ["rc.sh"]);
+    assert_eq!(entries(&d.join(".trellis")), ["config.toml"]);
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+#[test]
+fn init_symlink_linked_dot_trellis_is_refused_and_the_outside_directory_untouched() {
+    // A linked `.trellis` puts every scaffolded file wherever it points.
+    let outside = scratch("init-symlink-dot-outside");
+    let d = empty_repo("init-symlink-dot");
+    if !link_or_skip(&outside, &d.join(".trellis")) {
+        return;
+    }
+
+    let o = run(&d, &["init"]);
+    assert_init_refused(&o, ".trellis");
+    assert!(entries(&outside).is_empty(), "{:?}", entries(&outside));
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+#[test]
+fn init_symlink_linked_governance_dir_is_refused_and_nothing_is_written() {
+    // A linked parent directory moves the write as surely as a linked
+    // file: `.trellis/governance` pointing outside received README.md. The
+    // refusal comes before config.toml and context.md are created too.
+    let outside = scratch("init-symlink-gov-outside");
+    let d = empty_repo("init-symlink-gov");
+    std::fs::create_dir_all(d.join(".trellis")).unwrap();
+    if !link_or_skip(&outside, &d.join(".trellis/governance")) {
+        return;
+    }
+
+    let o = run(&d, &["init"]);
+    assert_init_refused(&o, "governance");
+    assert!(entries(&outside).is_empty(), "{:?}", entries(&outside));
+    assert_eq!(entries(&d.join(".trellis")), ["governance"]);
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+// ---------------------------------------------------------------------------
+// the handoff to trellis-tui (ADR 0052 decision 2.2, #514)
+// ---------------------------------------------------------------------------
+
+/// This build's `trellis`, hard-linked (copied where a link cannot be made)
+/// into `dir`, so a `trellis-tui` can sit beside it without touching
+/// `target/debug`, which every other test shares.
+fn trellis_in(dir: &Path) -> PathBuf {
+    let to = dir.join(format!("trellis{}", std::env::consts::EXE_SUFFIX));
+    if std::fs::hard_link(env!("CARGO_BIN_EXE_trellis"), &to).is_err() {
+        std::fs::copy(env!("CARGO_BIN_EXE_trellis"), &to).unwrap();
+    }
+    to
+}
+
+/// A `trellis-tui` in `dir` that writes its arguments, one per line, to
+/// `args.txt` and its environment to `env.txt` beside it, then exits 7, so
+/// the status `trellis` ends with shows whose it is.
+#[cfg(unix)]
+fn stub_tui(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let p = dir.join("trellis-tui");
+    std::fs::write(
+        &p,
+        "#!/bin/sh\nd=$(dirname \"$0\")\n\
+         for a in \"$@\"; do printf '%s\\n' \"$a\"; done > \"$d/args.txt\"\n\
+         env > \"$d/env.txt\"\nexit 7\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    p
+}
+
+/// Runs `trellis` (the path given) in `root` with `args` and extra
+/// environment, as `run` does. A script written a moment ago can be busy
+/// for exec while a concurrent test's fork holds it open (ETXTBSY), so that
+/// one failure is retried.
+fn run_at(trellis: &Path, root: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
+    for _ in 0..5 {
+        let mut c = Command::new(trellis);
+        c.args(args).current_dir(root).env("NO_COLOR", "1").env(
+            "TRELLIS_CONFIG_DIR",
+            std::env::temp_dir().join("trellis-tests-no-user-config"),
+        );
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        let out = c.output().expect("the binary must be built");
+        if !String::from_utf8_lossy(&out.stderr).contains("Text file busy") {
+            return out;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    panic!("trellis-tui stayed busy for exec");
+}
+
+#[cfg(unix)]
+#[test]
+fn launch_a_tui_beside_the_binary_gets_the_root_this_trellis_the_model_and_the_task() {
+    // The risk: a handoff that starts some other trellis's rpc, drops the
+    // user's --model or task, or loses the exit status.
+    let repo = empty_repo("launch-args");
+    let bin = scratch("launch-args-bin");
+    let me = trellis_in(&bin);
+    stub_tui(&bin);
+    let out = run_at(
+        &me,
+        &repo,
+        &[
+            "--root",
+            &repo.display().to_string(),
+            "tui",
+            "--model",
+            "scripted:/x.json",
+            "--",
+            "-change f",
+        ],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(7), "{}", combined(&out));
+    let args = std::fs::read_to_string(bin.join("args.txt")).unwrap();
+    let want = [
+        "--root".to_string(),
+        repo.display().to_string(),
+        "--trellis".to_string(),
+        me.display().to_string(),
+        "--model".to_string(),
+        "scripted:/x.json".to_string(),
+        "--".to_string(),
+        "-change f".to_string(),
+    ];
+    assert_eq!(args.lines().collect::<Vec<_>>(), want, "{args}");
+    let _ = std::fs::remove_dir_all(&bin);
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+#[test]
+fn launch_a_tui_on_path_but_not_beside_the_binary_is_not_used() {
+    // The risk: PATH searched, so another build, or another program called
+    // trellis-tui, is handed the terminal and the user's keys.
+    let repo = empty_repo("launch-path");
+    let bin = scratch("launch-path-bin");
+    let me = trellis_in(&bin);
+    let elsewhere = scratch("launch-path-elsewhere");
+    #[cfg(unix)]
+    stub_tui(&elsewhere);
+    #[cfg(not(unix))]
+    std::fs::write(elsewhere.join("trellis-tui.exe"), b"").unwrap();
+    let path = std::env::join_paths(std::iter::once(elsewhere.clone()).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .unwrap();
+    let out = run_at(
+        &me,
+        &repo,
+        &["tui", "--model", "scripted:/x.json"],
+        &[("PATH", path.to_str().unwrap())],
+    );
+    assert!(
+        !elsewhere.join("args.txt").exists(),
+        "the trellis-tui on PATH ran: {}",
+        combined(&out)
+    );
+    assert!(
+        combined(&out).contains("the Go TUI is not installed beside this trellis"),
+        "{}",
+        combined(&out)
+    );
+    for d in [&bin, &elsewhere, &repo] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+#[test]
+fn launch_without_a_tui_beside_it_falls_back_to_the_ratatui_tui_and_says_where_it_looked() {
+    // The risk: a missing trellis-tui leaves `trellis tui` doing nothing,
+    // or falls back without saying so.
+    let repo = empty_repo("launch-missing");
+    let bin = scratch("launch-missing-bin");
+    let me = trellis_in(&bin);
+    let out = run_at(&me, &repo, &["tui", "--model", "scripted:/x.json"], &[]);
+    let said = combined(&out);
+    let looked = bin.join(format!("trellis-tui{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        said.contains(&format!(
+            "the Go TUI is not installed beside this trellis (looked for {})",
+            looked.display()
+        )),
+        "{said}"
+    );
+    // The ratatui TUI then ran, and refused the pipe as it always has.
+    assert!(said.contains("needs a terminal"), "{said}");
+    assert!(!out.status.success(), "{said}");
+    let _ = std::fs::remove_dir_all(&bin);
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+#[cfg(unix)]
+#[test]
+fn launch_the_handoff_passes_the_environment_unchanged() {
+    // The owner's answer on #514 (ADR 0052, amendment of 2026-10-07): the
+    // handoff passes trellis's environment unchanged, key variables
+    // included, because trellis-tui's own `trellis rpc` needs them for a
+    // hosted model the user chose. Every other child stays scrubbed
+    // (tests/child_env.rs).
+    let repo = empty_repo("launch-env");
+    let bin = scratch("launch-env-bin");
+    let me = trellis_in(&bin);
+    stub_tui(&bin);
+    let canary = format!("canary-{}-{}", std::process::id(), "launch");
+    let out = run_at(
+        &me,
+        &repo,
+        &["tui", "--model", "scripted:/x.json"],
+        &[
+            ("OPENAI_API_KEY", &canary),
+            ("ANTHROPIC_API_KEY", &canary),
+            ("TRELLIS_LAUNCH_PROBE", "kept"),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(7), "{}", combined(&out));
+    let env = std::fs::read_to_string(bin.join("env.txt")).unwrap();
+    for want in [
+        format!("OPENAI_API_KEY={canary}"),
+        format!("ANTHROPIC_API_KEY={canary}"),
+        "TRELLIS_LAUNCH_PROBE=kept".to_string(),
+    ] {
+        assert!(env.lines().any(|l| l == want), "{want} missing:\n{env}");
+    }
+    let _ = std::fs::remove_dir_all(&bin);
+    let _ = std::fs::remove_dir_all(&repo);
 }

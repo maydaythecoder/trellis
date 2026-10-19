@@ -36,8 +36,7 @@ You implement exactly what the ticket specifies. Nothing more.
 ## Before returning
 Run the ticket's Verify command, then `scripts/gates/run-all.sh <n>`. If
 either fails, you are not done. Report what you ran and the actual output, not
-a summary of it. Commit on the ticket branch with a message that says why; end
-it with a blank line and `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+a summary of it. Commit on the ticket branch with a message that says why.
 
 ## Never
 - Weaken, skip or delete a test to make a build pass.

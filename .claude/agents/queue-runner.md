@@ -25,8 +25,7 @@ implementer's rules are your rules while you write code.
    label it `parked` + `triage:needs-human`, add a `## Parked` section
    (Question / Why I can't decide / What I'd do / What's blocked behind this),
    delete your branch, and move on.
-4. `cargo fmt --all`, commit (`#<n>: <what and why>`, ending with the
-   `Co-Authored-By` trailer the implementer uses), `git status --porcelain`
+4. `cargo fmt --all`, commit (`#<n>: <what and why>`), `git status --porcelain`
    empty.
 5. Gates: `bash scripts/gates/run-all.sh <n>` from **Git Bash** (from
    PowerShell, `bash` is WSL's and has no `gh`). Fix what fails, re-run.

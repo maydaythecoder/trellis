@@ -38,6 +38,40 @@ scripts/checks/desktop-guards.sh --self-test
 scripts/checks/desktop-guards.sh
 cargo deny --locked --manifest-path desktop/Cargo.toml check
 cargo audit --file desktop/Cargo.lock
+# Go (ADR 0052 section 5, #504). The guard holds Go code in tui/ to ADR
+# 0023's and ADR 0048 section 3's lines, which tests/hygiene.rs and
+# tests/child_env.rs cannot read; its self-test first, as for the desktop's.
+# It skips itself while tui/ is absent.
+scripts/checks/go-guards.sh --self-test
+scripts/checks/go-guards.sh
+# Then, once tui/ exists: go.sum matches what the module cache holds,
+# govulncheck finds no known vulnerability reachable from the code (none is
+# ever ignored; tui/VULN-EXCEPTIONS.md lists none), and every module's
+# licence is on deny.toml's allow-list. tui/'s own packages are skipped by
+# go-licenses: they are this repository's code, under its LICENSE, which
+# sits above the module root where go-licenses does not look. Each tool
+# absent fails the gate, as zizmor's does below.
+if go_module_present; then
+  go_require
+  gobin=$(go env GOPATH)/bin
+  [ -d "$gobin" ] && PATH="$PATH:$gobin"
+  for d in "$HOME/go/bin" "$HOME/.local/bin"; do
+    [ -d "$d" ] && PATH="$PATH:$d"
+  done
+  command -v govulncheck >/dev/null 2>&1 \
+    || fail "govulncheck not installed (go install -mod=readonly golang.org/x/vuln/cmd/govulncheck@v1.8.0); G5 cannot audit tui/ without it"
+  command -v go-licenses >/dev/null 2>&1 \
+    || fail "go-licenses not installed (go install -mod=readonly github.com/google/go-licenses/v2@v2.0.1); G5 cannot check tui/'s licences without it"
+  allowed=$(deny_allowed_licenses)
+  [ -n "$allowed" ] || fail "could not read the licence allow-list from deny.toml"
+  (cd tui && go mod verify) || fail "go mod verify failed in tui/: go.sum and the module cache disagree"
+  (cd tui && govulncheck ./...) || fail "govulncheck found a vulnerability in tui/ (above); none is ignored (tui/VULN-EXCEPTIONS.md)"
+  (cd tui && go-licenses check ./... --ignore github.com/maydaythecoder/trellis/tui --allowed_licenses="$allowed") \
+    || fail "go-licenses: a module under tui/ has a licence outside deny.toml's allow-list (above)"
+  gomsg="go-guards and its self-test; go mod verify, govulncheck and go-licenses over tui/"
+else
+  gomsg="go-guards and its self-test (tui/ absent: its Go checks skipped)"
+fi
 # The workflows, as the pre-commit hook audits them but over the whole
 # directory, so a workflow change that reached the branch without the hook
 # (another clone, --no-verify) is still held to it (#215). zizmor at medium
@@ -104,4 +138,4 @@ if [ -n "$hits" ]; then
   printf '%s\n' "$hits"
   exit 1
 fi
-echo "OK: fuzz/Cargo.lock current; desktop guards and their self-test pass; cargo deny, cargo audit (root, fuzz/Cargo.lock and desktop/Cargo.lock); zizmor clean and every workflow cargo command --locked; no CI job lost; pre-push, pre-commit and ci-local self-tests pass; gitleaks clean over $GATE_BASE..HEAD; no key-shaped literal or basic-auth URL added"
+echo "OK: fuzz/Cargo.lock current; desktop guards and their self-test pass; $gomsg; cargo deny, cargo audit (root, fuzz/Cargo.lock and desktop/Cargo.lock); zizmor clean and every workflow cargo command --locked; no CI job lost; pre-push, pre-commit and ci-local self-tests pass; gitleaks clean over $GATE_BASE..HEAD; no key-shaped literal or basic-auth URL added"

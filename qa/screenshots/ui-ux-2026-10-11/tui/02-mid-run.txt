@@ -1,0 +1,25 @@
+# tui_demo · 80x24 · t=1.56s · keys so far: (none) · cursor=(79, 19)
+ TRELLIS   model none  tier unknown  worktree 1 edit(s) pending
+┌ transcript ──────────────────────────────────┐┌ actions ─────────────────────┐
+│Reading blast radius for `resolve_symbol`...  ││  blast_radius     ○─┐        │
+│12 callers found. Checking scope resolution.  ││  read_file        ○─┤        │
+│Editing src/index/resolve.rs                  ││  edit             ○─┤──◆ 0 ac│
+│Running type check...                         ││  run_checks       ○─┘        │
+│                                              │└──────────────────────────────┘
+│                                              │┌ edits ───────────────────────┐
+│                                              │└──────────────────────────────┘
+│                                              │┌ checks ──────────────────────┐
+│                                              ││                              │
+│                                              │└──────────────────────────────┘
+│                                              │┌ radius ──────────────────────┐
+│                                              ││  resolved      47 ●─┐        │
+│                                              ││  candidates     3 ◐─┤──◆ reac│
+│                                              ││  unresolved     2 ○─┘        │
+│                                              ││  a floor on reach, not a boun│
+└──────────────────────────────────────────────┘└──────────────────────────────┘
+┌ budget ──────────────────────────────────────────────────────────────────────┐
+│iteration 4  ·  16800 B prompt  ·  36s elapsed  ·  85 tok, 11.3 tok/s  ·  queu│
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ task  ·  enter to run  ·  /help  ·  esc to clear, esc again to quit ─────────┐
+│█                                                                             │
+└──────────────────────────────────────────────────────────────────────────────┘

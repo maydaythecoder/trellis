@@ -10,6 +10,10 @@ use ratatui::crossterm::event::KeyEvent;
 pub enum Message {
     // terminal
     Key(KeyEvent),
+    /// Text pasted into the terminal, as one message (#639). Line breaks
+    /// are kept here and flattened by `update`: a paste goes into the
+    /// input and nothing is sent until Enter is pressed.
+    Paste(String),
     Resize(u16, u16),
     Tick,
     // work events, from the run driver (mock.rs in the demo)
@@ -44,7 +48,8 @@ pub enum Message {
         unresolved: usize,
     },
     /// After each turn. `prompt_bytes` is the prompt's size in bytes as
-    /// the loop measured it, not a token count (#243).
+    /// the loop measured it, not a token count (#243), and `None` when the
+    /// turn did not report one (#641).
     ///
     /// The last three are that turn's model call as the `turn` event reports
     /// it (#256): output tokens, the call's wall time, and the queue wait the
@@ -52,17 +57,26 @@ pub enum Message {
     /// the view can draw nothing rather than a rate made from a guess (#257).
     BudgetUpdated {
         iteration: u32,
-        prompt_bytes: u64,
+        prompt_bytes: Option<u64>,
         elapsed_secs: u64,
         completion_tokens: Option<u64>,
         model_ms: Option<u64>,
         queue_wait_ms: Option<u64>,
     },
+    /// Seconds since the run began, from the driver's clock, every second
+    /// while a run is in flight (#641). Sent from outside so that `update`
+    /// stays free of IO and the view never reads a clock itself.
+    Elapsed(u64),
     /// At the start of a run: the iteration ceiling the loop enforces.
     BudgetKnown {
         max_iterations: u32,
     },
+    /// A call waiting for a yes. `question` names it (`edit a.py (+1 -1)`)
+    /// and goes in the modal's title, apart from `diff`, what it would do:
+    /// sent after the diff, the question was the first thing a long diff
+    /// pushed out of the box (#640).
     ApprovalRequested {
+        question: String,
         diff: String,
     },
     /// A steer the view queued reached the model (#113, #115).
@@ -79,7 +93,16 @@ pub enum Message {
     /// How the run ended, one line, sent just before `RunFinished` (#244).
     /// Shown where it does not scroll, so a finished run is visible even
     /// when the transcript's last lines are not.
-    RunOutcome(String),
+    ///
+    /// `restored` is whether the run put the worktree back, when its ending
+    /// says (#636): the status bar's worktree state follows it, and reading
+    /// it back out of `line` would make display text a protocol. `None` for
+    /// an ending that does not restore (converged) or does not know
+    /// (failed).
+    RunOutcome {
+        line: String,
+        restored: Option<bool>,
+    },
     RunFinished,
     // internal
     Quit,
@@ -99,4 +122,9 @@ pub enum SteerOut {
     /// Sent immediately before a task: every steer ahead of this was typed
     /// for an earlier task, and every steer after it for this one or later.
     TaskFollows,
+    /// Ctrl-C, or Esc on an empty line, while a run was in flight: stop that
+    /// run, which rolls it back (#634). On this channel rather than its own
+    /// so the `TaskFollows` boundary orders it too: a stop typed for one run
+    /// cannot reach the next.
+    Stop,
 }

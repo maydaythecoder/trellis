@@ -5,7 +5,9 @@
 //! variables a child must not inherit (`secrets`), because every crate that
 //! spawns one needs that list and all of them may depend on this crate.
 //! Of paths it knows which ones a repository may hand to the prompt or to
-//! a write (`paths`), for the same reason. And how to kill a child and what
+//! a write (`paths`), for the same reason, and how to write under
+//! `.trellis/` without following a link the repository planted (`links`).
+//! And how to kill a child and what
 //! it started (`process`), which the tool runner and the checks both need.
 //! And how to print repository text without letting it drive the terminal
 //! (`text`), which the loop and the binary both do.
@@ -14,6 +16,7 @@
 
 mod ids;
 pub mod interner;
+pub mod links;
 pub mod paths;
 pub mod process;
 pub mod secrets;

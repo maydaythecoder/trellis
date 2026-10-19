@@ -1,0 +1,25 @@
+# tui_demo · 80x24 · t=6.01s · keys so far: n /help Enter · cursor=(7, 22)
+ TRELLIS   model none  tier unknown  worktree 1 edit(s) pending
+┌ transcript ──────────────────────────────────┐┌ actions ─────────────────────┐
+│  esc       clear the line; again to leave    ││  blast_radius     ○─┐        │
+│  ^c        leave; a run in flight is stopped ││  read_file        ○─┤        │
+│  enter during a run queues the line as a     ││  edit             ○─┤──◆ 0 ac│
+│steer for its next turn                       ││  run_checks       ○─┘        │
+│  ↑ ↓       scroll the transcript             │└──────────────────────────────┘
+│                                              │┌ edits ───────────────────────┐
+│  Anything else is a task: it snapshots the   │└──────────────────────────────┘
+│worktree, drives the                          │┌ checks ──────────────────────┐
+│  model, runs the repository's own checks and ││pass typecheck                │
+│rolls back if it                              │└──────────────────────────────┘
+│  does not converge.                          │┌ radius ──────────────────────┐
+│                                              ││  resolved      47 ●─┐        │
+│  For the model catalogue, weights and config,││  candidates     3 ◐─┤──◆ reac│
+│leave and use                                 ││  unresolved     2 ○─┘        │
+│  `trellis model` or `trellis session`.       ││  a floor on reach, not a boun│
+└──────────────────────────────────────────────┘└──────────────────────────────┘
+┌ budget ──────────────────────────────────────────────────────────────────────┐
+│iteration 4  ·  16800 B prompt  ·  36s elapsed  ·  85 tok, 11.3 tok/s  ·  queu│
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ task  ·  enter to run  ·  /help  ·  esc to clear, esc again to quit ─────────┐
+│█                                                                             │
+└──────────────────────────────────────────────────────────────────────────────┘

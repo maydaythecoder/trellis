@@ -2,7 +2,8 @@
 //!
 //! **Tier 2 ships a JSON Schema, not a compiled grammar.** The runtimes each
 //! take a schema under a different key — llama.cpp `json_schema`, vLLM
-//! `guided_json`, SGLang `json_schema` inside `sampling_params` — and
+//! `structured_outputs.json` (and `guided_json`, which vLLM 0.12.0 removed,
+//! for older servers), SGLang `json_schema` inside `sampling_params` — and
 //! llama.cpp's `grammar` key wants GBNF rather than llguidance's Lark. JSON
 //! Schema is the one format all of them accept, so it is the wire format, and
 //! llguidance's job here is to have already validated that the schema compiles
@@ -203,6 +204,13 @@ impl RuntimeClient {
                     "temperature": 0.0,
                 });
                 if let Some(s) = schema {
+                    // vLLM 0.12.0 removed `guided_json`: a current server logs
+                    // it as removed, answers 200 and samples unconstrained.
+                    // `structured_outputs.json` is the key it reads now. Both
+                    // are sent because each server ignores the key it does not
+                    // know, so a pre-0.12 server still constrains on the old
+                    // one; the schema probe decides the tier either way.
+                    b["structured_outputs"] = json!({ "json": s.clone() });
                     b["guided_json"] = s.clone();
                 }
                 b
@@ -457,7 +465,11 @@ mod tests {
         assert_eq!(b["json_schema"], schema);
         assert!(b.get("guided_json").is_none());
 
+        // vLLM 0.12.0 and later read `structured_outputs.json` and ignore the
+        // removed `guided_json`; an older server reads only `guided_json`.
+        // Dropping either key silently unconstrains one side of that boundary.
         let b = client(Dialect::VllmOpenAi).body("p", Some(&schema), 64);
+        assert_eq!(b["structured_outputs"]["json"], schema);
         assert_eq!(b["guided_json"], schema);
         assert!(b.get("json_schema").is_none());
 
@@ -474,7 +486,9 @@ mod tests {
             let b = client(d).body("p", None, 64);
             let s = b.to_string();
             assert!(
-                !s.contains("json_schema") && !s.contains("guided_json"),
+                !s.contains("json_schema")
+                    && !s.contains("guided_json")
+                    && !s.contains("structured_outputs"),
                 "{d:?} leaked a schema key when unconstrained: {s}"
             );
         }

@@ -10,8 +10,15 @@ name: Release
 #
 # A tag builds artefacts. `workflow_dispatch` builds them without one, so the
 # packaging can be exercised before it is needed rather than discovered
-# broken at the moment someone wants a release. A tag builds Linux and
-# Windows; `workflow_dispatch` adds macOS (see the matrix, #381).
+# broken at the moment someone wants a release. Both build Linux and Windows
+# only (ADR 0052 decision 2.5), on GitHub-hosted runners: the self-hosted
+# path (owner decision 2026-10-06) is set aside as of 2026-10-19, after the
+# runner host stopped taking jobs on 2026-10-12. macOS stays dropped.
+#
+# Each leg ships two binaries: `trellis` and the Go TUI, `trellis-tui`
+# (ADR 0052), built from `tui/` with the pinned Go: the runner's own on a
+# self-hosted runner, scripts/runners/go-hosted.sh's hash-checked unpack on
+# a GitHub-hosted one, held to the same version check either way.
 #
 # A `v*` tag also publishes: the `publish` job turns the tag's artefacts into
 # a GitHub release, and only for a commit already on `main` (#386). It is the
@@ -28,25 +35,38 @@ permissions:
 jobs:
   build:
     name: ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
+    # Self-hosted when the repository variables name runners (JSON label
+    # lists), GitHub-hosted when unset, as ci.yml reads them (#157).
+    runs-on: ${{ matrix.os == 'windows' && 'windows-latest' || 'ubuntu-latest' }}
     # A fat-LTO release build with one codegen unit, plus the release test
     # suite on Linux; without a ceiling a stuck runner waits GitHub's default
     # 360 minutes (#381).
     timeout-minutes: 60
+    # go.sum is the pin, and go.mod's toolchain line never downloads another
+    # toolchain (ADR 0052 decision 2.4).
+    env:
+      GOFLAGS: -mod=readonly
+      GOTOOLCHAIN: local
     strategy:
       # Every platform is built even when one fails. A matrix that stops at
       # the first failure reports one broken target and hides the others,
       # which turns a release into several rounds of finding out.
       fail-fast: false
-      # Linux and Windows on every trigger. macOS (aarch64-apple-darwin) only
-      # on `workflow_dispatch`: its minutes cost ten times Linux's on a
-      # private repository (#381), and it is built here, never run by a human
-      # on this project; the supported-platform list in the documentation
-      # says so rather than implying parity with the two used daily. The list
-      # is chosen by event because `exclude` and `include` cannot drop a leg
-      # conditionally, and a job-level `if` would skip every leg at once.
+      # One Linux and one Windows leg on every trigger. The macOS leg
+      # (aarch64-apple-darwin, `workflow_dispatch` only) was dropped by the
+      # owner's decision of 2026-10-06 (ADR 0052 decision 2.5), and stays
+      # dropped on GitHub-hosted runners too: its minutes cost ten times
+      # Linux's on a private repository (#381). It returns by owner decision.
       matrix:
-        include: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '[{"os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","bin":"trellis"},{"os":"windows-latest","target":"x86_64-pc-windows-msvc","bin":"trellis.exe"},{"os":"macos-latest","target":"aarch64-apple-darwin","bin":"trellis"}]' || '[{"os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","bin":"trellis"},{"os":"windows-latest","target":"x86_64-pc-windows-msvc","bin":"trellis.exe"}]') }}
+        include:
+          - os: linux
+            target: x86_64-unknown-linux-gnu
+            bin: trellis
+            tui: trellis-tui
+          - os: windows
+            target: x86_64-pc-windows-msvc
+            bin: trellis.exe
+            tui: trellis-tui.exe
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -89,6 +109,55 @@ jobs:
       - name: It runs
         run: ./target/${{ matrix.target }}/release/${{ matrix.bin }} --version
 
+      # The Go TUI (ADR 0052). The runner's own pinned Go, checked first, as
+      # ci.yml's go job does; then the Go checks (the rpc tests spawn the
+      # debug trellis, so it is built for them).
+      - name: Go, pinned, on a GitHub-hosted runner (scripts/runners/go-hosted.sh)
+        if: runner.environment == 'github-hosted'
+        shell: bash
+        run: |
+          scripts/runners/go-hosted.sh --self-test
+          scripts/runners/go-hosted.sh
+
+      - name: Go is the pinned toolchain (scripts/runners/install-go.sh)
+        shell: bash
+        run: |
+          v=$(go version)
+          echo "$v"
+          case "$v" in
+            "go version go1.27.2 "*) ;;
+            *) echo "::error::expected go1.27.2, the pin in scripts/runners/install-go.sh; run it on this runner"; exit 1 ;;
+          esac
+
+      - name: Go checks (tui/)
+        shell: bash
+        run: |
+          cargo build --locked -p trellis-cli
+          scripts/checks/go-test.sh
+
+      # CGO_ENABLED=0 and -trimpath (ADR 0052 section 5): a static binary
+      # with no build machine's paths in it; -buildvcs=false, since the
+      # version is the tag's and nothing else. The version is the tag's
+      # without its `v`, or `dev` from `workflow_dispatch`; the ref reaches
+      # the shell through env, never through an expression in `run:`.
+      - name: Build trellis-tui
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          OUT: ../target/${{ matrix.target }}/release/${{ matrix.tui }}
+        run: |
+          set -euo pipefail
+          version=dev
+          if [ "$EVENT" = push ] && printf '%s\n' "$REF_NAME" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+'; then
+            version="${REF_NAME#v}"
+          fi
+          cd tui
+          CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false -ldflags "-X main.version=$version" -o "$OUT" ./cmd/trellis-tui
+
+      - name: trellis-tui runs
+        run: ./target/${{ matrix.target }}/release/${{ matrix.tui }} --version
+
       - name: Package
         shell: bash
         run: |
@@ -96,11 +165,13 @@ jobs:
           out="trellis-${{ matrix.target }}"
           mkdir -p "dist/$out"
           cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "dist/$out/"
+          # Beside trellis: `trellis tui` looks for it there and nowhere else.
+          cp "target/${{ matrix.target }}/release/${{ matrix.tui }}" "dist/$out/"
           cp dist/QUICKSTART.md "dist/$out/"
           cp LICENSE "dist/$out/" 2>/dev/null || true
-          # A checksum beside the binary, because "download this and run it"
-          # deserves a way to check what arrived is what was built.
-          (cd "dist/$out" && sha256sum "${{ matrix.bin }}" > SHA256SUMS)
+          # A checksum beside the binaries, because "download this and run
+          # it" deserves a way to check what arrived is what was built.
+          (cd "dist/$out" && sha256sum "${{ matrix.bin }}" "${{ matrix.tui }}" > SHA256SUMS)
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -113,8 +184,10 @@ jobs:
   # `workflow_dispatch` has no tag to release. It runs after every leg of
   # `build` has passed, and refuses before writing anything unless the tagged
   # commit is already on `main` (ADR 0051: `main` is what ships, and the owner
-  # moves it) and the Linux binary reports the tag's version, so a tag pushed
-  # on `dev`, or one that does not match Cargo.toml, publishes nothing.
+  # moves it) and both Linux binaries report the tag's version, so a tag
+  # pushed on `dev`, or one that does not match Cargo.toml or the TUI's
+  # build, publishes nothing. On a GitHub-hosted Linux runner, like
+  # `build`, which ships `gh` and `zip`.
   publish:
     needs: build
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -156,22 +229,28 @@ jobs:
           pattern: trellis-*
           path: artifacts
 
-      # The binary that ships answers for the version, not the manifest: the
-      # same --version `build` ran, compared with the tag this time. The
-      # artifact upload drops the execute bit, so it is put back first.
-      - name: trellis --version equals the tag
+      # The binaries that ship answer for the version, not the manifest: the
+      # same --version `build` ran, compared with the tag this time, for
+      # trellis and for trellis-tui. Both are checked before either answer
+      # is acted on, and nothing is written unless both match. The artifact
+      # upload drops the execute bit, so it is put back first.
+      - name: trellis --version and trellis-tui --version equal the tag
         env:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          bin=artifacts/trellis-x86_64-unknown-linux-gnu/trellis
-          chmod +x "$bin"
-          got=$("$bin" --version)
-          want="trellis ${TAG#v}"
-          if [ "$got" != "$want" ]; then
-            echo "::error::refusing to publish: the binary says '$got', the tag wants '$want'"
-            exit 1
-          fi
+          dir=artifacts/trellis-x86_64-unknown-linux-gnu
+          bad=0
+          for name in trellis trellis-tui; do
+            chmod +x "$dir/$name"
+            got=$("$dir/$name" --version)
+            want="$name ${TAG#v}"
+            if [ "$got" != "$want" ]; then
+              echo "::error::refusing to publish: $name says '$got', the tag wants '$want'"
+              bad=1
+            fi
+          done
+          [ "$bad" -eq 0 ]
 
       # One archive per target, and one SHA256SUMS over the archives, so a
       # download can be checked before it is unpacked (each archive keeps the

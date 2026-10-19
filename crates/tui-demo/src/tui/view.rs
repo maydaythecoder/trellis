@@ -3,7 +3,7 @@
 //! Every `Rect` is computed fresh from `frame.area()` each frame. Caching one
 //! is how a resize produces a layout drawn against the old size.
 
-use crate::tui::app::{AppState, Budget, EditStatus, Modal};
+use crate::tui::app::{AppState, Budget, EditStatus, Modal, Worktree};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -14,6 +14,16 @@ use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, 
 const MIN_WIDTH: u16 = 80;
 const MIN_HEIGHT: u16 = 24;
 // Status 1 + budget 3 + input 3 + a body worth looking at.
+/// The right column's floor: two borders and the radius pane's caption, "a
+/// floor on reach, not a boundary", at 34 columns. The actions pane's widest
+/// row is measured per frame (`actions_width`) and can raise it.
+const RIGHT_MIN_WIDTH: u16 = 36;
+
+/// The transcript pane's inner width at the narrowest layout drawn: its 60%
+/// of `MIN_WIDTH`, less two borders. The transcript wraps to the most rows
+/// here, so a scroll back by its row count at this width reaches the top at
+/// any size the view lays out (`Home`, #660).
+pub(crate) const MIN_TRANSCRIPT_WIDTH: u16 = MIN_WIDTH * 60 / 100 - 2;
 
 pub fn render(state: &AppState, frame: &mut Frame) {
     let area = frame.area();
@@ -42,9 +52,18 @@ pub fn render(state: &AppState, frame: &mut Frame) {
         ])
         .split(area);
 
+    // The right column takes two fifths of the width, and never less than
+    // its widest row needs: at 80 columns the two fifths were 32, and the
+    // panes read "0 ac", "reac" and "not a boun" where their labels were
+    // (#655). Below 100 columns the transcript gives the difference up,
+    // since a cut figure is worse than a narrower transcript that wraps.
+    let right_w = u16::try_from(u32::from(area.width) * 2 / 5)
+        .unwrap_or(u16::MAX)
+        .max(RIGHT_MIN_WIDTH)
+        .max(actions_width(state).saturating_add(2));
     let body = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(60), Constraint::Fill(1)])
+        .constraints([Constraint::Fill(1), Constraint::Length(right_w)])
         .split(rows[1]);
 
     let right = Layout::default()
@@ -74,8 +93,13 @@ pub fn render(state: &AppState, frame: &mut Frame) {
 
     // Last, so it is over everything, and `Clear` first so what is under it
     // is wiped rather than showing through the gaps.
-    if let Some(Modal::Approval { diff }) = &state.modal {
-        render_modal(diff, area, frame);
+    if let Some(Modal::Approval {
+        question,
+        diff,
+        scroll,
+    }) = &state.modal
+    {
+        render_modal(question, diff, *scroll, area, frame);
     }
 }
 
@@ -101,15 +125,33 @@ fn render_too_small(area: Rect, frame: &mut Frame) {
 }
 
 fn render_status(state: &AppState, area: Rect, frame: &mut Frame) {
-    let worktree = if state.edits.is_empty() {
-        Span::styled("clean", Style::default().fg(Color::Green))
-    } else {
-        Span::styled(
-            format!("{} edit(s) pending", state.edits.len()),
-            Style::default().fg(Color::Yellow),
-        )
+    let (green, yellow) = (
+        Style::default().fg(Color::Green),
+        Style::default().fg(Color::Yellow),
+    );
+    let worktree = match state.worktree() {
+        Worktree::Clean => Span::styled("clean", green),
+        Worktree::Pending(n) => Span::styled(format!("{n} edit(s) pending"), yellow),
+        Worktree::Restored => Span::styled("restored", green),
+        Worktree::LeftForReview(n) => Span::styled(format!("{n} file(s) left for review"), yellow),
     };
-    let line = Line::from(vec![
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    // The word for a tier nothing has reported, as `get_state` says it
+    // (#519); a label never repeats the `tier ` written beside it.
+    let tier = if state.tier.is_empty() {
+        "unknown".to_string()
+    } else {
+        state.tier.clone()
+    };
+    let model = if state.model.is_empty() {
+        "none".to_string()
+    } else {
+        state.model.clone()
+    };
+    // The worktree goes before the model, and the model is the span that is
+    // cut, with "…": drawn last, the worktree state was pushed past column
+    // 80 by a long spec and read "work" (#636).
+    let mut spans = vec![
         Span::styled(
             " TRELLIS ",
             Style::default()
@@ -117,37 +159,23 @@ fn render_status(state: &AppState, area: Rect, frame: &mut Frame) {
                 .bg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  model "),
-        Span::styled(
-            if state.model.is_empty() {
-                "none".to_string()
-            } else {
-                state.model.clone()
-            },
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  tier "),
-        Span::styled(
-            // The word for a tier nothing has reported, as `get_state` says
-            // it (#519); a label never repeats the `tier ` written above.
-            if state.tier.is_empty() {
-                "unknown".to_string()
-            } else {
-                state.tier.clone()
-            },
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
         Span::raw("  worktree "),
         worktree,
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+        Span::raw("  model "),
+    ];
+    let tier_spans = [Span::raw("  tier "), Span::styled(tier, bold)];
+    let used: usize = spans.iter().chain(tier_spans.iter()).map(Span::width).sum();
+    let room = usize::from(area.width).saturating_sub(used).max(1);
+    spans.push(Span::styled(truncate(&model, room), bold));
+    spans.extend(tier_spans);
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Rows `text` takes when wrapped to `width` columns: greedy word wrap, as
 /// the paragraph does, a word longer than the width breaking across rows.
 /// Close enough to place the end of the transcript in view; it is a count
 /// for scrolling, never a figure shown to anyone.
-fn wrapped_rows(text: &str, width: u16) -> u16 {
+pub(crate) fn wrapped_rows(text: &str, width: u16) -> u16 {
     let width = usize::from(width.max(1));
     let mut rows: usize = 0;
     for line in text.split('\n') {
@@ -314,6 +342,68 @@ fn render_radius(state: &AppState, area: Rect, frame: &mut Frame) {
 /// from what happened cannot show the difference.
 const TOOLS: [&str; 4] = ["blast_radius", "read_file", "edit", "run_checks"];
 
+/// One node of the action graph: a tool, and its count as the row draws it.
+struct ActionNode<'a> {
+    name: &'a str,
+    calls: usize,
+    wrote: usize,
+    /// Empty for an uncalled tool; `N` for one that only looked; `N · M
+    /// wrote` for one that changed the tree, said in words and not only in
+    /// yellow (#661), the way the desktop's graph says "3 calls · 1 wrote".
+    count: String,
+}
+
+/// The tools on the graph, in the prompt's order, then any the model called
+/// that `TOOLS` has not heard of: a node missing because a constant was out
+/// of date would make the picture a lie about what ran.
+fn action_nodes(state: &AppState) -> Vec<ActionNode<'_>> {
+    let mut names: Vec<&str> = TOOLS.to_vec();
+    for a in &state.actions {
+        if !names.contains(&a.tool.as_str()) {
+            names.push(&a.tool);
+        }
+    }
+    names
+        .into_iter()
+        .map(|name| {
+            let calls = state.actions.iter().filter(|a| a.tool == name).count();
+            let wrote = state
+                .actions
+                .iter()
+                .filter(|a| a.tool == name && a.wrote)
+                .count();
+            let count = match (calls, wrote) {
+                (0, _) => String::new(),
+                (n, 0) => n.to_string(),
+                (n, w) => format!("{n} · {w} wrote"),
+            };
+            ActionNode {
+                name,
+                calls,
+                wrote,
+                count,
+            }
+        })
+        .collect()
+}
+
+/// The columns the action graph's widest row takes, so the layout can give
+/// the pane that much before it draws (#655): indent, label, count between
+/// two spaces, glyph, edge, and the focus node with its action count.
+fn actions_width(state: &AppState) -> u16 {
+    let nodes = action_nodes(state);
+    let label_w = nodes.iter().map(|n| n.name.len()).max().unwrap_or(0);
+    let count_w = nodes
+        .iter()
+        .map(|n| n.count.chars().count())
+        .max()
+        .unwrap_or(0);
+    let n = state.actions.len();
+    let focus = format!("──◆ {n} action{}", if n == 1 { "" } else { "s" });
+    let w = 2 + label_w + 1 + count_w + 1 + 1 + 2 + Span::raw(focus).width();
+    u16::try_from(w).unwrap_or(u16::MAX)
+}
+
 /// The action graph: what this run has called, as converging edges.
 ///
 /// The reference is `ui_examples/preview.webp` — nodes with edges meeting at a
@@ -331,35 +421,31 @@ fn render_actions(state: &AppState, area: Rect, frame: &mut Frame) {
         return;
     }
 
-    // Anything the model called that this list has not heard of still belongs
-    // on the graph: a node missing because a constant was out of date would
-    // make the picture a lie about what ran.
-    let mut names: Vec<&str> = TOOLS.to_vec();
-    for a in &state.actions {
-        if !names.contains(&a.tool.as_str()) {
-            names.push(&a.tool);
-        }
-    }
-
-    let mid = names.len() / 2;
-    let label_w = names.iter().map(|n| n.len()).max().unwrap_or(0);
+    let nodes = action_nodes(state);
+    let mid = nodes.len() / 2;
+    let label_w = nodes.iter().map(|n| n.name.len()).max().unwrap_or(0);
+    let count_w = nodes
+        .iter()
+        .map(|n| n.count.chars().count())
+        .max()
+        .unwrap_or(0);
     let mut lines: Vec<Line> = Vec::new();
 
-    for (i, name) in names.iter().enumerate() {
-        let calls = state.actions.iter().filter(|a| a.tool == *name).count();
-        let wrote = state.actions.iter().any(|a| a.tool == *name && a.wrote);
+    for (i, node) in nodes.iter().enumerate() {
+        let (name, calls, wrote) = (node.name, node.calls, node.wrote);
         let connector = if i == 0 {
             '┐'
-        } else if i == names.len() - 1 {
+        } else if i == nodes.len() - 1 {
             '┘'
         } else {
             '┤'
         };
         let (glyph, colour) = if calls == 0 {
             ('○', Color::DarkGray)
-        } else if wrote {
-            // The one node whose colour carries a fact rather than a status:
-            // this tool changed the tree.
+        } else if wrote > 0 {
+            // The node whose colour carries a fact rather than a status: this
+            // tool changed the tree. The count says so in words too, for a
+            // monochrome terminal or NO_COLOR (#661).
             ('●', Color::Yellow)
         } else {
             ('●', Color::Green)
@@ -370,14 +456,12 @@ fn render_actions(state: &AppState, area: Rect, frame: &mut Frame) {
             Style::default().fg(Color::Gray)
         };
 
+        // The counts are right-aligned to the widest, so the edge column
+        // stays one column whatever a node's count says.
         let mut spans = vec![
             Span::styled(format!("  {name:<label_w$}"), label_style),
             Span::styled(
-                if calls == 0 {
-                    "     ".to_string()
-                } else {
-                    format!("{calls:>4} ")
-                },
+                format!(" {:>count_w$} ", node.count),
                 Style::default().fg(colour).add_modifier(Modifier::BOLD),
             ),
             Span::styled(glyph.to_string(), Style::default().fg(colour)),
@@ -462,10 +546,13 @@ fn render_budget(state: &AppState, area: Rect, frame: &mut Frame) {
     } else {
         f64::from(b.iteration.min(b.max_iterations)) / f64::from(b.max_iterations)
     };
-    let iteration = if b.max_iterations == 0 {
-        format!("iteration {}", b.iteration)
-    } else {
-        format!("iteration {}/{}", b.iteration, b.max_iterations)
+    // Turns count from 1: a 0 is a run that has not reported a turn, and
+    // an unreported figure is never drawn as 0 (#641), here or below.
+    let iteration = match (b.iteration, b.max_iterations) {
+        (0, 0) => "no iteration yet".to_string(),
+        (0, max) => format!("no iteration yet of {max}"),
+        (n, 0) => format!("iteration {n}"),
+        (n, max) => format!("iteration {n}/{max}"),
     };
     // A finished run does not keep presenting an iteration in progress
     // (#244): the counts stay, marked as the last run's.
@@ -474,17 +561,72 @@ fn render_budget(state: &AppState, area: Rect, frame: &mut Frame) {
     } else {
         iteration
     };
+    let prompt = match b.prompt_bytes {
+        Some(bytes) => format!("{bytes} B prompt"),
+        None => "prompt not reported".to_string(),
+    };
+    let elapsed = match b.elapsed_secs {
+        Some(secs) => format!("{} elapsed", clock(secs)),
+        None => "not started".to_string(),
+    };
+    let (rate, queued) = turn_rate(&b);
+    let block = Block::default().borders(Borders::ALL).title(" budget ");
+    let label = budget_label(
+        &iteration,
+        &prompt,
+        &elapsed,
+        rate.as_deref(),
+        queued.as_deref(),
+        usize::from(block.inner(area).width),
+    );
     let gauge = Gauge::default()
-        .block(Block::default().borders(Borders::ALL).title(" budget "))
+        .block(block)
         .gauge_style(Style::default().fg(Color::Cyan))
         .ratio(ratio)
-        .label(format!(
-            "{iteration}  ·  {} B prompt  ·  {}s elapsed{}",
-            b.prompt_bytes,
-            b.elapsed_secs,
-            turn_rate(&b)
-        ));
+        .label(label);
     frame.render_widget(gauge, area);
+}
+
+/// The budget line's segments joined with `  ·  `, dropping whole segments
+/// from the tail until the line fits `width` (#655).
+///
+/// The gauge clips a long label mid-word ("· queu" at 80 columns), so a
+/// segment that does not fit is left out rather than cut, in this order: the
+/// token rate first, since it is the one figure derived from the others; then
+/// the queue wait; then the prompt size. The iteration and the elapsed time
+/// are never dropped, because they are what says the run is moving.
+fn budget_label(
+    iteration: &str,
+    prompt: &str,
+    elapsed: &str,
+    rate: Option<&str>,
+    queued: Option<&str>,
+    width: usize,
+) -> String {
+    let mut keep = [true, true, true, true, true];
+    let segments = [Some(iteration), Some(prompt), Some(elapsed), rate, queued];
+    let join = |keep: &[bool; 5]| -> String {
+        segments
+            .iter()
+            .zip(keep)
+            .filter_map(|(s, k)| if *k { *s } else { None })
+            .collect::<Vec<_>>()
+            .join("  ·  ")
+    };
+    // Indices into `segments`, in the order they give way.
+    for drop in [3, 4, 1] {
+        if Span::raw(join(&keep)).width() <= width {
+            break;
+        }
+        keep[drop] = false;
+    }
+    join(&keep)
+}
+
+/// Seconds as `m:ss`, so a minutes-long model call reads as time passing
+/// rather than as a count (#641): "1:15" where "75s" needed arithmetic.
+fn clock(secs: u64) -> String {
+    format!("{}:{:02}", secs / 60, secs % 60)
 }
 
 /// The last turn's output rate and queue wait, as the budget line's tail.
@@ -494,23 +636,23 @@ fn render_budget(state: &AppState, area: Rect, frame: &mut Frame) {
 /// runtime reported separately (0 when it did not). The wall time still
 /// includes prompt processing, so this reads below the decode rate. Nothing
 /// is estimated: with no reported tokens the tail is empty, and with no model
-/// time left after the wait there is no rate to draw.
-fn turn_rate(b: &Budget) -> String {
+/// time left after the wait there is no rate to draw. Two segments, so the
+/// label can drop one without the other.
+fn turn_rate(b: &Budget) -> (Option<String>, Option<String>) {
     let Some(tokens) = b.completion_tokens else {
-        return String::new();
+        return (None, None);
     };
-    let mut tail = String::new();
-    if let Some(model_ms) = b.model_ms {
+    let rate = b.model_ms.and_then(|model_ms| {
         let decoding_ms = model_ms.saturating_sub(b.queue_wait_ms.unwrap_or(0));
-        if decoding_ms > 0 {
+        (decoding_ms > 0).then(|| {
             let rate = tokens as f64 * 1000.0 / decoding_ms as f64;
-            tail.push_str(&format!("  ·  {tokens} tok, {rate:.1} tok/s"));
-        }
-    }
-    if let Some(queue_ms) = b.queue_wait_ms {
-        tail.push_str(&format!("  ·  queued {:.1} s", queue_ms as f64 / 1000.0));
-    }
-    tail
+            format!("{tokens} tok, {rate:.1} tok/s")
+        })
+    });
+    let queued = b
+        .queue_wait_ms
+        .map(|queue_ms| format!("queued {:.1} s", queue_ms as f64 / 1000.0));
+    (rate, queued)
 }
 
 fn render_input(state: &AppState, offered: &[&str], area: Rect, frame: &mut Frame) {
@@ -547,17 +689,80 @@ fn render_input(state: &AppState, offered: &[&str], area: Rect, frame: &mut Fram
     frame.render_widget(p, area);
 }
 
-fn render_modal(diff: &str, area: Rect, frame: &mut Frame) {
+/// The approval box: the question on its top border, the answer keys on its
+/// bottom one, and the diff between, scrolled from line `scroll` (#640).
+///
+/// The question used to come after the diff, and a long diff clipped it
+/// along with its own tail, so a change was approved or declined unseen.
+/// On the border it is drawn whatever the diff's length; the keys and
+/// "lines a–b of n" are on rows the diff cannot push out either.
+fn render_modal(question: &str, diff: &str, scroll: usize, area: Rect, frame: &mut Frame) {
     let modal = centred(60, 60, area);
     frame.render_widget(Clear, modal);
-    let p = Paragraph::new(diff.to_string())
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" approve this change?  [y] accept  [n] reject "),
-        )
-        .wrap(Wrap { trim: false });
-    frame.render_widget(p, modal);
+    // `edit` and `write_file` change the tree; anything else the gate asks
+    // about (`bash`, `ask_human`, a custom tool) is a call.
+    let what = if question.starts_with("edit ") || question.starts_with("write_file ") {
+        "change"
+    } else {
+        "call"
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {question}? "))
+        .title_bottom(format!(" [y] accept this {what}  [n] reject "));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+
+    let lines: Vec<&str> = diff.lines().collect();
+    let rows = |l: &str| usize::from(wrapped_rows(l, inner.width));
+    let height = usize::from(inner.height);
+    let scrolls = lines.iter().map(|l| rows(l)).sum::<usize>() > height;
+    // One row for the position when there is more than fits.
+    let body_h = if scrolls {
+        height.saturating_sub(1)
+    } else {
+        height
+    };
+    // The furthest down a view can start and still fill the box, so the
+    // last page is a full one and `scroll` past it shows that page.
+    let mut last_from = lines.len();
+    let mut used = 0;
+    while last_from > 0 && used + rows(lines[last_from - 1]) <= body_h {
+        used += rows(lines[last_from - 1]);
+        last_from -= 1;
+    }
+    let from = scroll.min(last_from);
+    let mut to = from;
+    let mut used = 0;
+    while to < lines.len() && used + rows(lines[to]) <= body_h {
+        used += rows(lines[to]);
+        to += 1;
+    }
+
+    let body = Rect {
+        height: u16::try_from(body_h).unwrap_or(inner.height),
+        ..inner
+    };
+    // `from` is at most `last_from`, which is at most the line count.
+    let shown = lines[from..].join("\n");
+    frame.render_widget(Paragraph::new(shown).wrap(Wrap { trim: false }), body);
+    if scrolls {
+        let at = Rect {
+            y: inner.y + body.height,
+            height: 1,
+            ..inner
+        };
+        let position = format!(
+            "lines {}–{} of {} · ↑↓ PgUp PgDn",
+            from + 1,
+            to.max(from + 1),
+            lines.len()
+        );
+        frame.render_widget(
+            Paragraph::new(position).style(Style::default().add_modifier(Modifier::DIM)),
+            at,
+        );
+    }
 }
 
 /// A rect `pct_x` by `pct_y` percent of `area`, centred in it.
@@ -607,7 +812,7 @@ mod tests {
         s.update(Message::BudgetKnown { max_iterations: 40 });
         s.update(Message::BudgetUpdated {
             iteration: 2,
-            prompt_bytes: 8400,
+            prompt_bytes: Some(8400),
             elapsed_secs: 18,
             completion_tokens: None,
             model_ms: None,
@@ -670,20 +875,63 @@ mod tests {
     }
 
     #[test]
+    fn worktree_state_is_whole_on_row_0_at_80_by_24_with_a_40_character_spec() {
+        // #636: the worktree was drawn last, and at 80 columns a long spec
+        // cut "worktree clean" to "work". It comes before the model now,
+        // and the model is the span that gives way, saying it was cut.
+        let spec = "llamacpp:http://127.0.0.1:8080#qwen3-8b";
+        let spec = format!("{spec}{}", "x".repeat(40 - spec.len()));
+        assert_eq!(spec.len(), 40);
+        let mut s = AppState::with_model(spec.clone(), "unknown, probing…".into());
+        let row = drawn_rows(&s, 80, 24).remove(0);
+        assert!(row.contains("worktree clean"), "{row}");
+        assert!(row.contains("tier unknown, probing…"), "{row}");
+        assert!(row.contains('…') && !row.contains(&spec), "{row}");
+
+        // The longest state the bar can say, after a converged run.
+        s.edits = ["a.py", "b.py", "c.py"]
+            .into_iter()
+            .map(|p| crate::tui::app::Edit {
+                path: p.into(),
+                status: EditStatus::Proposed,
+            })
+            .collect();
+        let row = drawn_rows(&s, 80, 24).remove(0);
+        assert!(row.contains("worktree 3 file(s) left for review"), "{row}");
+    }
+
+    #[test]
+    fn worktree_state_after_a_restored_run_has_no_edits_pending() {
+        // #636: after a rolled-back run the bar said "N edit(s) pending" and
+        // the edits pane listed files the rollback had already put back.
+        let mut s = populated().with_running(true);
+        assert!(drawn(&s, 80, 24).contains("1 edit(s) pending"));
+        s.update(Message::RunOutcome {
+            line: "did not converge; worktree restored: true".into(),
+            restored: Some(true),
+        });
+        s.update(Message::RunFinished);
+        let row = drawn_rows(&s, 80, 24).remove(0);
+        assert!(!row.contains("edit(s) pending"), "{row}");
+        assert!(row.contains("worktree restored"), "{row}");
+    }
+
+    #[test]
     fn transcript_outcome_of_a_finished_run_is_on_screen_without_scrolling() {
         let mut s = long_transcript();
         s.update(Message::BudgetKnown { max_iterations: 6 });
         s.update(Message::BudgetUpdated {
             iteration: 3,
-            prompt_bytes: 2435,
+            prompt_bytes: Some(2435),
             elapsed_secs: 42,
             completion_tokens: None,
             model_ms: None,
             queue_wait_ms: None,
         });
-        s.update(Message::RunOutcome(
-            "did not converge; worktree restored: true".into(),
-        ));
+        s.update(Message::RunOutcome {
+            line: "did not converge; worktree restored: true".into(),
+            restored: Some(true),
+        });
         s.update(Message::RunFinished);
         // Scrolled back too: the outcome does not depend on where the view is.
         for _ in 0..40 {
@@ -725,7 +973,7 @@ mod tests {
             out.contains("iteration 2/40"),
             "against the run's own ceiling"
         );
-        assert!(out.contains("18s elapsed"));
+        assert!(out.contains("0:18 elapsed"), "{out}");
     }
 
     /// `populated()` after one turn that reported these, drawn wide enough
@@ -734,7 +982,7 @@ mod tests {
         let mut s = populated();
         s.update(Message::BudgetUpdated {
             iteration: 3,
-            prompt_bytes: 8400,
+            prompt_bytes: Some(8400),
             elapsed_secs: 40,
             completion_tokens: tokens,
             model_ms,
@@ -788,6 +1036,47 @@ mod tests {
     }
 
     #[test]
+    fn budget_unreported_figures_are_named_not_drawn_as_zero() {
+        // #641: at launch the line read "iteration 0 · 0 B prompt · 0s
+        // elapsed", three figures nothing had reported, and the desktop's
+        // never-0 rule (render.js) was broken on the terminal.
+        let out = drawn(&AppState::default(), 100, 24);
+        assert!(!out.contains("0 B prompt"), "{out}");
+        assert!(!out.contains("iteration 0"), "{out}");
+        assert!(!out.contains("0s elapsed"), "{out}");
+        assert!(out.contains("not reported"), "{out}");
+        assert!(out.contains("no iteration yet"), "{out}");
+
+        // A turn that measured nothing still has no size to draw, and the
+        // ceiling is drawn without inventing a count against it.
+        let mut s = AppState::default().with_running(true);
+        s.update(Message::BudgetKnown { max_iterations: 40 });
+        s.update(Message::BudgetUpdated {
+            iteration: 2,
+            prompt_bytes: None,
+            elapsed_secs: 18,
+            completion_tokens: None,
+            model_ms: None,
+            queue_wait_ms: None,
+        });
+        let out = drawn(&s, 120, 24);
+        assert!(out.contains("prompt not reported"), "{out}");
+        assert!(out.contains("iteration 2/40"), "{out}");
+    }
+
+    #[test]
+    fn budget_unreported_elapsed_tick_is_drawn_as_a_clock() {
+        // #641: the driver's tick between turns is what moves on screen
+        // during a long model call; 75 s reads as 1:15.
+        let mut s = AppState::default().with_running(true);
+        s.update(Message::BudgetKnown { max_iterations: 40 });
+        s.update(Message::Elapsed(75));
+        let out = drawn(&s, 120, 24);
+        assert!(out.contains("1:15 elapsed"), "{out}");
+        assert!(out.contains("no iteration yet of 40"), "{out}");
+    }
+
+    #[test]
     fn it_lays_out_again_at_a_larger_size() {
         let out = drawn(&populated(), 120, 40);
         assert!(out.contains("transcript"));
@@ -805,6 +1094,66 @@ mod tests {
         );
     }
 
+    /// An approval of `question` with a diff of `n` numbered lines.
+    fn asked(question: &str, n: usize) -> AppState {
+        let mut s = populated().with_running(true);
+        let diff: Vec<String> = (1..=n).map(|i| format!("+ line {i:02}")).collect();
+        s.update(Message::ApprovalRequested {
+            question: question.into(),
+            diff: diff.join("\n"),
+        });
+        s
+    }
+
+    fn pressed(s: &mut AppState, code: ratatui::crossterm::event::KeyCode) {
+        s.update(Message::Key(ratatui::crossterm::event::KeyEvent::from(
+            code,
+        )));
+    }
+
+    #[test]
+    fn approval_modal_scroll_keeps_the_question_drawn_at_80_by_24_with_a_60_line_diff() {
+        // #640: the question came after the diff, and a long diff clipped
+        // it along with its own tail, so the change was answered unseen.
+        let s = asked("edit a.py (+60 -0)", 60);
+        let out = drawn(&s, 80, 24);
+        assert!(out.contains(" edit a.py (+60 -0)? "), "{out}");
+        assert!(out.contains("[y] accept this change  [n] reject"), "{out}");
+        assert!(out.contains("+ line 01"), "{out}");
+        assert!(out.contains("lines 1–") && out.contains(" of 60"), "{out}");
+        assert!(!out.contains("+ line 60"), "the tail is below, not drawn");
+    }
+
+    #[test]
+    fn approval_modal_scroll_page_down_reaches_the_last_line_and_y_still_answers() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut s = asked("edit a.py (+60 -0)", 60);
+        for _ in 0..10 {
+            pressed(&mut s, KeyCode::PageDown);
+        }
+        let out = drawn(&s, 80, 24);
+        assert!(out.contains("+ line 60"), "{out}");
+        assert!(out.contains("–60 of 60"), "{out}");
+        assert!(out.contains(" edit a.py (+60 -0)? "), "the question stays");
+
+        pressed(&mut s, KeyCode::Char('q'));
+        assert!(!s.should_quit && s.modal.is_some(), "q is still ignored");
+        pressed(&mut s, KeyCode::Char('y'));
+        assert!(s.modal.is_none());
+        assert_eq!(s.answered, Some(true), "y still answers");
+    }
+
+    #[test]
+    fn approval_modal_scroll_title_says_call_for_a_call_that_is_not_an_edit() {
+        let out = drawn(&asked("bash", 3), 80, 24);
+        assert!(out.contains(" bash? "), "{out}");
+        assert!(out.contains("[y] accept this call  [n] reject"), "{out}");
+        assert!(
+            !out.contains("lines 1–"),
+            "a diff that fits says no position: {out}"
+        );
+    }
+
     #[test]
     fn the_modal_covers_what_is_under_it() {
         let mut s = populated();
@@ -816,11 +1165,39 @@ mod tests {
         assert!(before.contains("aaaaaaaaaaaaaaaaaaaa"));
 
         s.update(Message::ApprovalRequested {
+            question: "edit a.py (+1 -1)".into(),
             diff: "--- a/src/index/resolve.rs\n+++ b/src/index/resolve.rs".into(),
         });
         let after = drawn(&s, 80, 24);
         assert!(after.contains("[y] accept"), "got:\n{after}");
         assert!(after.contains("+++ b/src/index/resolve.rs"));
+    }
+
+    #[test]
+    fn approval_answer_keeps_edits_row_undecorated_and_the_decline_in_the_transcript() {
+        // #635: after `n` the pane used to draw `- a.py` in red for a file
+        // the loop had already written. The row keeps the mark it was
+        // reported with, and the decline is the driver's transcript line.
+        let mut s = AppState::default();
+        s.update(Message::EditProposed {
+            path: "a.py".into(),
+        });
+        s.update(Message::ApprovalRequested {
+            question: "edit a.py (+1 -1)".into(),
+            diff: "apply the edit?".into(),
+        });
+        s.update(Message::Key(ratatui::crossterm::event::KeyEvent::new(
+            ratatui::crossterm::event::KeyCode::Char('n'),
+            ratatui::crossterm::event::KeyModifiers::NONE,
+        )));
+        // What `tui_run.rs` sends once the answer is read.
+        s.update(Message::AgentToken("· apply the edit? declined\n".into()));
+        // Tall enough for the edits pane to have a row inside its borders;
+        // at 80x24 it is borders only, which is its own finding.
+        let out = drawn(&s, 100, 30);
+        assert!(!out.contains("- a.py"), "got:\n{out}");
+        assert!(out.contains("~ a.py"), "got:\n{out}");
+        assert!(out.contains("· apply the edit? declined"), "got:\n{out}");
     }
 
     #[test]
@@ -1065,6 +1442,146 @@ mod tests {
             (0..w).any(|x| buf[(x, 0)].symbol() == "a"),
             "the border and title are still drawn"
         );
+    }
+
+    // ---- #655: whole words at the default 80 columns ----
+
+    /// The rows of the pane titled `title`, between its borders, at 80x24.
+    fn pane_rows(s: &AppState, title: &str) -> Vec<String> {
+        let rows = drawn_rows(s, 80, 24);
+        // The title sits on the top border, just after its corner; the text
+        // of a pane can say the same word, so the corner is what is matched.
+        let title: Vec<char> = format!("┌ {title} ").chars().collect();
+        let (top, left) = rows
+            .iter()
+            .enumerate()
+            .find_map(|(y, r)| {
+                let row: Vec<char> = r.chars().collect();
+                row.windows(title.len())
+                    .position(|w| w == title.as_slice())
+                    .map(|x| (y, x))
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "no `{}` pane:\n{}",
+                    title[2..].iter().collect::<String>(),
+                    rows.join("\n")
+                )
+            });
+        let row: Vec<char> = rows[top].chars().collect();
+        let right = left + row[left..].iter().position(|c| *c == '┐').unwrap();
+        rows[top + 1..]
+            .iter()
+            .take_while(|r| r.chars().nth(left) != Some('└'))
+            .map(|r| r.chars().take(right).skip(left + 1).collect::<String>())
+            .collect()
+    }
+
+    #[test]
+    fn fits_80_columns_actions_and_radius_labels_are_whole() {
+        // #655: at 80 columns the right column was 32 wide and read "0 ac",
+        // "reac" and "a floor on reach, not a boun" where the figures are.
+        let s = acted(&[
+            ("read_file", "app/calc.py", false),
+            ("edit", "app/calc.py", true),
+        ]);
+        let actions = pane_rows(&s, "actions").join("\n");
+        assert!(actions.contains("2 actions"), "{actions}");
+        let radius = pane_rows(&s, "radius").join("\n");
+        assert!(radius.contains("◆ reach "), "{radius}");
+        assert!(
+            radius.contains("a floor on reach, not a boundary"),
+            "{radius}"
+        );
+        // And the same with nothing called: the row the audit captured.
+        let actions = pane_rows(&populated(), "actions").join("\n");
+        assert!(actions.contains("0 actions"), "{actions}");
+    }
+
+    #[test]
+    fn fits_80_columns_budget_line_ends_with_a_whole_segment() {
+        // #655: one string, centred and clipped by the gauge, ended "· queu"
+        // once a turn had reported a rate and a wait. The rate goes first.
+        let mut s = populated();
+        s.update(Message::BudgetUpdated {
+            iteration: 4,
+            prompt_bytes: Some(16800),
+            elapsed_secs: 36,
+            completion_tokens: Some(85),
+            model_ms: Some(9_600),
+            queue_wait_ms: Some(2_100),
+        });
+        let budget = pane_rows(&s, "budget").join("\n");
+        assert!(budget.contains("iteration 4/40"), "{budget}");
+        assert!(budget.contains("16800 B prompt"), "{budget}");
+        assert!(budget.contains("0:36 elapsed"), "{budget}");
+        assert!(budget.contains("queued 2.1 s"), "{budget}");
+        assert!(!budget.contains("tok"), "the rate gave way first: {budget}");
+        assert!(!budget.contains("queu "), "{budget}");
+
+        // Wider, the same state draws the rate: nothing was dropped for good.
+        let wide = drawn(&s, 140, 24);
+        assert!(wide.contains("85 tok, 11.3 tok/s"), "{wide}");
+        assert!(wide.contains("queued 2.1 s"), "{wide}");
+    }
+
+    #[test]
+    fn fits_80_columns_help_has_no_row_ending_mid_word() {
+        // #655: a row cut inside a word reads as a different word. Every
+        // token on screen must be a token of the help text, so "stopp" or
+        // "boun" fails here where a substring check would not.
+        let mut s = AppState::default();
+        s.input = "/help".into();
+        pressed(&mut s, ratatui::crossterm::event::KeyCode::Enter);
+        let help = s.transcript.join("\n");
+        let words: std::collections::HashSet<&str> = help.split_whitespace().collect();
+        let rows = pane_rows(&s, "transcript");
+        assert!(
+            rows.iter().any(|r| r.contains("scroll the transcript")),
+            "{}",
+            rows.join("\n")
+        );
+        for row in &rows {
+            for token in row.split_whitespace() {
+                assert!(
+                    words.contains(token),
+                    "`{token}` is not a word of the help text, in row `{row}`:\n{}",
+                    rows.join("\n")
+                );
+            }
+        }
+    }
+
+    // ---- #661: a write is said in words, not only in yellow ----
+
+    #[test]
+    fn wrote_in_text_on_the_edit_node_at_80_columns() {
+        // #661: under NO_COLOR or a monochrome terminal the node that changed
+        // the tree looked like the others. Three calls, one write, as the
+        // desktop's graph says it; and whole at the default width.
+        let s = acted(&[
+            ("read_file", "app/calc.py", false),
+            ("edit", "app/calc.py", false),
+            ("edit", "app/calc.py", false),
+            ("edit", "app/calc.py", true),
+        ]);
+        let rows = pane_rows(&s, "actions");
+        let edit = rows
+            .iter()
+            .find(|r| r.contains("edit"))
+            .unwrap_or_else(|| panic!("{}", rows.join("\n")));
+        assert!(edit.contains("3 · 1 wrote"), "{edit}");
+        assert!(edit.contains("◆ 4 actions"), "{}", rows.join("\n"));
+        // A node that only looked says its count alone: "wrote" on it would
+        // claim a write that did not happen.
+        let read = rows.iter().find(|r| r.contains("read_file")).unwrap();
+        assert!(!read.contains("wrote"), "{read}");
+        // The edge column is still one column.
+        let edges: std::collections::HashSet<usize> = rows
+            .iter()
+            .filter_map(|r| r.chars().position(|c| c == '●' || c == '○'))
+            .collect();
+        assert_eq!(edges.len(), 1, "{}", rows.join("\n"));
     }
 
     // ---- #519: the status bar's tier, one `tier` word, one vocabulary ----
