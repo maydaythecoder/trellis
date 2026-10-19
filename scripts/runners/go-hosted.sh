@@ -32,11 +32,15 @@ read_pin() {
 	grep -E "^${name}=\"[^\"]+\"$" "$pin_file" | head -n1 | sed -E 's/^[^=]+="([^"]+)"$/\1/'
 }
 
+# The file is read from stdin, not named: GNU sha256sum escapes a name
+# that holds a backslash and marks the line with a leading `\`, so a path
+# under a Windows RUNNER_TEMP (D:\a\_temp) made every hash "not the
+# recorded one".
 sha256_of() {
 	if command -v sha256sum >/dev/null 2>&1; then
-		sha256sum -- "$1" | cut -d' ' -f1
+		sha256sum <"$1" | cut -d' ' -f1
 	elif command -v shasum >/dev/null 2>&1; then
-		shasum -a 256 -- "$1" | cut -d' ' -f1
+		shasum -a 256 <"$1" | cut -d' ' -f1
 	else
 		die "no sha256sum or shasum on this runner"
 	fi
