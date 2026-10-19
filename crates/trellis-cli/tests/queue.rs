@@ -1450,8 +1450,13 @@ fn task_worktree_runs_hold_no_queue_of_their_own() {
     assert!(o.status.success(), "{}", combined(&o));
     let id = &ids(&d, "done")[0];
     let wt = d.join(".trellis/work/task").join(id);
-    let gd = PathBuf::from(git(&wt, &["rev-parse", "--absolute-git-dir"]).trim());
-    assert!(gd.starts_with(d.join(".git/worktrees")), "{}", gd.display());
+    // Canonical on both sides: git prints the long form of the path and the
+    // fixture may sit under a short (8.3) temp directory name on Windows.
+    let gd = PathBuf::from(git(&wt, &["rev-parse", "--absolute-git-dir"]).trim())
+        .canonicalize()
+        .unwrap();
+    let worktrees = d.join(".git/worktrees").canonicalize().unwrap();
+    assert!(gd.starts_with(&worktrees), "{}", gd.display());
     assert!(!gd.join("trellis").exists(), "{}", gd.display());
     let _ = std::fs::remove_dir_all(&d);
 }
