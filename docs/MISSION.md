@@ -24,6 +24,11 @@ It runs on models you host, including models with no native tool-calling
 support. Your code stays on your machine. Your API key, if you use one, stays
 on your machine.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/run-dark.svg">
+  <img src="assets/run-light.svg" width="980" alt="One run: snapshot, one model driving one loop, checks that execute, a verdict minted only inside trellis-checks, then either edits left in the tree with a committed trail or a reset to the snapshot with a committed trail.">
+</picture>
+
 ## Goal state, and which of it is delivered
 
 Eight goals. **Five are delivered, three are not.** Two of the three, goals 3
