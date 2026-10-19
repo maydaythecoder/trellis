@@ -52,16 +52,20 @@ and never inside the repository). A G2 failure also prints every
 | Gate | Script | Proves |
 |---|---|---|
 | G0 | `ticket-ready.sh <n>` | the issue is open, has `## Done when` and a fenced `## Verify`, is not blocked, needs-human, or split |
-| G1 | `build.sh` | workspace builds, all targets; `trellis-cli --no-default-features` builds |
-| G2 | `test.sh` | full workspace suite, and the local-only CLI suite; each `cargo test` fails after `GATE_TEST_TIMEOUT_S` seconds (default 2400) rather than hanging (#173); tests run at most 4 at a time (`RUST_TEST_THREADS=4`) so the gate's own load does not fail timing tests (#226) |
+| G1 | `build.sh` | workspace builds, all targets; `trellis-cli --no-default-features` builds. Go branch (#504): `go build ./...` in `tui/` |
+| G2 | `test.sh` | full workspace suite, and the local-only CLI suite; each `cargo test` fails after `GATE_TEST_TIMEOUT_S` seconds (default 2400) rather than hanging (#173); tests run at most 4 at a time (`RUST_TEST_THREADS=4`) so the gate's own load does not fail timing tests (#226). Go branch (#504): `go test -count=1 ./...` in `tui/`, under the same time limit |
 | G2b | `guards.sh` | `qa/run-guards.py` holds every guard against the fresh debug binary, and fails unless `trellis` resolves to it; needs Ollama at 127.0.0.1:11434. Before #158, on Windows, it ran whatever `trellis` was installed instead |
-| G3 | `lint.sh` | `cargo fmt --check`, `clippy -D warnings`, and no `#[allow(` added by this change; ADR numbers unique and held, also against the base (`scripts/checks/adr-numbers.sh`, #284), and the exit-gate check's self-test (`gate-checked.sh`); CI runs both, the tree half in the `guards` job and the base half in `supply-chain` (#532) |
-| G4 | `no-stubs.sh` | no `TODO`/`FIXME`/`todo!`/`unimplemented!`/mock markers in production lines this change added (test modules, `tests/`, `examples/` excluded) |
-| G5 | `security.sh` | `cargo deny --locked check` and `cargo audit` over the root, `fuzz/` and `desktop/` locks, the desktop's under `desktop/deny.toml` (ADR 0048 §7); `fuzz/Cargo.lock` is current (`scripts/checks/fuzz-lock-current.sh`, #197); Tauri stays out of the root lock, `desktop/Cargo.lock` is current, `desktop/deny.toml` is the root policy plus its `desktop-only` lines, no `audit.toml` exists, and the desktop's code stays inside ADR 0048's lines (`scripts/checks/desktop-guards.sh`, after its self-test, #290); `zizmor --min-severity medium .github/workflows/` is clean and every workflow cargo build/test/clippy/run passes `--locked` (`scripts/checks/workflows-locked.sh`, #215); trellis-cli's test fixtures spawn no bare `git` (`scripts/checks/no-bare-git-in-cli-tests.sh`, #240/#241); gitleaks finds nothing in `$GATE_BASE..HEAD` and fails when absent, after a self-test that plants a token built at run time in a throwaway repository (`scripts/checks/gitleaks-range.sh`, #236; CI's supply-chain job runs it with a release pinned by version and SHA-256); no CI job dropped (`ci-jobs-unchanged.sh`) and the pre-push, pre-commit and ci-local self-tests pass; no key-shaped literal or basic-auth URL added (`key-pattern.sh`, `no-auth-urls.sh`). CI's `supply-chain` job runs the cargo deny and cargo audit lines, the fuzz and desktop checks, `workflows-locked.sh`, gitleaks and `ci-jobs-unchanged.sh`; its `guards` job runs `no-auth-urls.sh` over the whole tracked tree, the bare-git check and the pre-push and pre-commit self-tests (#532), and `zizmor --min-severity medium .github/workflows/` from a hash-pinned install (`.github/requirements-zizmor.txt`, #534). Not in CI: the ci-local self-test (it needs PyYAML, which CI's hashed `qa/requirements-ci.txt` does not pin) and the key-shape scan (G5 applies it to added lines only; gitleaks covers the change's commits in CI) |
+| G3 | `lint.sh` | `cargo fmt --check`, `clippy -D warnings`, and no `#[allow(` added by this change; ADR numbers unique and held, also against the base (`scripts/checks/adr-numbers.sh`, #284), and the exit-gate check's self-test (`gate-checked.sh`); CI runs both, the tree half in the `guards` job and the base half in `supply-chain` (#532). Go branch (#504): `gofmt -l` prints nothing, `go vet ./...`, and no `//nolint` added |
+| G4 | `no-stubs.sh` | no `TODO`/`FIXME`/`todo!`/`unimplemented!`/mock markers in production lines this change added (test modules, `tests/`, `examples/` excluded). Go branch (#504): the same markers, and `panic("not `, in added non-test `*.go` lines under `tui/` |
+| G5 | `security.sh` | `cargo deny --locked check` and `cargo audit` over the root, `fuzz/` and `desktop/` locks, the desktop's under `desktop/deny.toml` (ADR 0048 §7); `fuzz/Cargo.lock` is current (`scripts/checks/fuzz-lock-current.sh`, #197); Tauri stays out of the root lock, `desktop/Cargo.lock` is current, `desktop/deny.toml` is the root policy plus its `desktop-only` lines, no `audit.toml` exists, and the desktop's code stays inside ADR 0048's lines (`scripts/checks/desktop-guards.sh`, after its self-test, #290); `zizmor --min-severity medium .github/workflows/` is clean and every workflow cargo build/test/clippy/run passes `--locked` (`scripts/checks/workflows-locked.sh`, #215); trellis-cli's test fixtures spawn no bare `git` (`scripts/checks/no-bare-git-in-cli-tests.sh`, #240/#241); gitleaks finds nothing in `$GATE_BASE..HEAD` and fails when absent, after a self-test that plants a token built at run time in a throwaway repository (`scripts/checks/gitleaks-range.sh`, #236; CI's supply-chain job runs it with a release pinned by version and SHA-256); no CI job dropped (`ci-jobs-unchanged.sh`) and the pre-push, pre-commit and ci-local self-tests pass; no key-shaped literal or basic-auth URL added (`key-pattern.sh`, `no-auth-urls.sh`). CI's `supply-chain` job runs the cargo deny and cargo audit lines, the fuzz and desktop checks, `workflows-locked.sh`, gitleaks and `ci-jobs-unchanged.sh`; its `guards` job runs `no-auth-urls.sh` over the whole tracked tree, the bare-git check and the pre-push and pre-commit self-tests (#532), and `zizmor --min-severity medium .github/workflows/` from a hash-pinned install (`.github/requirements-zizmor.txt`, #534). Not in CI: the ci-local self-test (it needs PyYAML, which CI's hashed `qa/requirements-ci.txt` does not pin) and the key-shape scan (G5 applies it to added lines only; gitleaks covers the change's commits in CI). Go branch (#504, ADR 0052): `scripts/checks/go-guards.sh --self-test` and then `go-guards.sh` (no `exec` outside `tui/internal/rpc/`, no `git` spawn, no environment change, no `replace` and a `toolchain` line in `tui/go.mod`); then `go mod verify`, `govulncheck ./...` and `go-licenses check` with `deny.toml`'s licence list, each tool absent failing the gate; `workflows-locked.sh` also holds every workflow `go build/test/vet/run/install` to `-mod=readonly` and every `go install` to an exact `@vX.Y.Z` |
 | G6 | `ticket-verify.sh <n>` | the ticket's own Verify command exits 0 |
 | G7 | in `run-all.sh` | exit 3 when the ticket is `risk:high` or `surface:public`: a person approves the merge |
 
 Every gate unsets provider keys before it runs anything (ADR 0024 §3).
+Each Go branch runs only when `tui/go.mod` exists, and its gate's OK line
+says it skipped otherwise. With `tui/` present, a missing `go` fails the
+gate, and every go command runs with `GOFLAGS=-mod=readonly` and
+`GOTOOLCHAIN=local` (ADR 0052 decision 2.4).
 G6 runs text from an issue body, so each line must start with `cargo`, `git`,
 `scripts/`, `py -3 qa/` or `python3 qa/`, and may not contain `..`, `$(`,
 backticks, pipes, `;`, `&` or redirection. `python3` and `py -3` both run as
@@ -181,12 +185,22 @@ crate inherits, and `version` in `desktop/Cargo.toml`; the two stay equal.
 3. **The owner tags `vX.Y.Z` on `main`** and pushes the tag. The pre-push
    hook refuses `v*` tags on purpose (ADR 0051 item 3): the push is the
    owner's act, not an agent's.
-4. `release.yml` builds and tests every platform, then its `publish` job
-   refuses unless the tag is `vX.Y.Z`, its commit is an ancestor of
-   `origin/main` and the Linux binary's `--version` is `trellis X.Y.Z`. Only
-   then does it create the GitHub release with one archive per target and a
-   `SHA256SUMS` over them. `publish` is the only job in any workflow with
-   `contents: write`.
+4. `release.yml` builds and tests Linux (`x86_64-unknown-linux-gnu`) and
+   Windows (`x86_64-pc-windows-msvc`) on GitHub-hosted runners
+   (`ubuntu-latest`, `windows-latest`; as of 2026-10-19, see "CI runners"),
+   and nothing else: macOS is dropped until a macOS runner exists (owner
+   decision 2026-10-06, ADR 0052 decision 2.5; #506). Each leg ships
+   `trellis` and the Go TUI `trellis-tui` side by side, `trellis-tui` built
+   from `tui/` with the pinned Go that `scripts/runners/go-hosted.sh`
+   unpacks for the job (`CGO_ENABLED=0`, `-trimpath`,
+   `-buildvcs=false`, `-ldflags "-X main.version=X.Y.Z"`, or `dev` from
+   `workflow_dispatch`), and its `SHA256SUMS` lists both. Its `publish`
+   job, on the Linux runner, which needs `gh` and `zip`, refuses unless
+   the tag is `vX.Y.Z`, its commit is an ancestor of `origin/main`, and
+   the Linux `trellis --version` is `trellis X.Y.Z` and `trellis-tui
+   --version` is `trellis-tui X.Y.Z`. Only then does it create the GitHub
+   release with one archive per target and a `SHA256SUMS` over them.
+   `publish` is the only job in any workflow with `contents: write`.
 
 ## Where a person is needed
 
@@ -225,20 +239,39 @@ Changed or dropped:
 
 ## CI runners
 
-GitHub-hosted jobs stopped starting on 2026-09-28 ("recent account payments
-have failed or your spending limit needs to be increased"). CI runs on two
-self-hosted runners on the owner's machine instead; a smoke job on one ran
-while GitHub-hosted jobs were blocked (run 36507327810).
+As of 2026-10-19 (#736), every job in `ci.yml` and `release.yml` runs on
+GitHub-hosted runners: `ubuntu-latest` and `windows-latest`, named directly
+in each `runs-on`. The `go` and `supply-chain` jobs and the release build
+get the pinned Go from `scripts/runners/go-hosted.sh`, which unpacks the same hash-checked
+go.dev archive that `install-go.sh` records for a self-hosted runner, into
+`$RUNNER_TEMP` only. The `desktop` job installs its Tauri prerequisites
+with apt on the hosted Linux image, which does not ship WebKitGTK.
+`rust-cache` runs on these runners. CI runs on pull requests into `dev` and
+`main` and on a push to `main`; nothing runs on a pull request into `audit`
+(the `on:` comment in `ci.yml` says why).
 
-| Runner | Where | Labels | Started by |
+The self-hosted runners below are set aside as of 2026-10-19: the runner
+host stopped taking jobs on 2026-10-12, every run queued until the next push
+cancelled it, and #736 moved the jobs off them so promotion PRs could merge
+again. The table and the procedure that follow are kept as the record of
+that setup; the low-privilege account move is #219, open and parked. What
+was true until then: GitHub-hosted jobs stopped starting on 2026-09-28
+("recent account payments have failed or your spending limit needs to be
+increased") and CI ran on two self-hosted runners on the owner's machine
+instead; a smoke job on one ran while GitHub-hosted jobs were blocked (run
+36507327810).
+
+| Runner (set aside 2026-10-19, see #219) | Where | Labels | Started by |
 |---|---|---|---|
 | `trellis-win` | `C:\actions-runner\win` (Windows host) | self-hosted, Windows, X64 | `start-runner.cmd` there |
 | `trellis-wsl` | `~/actions-runner` in WSL2 Ubuntu 24.04 | self-hosted, Linux, X64 | `wsl.exe -d Ubuntu -- ~/actions-runner/start.sh` |
 
-- Each `runs-on` in `ci.yml` reads `vars.LINUX_RUNNER` / `vars.WINDOWS_RUNNER`
-  (repository variables holding a JSON label list) and falls back to
-  `ubuntu-latest` / `windows-latest` when unset. Back to GitHub-hosted:
-  `gh variable delete LINUX_RUNNER` and `gh variable delete WINDOWS_RUNNER`.
+- Until #736, each `runs-on` in `ci.yml` read `vars.LINUX_RUNNER` /
+  `vars.WINDOWS_RUNNER` (repository variables holding a JSON label list) and
+  fell back to `ubuntu-latest` / `windows-latest` when unset. `ci.yml` and
+  `release.yml` no longer read those variables, so bringing a self-hosted
+  runner back to them is a workflow change, not a variable. `mutants.yml`
+  still reads them, with the same hosted fallback.
 - Each runner's `.env` gives jobs their own `CARGO_HOME`, `RUSTUP_HOME` and
   `GIT_CONFIG_GLOBAL` under the runner's directory. Without them a job runs as
   the owner with the owner's homes: on 2026-09-28 `Swatinem/rust-cache`'s
@@ -248,16 +281,20 @@ while GitHub-hosted jobs were blocked (run 36507327810).
   GitHub-hosted runners only. Each launcher strips the provider-key variables.
 - The runners are processes, not services: they stop on logout or reboot and
   are restarted with the commands above. One job runs per runner at a time.
-- WSL runs its own Ollama on 127.0.0.1:11434, so the `guards` job's stand-in
-  listener does not bind; the job only needs something listening there.
+- WSL ran its own Ollama on 127.0.0.1:11434, so the `guards` job's stand-in
+  listener did not bind there; the job only needs something listening on
+  that port, and on a hosted runner the stand-in binds.
 - Self-hosted runners run whatever a pushed workflow says, as the owner. That
   is acceptable for a private repository with one owner; GitHub advises
   against it for public ones. The owner decided on 2026-10-04 to move both
-  runners to low-privilege accounts (#219); the procedure is below. Until the
-  owner has run it and one CI run is green on each runner, the table above is
-  still the current state.
+  runners to low-privilege accounts (#219); the procedure is below. It was
+  not run before the runners were set aside, so if they return it is still
+  the step before a job runs on them.
 
 ### Low-privilege runner accounts (#219)
+
+Parked with the self-hosted runners (2026-10-19). The procedure below is the
+one to run if they return.
 
 Two scripts, both run by the owner with admin rights. Both print every step,
 have a dry-run mode, refuse to start without admin rights, refuse while their
@@ -363,14 +400,67 @@ https://github.com/maydaythecoder/trellis --token <token> --name trellis-win
 --labels self-hosted,Windows,X64 --unattended` as the new account, before
 running the scripts.
 
+### Go on the runners (#503)
+
+The self-hosted procedure; set aside with the runners on 2026-10-19. On a
+GitHub-hosted runner `scripts/runners/go-hosted.sh` unpacks the same pinned
+archive per job ("CI runners" above); the pin and the hashes stay in
+`install-go.sh`, read by both.
+
+`tui/` is a Go module (ADR 0052). Each runner gets its own pinned Go from
+`scripts/runners/install-go.sh`, never the owner's install (`C:\Program
+Files\Go` on Windows is the owner's, not a pin) and never `actions/setup-go`
+(refused by `scripts/ci-local.py`).
+
+- **Pin:** Go 1.27.2. The script holds the version and the go.dev SHA-256 of
+  `go1.27.2.linux-amd64.tar.gz` and `go1.27.2.windows-amd64.zip`. It
+  refuses to unpack an archive whose hash differs, before anything is
+  written. Once they exist (#505), `tui/go.mod`'s `toolchain` line and CI's
+  `go version` check name the same pin.
+- **Where:** under the runner's own directory only. The script refuses a
+  target outside it, by path, `..` or symlink, a directory without a
+  `.runner` file, and a system path. GOROOT is
+  `<runner>/toolchains/go1.27.2/go`.
+- **Variables**, written into the runner's `.env`: `GOROOT`, `GOPATH`
+  (`<runner>/go-path`), `GOMODCACHE` (`<runner>/go-path/pkg/mod`),
+  `GOCACHE` (`<runner>/go-cache`), `GOTOOLCHAIN=local` (a `toolchain` line
+  in `go.mod` never downloads another toolchain) and `GOFLAGS=-mod=readonly`
+  (a build never rewrites `go.mod` or `go.sum`). The pinned Go's `bin` goes
+  first in `.path`. On Windows both files get Windows paths.
+- **Run** once per runner, after #219, with the runner stopped, then restart
+  it. Run again with the same pin, it changes nothing.
+
+```
+# WSL, from cmd or Git Bash (PowerShell has no `<`): as trellis-ci, which
+# owns the runner directory (mode 700). The script
+# is read from stdin because trellis-ci cannot read the owner's checkout.
+wsl.exe -d Ubuntu -u root -- sudo -u trellis-ci -H bash -s -- --runner-dir /home/trellis-ci/actions-runner --dry-run < scripts/runners/install-go.sh
+wsl.exe -d Ubuntu -u root -- sudo -u trellis-ci -H bash -s -- --runner-dir /home/trellis-ci/actions-runner < scripts/runners/install-go.sh
+# Windows: from an elevated Git Bash. trellis-ci-win is denied interactive
+# logon; the runner directory's ACL admits Administrators, and what the
+# script writes there inherits trellis-ci-win's access.
+bash scripts/runners/install-go.sh --runner-dir /c/actions-runner/win --dry-run
+bash scripts/runners/install-go.sh --runner-dir /c/actions-runner/win
+```
+
+`--runner-dir <dir>` names another runner directory; `--self-test` shows
+that a tampered archive and an outside target are refused.
+
+**Moving the pin** is one commit that changes `GO_VERSION` and both hashes
+in `install-go.sh`, copied from `https://go.dev/dl/?mode=json`, together
+with `tui/go.mod`'s `toolchain` line and CI's `go version` check. The owner
+then runs the script again on both runners; the old toolchain's `bin` is
+dropped from `.path`, and its directory can be deleted by hand.
+
 ### Mutation testing on CI (#248)
 
 `.github/workflows/mutants.yml` runs cargo-mutants with the whole workspace
 suite against each mutant. These are the flags `WORKSPACE_TESTS=1
 scripts/mutate-by-crate.sh` uses: `-p <crate> --test-workspace true
 --timeout 300 -j 1`. It runs on `workflow_dispatch` only, never on a push or
-a pull request. It uses the same runner variables as `ci.yml` and the same
-pins: action SHAs, toolchain 1.93.0, cargo-mutants 27.1.0 installed with
+a pull request. It still reads the runner variables `ci.yml` read until
+#736 (`vars.LINUX_RUNNER`, `vars.WINDOWS_RUNNER`, hosted fallback) and uses
+the same pins as `ci.yml`: action SHAs, toolchain 1.93.0, cargo-mutants 27.1.0 installed with
 `--locked`, and `--locked` on every cargo command it runs. It uploads
 `mutants.out/` as the artifact `mutants-<crate>-<os>-<commit>[-shard-k-of-n][-file-<stem>]`,
 kept for 30 days. The job limit is 360 minutes, GitHub's limit for hosted
@@ -378,8 +468,10 @@ runners. A shard that reaches the step's 345-minute limit still uploads the
 outcomes it has.
 
 GitHub dispatches a workflow by name only when the file is on the default
-branch (`main`). `--ref` picks the branch whose head is tested. Run it only
-when the runners are idle: the Linux leg holds the runner `ci.yml` needs.
+branch (`main`). `--ref` picks the branch whose head is tested. On the
+self-hosted runners, run it only when they are idle: the Linux leg holds the
+runner `ci.yml` needs. (Written for the self-hosted runners, set aside
+2026-10-19; `ci.yml` no longer reads the runner variables.)
 
 ```
 gh workflow run mutants.yml -f crate=trellis-cli                      # whole crate, one job
@@ -396,7 +488,10 @@ all in 6 hours. Dispatch shard `0/10` first and read its wall time, then size
 `n` for the other shards. Every shard of one run must use the same `n`, or the
 shards do not split the mutants between them. Dispatch the next shard after
 the previous one finishes. A job that waits more than 24 hours for a
-self-hosted runner is cancelled.
+self-hosted runner is cancelled. Since 2026-10-19 the self-hosted runners
+are set aside; `mutants.yml` still reads `vars.LINUX_RUNNER` and
+`vars.WINDOWS_RUNNER`, so a dispatch runs on a hosted runner only once those
+variables are unset, and queues on an offline runner while they are set.
 
 The optional `file` input (#556) passes `-f <path>` to cargo-mutants, so only
 that source file's mutants run, e.g. `-f file=crates/trellis-cli/src/main.rs`.
@@ -457,4 +552,4 @@ replaced (checkout, toolchain) or skipped (rust-cache); setup-python becomes a
 virtualenv; an action it does not know fails the job. Jobs get a throwaway
 `GIT_CONFIG_GLOBAL` and `CARGO_INSTALL_ROOT`, no provider keys, and a closed
 `OPENAI_BASE_URL`. Exit 0 only when every leg passed. It posts nothing to
-GitHub; the self-hosted runners do that.
+GitHub; CI's own runners do that.

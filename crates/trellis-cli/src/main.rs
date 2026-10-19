@@ -32,6 +32,7 @@ mod orchestrate; // `agents` and `routines` (ADR 0026)
 mod output; // where output goes, and the JSONL framing of `--json` and `rpc`
 mod overview; // `overview` (ADR 0050 §3)
 mod process_agent; // process agents and the carry-back of what they wrote
+mod replay; // the replay recording every run writes (ADR 0056)
 mod rpc; // `rpc`: JSONL commands on stdin
 mod run_cmd; // `run` and `resume`, and the trail a run writes
 mod services; // services an agent profile declares (ADR 0026 §12)
@@ -119,7 +120,9 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
-    /// Omit to enter an interactive session.
+    /// Omit to start as the Start lines above say: at a terminal, the
+    /// desktop window and the overview, or the terminal interface without a
+    /// desktop; on a pipe or redirect, the line-based session.
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -258,10 +261,11 @@ enum Command {
 
     /// Watch a run happen: actions, transcript, edits, checks, radius, budget.
     ///
-    /// The line-based session stays the default. This is the surface for
-    /// watching one run rather than issuing a sequence of commands, and it
-    /// renders the same `AppState` the standalone `tui_demo` binary does —
-    /// only the source of events differs.
+    /// `trellis --tui` opens it too, as bare `trellis` does at a terminal
+    /// with no desktop to open. This is the surface for watching one run
+    /// rather than issuing a sequence of commands, and it renders the same
+    /// `AppState` the standalone `tui_demo` binary does — only the source of
+    /// events differs.
     Tui {
         /// A task to start immediately. Omit it to open idle and type one.
         task: Option<String>,
@@ -356,8 +360,9 @@ enum Command {
 
     /// Run queued tasks one at a time, oldest first, through `trellis run`.
     ///
-    /// Stops at the first converged change, which waits for review; never
-    /// claims a task while the worktree is dirty.
+    /// Each task runs in a worktree of its own on `trellis/task/<id>`, where
+    /// a converged change waits for review (ADR 0053); never claims a task
+    /// while the worktree is dirty.
     Work(work::WorkArgs),
 
     /// Check, search, inspect and edit an Apex-format note vault (ADR 0022).
@@ -393,16 +398,27 @@ enum Command {
         /// `<git-url|path>@<ref>`.
         #[arg(
             value_name = "SOURCE@REF",
-            required_unless_present_any = ["list", "remove"],
-            conflicts_with_all = ["list", "remove"]
+            required_unless_present_any = ["list", "remove", "upgrade"],
+            conflicts_with_all = ["list", "remove", "upgrade"]
         )]
         source: Option<String>,
-        /// Print each installed package's source, ref and commit.
-        #[arg(long, conflicts_with = "remove")]
+        /// Print each installed package's source, ref, commit and whether
+        /// its files still match the digest recorded at install.
+        #[arg(long, conflicts_with_all = ["remove", "upgrade"])]
         list: bool,
         /// Delete one installed package and its manifest entry.
-        #[arg(long, value_name = "NAME")]
+        #[arg(long, value_name = "NAME", conflicts_with = "upgrade")]
         remove: Option<String>,
+        /// Re-resolve one installed package's ref and install its current
+        /// commit over the old copy. Refused when the copy was edited since
+        /// it was installed (the paths are named); there is no flag to
+        /// overwrite them.
+        #[arg(long, value_name = "NAME")]
+        upgrade: Option<String>,
+        /// With a source: fetch and list what would be copied and what
+        /// skipped, and write nothing.
+        #[arg(long, requires = "source")]
+        dry_run: bool,
     },
 
     /// Agent profiles in .trellis/agents/: list, show, pause, resume
@@ -491,14 +507,6 @@ fn main() -> Result<()> {
             )
             .exit();
     }
-    // Accepted by the parser so the surface ADR 0050 records is the one
-    // people learn, and refused here until it is built: a flag that
-    // appeared to start something it cannot is worse than one that says so.
-    if cli.web {
-        anyhow::bail!(
-            "the web view is not built yet (ADR 0050, story S19); `trellis --tui` opens the terminal interface"
-        );
-    }
     let json = match &cli.log_json {
         Some(p) => {
             let f = std::fs::OpenOptions::new()
@@ -552,6 +560,9 @@ fn main() -> Result<()> {
         .with(
             tracing_subscriber::fmt::layer()
                 .with_target(false)
+                // After `set_json`, so it asks about the stream `human`
+                // actually writes to.
+                .with_ansi(output::human_colour())
                 .with_writer(output::human)
                 .with_filter(filter.clone()),
         )
@@ -579,9 +590,10 @@ fn main() -> Result<()> {
     // `overview` too: outside a repository it prints the recent list, and
     // reads nothing under the directory it fell back to (ADR 0050 §3).
     //
-    // `--dsk` too: outside a repository the desktop opens on its overview
-    // (ADR 0050 section 3), so there is nothing to refuse.
+    // `--dsk` and `--web` too: outside a repository the desktop opens on
+    // its overview (ADR 0050 section 3), so there is nothing to refuse.
     let needs_repo = !cli.dsk
+        && !cli.web
         && !matches!(
             cli.command,
             Some(
@@ -687,6 +699,12 @@ fn main() -> Result<()> {
         let found = explicit || root.join(".git").exists();
         return launch::launch_desktop(found.then_some(root.as_path()));
     }
+    // ADR 0050 section 5: the same desktop, serving its page on 127.0.0.1
+    // and waited for, on the same root rule.
+    if cli.web {
+        let found = explicit || root.join(".git").exists();
+        return launch::launch_web(found.then_some(root.as_path()));
+    }
 
     let Some(command) = cli.command else {
         // Bare `trellis` at a terminal opens the desktop on this root and
@@ -703,7 +721,7 @@ fn main() -> Result<()> {
         }
         let spec = config::RepoConfig::load(&root).ok().and_then(|c| c.model());
         if route == Route::Tui {
-            return tui_run::run(&root, None, spec, false);
+            return terminal_ui(&root, None, spec, false);
         }
         return session::Session::open(&root, None)?.run();
     };
@@ -807,6 +825,7 @@ fn main() -> Result<()> {
                     // `trellis run` has no task for a question to wait on.
                     queued: false,
                     services: &[],
+                    trust_root: None,
                 },
                 RunControl {
                     flag,
@@ -833,7 +852,7 @@ fn main() -> Result<()> {
         Command::Tui { task, model } => {
             let from_user = model.is_some();
             let spec = model.or_else(|| config::RepoConfig::load(&root).ok()?.model());
-            tui_run::run(&root, task, spec, from_user)
+            terminal_ui(&root, task, spec, from_user)
         }
         Command::Resume { run_id } => cmd_resume(&root, run_id.as_deref()),
         Command::Log { limit, .. } if output::json() => {
@@ -881,7 +900,9 @@ fn main() -> Result<()> {
             source,
             list,
             remove,
-        } => install::run(source, list, remove),
+            upgrade,
+            dry_run,
+        } => install::run(source, list, remove, upgrade, dry_run),
         Command::Rpc => rpc::serve(
             &root,
             std::io::stdin().lock(),
@@ -997,6 +1018,50 @@ fn launch_route(route: Route, desktop: Option<&Path>, display: bool) -> Launch {
     } else {
         Launch::Fallback(route)
     }
+}
+
+/// The terminal interface (ADR 0052 decision 2.2, ADR 0050 §1, #514).
+///
+/// With `trellis-tui` beside this executable, first run keeps its turn in
+/// Rust (ADR 0050 §2) and then the terminal is handed to it. Without one,
+/// the ratatui TUI runs as before, for one release, after a line on stderr
+/// saying where `trellis-tui` was looked for. `spec` is the model to use,
+/// `--model`'s when `from_user`, otherwise the configured one.
+fn terminal_ui(
+    root: &Path,
+    task: Option<String>,
+    spec: Option<String>,
+    from_user: bool,
+) -> Result<()> {
+    let exe = std::env::current_exe().context("cannot find the running trellis executable")?;
+    let tui = match launch::find_tui(&exe) {
+        Ok(t) => t,
+        Err(tried) => {
+            let _ = writeln!(std::io::stderr(), "{}", launch::tui_not_found(&tried));
+            return tui_run::run(root, task, spec, from_user);
+        }
+    };
+    if spec.is_none() {
+        // First run: the picker, in this terminal, before the handoff, as
+        // `tui_run` offers it. It needs a terminal on both ends, so without
+        // one `tui_run` refuses as it always has. A config that does not
+        // load says why rather than reading as "no model"; the picker's
+        // choice is saved to the user's config, which `trellis-tui`
+        // confirms; quitting it starts nothing.
+        use std::io::IsTerminal;
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            return tui_run::run(root, task, spec, from_user);
+        }
+        config::RepoConfig::load(root)?;
+        if first_run::offer_model_choice()?.is_none() {
+            return Ok(());
+        }
+    }
+    let user_model = if from_user { spec.as_deref() } else { None };
+    Err(launch::hand_off(
+        &tui,
+        &launch::tui_args(root, &exe, user_model, task.as_deref()),
+    ))
 }
 
 /// Bare `trellis` at a terminal: starts the desktop on `root` and prints

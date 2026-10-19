@@ -138,6 +138,21 @@ which read outside the repository on Windows before.
   `a_link_out_of_the_repository_is_neither_read_nor_written`, which failed
   with the fix's behaviour removed.
 
+  *Amended 2026-10-11 (#611): a path git ignores is not read or listed.*
+  `find` (`git ls-files --exclude-standard`), `grep` (`git grep
+  --untracked`) and the throwaway clone already left ignored files out, so
+  a git-ignored `.env` was invisible to four tools and readable by the
+  fifth. `read_file` now asks `git check-ignore` (through `trellis_vcs`,
+  without `--no-index`, so a tracked file is read whatever its name
+  matches) and refuses an ignored path with the reason; `ls` asks once for
+  the whole directory (`--stdin -z`) and leaves ignored entries out without
+  saying so, because a note would itself name which ignored files exist.
+  Both fail closed as `write_file`'s check does: a check that could not be
+  made refuses. Git's rule, not a name list: a tracked `.env` is already in
+  the history the model is shown. A narrowing of the rule above, so no new
+  ADR. Evidence: `read_file_refuses_an_ignored_*` and
+  `ls_leaves_ignored_entries_out_*`.
+
 Output from `grep`, `bash` and custom tools is capped at the tail (8 KiB,
 with a line saying how much was cut) before it becomes an observation;
 `find` and `ls` name at most 500 paths and say how many they left out. The adapter's own tail window then applies as it does to every
@@ -1125,6 +1140,9 @@ absolute path, which a clone does not stop (ADR 0032, "Limits": no network
 isolation, reads and writes outside the clone still possible). The guards
 above are kept for those writers. Containers or an OS sandbox, for network
 and home-directory isolation, remain deferred (ADR 0021, 1.6 and 13.3).
+*Amended 2026-10-12 (ADR 0055, #621):* an OS sandbox (`bwrap` on Linux,
+`sandbox-exec` on macOS) now confines these writers where it is present
+and works, and a run says `sandbox: none (<reason>)` where it does not.
 `trellis trust` prints one line stating the limit when it records trust for
 any of these writers.
 
@@ -1419,3 +1437,135 @@ What reverses it: the owner wanting custom tools to declare
 at all. Tests: `read_only_table_*` in `gate.rs`, and
 `call_json_has_no_read_only_*` and `hook_payload_read_only_*` in
 `crates/trellis-loop/src/extension_tests.rs`.
+
+## Amendment 2026-10-12: replay recordings are left out of the `.trellis/` digest (#620)
+
+Status: Accepted (owner-directed): the owner's decision of 2026-10-12 on
+#620.
+
+Every run now writes `.trellis/replays/<run_id>.json` and, when absent,
+`.trellis/replays/.gitignore` (ADR 0056). §4's digest covers every file
+under `.trellis/` except what trellis writes there, and these are written by
+trellis on every run, as trails are, so they join the skips on the same
+terms:
+
+- regular files named `*.json` directly under `.trellis/replays/`;
+- `.trellis/replays/.gitignore`, only while its bytes (ignoring line
+  endings) are the file trellis writes, `trellis_loop::REPLAY_IGNORE`. One a
+  person edited is covered.
+
+Decided on the real path relative to the real `.trellis/`, as the other
+skips are. Everything else under `replays/` is hashed: `replays/gate.py`,
+`replays/sub/x.json`. A repository with no `replays/` directory has the
+digest it had, so no trust recorded before this changes. The `.trellis/`
+item's shown text in `trellis trust` still names only the three earlier
+skips: that text is part of the digest, and changing it would untrust every
+repository trusted before. Evidence:
+`only_what_trellis_writes_is_left_out_of_the_dot_trellis_digest` in
+`crates/trellis-loop/src/trust.rs` now writes a recording and the
+`.gitignore`, and shows an edited `replays/.gitignore` and the two paths
+above are covered.
+
+What reverses it: dropping the replay recording (ADR 0056), after which a
+leftover `replays/` would be hashed like any other file.
+
+## Amendment 2026-10-13: registered linked worktrees under `.trellis/work/` are left out of the `.trellis/` digest (#718)
+
+Status: Accepted (owner-directed): the owner's decision of 2026-10-13 on
+PR #717, filed as #718.
+
+`trellis work` keeps a converged task's linked worktree at
+`.trellis/work/task/<id>/` (ADR 0053). §4's digest walked it like any
+directory under `.trellis/`, so keeping one changed the starting worktree's
+fingerprint, and every later trust check there (`work`'s gate for process
+agents and services, an in-place `trellis run`) read "changed since it was
+trusted". A run in the task worktree changed it again with every edit. A
+worktree is a checkout of the repository, not code the person trusted under
+`.trellis/`, so it joins the skips, on terms a directory cannot claim for
+itself. A directory is left out only when all of these hold:
+
+- its real path is strictly under the real `.trellis/work/`, and the walk
+  reached it there, with no symbolic link on the way;
+- its `.git` is a regular file (not a directory, not a link) whose
+  `gitdir:` line resolves, `..` and relative paths included, to
+  `<common git dir>/worktrees/<name>`, a directory directly under a
+  `worktrees` that is not itself a link;
+- that directory's `gitdir` file resolves back to this `.git`: the
+  worktree is registered in this repository.
+
+The common git directory is read from disk (`root/.git`, or the
+`commondir` its `.git` file leads to), as are the two pointer files, each
+read up to 4096 bytes. No git process is run: the digest is taken before
+every hook spawn. Built as `trellis_vcs::common_git_dir_on_disk` and
+`trellis_vcs::is_registered_linked_worktree`. Everything else under
+`.trellis/work/` is hashed as before: a directory with no `.git`, with a
+`.git` directory, with a `.git` pointing elsewhere, at the common git
+directory, or at another worktree's directory (which does not name it
+back), a `.git` that is a link, a worktree whose registration was removed,
+and a link under `.trellis/` to a registered worktree, whose files are then
+recorded under their real paths as any alias's are. A linked worktree
+outside `.trellis/work/` is hashed too.
+
+A hook or custom tool whose argv names a file inside such a worktree
+(decided on the canonical path, so a link under `.trellis/` into one counts)
+is refused, as code outside `.trellis/` is (the eleventh and twelfth
+amendments above): it is not in the digest, and a run rooted in that
+worktree edits it. `trellis trust` prints the item, the file and the
+worktree, and says to move the code to `.trellis/hooks/` or
+`.trellis/tools/`.
+
+A repository with no linked worktree under `.trellis/work/` has the digest
+it had, so no trust recorded before this changes. The `.trellis/` item's
+shown text in `trellis trust` is unchanged, as for #620: that text is part
+of the digest, and changing it would untrust every repository trusted
+before. Evidence, in `crates/trellis-loop/src/trust.rs`:
+`trust_linked_worktree_registered_under_work_is_left_out_of_the_digest`
+(the fingerprint is the same before a task worktree is added, after, and
+after edits in it; relative pointers with `..` resolve),
+`trust_linked_worktree_forged_or_unregistered_is_still_fingerprinted`,
+`trust_linked_worktree_outside_work_is_still_fingerprinted` and
+`trust_linked_worktree_code_named_by_a_hook_is_refused`.
+
+**Not covered, plainly:** whoever can write `.git/worktrees/` can register
+a directory, and so leave it out. That is the same writer who can already
+change `.git/config`, and a run refuses when `.git/` changed during it
+(§5, ADR 0032); a clone cannot carry a `.git` file, since git refuses the
+path. The skip is decided each time the digest is taken: a directory that
+becomes registered, or stops being registered, after a trust changes the
+digest, and reads as changed.
+
+What reverses it: removing the skip from `dot_trellis_files`, after which
+kept task worktrees untrust the starting worktree again.
+
+## Amendment 2026-10-15: every `.trellis/.gitignore` text trellis wrote is its own (#726)
+
+Status: Accepted (owner-directed): #726, default taken by the owner on
+2026-10-15 (add the pattern to the ignore text).
+
+#726 adds a line to `trellis_index::cache::IGNORE` so the temporary files
+`cache::save` writes the index through (`.trellis/.index.bin.<pid>.<n>.tmp`,
+#721) are ignored when an interrupted save leaves one. §4 skips
+`.trellis/.gitignore` only while its bytes are the file trellis writes, and
+`ignore_the_blob` never rewrites that file, so a repository given the text
+before #726 keeps it. Compared against the new text alone, that file would
+be hashed and every such repository asked to re-trust for a file nobody
+touched.
+
+The skip now holds while the bytes (ignoring line endings) are any text
+trellis has written: `cache::IGNORE` or one of `cache::EARLIER_IGNORES`,
+through `cache::is_trellis_gitignore`. A `.gitignore` a person edited is
+still covered. No trust recorded before this changes, and the `.trellis/`
+item's shown text in `trellis trust` is unchanged, for the reason given
+under #620. Evidence:
+`trust_generated_gitignore_of_any_version_is_trellis_own_and_an_edited_one_is_not`
+in `crates/trellis-loop/src/trust.rs`, and
+`cache_tmp_both_generated_texts_are_trellis_own_and_an_edited_one_is_not` in
+`crates/trellis-index/src/cache.rs`.
+
+A leftover temporary file is not skipped: it is removed by the next save
+(`cache_tmp_leftover_temporary_file_is_removed_at_the_next_save`). Until
+then it is hashed, so a trust recorded while one was present stops matching
+once it is gone.
+
+What reverses it: a future text change that drops an entry from
+`EARLIER_IGNORES`, which untrusts every repository that has that text.

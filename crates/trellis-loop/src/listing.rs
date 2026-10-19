@@ -56,6 +56,7 @@ pub(crate) async fn grep(root: &Path, pattern: &str, path: Option<&str>) -> Tool
         cap: OUTPUT_CAP,
         head: false,
         whole: false,
+        os: None,
     })
     .await;
     match r {
@@ -179,6 +180,7 @@ async fn find_capped(root: &Path, glob: &str, cap: usize) -> ToolResult {
         cap,
         head: false,
         whole: true,
+        os: None,
     })
     .await;
     let c = match r {
@@ -216,7 +218,7 @@ async fn find_capped(root: &Path, glob: &str, cap: usize) -> ToolResult {
     ToolResult::Output(name_list(&hits, &format!("no file matches `{glob}`")))
 }
 
-pub(crate) fn ls(root: &Path, rel: &str) -> ToolResult {
+pub(crate) async fn ls(root: &Path, rel: &str) -> ToolResult {
     let full = root.join(rel);
     let rd = match std::fs::read_dir(&full) {
         Ok(rd) => rd,
@@ -238,8 +240,117 @@ pub(crate) fn ls(root: &Path, rel: &str) -> ToolResult {
         })
         .collect();
     names.sort_unstable();
-    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    // Ignored entries are left out, as `find` and `grep` leave them out
+    // (#611): a listing that names a git-ignored `.env` invites the read
+    // that `read_file` now refuses. Nothing says they were left out, so the
+    // listing does not itself say which ignored files exist.
+    let ignored = match ignored_entries(root, rel, &names).await {
+        Ok(set) => set,
+        Err(why) => return ToolResult::Error(format!("ls refused: {why}")),
+    };
+    let refs: Vec<&str> = names
+        .iter()
+        .filter(|n| !ignored.contains(n.as_str()))
+        .map(String::as_str)
+        .collect();
     ToolResult::Output(name_list(&refs, &format!("{rel} is empty")))
+}
+
+/// Which of `names`, the entries of `rel` under the root (directories with
+/// their trailing `/`), git ignores, or why it could not say. Fail closed:
+/// an answer that could not be had is not "none of them".
+///
+/// One `git check-ignore --stdin -z` for the whole directory rather than a
+/// spawn per entry: a directory of a few hundred files would otherwise cost
+/// a few hundred processes for one `ls`, on a host shared with the model.
+/// Without `--no-index`, so a tracked file is never ignored whatever its
+/// name matches, which is the rule `find` lists by. Each path is given as
+/// `./...`: `check-ignore` reads a leading `:` as pathspec magic (and does
+/// not take `--literal-pathspecs`), so an entry named `:x` would otherwise
+/// be answered for a different path than the one listed.
+async fn ignored_entries<'n>(
+    root: &Path,
+    rel: &str,
+    names: &'n [String],
+) -> Result<std::collections::HashSet<&'n str>, String> {
+    if names.is_empty() {
+        return Ok(Default::default());
+    }
+    // As git spells it: forward slashes, no trailing one, nothing for the
+    // root itself.
+    let dir = rel.replace('\\', "/");
+    let dir = dir.trim_end_matches('/');
+    let dir = if dir.is_empty() || dir == "." {
+        ""
+    } else {
+        dir
+    };
+    let mut input = Vec::new();
+    for n in names {
+        input.extend_from_slice(b"./");
+        if !dir.is_empty() {
+            input.extend_from_slice(dir.as_bytes());
+            input.push(b'/');
+        }
+        input.extend_from_slice(n.as_bytes());
+        input.push(0);
+    }
+    // git echoes each ignored path as it was given, so the answer is never
+    // longer than the question, and an answer past it is not git's. The
+    // floor leaves git's own error message room on stderr.
+    let cap = OUTPUT_CAP.max(input.len());
+    let argv = trellis_vcs::git_argv(&["check-ignore", "-z", "--stdin"]);
+    let r = exec::run(Spec {
+        argv: &argv,
+        cwd: root,
+        env: &git_env(),
+        env_remove: &[],
+        stdin: Some(input),
+        timeout: LISTING_TIMEOUT,
+        cap,
+        head: false,
+        whole: true,
+        os: None,
+    })
+    .await;
+    let failed = |e: &str| format!("could not ask git which entries of `{rel}` it ignores ({e})");
+    let c = match r {
+        Err(e) => return Err(failed(&e.to_string())),
+        Ok(c) if c.timed_out => return Err(failed("it timed out")),
+        // 0: some are ignored; 1: none are. Anything else is git failing.
+        Ok(c) if c.code == Some(0) || c.code == Some(1) => c,
+        Ok(c) => {
+            let err = c.stderr.render();
+            let why = match (err.trim(), c.code) {
+                ("", Some(code)) => format!("it exited {code}"),
+                ("", None) => "it was ended by a signal".to_string(),
+                (e, _) => e.to_string(),
+            };
+            return Err(failed(&why));
+        }
+    };
+    // Past the cap the capture kept nothing (`whole`), and a partial answer
+    // would list the entries whose verdict was cut.
+    if c.stdout.total > cap {
+        return Err(failed("the answer was longer than the question"));
+    }
+    let listed: std::collections::HashSet<&str> = names.iter().map(String::as_str).collect();
+    let out = c.stdout.render();
+    Ok(out
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .filter_map(|p| {
+            // The `./` and directory prefix come back off to match the
+            // names listed.
+            let p = p.strip_prefix("./")?;
+            let n = if dir.is_empty() {
+                p
+            } else {
+                p.strip_prefix(dir)?.strip_prefix('/')?
+            };
+            listed.get(n).copied()
+        })
+        .collect())
 }
 
 fn name_list(names: &[&str], empty: &str) -> String {
