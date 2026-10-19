@@ -82,8 +82,9 @@ guards against (a pane added to the reducer, a key dropped from
 the planted cases are kept in the tests. The window: CI run
 [37731262937](https://github.com/maydaythecoder/trellis/actions/runs/37731262937)
 (push to `main` at 84cdc4a, 2026-10-08) built, linted and tested
-`desktop/` with `--locked` in its `desktop` job on both self-hosted runners,
-`trellis-win` (Windows) and `trellis-wsl` (Linux), and ran
+`desktop/` with `--locked` in its `desktop` job on both self-hosted runners
+of that date, `trellis-win` (Windows) and `trellis-wsl` (Linux; set aside
+2026-10-19, #736, the job runs on GitHub-hosted runners since), and ran
 `scripts/checks/desktop-guards.sh --self-test` (40 planted cases, each
 refused naming its rule) and `desktop-guards.sh` there. Since 84cdc4a,
 `desktop/tauri.conf.json`, `Cargo.toml`, `Cargo.lock`, `build.rs` and

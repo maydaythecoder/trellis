@@ -73,12 +73,24 @@ section 4 on hosted model specs.
 4. **Go on the runners** comes from a pinned go.dev tarball, checked against
    its SHA-256 and unpacked user-local, with `GOTOOLCHAIN=local` so a
    `toolchain` line in `go.mod` never downloads another toolchain.
+   *Amended 2026-10-19 (#736, #754):* on a GitHub-hosted runner the same
+   pinned archive and hash are unpacked per job by
+   `scripts/runners/go-hosted.sh` into `$RUNNER_TEMP`; the pin stays in
+   `install-go.sh`.
 5. **Releases are Windows and Linux only**, built on the self-hosted runners.
    macOS is dropped from releases until a macOS runner exists.
+   *Amended 2026-10-19 (#736, #754):* built on GitHub-hosted runners
+   (`ubuntu-latest`, `windows-latest`); the self-hosted runners are set
+   aside as of 2026-10-19 (`docs/BUILD_SYSTEM.md`, "CI runners"). The
+   targets are unchanged. Whether macOS returns now that a hosted macOS
+   runner is available is the owner's question and is not decided here.
 6. **#289's decisions stand.** #290 first (now closed); the owner installs
    WebKitGTK on WSL; the identifier is `dev.trellis.desktop`; the change to
    `desktop/src/child.rs` is allowed; and if Tauri's generated code needs
    `unsafe`, the work stops and is escalated to the owner.
+   *Amended 2026-10-19 (#736, #754):* on the GitHub-hosted Linux runner the
+   `desktop` job installs WebKitGTK and the other Tauri prerequisites with
+   apt itself; the owner's WSL install stays the self-hosted step.
 
 ### 3. Go for `tui/` only
 
@@ -124,6 +136,10 @@ Linux-only.
 - The release job builds `trellis` and `trellis-tui` for Windows and Linux on
   the self-hosted runners, and lists both in `SHA256SUMS` and in #386's
   version check.
+- *Amended 2026-10-19 (#736, #754):* the `go`, `desktop` and release jobs,
+  and every other job in `ci.yml`, run on GitHub-hosted runners
+  (`ubuntu-latest`, `windows-latest`); "both runners" above reads as both
+  hosted platforms. The self-hosted runners are set aside.
 
 ### 7. The parity bar, and retiring the Rust TUI
 
@@ -131,6 +147,8 @@ Linux-only.
 `app.rs` (40 tests), `view.rs` (23), `events.rs` (6), `tui_bridge.rs` (16)
 and `tui_run.rs` (23). Parity is reached when every row maps to a Go test
 that passes in `go-test.sh` on both runners.
+*Amended 2026-10-19 (#736, #754):* "both runners" here and in section 6 reads
+as both hosted platforms, `ubuntu-latest` and `windows-latest`.
 
 At parity, bare `trellis` and `trellis tui` hand off to `trellis-tui`, with
 the ratatui fallback. One release later the Rust TUI is retired: deleting
@@ -160,6 +178,9 @@ Go.** Two copies of the question-or-task rule would drift.
   are held for Go by `go-guards.sh`, not by the Rust tests.
 - CI gains the `go` job and three supply-chain steps; cold Tauri and Go
   builds run one at a time on the runners, under the Windows commit limit.
+  (*Amended 2026-10-19 (#736, #754):* on GitHub-hosted runners the jobs run
+  in parallel as the matrix allows; the one-at-a-time limit was the
+  self-hosted runners'.)
 - Releases lose macOS until a macOS runner exists.
 - The protocol grows by `classify`, `list_paths` and a `tier` field in
   `get_state`, each with contract tests on both clients. Merges that touch
@@ -182,7 +203,9 @@ Go.** Two copies of the question-or-task rule would drift.
 
 Each ticket gets its own `t<n>-<slug>` branch and worktree, and goes through
 `audit` → `dev` → `main` (ADR 0051). The lettered tickets are filed once this
-ADR is accepted. `∥` marks tickets that can run in parallel.
+ADR is accepted. `∥` marks tickets that can run in parallel. (The plan is
+kept as written; the self-hosted runners it names were set aside on
+2026-10-19, #736, after every ticket but T9 had landed.)
 
 - **Owner actions (P0, not tickets):** apply #219 on WSL; install
   `libwebkit2gtk-4.1-dev`, `libxdo-dev` and `pkg-config` on WSL; check for
