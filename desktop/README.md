@@ -8,6 +8,24 @@ save writes only your own user config file. The page shows what trellis
 reports and computes no verdict. The rules for working on it are in
 [`CLAUDE.md`](CLAUDE.md) beside this file.
 
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../docs/assets/desktop-run-dark.png">
+  <img src="../docs/assets/desktop-run-light.png" width="980" alt="The Run section after a scripted run: actions log, the tier, budget, session tokens, radius, checks, turns, edits and last run panes, and the action graph.">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../docs/assets/desktop-atlas-dark.png">
+  <img src="../docs/assets/desktop-atlas-light.png" width="980" alt="The Atlas on poetry 2.5.0 with the Churn lens: a treemap of modules shaded by commits in the last 90 days, a snapshot slider across the tags, and a selection pane with three separate call-site counts.">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../docs/assets/desktop-trails-dark.png">
+  <img src="../docs/assets/desktop-trails-light.png" width="980" alt="The Trails section: a filterable list of runs and one run's record, with the checks the trail records kept apart from the model's opinion.">
+</picture>
+
+<sub>The pictures follow the system theme, as the page does. They were made against the real page and the real core, driven headlessly; the method is in <code>docs/assets/README.md</code>.</sub>
+
 ## Building it
 
 It is its own Cargo workspace (ADR 0048 §1), so every command names its

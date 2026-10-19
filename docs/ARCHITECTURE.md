@@ -19,10 +19,20 @@ can only come from a process that ran, and that rule is held by the type
 system rather than by a prompt (ADR 0004). What is built and what is not is
 audited in `docs/STATUS.md`. `trellis rpc` has two clients on record: the
 Tauri desktop in `desktop/`, whose overview, run, trails, codebase, board
-and vault views are built (ADR 0048, story S15), and a Go TUI, which is not built
-(ADR 0052, #514).
+and vault views are built (ADR 0048, story S15), and the Go TUI in `tui/`,
+built and handed the terminal by `trellis --tui` when `trellis-tui` is beside
+the binary, with the ratatui interface as the fallback for one release
+(ADR 0052, #514; parity in `tui/PARITY.md`).
 
 ## Crate map
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/crates-dark.svg">
+  <img src="assets/crates-light.svg" width="980" alt="The workspace in four rows: interfaces, the loop, the facts, the base. Arrows show which crates may depend on which; a footer names the two boundaries that are load-bearing.">
+</picture>
+
+The picture is the same information as the tables below, drawn once; the
+tables are what is checked against the manifests.
 
 "May depend on" is the workspace crates each `Cargo.toml` names under
 `[dependencies]`, read on 2026-10-10. "Must never depend on" is the rule as
@@ -103,8 +113,14 @@ trellis-core, trellis-model, trellis-vault, tui-demo -> (no workspace crate)
 
 ## A run from start to finish
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/run-dark.svg">
+  <img src="assets/run-light.svg" width="980" alt="One run: snapshot, one model driving one loop, checks that execute, a verdict minted only inside trellis-checks, then either edits left in the tree with a committed trail or a reset to the snapshot with a committed trail.">
+</picture>
+
 `trellis run --model <spec> "<task>"`, single agent, no `--target`. Line
-numbers drift; search for the names.
+numbers drift; search for the names. Steps 8, 10 and 12 are the four boxes
+and the two outcomes in the picture.
 
 | # | Step | Where | Names |
 |---|---|---|---|
@@ -144,7 +160,7 @@ numbers drift; search for the names.
 |---|---|---|---|
 | bare `trellis` | `crates/trellis-cli/src/main.rs` (`let Some(command) = cli.command else`) | at a terminal: the desktop via `launch::launch_desktop` or the TUI; on a pipe: `session::Session` | 0050 |
 | `trellis session` | `crates/trellis-cli/src/session.rs` | `cmd_run_with`, holding the index between tasks | — |
-| `trellis tui` | `crates/trellis-cli/src/tui_run.rs`, interface in `crates/tui-demo/` | `cmd_run` | 0052 (the Go TUI that will replace it is not built) |
+| `trellis tui` | `crates/trellis-cli/src/main.rs` `terminal_ui`, handing off to `tui/` (`launch::hand_off`), or `tui_run.rs` with the interface in `crates/tui-demo/` when no `trellis-tui` is found | `cmd_run` | 0052 |
 | `trellis rpc` (desktop and TUI clients) | `crates/trellis-cli/src/rpc.rs`, `serve` | `cmd_run_with` on its own thread, once a `set_model` has given the session a model (a `prompt` before then is refused, #564); `abort`, `approve`, `steer`, `get_state` answered meanwhile | 0025 §5, 0048, 0052 |
 | `trellis queue`, `trellis work` | `crates/trellis-cli/src/work.rs` (`queue`, `work`); `crates/trellis-queue/src/lib.rs` (`work`, `Runner`, `Queue`) | a `Runner` whose `run` is `cmd_run`; a process agent runs its command in a clone instead (`process_agent.rs`) | 0020, 0026 |
 | `trellis agents`, `trellis routines` | `crates/trellis-cli/src/orchestrate.rs` | not at all; they list and validate profiles and routines | 0026 |

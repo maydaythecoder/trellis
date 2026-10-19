@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 400" width="980" height="400">
+<rect width="980" height="400" fill="#161715"/>
+<defs>
+<marker id="ah-9b9a92" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#9b9a92"/></marker>
+<marker id="ah-7fcf98" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#7fcf98"/></marker>
+<marker id="ah-f08a7e" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#f08a7e"/></marker>
+<marker id="ah-8cc4b2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8cc4b2"/></marker>
+</defs>
+<text x="20" y="30" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#e6e5df">One run of <tspan font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">trellis run</tspan></text>
+<rect x="20" y="56" width="180" height="96" rx="6" fill="#1b1c1a" stroke="#34352f" stroke-width="1.5"/>
+<text x="34" y="80" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#e6e5df">1. Snapshot</text>
+<text x="34" y="102" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">clean worktree required;</text>
+<text x="34" y="120" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">HEAD recorded before</text>
+<text x="34" y="138" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">anything happens</text>
+<rect x="240" y="56" width="240" height="96" rx="6" fill="#1b1c1a" stroke="#8cc4b2" stroke-width="1.5"/>
+<text x="254" y="80" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#e6e5df">2. One model, one loop</text>
+<text x="254" y="102" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">flat tool list:</text>
+<text x="254" y="120" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">blast_radius · read_file</text>
+<text x="254" y="138" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">edit · run_checks</text>
+<rect x="520" y="56" width="200" height="96" rx="6" fill="#1b1c1a" stroke="#34352f" stroke-width="1.5"/>
+<text x="534" y="80" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#e6e5df">3. Checks execute</text>
+<text x="534" y="102" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">mypy · pytest</text>
+<text x="534" y="120" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">governance rules</text>
+<text x="534" y="138" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">real processes, exit codes</text>
+<rect x="760" y="56" width="200" height="96" rx="6" fill="#1b1c1a" stroke="#8cc4b2" stroke-width="1.5"/>
+<text x="774" y="80" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#e6e5df">4. Verdict</text>
+<text x="774" y="102" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">minted only inside</text>
+<text x="774" y="120" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">trellis-checks, from a</text>
+<text x="774" y="138" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">process that ran</text>
+<line x1="200" y1="104" x2="238" y2="104" stroke="#9b9a92" stroke-width="1.5" marker-end="url(#ah-9b9a92)"/>
+<line x1="480" y1="104" x2="518" y2="104" stroke="#9b9a92" stroke-width="1.5" marker-end="url(#ah-9b9a92)"/>
+<line x1="720" y1="104" x2="758" y2="104" stroke="#9b9a92" stroke-width="1.5" marker-end="url(#ah-9b9a92)"/>
+<path d="M 620 152 L 620 186 L 360 186 L 360 154" fill="none" stroke="#9b9a92" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#ah-9b9a92)"/>
+<text x="380" y="178" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#9b9a92">the model reads the check output and decides what to do next; it never decides the verdict</text>
+<line x1="860" y1="152" x2="860" y2="214" stroke="#9b9a92" stroke-width="1.5"/>
+<line x1="300" y1="214" x2="860" y2="214" stroke="#9b9a92" stroke-width="1.5"/>
+<line x1="300" y1="214" x2="300" y2="236" stroke="#7fcf98" stroke-width="1.5" marker-end="url(#ah-7fcf98)"/>
+<line x1="860" y1="214" x2="860" y2="236" stroke="#f08a7e" stroke-width="1.5" marker-end="url(#ah-f08a7e)"/>
+<rect x="40" y="238" width="440" height="118" rx="6" fill="#1b1c1a" stroke="#7fcf98" stroke-width="1.5"/>
+<text x="54" y="262" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#7fcf98">Converged: every check passed</text>
+<text x="54" y="284" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">edits are left in the working tree for you to review</text>
+<text x="54" y="302" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">nothing is committed on your behalf; acceptance is yours</text>
+<text x="54" y="320" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">trail written to .trellis/runs/ and committed</text>
+<rect x="520" y="238" width="440" height="118" rx="6" fill="#1b1c1a" stroke="#f08a7e" stroke-width="1.5"/>
+<text x="534" y="262" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#f08a7e">Not converged: budget, refusal, or no passing check</text>
+<text x="534" y="284" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">git reset --hard to the snapshot; worktree restored</text>
+<text x="534" y="302" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">the model's own claim of success changes nothing</text>
+<text x="534" y="320" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">trail written and committed anyway: failures are the record</text>
+<text x="20" y="386" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#9b9a92">Verdict has no public constructor and no Deserialize, so the rule is held by the type system rather than by a prompt. ADR 0004, 0005, 0009.</text>
+</svg>
