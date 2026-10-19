@@ -1,6 +1,6 @@
 # ADR 0050 — Starting trellis: plain `trellis`, or `--tui`, `--dsk`, `--web`
 
-**Status:** Accepted (owner-directed). Built (story S19, #377): sections 1–4 by #370–#374, #553, #555, #556, #558 and #561; section 5 by #375. The handoff to `trellis-tui` (section 1, amended) is #514's and is not built.
+**Status:** Accepted (owner-directed). Built (story S19, #377): sections 1–4 by #370–#374, #553, #555, #556, #558 and #561; section 5 by #375. The handoff to `trellis-tui` (section 1, amended) is built by #514, 2026-10-12.
 **Date:** 2026-10-04
 **Decided by:** the owner's request of 2026-10-04 ("make the startup more
 intuitive, limited flags; start with just `trellis`, with `--tui`, `--dsk`,
