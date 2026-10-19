@@ -1640,6 +1640,11 @@ mod tests {
         write(src, "skills/delta/SKILL.md", "---\nname: delta\n---\nD\n");
         write(src, "hooks/new.sh", "#!/bin/sh\n");
         git_in(src, &["add", "-A"]);
+        // tool.md becomes a plain file at v2 on every platform. On Linux
+        // `add -A` already re-reads its mode from the worktree (644); on
+        // Windows core.filemode is off and the index would keep the +x from
+        // `source`, which made the upgrade test's file count differ by one.
+        git_in(src, &["update-index", "--chmod=-x", "skills/alpha/tool.md"]);
         git_in(src, &["commit", "-q", "-m", "v2"]);
     }
 
@@ -1673,9 +1678,9 @@ mod tests {
         );
         assert!(said.contains("hooks/new.sh: outside"), "{said}");
         let pkg = cfg.join("packages/pkg-src");
-        // `advance` re-added the tree from the worktree, where tool.md is a
-        // plain file and the index-only link does not exist, so one more
-        // text file is copied and the link is gone.
+        // `advance` re-added the tree from the worktree, where the
+        // index-only link does not exist, and cleared tool.md's +x, so one
+        // more text file is copied and the link is gone.
         assert_eq!(
             files_under(&pkg),
             vec![

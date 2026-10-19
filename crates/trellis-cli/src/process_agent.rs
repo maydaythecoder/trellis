@@ -1266,7 +1266,9 @@ mod tests {
             std::fs::write(root.join("app/old.cfg"), "[x]\n\ty = 1\n").unwrap();
             std::fs::write(root.join("app/gone.cfg"), "[x]\n\ty = 1\n").unwrap();
             let cmd = if name == "proc-ignored-gone" {
-                let gone = root.join("app/gone.cfg").display().to_string();
+                // Native separators throughout: `del` refuses a path with a
+                // forward slash in it, and then nothing is deleted.
+                let gone = root.join("app").join("gone.cfg").display().to_string();
                 if cfg!(windows) {
                     format!("['cmd', '/C', 'del {gone}']")
                 } else {
