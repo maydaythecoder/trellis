@@ -2702,7 +2702,9 @@ mod task_worktree_tests {
             );
             let o = q.find(id).unwrap().1.outcome.unwrap();
             assert_eq!(o.branch, Some(format!("trellis/task/{id}")));
-            assert_eq!(o.worktree, Some(wt.display().to_string()));
+            // As paths, not strings: the recorded worktree has native
+            // separators throughout and `wt` was joined from a `/` literal.
+            assert_eq!(o.worktree.as_deref().map(Path::new), Some(wt.as_path()));
         }
         assert_eq!(git_stdout(&root, &["rev-parse", "HEAD"]), head);
         assert_eq!(git_stdout(&root, &["status", "--porcelain"]), "");
