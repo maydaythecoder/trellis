@@ -728,7 +728,12 @@ mod tests {
         let mut r = Reader::spawn(read).unwrap();
         r.stop();
         typing.send("in flight\n".into()).unwrap();
-        typing.send("for the line editor\n".into()).unwrap();
+        // Not unwrapped: once the stopped reader has handed on the line in
+        // flight its thread ends and drops the receiving end, so this send
+        // can fail. That is the behaviour under test, and whether the send
+        // lands first is the scheduler's choice (CI run 39277098764, the
+        // test (ubuntu-latest) job, panicked here with a SendError).
+        let _ = typing.send("for the line editor\n".into());
         drop(typing);
         assert_eq!(r.lines.blocking_recv(), Some(Some("in flight\n".into())));
         assert_eq!(r.lines.blocking_recv(), None, "the thread has ended");
