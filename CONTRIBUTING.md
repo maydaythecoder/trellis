@@ -83,6 +83,18 @@ From `CLAUDE.md` and ADR 0051:
    on it.
 4. `dev` reaches `main` only by the owner's pull request, squash-merged.
 
+```mermaid
+flowchart LR
+  t["t&lt;n&gt;-&lt;slug&gt; or feature/&lt;slug&gt;<br/>cut from origin/dev"]
+  a[audit]
+  d[dev]
+  m[main]
+  t -- "green: git merge --no-ff" --> a
+  a -- "audit → dev pull request, CI runs" --> d
+  d -- "owner's pull request, squash-merged" --> m
+  m -. "v* tags: the owner's act" .-> m
+```
+
 **Never push `main` or a `v*` tag.** The pre-push hook refuses both; tags are
 the owner's act (`docs/BUILD_SYSTEM.md`, "Versions and releases"). The only
 permanent branches are `main`, `dev` and `audit`; delete yours after it
