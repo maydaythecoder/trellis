@@ -19,8 +19,14 @@
 use crate::budget::{Budget, Exhaustion, Spend};
 use crate::orchestrator::Handle;
 use crate::tools::ToolResult;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use trellis_checks::CheckKind;
+
+/// A duration as the whole milliseconds the trail records; saturating,
+/// as `model_ms` is.
+fn millis(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
 
 /// How many identical call-and-result pairs in a row mean the run is stuck.
 ///
@@ -196,6 +202,13 @@ pub struct Turn {
     /// ([`crate::orchestrator::Dispatched::changed`]). Empty for every other
     /// tool. Whole here; the trail cuts it to its cap and keeps the count.
     pub changed: Vec<String>,
+    /// How long the call took, in milliseconds, by the monotonic clock
+    /// (`Instant`, never the wall clock, ADR 0046), with any wait on a
+    /// person in approve mode taken out, so it is the tool's own time
+    /// (#622). Timed here around the orchestrator's call, never inside
+    /// `trellis-checks` (rule 1): for a check it is the check call's time
+    /// as the loop saw it. The trail records it per action and per check.
+    pub duration_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -877,7 +890,7 @@ pub async fn run_seeded<M: Model>(
         // and a model time that went backwards would be an invented figure.
         let asked = Instant::now();
         let step = model.next_step(&t).await;
-        let model_ms = u64::try_from(asked.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let model_ms = millis(asked.elapsed());
         let step = match step {
             Ok(s) => s,
             Err(e) => {
@@ -910,10 +923,12 @@ pub async fn run_seeded<M: Model>(
                     // would fall through to `Converged` with no rule
                     // enforced. Asked after both answers, so an actor that
                     // died before or between them is caught.
+                    let audit_started = Instant::now();
                     let gate = match orch.has_governance_rules().await {
                         true => Some(orch.audit_governance().await),
                         false => None,
                     };
+                    let audit_ms = millis(audit_started.elapsed());
                     if !orch.is_alive() || matches!(gate, Some(ToolResult::Error(_))) {
                         tracing::error!("the orchestrator task is gone; stopping");
                         break 'run Outcome::NotConverged {
@@ -955,6 +970,7 @@ pub async fn run_seeded<M: Model>(
                             human: None,
                             may_have_changed_tree: false,
                             changed: Vec::new(),
+                            duration_ms: audit_ms,
                         });
                         if !v.passed() {
                             // Asked only now, after the outcome is settled:
@@ -990,6 +1006,7 @@ pub async fn run_seeded<M: Model>(
                 // this call, not the next one.
                 let prompt_bytes = model.prompt_bytes();
                 let usage = model.step_usage();
+                let called = Instant::now();
                 let crate::orchestrator::Dispatched {
                     result,
                     radius_sites,
@@ -1009,6 +1026,13 @@ pub async fn run_seeded<M: Model>(
                             .saturating_sub(started.elapsed().saturating_sub(waited_on_human)),
                     )
                     .await;
+                // The tool's time: a person's deliberation in approve mode
+                // is taken out, as it is from the wall-clock budget.
+                let duration_ms = millis(
+                    called
+                        .elapsed()
+                        .saturating_sub(human.as_ref().map_or(Duration::ZERO, |h| h.waited)),
+                );
                 if let Some(h) = human {
                     waited_on_human += h.waited;
                 }
@@ -1105,6 +1129,7 @@ pub async fn run_seeded<M: Model>(
                     model_ms = model_ms,
                     completion_tokens = usage.completion_tokens,
                     queue_wait_ms = usage.queue_wait_ms,
+                    duration_ms = duration_ms,
                     "turn"
                 );
 
@@ -1119,6 +1144,7 @@ pub async fn run_seeded<M: Model>(
                     human,
                     may_have_changed_tree,
                     changed,
+                    duration_ms,
                 });
 
                 // After the turn is recorded, so the trail shows the call
@@ -2891,6 +2917,7 @@ rank = \"non-negotiable\"
                     human: None,
                     may_have_changed_tree: false,
                     changed: Vec::new(),
+                    duration_ms: 0,
                 },
                 Turn {
                     call: ToolCall::ReadFile { path: "b".into() },
@@ -2903,6 +2930,7 @@ rank = \"non-negotiable\"
                     human: None,
                     may_have_changed_tree: false,
                     changed: Vec::new(),
+                    duration_ms: 0,
                 },
             ],
             final_notice: false,
@@ -3700,6 +3728,57 @@ rank = \"non-negotiable\"
             "and must not trigger the escalation turn"
         );
         assert_eq!(t.turns[0].human, Some(true));
+    }
+
+    #[tokio::test]
+    async fn a_trail_records_duration_of_each_call_timed_by_the_loop_without_the_person_s_wait() {
+        // The risk (#622): a duration taken inside `trellis-checks` or from
+        // the wall clock, or one that charges a person's deliberation in
+        // approve mode to the tool. The check here sleeps for a second and
+        // the read is instant; the person takes 300 ms before each, which
+        // neither duration includes.
+        let d = repo();
+        let sleeper = if cfg!(windows) {
+            vec![
+                "cmd".into(),
+                "/C".into(),
+                "ping -n 2 127.0.0.1 >NUL & rem".into(),
+            ]
+        } else {
+            vec!["sh".into(), "-c".into(), "sleep 1".into()]
+        };
+        let cfg = CheckConfig {
+            typecheck: sleeper,
+            ..CheckConfig::default()
+        };
+        let (h, _j) = Orchestrator::new(d.path(), cfg)
+            .with_gate(Box::new(SlowPerson(std::time::Duration::from_millis(300))))
+            .spawn();
+        let mut m = Scripted::new(vec![
+            Step::Call(ToolCall::ReadFile {
+                path: "app/util.py".into(),
+            }),
+            typecheck_now(),
+            Step::Done {
+                summary: "checked".into(),
+            },
+        ]);
+        let (_, t) = run("time it", &mut m, &h, &budget()).await;
+        assert_eq!(t.turns.len(), 2, "{:?}", t.turns);
+        let read = &t.turns[0];
+        let check = &t.turns[1];
+        assert_eq!(read.human, Some(true));
+        assert!(
+            read.duration_ms < 300,
+            "the person's 300 ms is not the read's: {} ms",
+            read.duration_ms
+        );
+        assert_eq!(check.verdict_passed, Some(true));
+        assert!(
+            (900..10_000).contains(&check.duration_ms),
+            "the check slept about a second: {} ms",
+            check.duration_ms
+        );
     }
 
     fn typecheck_now() -> Step {
