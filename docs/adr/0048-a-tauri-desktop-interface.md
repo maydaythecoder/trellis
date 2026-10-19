@@ -1,6 +1,7 @@
 # ADR 0048 — A Tauri desktop interface, in `desktop/`, as a `trellis rpc` client
 
-**Status:** Accepted (owner-directed). Not built (story S15, #365).
+**Status:** Accepted (owner-directed). Built (story S15, #365, every ticket
+closed; the page's panes, the last of it, by #513, 2026-10-10).
 **Date:** 2026-10-04
 **Decided by:** the session, under the owner's 2026-10-04 delegation of the
 upstream plan's open questions ("ready for completion without decisions"),
