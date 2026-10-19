@@ -1,6 +1,6 @@
 ---
 source: crates/trellis-trail/tests/trail_snapshots.rs
-expression: "trail_json(\"rename Installer.run\", factual, judgment)"
+expression: "trail_json(\"rename Installer.run\", Some(\"2026-09-18T05:14:32Z\"), factual,\njudgment)"
 ---
 {
   "schema": 1,
@@ -8,6 +8,7 @@ expression: "trail_json(\"rename Installer.run\", factual, judgment)"
   "task": "rename Installer.run",
   "base_commit": "0123456789abcdef0123456789abcdef01234567",
   "started_at": "2026-09-18T05:12:00Z",
+  "ended_at": "2026-09-18T05:14:32Z",
   "provenance": {
     "trellis_version": "0.0.0-fixture",
     "model": "scripted",
@@ -28,11 +29,13 @@ expression: "trail_json(\"rename Installer.run\", factual, judgment)"
     "check_outcomes": [
       {
         "kind": "Typecheck",
-        "passed": true
+        "passed": true,
+        "duration_ms": 1850
       },
       {
         "kind": "Tests",
-        "passed": true
+        "passed": true,
+        "duration_ms": 12400
       }
     ],
     "approved_by": "Human",
@@ -51,7 +54,8 @@ expression: "trail_json(\"rename Installer.run\", factual, judgment)"
         "tool": "blast_radius",
         "target": "Installer.run",
         "outcome": "47 resolved, 3 candidates, 2 unresolved",
-        "wrote": false
+        "wrote": false,
+        "duration_ms": 32
       },
       {
         "turn": 2,
@@ -65,7 +69,8 @@ expression: "trail_json(\"rename Installer.run\", factual, judgment)"
         "tool": "edit",
         "target": "src/pkg/installer.py",
         "outcome": "applied",
-        "wrote": true
+        "wrote": true,
+        "duration_ms": 4
       },
       {
         "turn": 2,
@@ -76,14 +81,16 @@ expression: "trail_json(\"rename Installer.run\", factual, judgment)"
         "changed": [
           "src/pkg/installer_gen.py"
         ],
-        "changed_count": 1
+        "changed_count": 1,
+        "duration_ms": 910
       },
       {
         "turn": 3,
         "tool": "run_checks",
         "target": "",
         "outcome": "Typecheck: passed; Tests: passed",
-        "wrote": false
+        "wrote": false,
+        "duration_ms": 14250
       }
     ],
     "control": "approve (edit)",
@@ -131,7 +138,7 @@ expression: "trail_json(\"rename Installer.run\", factual, judgment)"
       }
     ]
   },
-  "factual_sha256": "8ff1d1338d6c78814f0cf8a503e1bde230b3e4685bb6abbe9a2fd89bcb10dd1d",
+  "factual_sha256": "978bd9544934c861e7cf9dcaace684e762d39e618089b4fc1197129a5a79c85e",
   "judgment": {
     "tech_debt_projection": "the alias will need removing",
     "rationale": "kept the old name as an alias"

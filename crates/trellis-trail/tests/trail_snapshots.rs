@@ -28,13 +28,16 @@ use trellis_trail::{
 /// Before returning, the JSON is read back as untrusted data and its
 /// integrity checked, so a snapshot can never be accepted for a document
 /// whose recorded digest a reader would call `Altered`.
-fn trail_json(task: &str, factual: Factual, judgment: Judgment) -> String {
+fn trail_json(task: &str, ended_at: Option<&str>, factual: Factual, judgment: Judgment) -> String {
     let t = Trail {
         schema: SCHEMA,
         run_id: "20260918-051200-000-fixture".into(),
         task: task.into(),
         base_commit: "0123456789abcdef0123456789abcdef01234567".into(),
         started_at: "2026-09-18T05:12:00Z".into(),
+        // Set only by the full-run fixture: the rolled-back one keeps the
+        // shape of a trail written before the field (#622).
+        ended_at: ended_at.map(str::to_string),
         provenance: Provenance {
             trellis_version: "0.0.0-fixture".into(),
             model: Some("scripted".into()),
@@ -57,8 +60,9 @@ fn trail_json(task: &str, factual: Factual, judgment: Judgment) -> String {
 #[test]
 fn trail_snapshot_full_run_with_every_optional_field_present() {
     // A run that did everything a trail can record: radius queries, an edit,
-    // checks, context fill, the control dial, tokens, an agent profile and
-    // user inputs. The risk defended: a field of the factual section changing
+    // checks, context fill, the control dial, tokens, an agent profile,
+    // user inputs, and the timings of #622: `ended_at` on the trail and
+    // `duration_ms` on every timed action and check outcome. The risk defended: a field of the factual section changing
     // name, shape or presence, or the digest over it changing, without a
     // reviewed diff. Both are what later runs trust (S10, S11).
     let factual = Factual {
@@ -75,10 +79,12 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
             CheckOutcome {
                 kind: "Typecheck".into(),
                 passed: true,
+                duration_ms: Some(1_850),
             },
             CheckOutcome {
                 kind: "Tests".into(),
                 passed: true,
+                duration_ms: Some(12_400),
             },
         ],
         approved_by: Approval::Human,
@@ -100,6 +106,7 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
                 wrote: false,
                 changed: Vec::new(),
                 changed_count: 0,
+                duration_ms: Some(32),
             },
             Action {
                 turn: 2,
@@ -109,6 +116,9 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
                 wrote: false,
                 changed: Vec::new(),
                 changed_count: 0,
+                // A person's answer is not timed: the wait is excluded
+                // from the call it decided, and absent is not 0.
+                duration_ms: None,
             },
             Action {
                 turn: 2,
@@ -118,6 +128,7 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
                 wrote: true,
                 changed: Vec::new(),
                 changed_count: 0,
+                duration_ms: Some(4),
             },
             Action {
                 turn: 2,
@@ -127,6 +138,7 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
                 wrote: false,
                 changed: Vec::new(),
                 changed_count: 0,
+                duration_ms: Some(910),
             }
             .with_changed(&["src/pkg/installer_gen.py".into()]),
             Action {
@@ -137,6 +149,7 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
                 wrote: false,
                 changed: Vec::new(),
                 changed_count: 0,
+                duration_ms: Some(14_250),
             },
         ],
         control: Some("approve (edit)".into()),
@@ -176,15 +189,21 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
         tech_debt_projection: Some("the alias will need removing".into()),
         rationale: Some("kept the old name as an alias".into()),
     };
-    insta::assert_snapshot!(trail_json("rename Installer.run", factual, judgment));
+    insta::assert_snapshot!(trail_json(
+        "rename Installer.run",
+        Some("2026-09-18T05:14:32Z"),
+        factual,
+        judgment
+    ));
 }
 
 #[test]
 fn trail_snapshot_rolled_back_run_omits_absent_optional_fields() {
     // A run that never reached approval: nothing proposed, one failed check,
-    // and every optional field absent. `control`, `tokens`, `agent` and
-    // `inputs` are skipped when absent so that trails written before those
-    // fields existed keep their digest; `context` is not skipped and shows as
+    // and every optional field absent. `control`, `tokens`, `agent`,
+    // `inputs`, `ended_at` and every `duration_ms` (#622) are skipped when
+    // absent so that trails written before those fields existed keep their
+    // digest; `context` is not skipped and shows as
     // null. The risk defended: an omitted field starting to serialize as null
     // or empty, which changes the digest of every older-shaped trail.
     let factual = Factual {
@@ -194,6 +213,7 @@ fn trail_snapshot_rolled_back_run_omits_absent_optional_fields() {
         check_outcomes: vec![CheckOutcome {
             kind: "Tests".into(),
             passed: false,
+            duration_ms: None,
         }],
         approved_by: Approval::None,
         mode_counts: ModeCounts::default(),
@@ -208,5 +228,10 @@ fn trail_snapshot_rolled_back_run_omits_absent_optional_fields() {
         label: None,
         suspected_recall_gaps: vec![],
     };
-    insta::assert_snapshot!(trail_json("fix flaky test", factual, Judgment::default()));
+    insta::assert_snapshot!(trail_json(
+        "fix flaky test",
+        None,
+        factual,
+        Judgment::default()
+    ));
 }
