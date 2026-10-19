@@ -15,6 +15,19 @@ pub(crate) fn cmd_log(root: &Path, limit: usize, actions: bool) -> Result<()> {
         let f = &e.trail.factual;
         println!("{}  {}", plain(&e.run_id()), e.outcome());
         println!("    {}", plain(&e.trail.task));
+        // Both wall-clock readings as recorded, never their difference: a
+        // clock step between them makes a subtraction a figure about the
+        // clock (ADR 0046). A trail from before `ended_at` says so.
+        if let Some(started) = &e.trail.started_at {
+            println!(
+                "    started {}; ended {}",
+                plain(started),
+                match &e.trail.ended_at {
+                    Some(ended) => plain(ended),
+                    None => "not recorded (written before the field)".to_string(),
+                }
+            );
+        }
         // "passed" and "failed" as words (#651): a `+`/`-` suffix read as
         // a mark on the check rather than as what an executed process said.
         // The kind is the trail's, lowercased for the sentence.
@@ -23,9 +36,14 @@ pub(crate) fn cmd_log(root: &Path, limit: usize, actions: bool) -> Result<()> {
             .iter()
             .map(|c| {
                 format!(
-                    "{} {}",
+                    "{} {}{}",
                     plain(&c.kind).to_lowercase(),
-                    if c.passed { "passed" } else { "failed" }
+                    if c.passed { "passed" } else { "failed" },
+                    // The loop's timing of the check call (#622); a trail
+                    // without one shows nothing rather than 0.
+                    c.duration_ms
+                        .map(|ms| format!(" in {ms} ms"))
+                        .unwrap_or_default()
                 )
             })
             .collect();
@@ -131,10 +149,16 @@ fn print_actions(f: &trellis_trail::UntrustedFactual) {
         // thing the rest of the line cannot: whether the tree changed.
         let wrote = if a.wrote { "*" } else { " " };
         println!(
-            "    {wrote} {:>2}. {} {}",
+            "    {wrote} {:>2}. {} {}{}",
             a.turn,
             plain(&a.tool),
-            plain(&a.target)
+            plain(&a.target),
+            // Absent for an untimed record (an approval, a partition, a
+            // compaction, or a trail from before the field): shown as
+            // nothing, never as 0.
+            a.duration_ms
+                .map(|ms| format!(" ({ms} ms)"))
+                .unwrap_or_default()
         );
         if !a.outcome.is_empty() {
             println!("          {}", plain(&a.outcome));

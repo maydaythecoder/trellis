@@ -686,6 +686,69 @@ fn log_actions_lists_each_recorded_action_and_only_the_outcomes_there_are() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+#[test]
+fn log_prints_ended_at_and_each_duration_a_run_recorded_and_nothing_for_an_older_trail() {
+    // The risk (#622): the timings written to the trail unread by the one
+    // command a person uses to see where a run's time went; or a trail from
+    // before the fields shown with an end of "" or a duration of 0, which
+    // reads as a measurement.
+    let d = repo_that_converges("log-durations", "def greet(name):\n    return \"hello\"\n");
+    let out = run(&d, &["run", "--model", "scripted:script.json", "tweak"]);
+    assert!(combined(&out).contains("CONVERGED"), "{}", combined(&out));
+    let runs = d.join(".trellis/runs");
+    let trail = std::fs::read_dir(&runs)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().is_some_and(|x| x == "json"))
+        .expect("the run wrote a trail");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&trail).unwrap()).unwrap();
+    assert!(v["ended_at"].is_string(), "{v}");
+    assert!(
+        v["factual"].get("ended_at").is_none(),
+        "outside the digest: {v}"
+    );
+    let actions = v["factual"]["actions"].as_array().unwrap();
+    assert!(!actions.is_empty());
+    assert!(
+        actions.iter().all(|a| a["duration_ms"].is_u64()),
+        "every loop action is timed: {actions:?}"
+    );
+    let checks = v["factual"]["check_outcomes"].as_array().unwrap();
+    assert!(!checks.is_empty());
+    assert!(
+        checks.iter().all(|c| c["duration_ms"].is_u64()),
+        "{checks:?}"
+    );
+
+    let s = stdout(&run(&d, &["log", "--actions"]));
+    let started = v["started_at"].as_str().unwrap();
+    let ended = v["ended_at"].as_str().unwrap();
+    assert!(
+        s.contains(&format!("started {started}; ended {ended}")),
+        "{s}"
+    );
+    assert!(
+        s.contains(" ms\n") || s.contains(" ms,"),
+        "a check's time: {s}"
+    );
+    assert!(s.contains(" ms)"), "an action's time: {s}");
+
+    // A trail written before the fields, beside it.
+    plant_log_fixture(
+        &d,
+        r#"[{"kind":"Tests","passed":true}]"#,
+        r#"{"reached_resolved":0,"reached_ambiguous":0,"widest_unbound_in_touched_files":0,"radius_queries":0}"#,
+    );
+    let s = stdout(&run(&d, &["log"]));
+    assert!(
+        s.contains("recorded checks: tests passed\n"),
+        "no time shown: {s}"
+    );
+    assert!(!s.contains("in 0 ms"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// A trail whose factual section holds the given check outcomes and radius
 /// counts, planted under `.trellis/runs`.
 fn plant_log_fixture(d: &Path, checks: &str, radius: &str) {

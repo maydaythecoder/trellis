@@ -135,6 +135,7 @@ impl Services {
                 // changed paths to record; what it touches is not a proposal.
                 changed: Vec::new(),
                 changed_count: 0,
+                duration_ms: None,
             })
             .collect()
     }

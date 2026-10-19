@@ -49,6 +49,30 @@ the agent it serves can rebuild it in roughly 32 ms on a 45k-line repository
 without a rebuild, committing it is a one-line change and this ADR should be
 amended rather than the `.gitignore` quietly edited.
 
+**Amended 2026-10-12 (#622): time in the record.** A trail gains `ended_at`
+beside `started_at`, and each `factual.actions[]` entry and each
+`factual.check_outcomes[]` entry gains `duration_ms`, all as optional
+fields omitted when absent. `ended_at` is a wall-clock reading taken as the
+trail is built; both readings are recorded as read and no difference is
+derived from them, since a clock step between them would make the
+difference a figure about the clock (ADR 0046). Each `duration_ms` is the
+loop's own monotonic-clock timing around the orchestrator's call (the
+`Turn`'s `duration_ms`, crates/trellis-loop/src/agent.rs, with a person's
+wait in approve mode taken out) or the supervisor's around an integrated
+check (crates/trellis-loop/src/integrate.rs); none is measured inside
+`trellis-checks` or carried by `Verdict` (rule 1). A record the writer did
+not time (an approval, a partition, a compaction, a service, a process
+agent's check) has the field absent, never 0. `SCHEMA` stays 1: an additive
+field read with a serde default is not a schema bump, which the fixture
+tests in crates/trellis-trail/src/untrusted.rs pin, and a trail written
+before the fields reads with each absent and keeps its bytes and digest.
+`trellis log` prints both readings and each duration, and nothing for an
+absent one. Evidence: the `duration_` tests in
+crates/trellis-trail/src/untrusted.rs, the two snapshot tests in
+crates/trellis-trail/tests/trail_snapshots.rs,
+`a_trail_records_duration_` in crates/trellis-loop/src/agent.rs and
+`log_prints_ended_at_` in crates/trellis-cli/tests/cli.rs.
+
 ## Alternatives considered
 
 **One combined section with a `speculative: true` field per entry.** Rejected:

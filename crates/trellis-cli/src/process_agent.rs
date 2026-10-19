@@ -819,6 +819,9 @@ fn write_trail(root: &Path, t: TrailInput<'_>, out: &mut dyn Write) -> Option<St
         .map(|v| CheckOutcome {
             kind: format!("{:?}", v.kind()),
             passed: v.passed(),
+            // This path runs its checks outside the loop and does not time
+            // them; absent, never 0 (#622).
+            duration_ms: None,
         })
         .collect();
     let factual = Factual {
@@ -843,6 +846,7 @@ fn write_trail(root: &Path, t: TrailInput<'_>, out: &mut dyn Write) -> Option<St
                 wrote: !t.touched.is_empty(),
                 changed: Vec::new(),
                 changed_count: 0,
+                duration_ms: None,
             }))
             // What it did to files git ignores: not `proposed`, which is what
             // a commit would carry, but recorded, since a converged run keeps
@@ -855,6 +859,7 @@ fn write_trail(root: &Path, t: TrailInput<'_>, out: &mut dyn Write) -> Option<St
                 wrote: true,
                 changed: Vec::new(),
                 changed_count: 0,
+                duration_ms: None,
             }))
             .collect(),
         control: Some("auto (process agent)".into()),
@@ -881,6 +886,9 @@ fn write_trail(root: &Path, t: TrailInput<'_>, out: &mut dyn Write) -> Option<St
         task: t.task.to_string(),
         base_commit: t.base.to_string(),
         started_at,
+        // `started_at` above is read as the trail is written, so an end
+        // beside it would be the same reading twice; absent (#622).
+        ended_at: None,
         provenance: Provenance {
             trellis_version: env!("CARGO_PKG_VERSION").to_string(),
             model: Some(format!("process:{}", t.argv.join(" "))),
