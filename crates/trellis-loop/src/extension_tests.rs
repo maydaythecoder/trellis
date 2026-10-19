@@ -303,7 +303,10 @@ async fn sgr_colour_codes_in_bash_output_do_not_reach_the_model() {
     // The command's environment is left alone; the capture is what is
     // cleaned, so a grounded check's own run is not touched (ADR 0021 1.16).
     let d = git_repo();
-    let tools = with_bash(&[], true, Duration::from_secs(10));
+    // A bound against a hang, not a figure under test. At 10s it timed out
+    // on test (windows-latest) in CI run 39324053522, where the clone and a
+    // cold PowerShell start both count against it.
+    let tools = with_bash(&[], true, Duration::from_secs(60));
     let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
         .with_tools(tools)
         .spawn();
