@@ -32,11 +32,17 @@ read_pin() {
 	grep -E "^${name}=\"[^\"]+\"$" "$pin_file" | head -n1 | sed -E 's/^[^=]+="([^"]+)"$/\1/'
 }
 
+# Run from the file's own directory on a bare name: given a path with a
+# backslash in it, sha256sum escapes the name and prefixes the whole line
+# with `\`, which read as a wrong hash on the first Windows run.
 sha256_of() {
+	local dir name
+	dir=$(dirname "$1")
+	name=$(basename "$1")
 	if command -v sha256sum >/dev/null 2>&1; then
-		sha256sum -- "$1" | cut -d' ' -f1
+		(cd "$dir" && sha256sum -- "$name") | cut -d' ' -f1
 	elif command -v shasum >/dev/null 2>&1; then
-		shasum -a 256 -- "$1" | cut -d' ' -f1
+		(cd "$dir" && shasum -a 256 -- "$name") | cut -d' ' -f1
 	else
 		die "no sha256sum or shasum on this runner"
 	fi
@@ -57,6 +63,8 @@ if [ "${1:-}" = "--self-test" ]; then
 fi
 
 [ -n "${RUNNER_TEMP:-}" ] || die "RUNNER_TEMP is unset; this runs inside a GitHub Actions job"
+# Git Bash hands RUNNER_TEMP over as D:\a\_temp; work with the POSIX form.
+if is_windows; then RUNNER_TEMP=$(cygpath -u "$RUNNER_TEMP"); fi
 [ -n "${GITHUB_PATH:-}" ] && [ -n "${GITHUB_ENV:-}" ] || die "GITHUB_PATH or GITHUB_ENV is unset; this runs inside a GitHub Actions job"
 
 version=$(read_pin GO_VERSION)
