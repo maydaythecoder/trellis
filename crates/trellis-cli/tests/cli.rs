@@ -7675,7 +7675,13 @@ fn assert_init_refused(o: &Output, link: &str) {
     let all = combined(o);
     assert!(!o.status.success(), "init went ahead through a link: {all}");
     assert!(all.contains("symbolic link"), "the refusal says why: {all}");
-    assert!(all.contains(link), "and names the path {link}: {all}");
+    // The refusal prints the path as the OS spells it, so a `/` in `link`
+    // is a `\\` on Windows.
+    let native = link.replace('/', std::path::MAIN_SEPARATOR_STR);
+    assert!(
+        all.contains(link) || all.contains(&native),
+        "and names the path {link}: {all}"
+    );
     assert!(all.contains("nothing was written"), "{all}");
 }
 
