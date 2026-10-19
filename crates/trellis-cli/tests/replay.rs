@@ -123,6 +123,20 @@ fn read_json(p: &Path) -> serde_json::Value {
     serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
 }
 
+/// `trail.factual[key]` with each entry's `duration_ms` removed. A replay
+/// must run the same checks to the same results, but how long each took is
+/// the loop's clock reading on this run (ADR 0007, amended for #622), so
+/// two runs of one recording differ there and nowhere else.
+fn untimed(trail: &serde_json::Value, key: &str) -> serde_json::Value {
+    let mut v = trail["factual"][key].clone();
+    for entry in v.as_array_mut().into_iter().flatten() {
+        if let Some(fields) = entry.as_object_mut() {
+            fields.remove("duration_ms");
+        }
+    }
+    v
+}
+
 #[test]
 fn replay_recording_is_written_by_every_run_loadable_ignored_and_refused_while_tracked() {
     // The risks (#620): a run path that writes no recording, or one a
@@ -223,7 +237,8 @@ fn replay_recording_of_a_converged_run_reproduces_its_proposed_list_and_checks()
     let second = the_trail(&f.root);
     for key in ["proposed", "check_outcomes"] {
         assert_eq!(
-            second["factual"][key], first["factual"][key],
+            untimed(&second, key),
+            untimed(&first, key),
             "{key} differs:\n{first:#}\n{second:#}"
         );
     }
@@ -283,7 +298,8 @@ fn replay_recording_of_a_multi_agent_run_writes_one_targets_section_per_agent() 
     let second = the_trail(&f.root);
     for key in ["proposed", "check_outcomes"] {
         assert_eq!(
-            second["factual"][key], first["factual"][key],
+            untimed(&second, key),
+            untimed(&first, key),
             "{key} differs:\n{first:#}\n{second:#}"
         );
     }
