@@ -1240,6 +1240,14 @@ impl CliRunner<'_> {
 /// repository that has never been indexed here has none yet, so it is
 /// written now, under the same rule: never over an existing file.
 fn ignore_task_worktrees(root: &Path) -> std::result::Result<(), String> {
+    // Named here, before git is asked: past a linked `.trellis`, git's own
+    // answer is a pathspec error that does not say why (#724).
+    trellis_core::links::refuse_links_below(
+        root,
+        Path::new(".trellis/work"),
+        "the task worktrees' .gitignore",
+    )
+    .map_err(|e| e.to_string())?;
     let ignored = || -> std::result::Result<bool, String> {
         let out = trellis_vcs::command()
             .args(["check-ignore", "-q", ".trellis/work/task/x/"])
@@ -1262,8 +1270,12 @@ fn ignore_task_worktrees(root: &Path) -> std::result::Result<(), String> {
     let dot = root.join(".trellis");
     let file = dot.join(".gitignore");
     if std::fs::symlink_metadata(&file).is_err() {
+        // Checked, so a linked `.trellis` is refused rather than given a
+        // `.gitignore` at its target (#724).
         std::fs::create_dir_all(&dot)
-            .and_then(|()| std::fs::write(&file, trellis_index::cache::IGNORE))
+            .and_then(|()| {
+                trellis_core::links::create_new(&file, trellis_index::cache::IGNORE.as_bytes())
+            })
             .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
         if ignored()? {
             return Ok(());
@@ -2865,5 +2877,53 @@ mod task_worktree_tests {
             trellis_index::cache::IGNORE
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn worktree_symlink_linked_dot_trellis_is_refused_before_any_ignore_is_written() {
+        // #724: with `.trellis` committed as a link to a directory outside
+        // the repository, the `.gitignore` that keeps task worktrees out of
+        // `git status` was written at the link's target.
+        let (root, _q) = repo("tw-link-dot");
+        let outside = scratch("tw-link-dot-outside");
+        if let Err(why) = trellis_core::paths::symlink_for_test(&outside, &root.join(".trellis")) {
+            eprintln!("{why}");
+            return;
+        }
+        let e = super::ignore_task_worktrees(&root).unwrap_err();
+        // trellis's own refusal, not git's pathspec error past the link,
+        // which also says "symbolic link" but does not name why.
+        assert!(
+            e.contains("is not written through a link") && e.contains(".trellis"),
+            "{e}"
+        );
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn worktree_symlink_linked_work_directory_is_refused() {
+        let (root, _q) = repo("tw-link-work");
+        let outside = scratch("tw-link-work-outside");
+        std::fs::create_dir_all(root.join(".trellis")).unwrap();
+        if let Err(why) =
+            trellis_core::paths::symlink_for_test(&outside, &root.join(".trellis/work"))
+        {
+            eprintln!("{why}");
+            return;
+        }
+        let e = super::ignore_task_worktrees(&root).unwrap_err();
+        assert!(
+            e.contains("is not written through a link") && e.contains("work"),
+            "{e}"
+        );
+        assert!(
+            !root.join(".trellis/.gitignore").exists(),
+            "nothing written"
+        );
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 }

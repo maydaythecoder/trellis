@@ -7642,6 +7642,138 @@ fn cache_symlink_get_codebase_refuses_the_link_and_says_so() {
 }
 
 // ---------------------------------------------------------------------------
+// trellis init behind a link (#723)
+// ---------------------------------------------------------------------------
+
+/// Makes `link` point at `target`; false (and the test skips, saying why)
+/// where the platform will not make one.
+fn link_or_skip(target: &Path, link: &Path) -> bool {
+    match trellis_core::paths::symlink_for_test(target, link) {
+        Ok(()) => true,
+        Err(why) => {
+            eprintln!("{why}");
+            false
+        }
+    }
+}
+
+/// The names in `dir`, sorted; empty when it does not exist.
+fn entries(dir: &Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.filter_map(Result::ok)
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+/// `trellis init` refused, naming the link and why.
+fn assert_init_refused(o: &Output, link: &str) {
+    let all = combined(o);
+    assert!(!o.status.success(), "init went ahead through a link: {all}");
+    assert!(all.contains("symbolic link"), "the refusal says why: {all}");
+    assert!(all.contains(link), "and names the path {link}: {all}");
+    assert!(all.contains("nothing was written"), "{all}");
+}
+
+#[test]
+fn init_symlink_dangling_file_links_create_nothing_outside() {
+    // #723's reproduction: `exists()` follows a link, so a dangling one read
+    // as absent and `fs::write` created the template at the link's target,
+    // outside the repository. One case per file init creates.
+    for rel in ["config.toml", "context.md", "governance/README.md"] {
+        let slug = rel.replace(['/', '.'], "-");
+        let outside = scratch(&format!("init-symlink-dangling-outside-{slug}"));
+        let d = empty_repo(&format!("init-symlink-dangling-{slug}"));
+        let link = d.join(".trellis").join(rel);
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        if !link_or_skip(&outside.join("planted"), &link) {
+            return;
+        }
+
+        let o = run(&d, &["init"]);
+        assert_init_refused(&o, rel);
+        assert!(
+            entries(&outside).is_empty(),
+            "{rel}: the dangling link's target was created: {:?}",
+            entries(&outside)
+        );
+        assert!(is_link(&link), "{rel}: the link itself is left as it was");
+        // Nothing beside it either: the check runs before any file is made.
+        let made: Vec<_> = ["config.toml", "context.md", "governance/README.md"]
+            .into_iter()
+            .filter(|f| *f != rel && std::fs::symlink_metadata(d.join(".trellis").join(f)).is_ok())
+            .collect();
+        assert!(made.is_empty(), "{rel}: a refusal still wrote {made:?}");
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+}
+
+#[test]
+fn init_symlink_config_toml_to_an_outside_file_leaves_it_untouched() {
+    // A live link: never overwritten before either, but kept as if it were
+    // the repository's own file, so `doctor` and every run read a config
+    // trellis cannot see the source of. Refused, and the target is as it was.
+    let outside = scratch("init-symlink-live-outside");
+    let target = outside.join("rc.sh");
+    std::fs::write(&target, "echo original\n").unwrap();
+    let d = empty_repo("init-symlink-live");
+    std::fs::create_dir_all(d.join(".trellis")).unwrap();
+    let link = d.join(".trellis/config.toml");
+    if !link_or_skip(&target, &link) {
+        return;
+    }
+
+    let o = run(&d, &["init"]);
+    assert_init_refused(&o, "config.toml");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "echo original\n");
+    assert_eq!(entries(&outside), ["rc.sh"]);
+    assert_eq!(entries(&d.join(".trellis")), ["config.toml"]);
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+#[test]
+fn init_symlink_linked_dot_trellis_is_refused_and_the_outside_directory_untouched() {
+    // A linked `.trellis` puts every scaffolded file wherever it points.
+    let outside = scratch("init-symlink-dot-outside");
+    let d = empty_repo("init-symlink-dot");
+    if !link_or_skip(&outside, &d.join(".trellis")) {
+        return;
+    }
+
+    let o = run(&d, &["init"]);
+    assert_init_refused(&o, ".trellis");
+    assert!(entries(&outside).is_empty(), "{:?}", entries(&outside));
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+#[test]
+fn init_symlink_linked_governance_dir_is_refused_and_nothing_is_written() {
+    // A linked parent directory moves the write as surely as a linked
+    // file: `.trellis/governance` pointing outside received README.md. The
+    // refusal comes before config.toml and context.md are created too.
+    let outside = scratch("init-symlink-gov-outside");
+    let d = empty_repo("init-symlink-gov");
+    std::fs::create_dir_all(d.join(".trellis")).unwrap();
+    if !link_or_skip(&outside, &d.join(".trellis/governance")) {
+        return;
+    }
+
+    let o = run(&d, &["init"]);
+    assert_init_refused(&o, "governance");
+    assert!(entries(&outside).is_empty(), "{:?}", entries(&outside));
+    assert_eq!(entries(&d.join(".trellis")), ["governance"]);
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+// ---------------------------------------------------------------------------
 // the handoff to trellis-tui (ADR 0052 decision 2.2, #514)
 // ---------------------------------------------------------------------------
 

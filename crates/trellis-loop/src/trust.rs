@@ -227,8 +227,10 @@ fn dot_trellis_files(root: &Path, cache: &HashCache) -> Result<Vec<(String, Stri
             let inner = inner.to_string_lossy().replace('\\', "/");
             match inner.as_str() {
                 "index.bin" => true,
+                // Any version trellis wrote, so changing the text (#726)
+                // does not untrust a repository that has the old one.
                 ".gitignore" => std::fs::read_to_string(real)
-                    .is_ok_and(|t| t.replace("\r\n", "\n") == trellis_index::cache::IGNORE),
+                    .is_ok_and(|t| trellis_index::cache::is_trellis_gitignore(&t)),
                 // Replay recordings (ADR 0023 §4, amended 2026-10-12): every
                 // run writes one, so hashing them would untrust the
                 // repository after each run, as trails would.
@@ -1944,6 +1946,34 @@ mod tests {
                 None
             }
         }
+    }
+
+    #[test]
+    fn trust_generated_gitignore_of_any_version_is_trellis_own_and_an_edited_one_is_not() {
+        // The risk (#726): trellis changes the text of the `.gitignore` it
+        // writes, and a repository that has the old text, which is never
+        // rewritten, is asked to re-trust for a file nobody touched. The
+        // other side: a person's edit to that file is taken for trellis's
+        // and left out of the digest.
+        let repo = tempfile::tempdir().unwrap();
+        let dot = repo.path().join(".trellis");
+        std::fs::create_dir_all(&dot).unwrap();
+        let h = hooks(&["python", "-m", "gate"]);
+        let digest = || Fingerprint::of(repo.path(), &h, &[], None).sha256;
+        let base = digest();
+        for text in [trellis_index::cache::IGNORE]
+            .into_iter()
+            .chain(trellis_index::cache::EARLIER_IGNORES.iter().copied())
+        {
+            std::fs::write(dot.join(".gitignore"), text).unwrap();
+            assert_eq!(base, digest(), "{text}");
+        }
+        std::fs::write(
+            dot.join(".gitignore"),
+            format!("{}mine\n", trellis_index::cache::EARLIER_IGNORES[0]),
+        )
+        .unwrap();
+        assert_ne!(base, digest(), "an edited .gitignore is the person's");
     }
 
     #[test]

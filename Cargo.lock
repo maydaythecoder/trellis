@@ -2720,6 +2720,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "toml",
+ "trellis-core",
  "trellis-vcs",
 ]
 
@@ -2746,6 +2747,7 @@ dependencies = [
  "tempfile",
  "tracing",
  "trellis-checks",
+ "trellis-core",
 ]
 
 [[package]]

@@ -12,6 +12,10 @@ publish = false
 
 [dependencies]
 trellis-checks.workspace = true
+# For `links`, the one link refusal every writer under .trellis/ shares
+# (#723). Already in the tree through trellis-checks: a new edge, not a new
+# package.
+trellis-core.workspace = true
 serde.workspace = true
 sha2.workspace = true
 serde_json.workspace = true

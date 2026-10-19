@@ -453,14 +453,61 @@ pub fn plan_import(root: &Path, q: &Queue, src: &Path, on: OnConflict) -> Result
     Ok(plan)
 }
 
+/// What a refusal names when an import meets a link.
+const WHAT: &str = "the import";
+
+/// Every path under the repository root that applying `plan` writes:
+/// `.trellis/agents/<name>.toml`, the instructions files that exist in the
+/// export, and `.trellis/routines/<name>.toml`. Tasks go to the queue in
+/// the git directory, not here.
+fn import_targets(plan: &Plan) -> Vec<PathBuf> {
+    let dot = Path::new(".trellis");
+    let mut v = Vec::new();
+    for it in &plan.items {
+        let target = match &it.action {
+            Action::Skip => continue,
+            Action::Rename(to) => to.as_str(),
+            Action::Create | Action::Replace => it.name.as_str(),
+        };
+        match it.kind {
+            Kind::Agent => {
+                v.push(dot.join(profile::DIR).join(format!("{target}.toml")));
+                if let Some(rel) = &plan.agents[&it.name].file.instructions
+                    && plan.src.join("instructions").join(rel).exists()
+                {
+                    v.push(dot.join(rel));
+                }
+            }
+            Kind::Routine => v.push(dot.join(routine::DIR).join(format!("{target}.toml"))),
+            Kind::Task => {}
+        }
+    }
+    v
+}
+
 /// Carries out a plan from [`plan_import`].
+///
+/// A repository can commit `.trellis`, `.trellis/agents`,
+/// `.trellis/routines` or any file an import writes as a link, and
+/// `fs::write` follows it, so the imported content overwrote whatever the
+/// link pointed at outside the repository (#725). Every target, and every
+/// directory on the way to it, is checked before the first write, so a
+/// refusal (`trellis_core::links::LinkRefused`, inside `QueueError::Io`)
+/// leaves the repository and the queue as they were. Each file is then
+/// written to a temporary file beside it and renamed over it, which never
+/// writes through a link. This is the worktree, not the git directory, so
+/// `files.rs`'s rule against renames (ADR 0020 §3, about claimers racing
+/// for a task file) does not apply: nothing claims these files.
 pub fn apply_import(root: &Path, q: &Queue, plan: &Plan) -> Result<(), QueueError> {
+    for rel in import_targets(plan) {
+        trellis_core::links::refuse_links_below(root, &rel, WHAT).map_err(io(&root.join(&rel)))?;
+    }
     let trellis = root.join(".trellis");
-    let write = |path: &Path, text: &str| -> Result<(), QueueError> {
+    let write = |path: &Path, bytes: &[u8]| -> Result<(), QueueError> {
         if let Some(d) = path.parent() {
             std::fs::create_dir_all(d).map_err(io(d))?;
         }
-        std::fs::write(path, text).map_err(io(path))
+        trellis_core::links::replace_file(path, bytes).map_err(io(path))
     };
     let mut tasks = plan.tasks.iter();
     for it in &plan.items {
@@ -478,19 +525,20 @@ pub fn apply_import(root: &Path, q: &Queue, plan: &Plan) -> Result<(), QueueErro
             Kind::Agent => {
                 write(
                     &trellis.join(profile::DIR).join(format!("{target}.toml")),
-                    &plan.agent_text[&it.name],
+                    plan.agent_text[&it.name].as_bytes(),
                 )?;
                 if let Some(rel) = &plan.agents[&it.name].file.instructions {
                     let from = plan.src.join("instructions").join(rel);
                     if from.exists() {
-                        copy(&from, &trellis.join(rel))?;
+                        let bytes = std::fs::read(&from).map_err(io(&from))?;
+                        write(&trellis.join(rel), &bytes)?;
                     }
                 }
             }
             Kind::Routine => {
                 write(
                     &trellis.join(routine::DIR).join(format!("{target}.toml")),
-                    &plan.routines[&it.name],
+                    plan.routines[&it.name].as_bytes(),
                 )?;
             }
             Kind::Task => {
@@ -924,5 +972,218 @@ mod tests {
         let plan = plan_import(&root, &q, &src, OnConflict::Skip).unwrap();
         apply_import(&root, &q, &plan).unwrap();
         assert_eq!(q.find("20260927-000000-000000001-x").unwrap().1.task, "x");
+    }
+
+    /// An export holding one agent with an instructions file, one routine
+    /// and one task, made from a repository of its own; the folder it is in.
+    fn an_export() -> (tempfile::TempDir, PathBuf) {
+        let (d, root, q) = setup();
+        std::fs::write(
+            root.join(".trellis/agents/rev.toml"),
+            "role = \"r\"\ninstructions = \"agents/rev.md\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.join(".trellis/agents/rev.md"), "be careful").unwrap();
+        std::fs::write(
+            root.join(".trellis/routines/n.toml"),
+            "schedule = \"0 3 * * *\"\n[task]\ntext = \"x\"\nassignee = \"rev\"\n",
+        )
+        .unwrap();
+        q.add("one", None, None).unwrap();
+        let out = d.path().join("export");
+        export(&root, &q, &out).unwrap();
+        (d, out)
+    }
+
+    /// Makes `link` point at `target`; false (and the test skips, saying
+    /// why) where the platform will not make one.
+    fn link_or_skip(target: &Path, link: &Path) -> bool {
+        match trellis_core::paths::symlink_for_test(target, link) {
+            Ok(()) => true,
+            Err(why) => {
+                eprintln!("{why}");
+                false
+            }
+        }
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir)
+            .map(|rd| {
+                rd.filter_map(Result::ok)
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        v.sort();
+        v
+    }
+
+    /// The link the import refused, as the named error and not some disk
+    /// error that happened to stop the write.
+    fn refused_at(e: &QueueError) -> PathBuf {
+        let QueueError::Io { source, .. } = e else {
+            panic!("expected an Io error carrying LinkRefused, got {e:?}");
+        };
+        assert!(e.to_string().contains("symbolic link"), "{e}");
+        assert!(e.to_string().contains("nothing was written"), "{e}");
+        source
+            .get_ref()
+            .and_then(|i| i.downcast_ref::<trellis_core::links::LinkRefused>())
+            .unwrap_or_else(|| panic!("expected LinkRefused, got {source:?}"))
+            .path
+            .clone()
+    }
+
+    /// Nothing of the import reached the queue: the refusal came before the
+    /// first write, tasks included.
+    fn queue_untouched(q: &Queue) {
+        for s in State::ALL {
+            assert!(q.ids(s).unwrap().is_empty(), "{s:?} has a task");
+        }
+    }
+
+    #[test]
+    fn import_symlink_linked_agents_dir_overwrites_nothing_outside() {
+        // #725's reproduction: `.trellis/agents` committed as a link to a
+        // directory outside the repository. With `--on-conflict replace`
+        // the import overwrote the profile there with the imported one.
+        let (_e, src) = an_export();
+        let (d, root, q) = setup();
+        let outside = d.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("rev.toml"), "role = \"theirs\"\n").unwrap();
+        std::fs::remove_dir(root.join(".trellis/agents")).unwrap();
+        let link = root.join(".trellis/agents");
+        if !link_or_skip(&outside, &link) {
+            return;
+        }
+
+        let plan = plan_import(&root, &q, &src, OnConflict::Replace).unwrap();
+        let e = apply_import(&root, &q, &plan).unwrap_err();
+        assert_eq!(refused_at(&e), link);
+        assert_eq!(
+            std::fs::read_to_string(outside.join("rev.toml")).unwrap(),
+            "role = \"theirs\"\n",
+            "the file the link points at was overwritten"
+        );
+        assert_eq!(names(&outside), ["rev.toml"], "nothing added beside it");
+        assert!(names(&root.join(".trellis/routines")).is_empty());
+        queue_untouched(&q);
+    }
+
+    #[test]
+    fn import_symlink_linked_routines_dir_is_refused_and_nothing_written() {
+        // Refused although the agent comes first in the plan: every target
+        // is checked before the first write, so the agent is not written
+        // either.
+        let (_e, src) = an_export();
+        let (d, root, q) = setup();
+        let plan = plan_import(&root, &q, &src, OnConflict::Skip).unwrap();
+        let outside = d.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::remove_dir(root.join(".trellis/routines")).unwrap();
+        let link = root.join(".trellis/routines");
+        if !link_or_skip(&outside, &link) {
+            return;
+        }
+
+        let e = apply_import(&root, &q, &plan).unwrap_err();
+        assert_eq!(refused_at(&e), link);
+        assert!(names(&outside).is_empty(), "{:?}", names(&outside));
+        assert!(names(&root.join(".trellis/agents")).is_empty());
+        queue_untouched(&q);
+    }
+
+    #[test]
+    fn import_symlink_linked_dot_trellis_is_refused_and_nothing_written() {
+        let (_e, src) = an_export();
+        let (d, root, q) = setup();
+        let plan = plan_import(&root, &q, &src, OnConflict::Skip).unwrap();
+        let outside = d.path().join("outside");
+        std::fs::rename(root.join(".trellis"), &outside).unwrap();
+        let link = root.join(".trellis");
+        if !link_or_skip(&outside, &link) {
+            return;
+        }
+
+        let e = apply_import(&root, &q, &plan).unwrap_err();
+        assert_eq!(refused_at(&e), link);
+        assert!(names(&outside.join("agents")).is_empty());
+        assert!(names(&outside.join("routines")).is_empty());
+        queue_untouched(&q);
+    }
+
+    #[test]
+    fn import_symlink_dangling_file_links_create_nothing() {
+        // A dangling link at a file the import writes: `fs::write` would
+        // create its target. One case per kind of file: a profile, its
+        // instructions, a routine.
+        for rel in ["agents/rev.toml", "agents/rev.md", "routines/n.toml"] {
+            let (_e, src) = an_export();
+            let (d, root, q) = setup();
+            let plan = plan_import(&root, &q, &src, OnConflict::Skip).unwrap();
+            let outside = d.path().join("outside");
+            std::fs::create_dir_all(&outside).unwrap();
+            let link = root.join(".trellis").join(rel);
+            if !link_or_skip(&outside.join("planted"), &link) {
+                return;
+            }
+
+            let e = apply_import(&root, &q, &plan).unwrap_err();
+            assert_eq!(refused_at(&e), link, "{rel}");
+            assert!(names(&outside).is_empty(), "{rel}: {:?}", names(&outside));
+            let written: Vec<_> = ["agents/rev.toml", "agents/rev.md", "routines/n.toml"]
+                .into_iter()
+                .filter(|f| {
+                    *f != rel && std::fs::symlink_metadata(root.join(".trellis").join(f)).is_ok()
+                })
+                .collect();
+            assert!(
+                written.is_empty(),
+                "{rel}: a refusal still wrote {written:?}"
+            );
+            queue_untouched(&q);
+        }
+    }
+
+    #[test]
+    fn import_symlink_instructions_file_to_an_outside_file_is_untouched() {
+        // A live link at the instructions path, replaced on import: the
+        // outside file would have received the imported instructions.
+        let (_e, src) = an_export();
+        let (d, root, q) = setup();
+        let plan = plan_import(&root, &q, &src, OnConflict::Replace).unwrap();
+        let target = d.path().join("rc.sh");
+        std::fs::write(&target, "echo original\n").unwrap();
+        let link = root.join(".trellis/agents/rev.md");
+        if !link_or_skip(&target, &link) {
+            return;
+        }
+
+        let e = apply_import(&root, &q, &plan).unwrap_err();
+        assert_eq!(refused_at(&e), link);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "echo original\n");
+        queue_untouched(&q);
+    }
+
+    #[test]
+    fn import_symlink_free_import_leaves_no_temporary_file() {
+        // The writes go through a temporary file and a rename. A temporary
+        // file left in .trellis/ is untracked and would block the next run
+        // (ADR 0009).
+        let (_e, src) = an_export();
+        let (_d, root, q) = setup();
+        std::fs::write(root.join(".trellis/agents/rev.toml"), "role = \"old\"\n").unwrap();
+        let plan = plan_import(&root, &q, &src, OnConflict::Replace).unwrap();
+        apply_import(&root, &q, &plan).unwrap();
+        assert_eq!(names(&root.join(".trellis/agents")), ["rev.md", "rev.toml"]);
+        assert_eq!(names(&root.join(".trellis/routines")), ["n.toml"]);
+        assert!(
+            std::fs::read_to_string(root.join(".trellis/agents/rev.toml"))
+                .unwrap()
+                .contains("agents/rev.md"),
+            "replaced with the imported profile"
+        );
     }
 }
