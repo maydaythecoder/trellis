@@ -1374,6 +1374,9 @@ mod tests {
     // exercised, and the test says so on stderr.
 
     /// This platform's sandbox, probed with `home` as the directory to hide.
+    /// Only the unix tests below use these four helpers; on Windows they
+    /// would be dead code under `-D warnings`.
+    #[cfg(unix)]
     fn platform_sandbox(home: &Path) -> crate::os_sandbox::OsSandbox {
         use crate::os_sandbox::{OsSandbox, OsSandboxKind};
         let temp = std::env::temp_dir();
@@ -1408,6 +1411,7 @@ mod tests {
 
     /// A shell line that prints `CONNECTED` if a TCP connection to
     /// 127.0.0.1:`port` opens, and `NO-CONNECTION` otherwise.
+    #[cfg(unix)]
     fn connect_line(port: u16) -> String {
         format!(
             "bash -c 'echo x > /dev/tcp/127.0.0.1/{port}' 2>/dev/null && echo CONNECTED \
@@ -1416,6 +1420,7 @@ mod tests {
     }
 
     /// A fake home directory holding a canary built at run time.
+    #[cfg(unix)]
     fn fake_home() -> (tempfile::TempDir, std::path::PathBuf, String) {
         let home = tempfile::tempdir().unwrap();
         let canary = format!("canary-621-{}", std::process::id());
@@ -1424,6 +1429,7 @@ mod tests {
         (home, file, canary)
     }
 
+    #[cfg(unix)]
     fn unconfined_said_why(os: &crate::os_sandbox::OsSandbox) {
         let label = os.label();
         assert!(label.starts_with("none ("), "{label}");
