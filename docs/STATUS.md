@@ -4,8 +4,8 @@ Part 8 of the brief is the *project's* definition of done, not any one
 session's. This maps each item to its actual state, so nothing is quietly
 assumed complete.
 
-Last updated 2026-09-27. Gate tables for v0.2, v0.3 and v1.0 are
-below, each audited against the code rather than against the milestone prose.
+Last updated 2026-10-19 (the "Clients" section; the rest is as of
+2026-09-27). Gate tables for v0.2, v0.3 and v1.0 are below, each audited against the code rather than against the milestone prose.
 
 | # | Part 8 item | State | Where |
 |---|---|---|---|
@@ -30,13 +30,15 @@ below, each audited against the code rather than against the milestone prose.
 | 19 | Factual claims cited; unverifiable ones flagged | **Done** | `OPEN_QUESTIONS.md`, final section |
 | 20 | No marketing language anywhere | **Done** | — |
 
-## Clients: recorded 2026-10-06, not built
+## Clients: recorded 2026-10-06, built 2026-10-19
 
 ADR 0052 (#500) records the owner's goal of two `trellis rpc` clients, a Tauri
 desktop that renders a whole run and a Go/Bubble Tea TUI that replaces the
-ratatui TUI at parity. It is **Proposed**, pending the owner's acceptance on
-#500, and nothing in it is built: the ratatui TUI is still the one that ships.
-MISSION.md goal 8 reads "Not delivered".
+ratatui TUI at parity. When this section was written it was **Proposed**,
+pending the owner's acceptance on #500, and nothing in it was built. The
+owner accepted it on 2026-10-07; the desktop and the Go TUI are built since
+(the dated paragraphs below), and the ratatui TUI still ships as the fallback
+for one release (#516).
 
 *As built 2026-10-07 (#558, #560, #374, #561):* the Tauri desktop
 (`desktop/`) now starts from the command line. `trellis overview` (and
@@ -50,9 +52,11 @@ detached, with its environment unchanged: the one key-exempt launch
 now starts the desktop and prints the overview; with no desktop installed, no
 display or a failed start, it says so on stderr, prints the overview and falls
 back to the start screen and the TUI. `--tui` and `trellis tui` keep the TUI
-(ADR 0050 section 1). Not built: the desktop drawing the overview (#562),
-its model prompt before input (#564), the web view, and the handoff to the
-Go TUI (#514).
+(ADR 0050 section 1). Not built as of 2026-10-07: the desktop drawing the
+overview (#562), its model prompt before input (#564), the web view, and
+the handoff to the Go TUI (#514). Each is built since: #562 and #564 with
+#513 below, the web view by #375 (ADR 0050 section 5) and the handoff by
+#514 (ADR 0050 section 1), the last two on `dev` as of 2026-10-19.
 
 *As built 2026-10-10 (#513), on the desktop S15 branch:* the desktop half of
 goal 8, "a Tauri desktop that renders a whole run" (ADR 0052 section 1:
@@ -87,9 +91,24 @@ refused naming its rule) and `desktop-guards.sh` there. Since 84cdc4a,
 declarations and its doc comment; the page under `desktop/ui/` and the
 panes are new since, and the three tests above have passed locally on Linux
 only. They run in the `desktop` job on both runners once this branch
-reaches a pull request into `dev`; until then, CI has not run them. Not
-built: the Go TUI half of goal 8 (T2 to T8, #514), so MISSION.md goal 8 as
-a whole still reads "Not delivered".
+reaches a pull request into `dev`; until then, CI has not run them. As of
+that date the Go TUI half of goal 8 (T2 to T8, #514) was not built, so
+MISSION.md goal 8 as a whole still read "Not delivered".
+
+*As built 2026-10-19 (T2 to T8: #508 to #512, #506 and #514, on `dev` by
+batch 46):* the Go TUI (`tui/`, its own Go module, built as `trellis-tui`)
+stands against the ratatui TUI by `tui/PARITY.md`, one row per test in the
+five Rust files ADR 0052 section 7 names, each mapped to a Go test or marked
+"not ported" with the reason (ADR 0052's parity bar reads "every row maps
+to a Go test"; the rows marked "not ported" are the gap, each with its
+reason, and the ADR has no amendment accepting them); `scripts/checks/go-parity.sh --complete` holds the mapping and
+`scripts/checks/go-test.sh` runs the Go tests in CI's `go` job. `--tui` and
+`trellis tui [task] [--model <spec>]` hand the terminal to `trellis-tui`
+when it is beside `current_exe()` (ADR 0050 section 1, as built 2026-10-12);
+when it is not, the ratatui TUI runs as before, for one release (ADR 0052
+decision 2.2). With that, MISSION.md goal 8 reads "Built, with the ratatui
+fallback still shipping", short of the parity bar as above; the retirement
+is #516.
 
 ## The measurement (resolves S1's reach; S16 fired, then averted)
 
