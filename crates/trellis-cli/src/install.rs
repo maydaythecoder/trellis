@@ -1642,7 +1642,8 @@ mod tests {
         git_in(src, &["add", "-A"]);
         // On unix `add -A` already records tool.md's worktree mode, a plain
         // file; with core.filemode off (Windows) the index keeps the +x
-        // `source` set, so say it explicitly and the two agree.
+        // `source` set. Setting the mode explicitly commits the same tree
+        // on both platforms.
         git_in(src, &["update-index", "--chmod=-x", "skills/alpha/tool.md"]);
         git_in(src, &["commit", "-q", "-m", "v2"]);
     }
@@ -1677,9 +1678,9 @@ mod tests {
         );
         assert!(said.contains("hooks/new.sh: outside"), "{said}");
         let pkg = cfg.join("packages/pkg-src");
-        // `advance` re-added the tree from the worktree, where tool.md is a
-        // plain file and the index-only link does not exist, so one more
-        // text file is copied and the link is gone.
+        // `advance` commits tool.md as a plain file (see its chmod) and drops
+        // the index-only link, which has no worktree file, so one more text
+        // file is copied and the link is gone.
         assert_eq!(
             files_under(&pkg),
             vec![
