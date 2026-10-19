@@ -7772,3 +7772,196 @@ fn init_symlink_linked_governance_dir_is_refused_and_nothing_is_written() {
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&outside);
 }
+
+// ---------------------------------------------------------------------------
+// the handoff to trellis-tui (ADR 0052 decision 2.2, #514)
+// ---------------------------------------------------------------------------
+
+/// This build's `trellis`, hard-linked (copied where a link cannot be made)
+/// into `dir`, so a `trellis-tui` can sit beside it without touching
+/// `target/debug`, which every other test shares.
+fn trellis_in(dir: &Path) -> PathBuf {
+    let to = dir.join(format!("trellis{}", std::env::consts::EXE_SUFFIX));
+    if std::fs::hard_link(env!("CARGO_BIN_EXE_trellis"), &to).is_err() {
+        std::fs::copy(env!("CARGO_BIN_EXE_trellis"), &to).unwrap();
+    }
+    to
+}
+
+/// A `trellis-tui` in `dir` that writes its arguments, one per line, to
+/// `args.txt` and its environment to `env.txt` beside it, then exits 7, so
+/// the status `trellis` ends with shows whose it is.
+#[cfg(unix)]
+fn stub_tui(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let p = dir.join("trellis-tui");
+    std::fs::write(
+        &p,
+        "#!/bin/sh\nd=$(dirname \"$0\")\n\
+         for a in \"$@\"; do printf '%s\\n' \"$a\"; done > \"$d/args.txt\"\n\
+         env > \"$d/env.txt\"\nexit 7\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    p
+}
+
+/// Runs `trellis` (the path given) in `root` with `args` and extra
+/// environment, as `run` does. A script written a moment ago can be busy
+/// for exec while a concurrent test's fork holds it open (ETXTBSY), so that
+/// one failure is retried.
+fn run_at(trellis: &Path, root: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
+    for _ in 0..5 {
+        let mut c = Command::new(trellis);
+        c.args(args).current_dir(root).env("NO_COLOR", "1").env(
+            "TRELLIS_CONFIG_DIR",
+            std::env::temp_dir().join("trellis-tests-no-user-config"),
+        );
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        let out = c.output().expect("the binary must be built");
+        if !String::from_utf8_lossy(&out.stderr).contains("Text file busy") {
+            return out;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    panic!("trellis-tui stayed busy for exec");
+}
+
+#[cfg(unix)]
+#[test]
+fn launch_a_tui_beside_the_binary_gets_the_root_this_trellis_the_model_and_the_task() {
+    // The risk: a handoff that starts some other trellis's rpc, drops the
+    // user's --model or task, or loses the exit status.
+    let repo = empty_repo("launch-args");
+    let bin = scratch("launch-args-bin");
+    let me = trellis_in(&bin);
+    stub_tui(&bin);
+    let out = run_at(
+        &me,
+        &repo,
+        &[
+            "--root",
+            &repo.display().to_string(),
+            "tui",
+            "--model",
+            "scripted:/x.json",
+            "--",
+            "-change f",
+        ],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(7), "{}", combined(&out));
+    let args = std::fs::read_to_string(bin.join("args.txt")).unwrap();
+    let want = [
+        "--root".to_string(),
+        repo.display().to_string(),
+        "--trellis".to_string(),
+        me.display().to_string(),
+        "--model".to_string(),
+        "scripted:/x.json".to_string(),
+        "--".to_string(),
+        "-change f".to_string(),
+    ];
+    assert_eq!(args.lines().collect::<Vec<_>>(), want, "{args}");
+    let _ = std::fs::remove_dir_all(&bin);
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+#[test]
+fn launch_a_tui_on_path_but_not_beside_the_binary_is_not_used() {
+    // The risk: PATH searched, so another build, or another program called
+    // trellis-tui, is handed the terminal and the user's keys.
+    let repo = empty_repo("launch-path");
+    let bin = scratch("launch-path-bin");
+    let me = trellis_in(&bin);
+    let elsewhere = scratch("launch-path-elsewhere");
+    #[cfg(unix)]
+    stub_tui(&elsewhere);
+    #[cfg(not(unix))]
+    std::fs::write(elsewhere.join("trellis-tui.exe"), b"").unwrap();
+    let path = std::env::join_paths(std::iter::once(elsewhere.clone()).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .unwrap();
+    let out = run_at(
+        &me,
+        &repo,
+        &["tui", "--model", "scripted:/x.json"],
+        &[("PATH", path.to_str().unwrap())],
+    );
+    assert!(
+        !elsewhere.join("args.txt").exists(),
+        "the trellis-tui on PATH ran: {}",
+        combined(&out)
+    );
+    assert!(
+        combined(&out).contains("the Go TUI is not installed beside this trellis"),
+        "{}",
+        combined(&out)
+    );
+    for d in [&bin, &elsewhere, &repo] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+#[test]
+fn launch_without_a_tui_beside_it_falls_back_to_the_ratatui_tui_and_says_where_it_looked() {
+    // The risk: a missing trellis-tui leaves `trellis tui` doing nothing,
+    // or falls back without saying so.
+    let repo = empty_repo("launch-missing");
+    let bin = scratch("launch-missing-bin");
+    let me = trellis_in(&bin);
+    let out = run_at(&me, &repo, &["tui", "--model", "scripted:/x.json"], &[]);
+    let said = combined(&out);
+    let looked = bin.join(format!("trellis-tui{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        said.contains(&format!(
+            "the Go TUI is not installed beside this trellis (looked for {})",
+            looked.display()
+        )),
+        "{said}"
+    );
+    // The ratatui TUI then ran, and refused the pipe as it always has.
+    assert!(said.contains("needs a terminal"), "{said}");
+    assert!(!out.status.success(), "{said}");
+    let _ = std::fs::remove_dir_all(&bin);
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+#[cfg(unix)]
+#[test]
+fn launch_the_handoff_passes_the_environment_unchanged() {
+    // The owner's answer on #514 (ADR 0052, amendment of 2026-10-07): the
+    // handoff passes trellis's environment unchanged, key variables
+    // included, because trellis-tui's own `trellis rpc` needs them for a
+    // hosted model the user chose. Every other child stays scrubbed
+    // (tests/child_env.rs).
+    let repo = empty_repo("launch-env");
+    let bin = scratch("launch-env-bin");
+    let me = trellis_in(&bin);
+    stub_tui(&bin);
+    let canary = format!("canary-{}-{}", std::process::id(), "launch");
+    let out = run_at(
+        &me,
+        &repo,
+        &["tui", "--model", "scripted:/x.json"],
+        &[
+            ("OPENAI_API_KEY", &canary),
+            ("ANTHROPIC_API_KEY", &canary),
+            ("TRELLIS_LAUNCH_PROBE", "kept"),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(7), "{}", combined(&out));
+    let env = std::fs::read_to_string(bin.join("env.txt")).unwrap();
+    for want in [
+        format!("OPENAI_API_KEY={canary}"),
+        format!("ANTHROPIC_API_KEY={canary}"),
+        "TRELLIS_LAUNCH_PROBE=kept".to_string(),
+    ] {
+        assert!(env.lines().any(|l| l == want), "{want} missing:\n{env}");
+    }
+    let _ = std::fs::remove_dir_all(&bin);
+    let _ = std::fs::remove_dir_all(&repo);
+}
