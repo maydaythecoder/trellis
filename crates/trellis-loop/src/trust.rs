@@ -115,20 +115,27 @@ fn argv_candidates(argv: &[String]) -> impl Iterator<Item = &str> {
 }
 
 /// `(repository-relative path, sha256)` when `arg` names a regular file
-/// inside `root`: a relative path with no `..`, or an absolute one under
+/// inside `root`: a path with no `..`, relative, or absolute and under
 /// `root`. A program found on `PATH` is not repository code and is not
 /// hashed; a script the repository ships is.
+///
+/// `..` is refused in the absolute case too. `root/x/../y` passes
+/// `starts_with(root)` by text while naming whatever `..` reaches, and on
+/// Windows `is_file` resolves `..` lexically, so `root/.git/worktrees/no-
+/// such-dir/../../config` read as `.git/config` there and was hashed into
+/// the digest; `work` then saw a changed fingerprint when a command wrote
+/// that file, instead of the restored-tree report it tests for.
 fn repo_file(root: &Path, arg: &str, cache: &HashCache) -> Option<(String, String)> {
     let p = Path::new(arg);
+    if arg.is_empty() || p.components().any(|c| c.as_os_str() == "..") {
+        return None;
+    }
     let full = if p.is_absolute() {
         if !p.starts_with(root) {
             return None;
         }
         p.to_path_buf()
     } else {
-        if arg.is_empty() || p.components().any(|c| c.as_os_str() == "..") {
-            return None;
-        }
         root.join(p)
     };
     if !full.is_file() {
