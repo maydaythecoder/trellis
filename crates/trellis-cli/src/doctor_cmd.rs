@@ -912,15 +912,29 @@ pub(crate) fn cmd_init(root: &Path) -> Result<()> {
     }
 
     let dir = root.join(".trellis");
-    let mut wrote = Vec::new();
-    let mut kept = Vec::new();
-    for (rel, body) in [
+    let files = [
         ("config.toml", CONFIG_TEMPLATE),
         ("context.md", CONTEXT_TEMPLATE),
         ("governance/README.md", GOVERNANCE_TEMPLATE),
-    ] {
+    ];
+    // A repository can commit `.trellis`, `.trellis/governance` or any of
+    // these files as a link, and a dangling one reads as absent to
+    // `exists()`, so the template was written at the link's target outside
+    // the repository (#723). Every entry is checked before anything is
+    // created, so a refusal leaves the disk as it was.
+    for (rel, _) in &files {
+        trellis_core::links::refuse_links_below(
+            root,
+            &Path::new(".trellis").join(rel),
+            "`trellis init`'s scaffold",
+        )?;
+    }
+    let mut wrote = Vec::new();
+    let mut kept = Vec::new();
+    for (rel, body) in files {
         let path = dir.join(rel);
-        if path.exists() {
+        // `symlink_metadata`, not `exists()`, for the reason above.
+        if std::fs::symlink_metadata(&path).is_ok() {
             kept.push(rel);
             continue;
         }
@@ -928,7 +942,10 @@ pub(crate) fn cmd_init(root: &Path) -> Result<()> {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
-        std::fs::write(&path, body).with_context(|| format!("writing {}", path.display()))?;
+        // `create_new`: a link planted after the check above is not
+        // followed, and an existing entry is never overwritten.
+        trellis_core::links::create_new(&path, body.as_bytes())
+            .with_context(|| format!("writing {}", path.display()))?;
         wrote.push(rel);
     }
 
