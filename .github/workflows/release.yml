@@ -11,13 +11,14 @@ name: Release
 # A tag builds artefacts. `workflow_dispatch` builds them without one, so the
 # packaging can be exercised before it is needed rather than discovered
 # broken at the moment someone wants a release. Both build Linux and Windows
-# only, on the self-hosted runners (owner decision 2026-10-06, ADR 0052
-# decision 2.5): GitHub-hosted runners have not started since 2026-09-28,
-# and macOS is dropped until a macOS runner exists.
+# only (ADR 0052 decision 2.5), on GitHub-hosted runners: the self-hosted
+# path (owner decision 2026-10-06) is set aside as of 2026-10-19, after the
+# runner host stopped taking jobs on 2026-10-12. macOS stays dropped.
 #
 # Each leg ships two binaries: `trellis` and the Go TUI, `trellis-tui`
-# (ADR 0052), built from `tui/` with the runner's pinned Go
-# (scripts/runners/install-go.sh) and held to the same version check.
+# (ADR 0052), built from `tui/` with the pinned Go: the runner's own on a
+# self-hosted runner, scripts/runners/go-hosted.sh's hash-checked unpack on
+# a GitHub-hosted one, held to the same version check either way.
 #
 # A `v*` tag also publishes: the `publish` job turns the tag's artefacts into
 # a GitHub release, and only for a commit already on `main` (#386). It is the
@@ -36,7 +37,7 @@ jobs:
     name: ${{ matrix.target }}
     # Self-hosted when the repository variables name runners (JSON label
     # lists), GitHub-hosted when unset, as ci.yml reads them (#157).
-    runs-on: ${{ fromJSON(matrix.os == 'windows' && (vars.WINDOWS_RUNNER || '"windows-latest"') || (vars.LINUX_RUNNER || '"ubuntu-latest"')) }}
+    runs-on: ${{ matrix.os == 'windows' && 'windows-latest' || 'ubuntu-latest' }}
     # A fat-LTO release build with one codegen unit, plus the release test
     # suite on Linux; without a ceiling a stuck runner waits GitHub's default
     # 360 minutes (#381).
@@ -53,9 +54,9 @@ jobs:
       fail-fast: false
       # One Linux and one Windows leg on every trigger. The macOS leg
       # (aarch64-apple-darwin, `workflow_dispatch` only) was dropped by the
-      # owner's decision of 2026-10-06 (ADR 0052 decision 2.5): releases are
-      # built on the self-hosted runners, and there is no macOS one. It
-      # returns when a macOS runner exists.
+      # owner's decision of 2026-10-06 (ADR 0052 decision 2.5), and stays
+      # dropped on GitHub-hosted runners too: its minutes cost ten times
+      # Linux's on a private repository (#381). It returns by owner decision.
       matrix:
         include:
           - os: linux
@@ -111,6 +112,13 @@ jobs:
       # The Go TUI (ADR 0052). The runner's own pinned Go, checked first, as
       # ci.yml's go job does; then the Go checks (the rpc tests spawn the
       # debug trellis, so it is built for them).
+      - name: Go, pinned, on a GitHub-hosted runner (scripts/runners/go-hosted.sh)
+        if: runner.environment == 'github-hosted'
+        shell: bash
+        run: |
+          scripts/runners/go-hosted.sh --self-test
+          scripts/runners/go-hosted.sh
+
       - name: Go is the pinned toolchain (scripts/runners/install-go.sh)
         shell: bash
         run: |
@@ -178,12 +186,12 @@ jobs:
   # commit is already on `main` (ADR 0051: `main` is what ships, and the owner
   # moves it) and both Linux binaries report the tag's version, so a tag
   # pushed on `dev`, or one that does not match Cargo.toml or the TUI's
-  # build, publishes nothing. On the self-hosted Linux runner, like `build`
-  # (ADR 0052 decision 2.5); it needs `gh` and `zip` there.
+  # build, publishes nothing. On a GitHub-hosted Linux runner, like
+  # `build`, which ships `gh` and `zip`.
   publish:
     needs: build
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     # Downloads, checksums and one API call; nothing is compiled here.
     timeout-minutes: 15
     # The only job with write access, and only to contents: `gh release

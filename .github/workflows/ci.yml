@@ -163,10 +163,12 @@ jobs:
           scripts/checks/desktop-guards.sh --self-test
           scripts/checks/desktop-guards.sh
 
-  # The Go TUI, tui/ (ADR 0052 section 6, #505), on both self-hosted
-  # runners. Go comes from the runner's own pinned install
-  # (scripts/runners/install-go.sh, #503), never actions/setup-go: the job
-  # checks `go version` names the pin before anything runs. GOFLAGS keeps
+  # The Go TUI, tui/ (ADR 0052 section 6, #505), on both platforms. Go is
+  # the pin in scripts/runners/install-go.sh (#503), never actions/setup-go:
+  # on a self-hosted runner it is the runner's own install, on a GitHub-hosted
+  # one scripts/runners/go-hosted.sh unpacks the same hash-checked archive
+  # under RUNNER_TEMP. Either way the job checks `go version` names the pin
+  # before anything runs. GOFLAGS keeps
   # go.sum the pin, and GOTOOLCHAIN=local stops go.mod's toolchain line from
   # downloading another toolchain (decision 2.4). The rpc tests spawn
   # target/debug/trellis, so it is built first, as the desktop job does.
@@ -177,7 +179,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ fromJSON(matrix.os == 'windows-latest' && (vars.WINDOWS_RUNNER || '"windows-latest"') || (vars.LINUX_RUNNER || '"ubuntu-latest"')) }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
       GOFLAGS: -mod=readonly
@@ -190,6 +192,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head, resolved 2026-09-30
         with:
           toolchain: "1.93.0"
+
+      - name: Go, pinned, on a GitHub-hosted runner (scripts/runners/go-hosted.sh)
+        if: runner.environment == 'github-hosted'
+        shell: bash
+        run: |
+          scripts/runners/go-hosted.sh --self-test
+          scripts/runners/go-hosted.sh
 
       - name: Go is the pinned toolchain (scripts/runners/install-go.sh)
         shell: bash
@@ -553,6 +562,13 @@ jobs:
       # deny.toml's allow-list, read by the function G5 uses. Each tool at an
       # exact version, installed under RUNNER_TEMP so nothing lands in the
       # runner's own directories. The go guards first, self-test before them.
+      - name: Go, pinned, on a GitHub-hosted runner (scripts/runners/go-hosted.sh)
+        if: runner.environment == 'github-hosted'
+        shell: bash
+        run: |
+          scripts/runners/go-hosted.sh --self-test
+          scripts/runners/go-hosted.sh
+
       - name: Go guards (ADR 0052)
         run: |
           scripts/checks/go-guards.sh --self-test
