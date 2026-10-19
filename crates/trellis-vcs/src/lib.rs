@@ -64,6 +64,33 @@ pub enum VcsError {
     /// decision 2).
     #[error(transparent)]
     TaskRefused(#[from] TaskRefusal),
+
+    /// A partition or task worktree refused before anything was created,
+    /// because `.trellis`, `.trellis/work` or another directory on the way
+    /// to it is a link (#724): `git worktree add` would check the
+    /// repository out at the link's target.
+    #[error(transparent)]
+    LinkRefused(trellis_core::links::LinkRefused),
+}
+
+/// `Err` when `.trellis`, `.trellis/work` or any directory on the way from
+/// `root` to the worktree `path` is a link (#724), checked before anything
+/// is created: `git worktree add` would check the repository out at the
+/// link's target. The refusal is [`VcsError::LinkRefused`], so a caller can
+/// tell it from a disk error.
+fn refuse_links_to(root: &Path, path: &Path) -> Result<(), VcsError> {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    trellis_core::links::refuse_links_below(root, rel, "a worktree").map_err(|e| {
+        let kind = e.kind();
+        match e
+            .into_inner()
+            .map(|inner| inner.downcast::<trellis_core::links::LinkRefused>())
+        {
+            Some(Ok(link)) => VcsError::LinkRefused(*link),
+            Some(Err(other)) => VcsError::Io(std::io::Error::new(kind, other)),
+            None => VcsError::Io(kind.into()),
+        }
+    })
 }
 
 /// Why [`TaskWorktree::create`] refused, each checked before anything is
@@ -1331,6 +1358,7 @@ impl Worktree {
             .join(run)
             .join(format!("partition-{partition}"));
         let branch = format!("trellis/{run}/p{partition}");
+        refuse_links_to(root, &path)?;
 
         run_git(
             root,
@@ -1510,6 +1538,8 @@ impl TaskWorktree {
             .map(|t| t.trim().to_string());
 
         let path = root.join(".trellis").join("work").join("task").join(id);
+        // Before the branch is looked at, so a refusal creates nothing.
+        refuse_links_to(root, &path)?;
         // Before the branch is judged, so a branch that could be reused
         // still never has `worktree add` pointed at a directory a person
         // left there.
@@ -3412,5 +3442,96 @@ mod tests {
         )
         .unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Makes `dir/<rel>` a link to a new, empty directory beside `dir`, and
+    /// returns that directory; `None` (the test skips) where the platform
+    /// will not make a link.
+    fn link_outside(dir: &Path, rel: &str) -> Option<PathBuf> {
+        let outside = dir.with_file_name(format!(
+            "{}-outside",
+            dir.file_name().unwrap().to_string_lossy()
+        ));
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).unwrap();
+        let link = dir.join(rel);
+        let _ = std::fs::remove_dir_all(&link);
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        match trellis_core::paths::symlink_for_test(&outside, &link) {
+            Ok(()) => Some(outside),
+            Err(why) => {
+                eprintln!("{why}");
+                None
+            }
+        }
+    }
+
+    fn no_trellis_branches(dir: &Path) -> bool {
+        run_git(dir, &["branch", "--list", "trellis/*"])
+            .unwrap()
+            .trim()
+            .is_empty()
+    }
+
+    #[test]
+    fn worktree_symlink_task_worktree_under_a_linked_work_directory_is_refused_with_nothing_created()
+     {
+        // #724: `.trellis/work` committed as a link to a directory outside
+        // the repository, and `git worktree add` checked the repository out
+        // there.
+        let (dir, base) = task_repo("task-link-work");
+        let Some(outside) = link_outside(&dir, ".trellis/work") else {
+            return;
+        };
+        let err = TaskWorktree::create(&dir, "9", &base).expect_err("linked work/");
+        assert!(
+            matches!(&err, VcsError::LinkRefused(l) if l.path == dir.join(".trellis/work")),
+            "{err}"
+        );
+        assert!(err.to_string().contains("symbolic link"), "{err}");
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        assert!(no_trellis_branches(&dir), "no branch created");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn worktree_symlink_task_directory_link_one_level_down_is_refused() {
+        // "Any parent on the way", not only the two names the ticket gives.
+        let (dir, base) = task_repo("task-link-task");
+        let Some(outside) = link_outside(&dir, ".trellis/work/task") else {
+            return;
+        };
+        let err = TaskWorktree::create(&dir, "9", &base).expect_err("linked task/");
+        assert!(
+            matches!(&err, VcsError::LinkRefused(l) if l.path == dir.join(".trellis/work/task")),
+            "{err}"
+        );
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        assert!(no_trellis_branches(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn worktree_symlink_partition_worktree_under_a_linked_dot_trellis_is_refused_with_nothing_created()
+     {
+        let dir = temp_repo("partition-link-dot");
+        let base = run_git(&dir, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        let Some(outside) = link_outside(&dir, ".trellis") else {
+            return;
+        };
+        let err = Worktree::create(&dir, "20260921-run", 0, &base).expect_err("linked .trellis");
+        assert!(
+            matches!(&err, VcsError::LinkRefused(l) if l.path == dir.join(".trellis")),
+            "{err}"
+        );
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        assert!(no_trellis_branches(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 }

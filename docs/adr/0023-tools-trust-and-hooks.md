@@ -1536,3 +1536,36 @@ digest, and reads as changed.
 
 What reverses it: removing the skip from `dot_trellis_files`, after which
 kept task worktrees untrust the starting worktree again.
+
+## Amendment 2026-10-15: every `.trellis/.gitignore` text trellis wrote is its own (#726)
+
+Status: Accepted (owner-directed): #726, default taken by the owner on
+2026-10-15 (add the pattern to the ignore text).
+
+#726 adds a line to `trellis_index::cache::IGNORE` so the temporary files
+`cache::save` writes the index through (`.trellis/.index.bin.<pid>.<n>.tmp`,
+#721) are ignored when an interrupted save leaves one. §4 skips
+`.trellis/.gitignore` only while its bytes are the file trellis writes, and
+`ignore_the_blob` never rewrites that file, so a repository given the text
+before #726 keeps it. Compared against the new text alone, that file would
+be hashed and every such repository asked to re-trust for a file nobody
+touched.
+
+The skip now holds while the bytes (ignoring line endings) are any text
+trellis has written: `cache::IGNORE` or one of `cache::EARLIER_IGNORES`,
+through `cache::is_trellis_gitignore`. A `.gitignore` a person edited is
+still covered. No trust recorded before this changes, and the `.trellis/`
+item's shown text in `trellis trust` is unchanged, for the reason given
+under #620. Evidence:
+`trust_generated_gitignore_of_any_version_is_trellis_own_and_an_edited_one_is_not`
+in `crates/trellis-loop/src/trust.rs`, and
+`cache_tmp_both_generated_texts_are_trellis_own_and_an_edited_one_is_not` in
+`crates/trellis-index/src/cache.rs`.
+
+A leftover temporary file is not skipped: it is removed by the next save
+(`cache_tmp_leftover_temporary_file_is_removed_at_the_next_save`). Until
+then it is hashed, so a trust recorded while one was present stops matching
+once it is gone.
+
+What reverses it: a future text change that drops an entry from
+`EARLIER_IGNORES`, which untrusts every repository that has that text.
