@@ -1,7 +1,6 @@
 # TRELLIS
 
 [![CI](https://github.com/maydaythecoder/trellis/actions/workflows/ci.yml/badge.svg)](https://github.com/maydaythecoder/trellis/actions/workflows/ci.yml)
-[![Mutants](https://github.com/maydaythecoder/trellis/actions/workflows/mutants.yml/badge.svg)](https://github.com/maydaythecoder/trellis/actions/workflows/mutants.yml)
 [![Rust 1.93](https://img.shields.io/badge/rust-1.93-b7410e)](rust-toolchain.toml)
 [![Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-2f5d50)](LICENSE)
 [![Open issues](https://img.shields.io/github/issues/maydaythecoder/trellis)](https://github.com/maydaythecoder/trellis/issues)
