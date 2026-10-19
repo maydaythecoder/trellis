@@ -186,11 +186,13 @@ crate inherits, and `version` in `desktop/Cargo.toml`; the two stay equal.
    hook refuses `v*` tags on purpose (ADR 0051 item 3): the push is the
    owner's act, not an agent's.
 4. `release.yml` builds and tests Linux (`x86_64-unknown-linux-gnu`) and
-   Windows (`x86_64-pc-windows-msvc`) on the self-hosted runners, and
-   nothing else: macOS is dropped until a macOS runner exists (owner
+   Windows (`x86_64-pc-windows-msvc`) on GitHub-hosted runners
+   (`ubuntu-latest`, `windows-latest`; as of 2026-10-19, see "CI runners"),
+   and nothing else: macOS is dropped until a macOS runner exists (owner
    decision 2026-10-06, ADR 0052 decision 2.5; #506). Each leg ships
    `trellis` and the Go TUI `trellis-tui` side by side, `trellis-tui` built
-   from `tui/` with the runner's pinned Go (`CGO_ENABLED=0`, `-trimpath`,
+   from `tui/` with the pinned Go that `scripts/runners/go-hosted.sh`
+   unpacks for the job (`CGO_ENABLED=0`, `-trimpath`,
    `-buildvcs=false`, `-ldflags "-X main.version=X.Y.Z"`, or `dev` from
    `workflow_dispatch`), and its `SHA256SUMS` lists both. Its `publish`
    job, on the Linux runner, which needs `gh` and `zip`, refuses unless
@@ -237,20 +239,39 @@ Changed or dropped:
 
 ## CI runners
 
-GitHub-hosted jobs stopped starting on 2026-09-28 ("recent account payments
-have failed or your spending limit needs to be increased"). CI runs on two
-self-hosted runners on the owner's machine instead; a smoke job on one ran
-while GitHub-hosted jobs were blocked (run 36507327810).
+As of 2026-10-19 (#736), every job in `ci.yml` and `release.yml` runs on
+GitHub-hosted runners: `ubuntu-latest` and `windows-latest`, named directly
+in each `runs-on`. The `go` and `supply-chain` jobs and the release build
+get the pinned Go from `scripts/runners/go-hosted.sh`, which unpacks the same hash-checked
+go.dev archive that `install-go.sh` records for a self-hosted runner, into
+`$RUNNER_TEMP` only. The `desktop` job installs its Tauri prerequisites
+with apt on the hosted Linux image, which does not ship WebKitGTK.
+`rust-cache` runs on these runners. CI runs on pull requests into `dev` and
+`main` and on a push to `main`; nothing runs on a pull request into `audit`
+(the `on:` comment in `ci.yml` says why).
 
-| Runner | Where | Labels | Started by |
+The self-hosted runners below are set aside as of 2026-10-19: the runner
+host stopped taking jobs on 2026-10-12, every run queued until the next push
+cancelled it, and #736 moved the jobs off them so promotion PRs could merge
+again. The table and the procedure that follow are kept as the record of
+that setup; the low-privilege account move is #219, open and parked. What
+was true until then: GitHub-hosted jobs stopped starting on 2026-09-28
+("recent account payments have failed or your spending limit needs to be
+increased") and CI ran on two self-hosted runners on the owner's machine
+instead; a smoke job on one ran while GitHub-hosted jobs were blocked (run
+36507327810).
+
+| Runner (set aside 2026-10-19, see #219) | Where | Labels | Started by |
 |---|---|---|---|
 | `trellis-win` | `C:\actions-runner\win` (Windows host) | self-hosted, Windows, X64 | `start-runner.cmd` there |
 | `trellis-wsl` | `~/actions-runner` in WSL2 Ubuntu 24.04 | self-hosted, Linux, X64 | `wsl.exe -d Ubuntu -- ~/actions-runner/start.sh` |
 
-- Each `runs-on` in `ci.yml` reads `vars.LINUX_RUNNER` / `vars.WINDOWS_RUNNER`
-  (repository variables holding a JSON label list) and falls back to
-  `ubuntu-latest` / `windows-latest` when unset. Back to GitHub-hosted:
-  `gh variable delete LINUX_RUNNER` and `gh variable delete WINDOWS_RUNNER`.
+- Until #736, each `runs-on` in `ci.yml` read `vars.LINUX_RUNNER` /
+  `vars.WINDOWS_RUNNER` (repository variables holding a JSON label list) and
+  fell back to `ubuntu-latest` / `windows-latest` when unset. `ci.yml` and
+  `release.yml` no longer read those variables, so bringing a self-hosted
+  runner back to them is a workflow change, not a variable. `mutants.yml`
+  still reads them, with the same hosted fallback.
 - Each runner's `.env` gives jobs their own `CARGO_HOME`, `RUSTUP_HOME` and
   `GIT_CONFIG_GLOBAL` under the runner's directory. Without them a job runs as
   the owner with the owner's homes: on 2026-09-28 `Swatinem/rust-cache`'s
@@ -260,16 +281,20 @@ while GitHub-hosted jobs were blocked (run 36507327810).
   GitHub-hosted runners only. Each launcher strips the provider-key variables.
 - The runners are processes, not services: they stop on logout or reboot and
   are restarted with the commands above. One job runs per runner at a time.
-- WSL runs its own Ollama on 127.0.0.1:11434, so the `guards` job's stand-in
-  listener does not bind; the job only needs something listening there.
+- WSL ran its own Ollama on 127.0.0.1:11434, so the `guards` job's stand-in
+  listener did not bind there; the job only needs something listening on
+  that port, and on a hosted runner the stand-in binds.
 - Self-hosted runners run whatever a pushed workflow says, as the owner. That
   is acceptable for a private repository with one owner; GitHub advises
   against it for public ones. The owner decided on 2026-10-04 to move both
-  runners to low-privilege accounts (#219); the procedure is below. Until the
-  owner has run it and one CI run is green on each runner, the table above is
-  still the current state.
+  runners to low-privilege accounts (#219); the procedure is below. It was
+  not run before the runners were set aside, so if they return it is still
+  the step before a job runs on them.
 
 ### Low-privilege runner accounts (#219)
+
+Parked with the self-hosted runners (2026-10-19). The procedure below is the
+one to run if they return.
 
 Two scripts, both run by the owner with admin rights. Both print every step,
 have a dry-run mode, refuse to start without admin rights, refuse while their
@@ -377,6 +402,11 @@ running the scripts.
 
 ### Go on the runners (#503)
 
+The self-hosted procedure; set aside with the runners on 2026-10-19. On a
+GitHub-hosted runner `scripts/runners/go-hosted.sh` unpacks the same pinned
+archive per job ("CI runners" above); the pin and the hashes stay in
+`install-go.sh`, read by both.
+
 `tui/` is a Go module (ADR 0052). Each runner gets its own pinned Go from
 `scripts/runners/install-go.sh`, never the owner's install (`C:\Program
 Files\Go` on Windows is the owner's, not a pin) and never `actions/setup-go`
@@ -428,8 +458,9 @@ dropped from `.path`, and its directory can be deleted by hand.
 suite against each mutant. These are the flags `WORKSPACE_TESTS=1
 scripts/mutate-by-crate.sh` uses: `-p <crate> --test-workspace true
 --timeout 300 -j 1`. It runs on `workflow_dispatch` only, never on a push or
-a pull request. It uses the same runner variables as `ci.yml` and the same
-pins: action SHAs, toolchain 1.93.0, cargo-mutants 27.1.0 installed with
+a pull request. It still reads the runner variables `ci.yml` read until
+#736 (`vars.LINUX_RUNNER`, `vars.WINDOWS_RUNNER`, hosted fallback) and uses
+the same pins as `ci.yml`: action SHAs, toolchain 1.93.0, cargo-mutants 27.1.0 installed with
 `--locked`, and `--locked` on every cargo command it runs. It uploads
 `mutants.out/` as the artifact `mutants-<crate>-<os>-<commit>[-shard-k-of-n][-file-<stem>]`,
 kept for 30 days. The job limit is 360 minutes, GitHub's limit for hosted
@@ -437,8 +468,10 @@ runners. A shard that reaches the step's 345-minute limit still uploads the
 outcomes it has.
 
 GitHub dispatches a workflow by name only when the file is on the default
-branch (`main`). `--ref` picks the branch whose head is tested. Run it only
-when the runners are idle: the Linux leg holds the runner `ci.yml` needs.
+branch (`main`). `--ref` picks the branch whose head is tested. On the
+self-hosted runners, run it only when they are idle: the Linux leg holds the
+runner `ci.yml` needs. (Written for the self-hosted runners, set aside
+2026-10-19; `ci.yml` no longer reads the runner variables.)
 
 ```
 gh workflow run mutants.yml -f crate=trellis-cli                      # whole crate, one job
@@ -455,7 +488,10 @@ all in 6 hours. Dispatch shard `0/10` first and read its wall time, then size
 `n` for the other shards. Every shard of one run must use the same `n`, or the
 shards do not split the mutants between them. Dispatch the next shard after
 the previous one finishes. A job that waits more than 24 hours for a
-self-hosted runner is cancelled.
+self-hosted runner is cancelled. Since 2026-10-19 the self-hosted runners
+are set aside; `mutants.yml` still reads `vars.LINUX_RUNNER` and
+`vars.WINDOWS_RUNNER`, so a dispatch runs on a hosted runner only once those
+variables are unset, and queues on an offline runner while they are set.
 
 The optional `file` input (#556) passes `-f <path>` to cargo-mutants, so only
 that source file's mutants run, e.g. `-f file=crates/trellis-cli/src/main.rs`.
@@ -516,4 +552,4 @@ replaced (checkout, toolchain) or skipped (rust-cache); setup-python becomes a
 virtualenv; an action it does not know fails the job. Jobs get a throwaway
 `GIT_CONFIG_GLOBAL` and `CARGO_INSTALL_ROOT`, no provider keys, and a closed
 `OPENAI_BASE_URL`. Exit 0 only when every leg passed. It posts nothing to
-GitHub; the self-hosted runners do that.
+GitHub; CI's own runners do that.
