@@ -4,6 +4,12 @@ A Rust agent harness for Python repositories. It maps the blast radius of a
 change, runs the repository's own checks, and commits a record of what
 happened.
 
+<p align="center">
+  <img src="../docs/assets/cli.gif" width="880" alt="A terminal session: trellis index and trellis radius on poetry 2.5.0, then two scripted runs on the demo fixture, one that converges and one that is rolled back.">
+</p>
+
+<sub>Everything in the recording is real output; the model is <code>scripted:</code>. How it was made: <code>docs/assets/README.md</code>.</sub>
+
 ## Getting `trellis` on your PATH
 
 ```
@@ -103,7 +109,9 @@ trellis run --model scripted:fix.json "fix the type error in app/calc.py"
 
 `scripted:` replays a fixed list of tool calls. Real files, real checks, real
 rollback — only judgement is stubbed. Useful for seeing the machinery without a
-model, and **never a measure of what a model can do**.
+model, and **never a measure of what a model can do**. The recording at the
+top of this file is exactly that: two scripted runs, one converging and one
+rolled back, against the demo fixture in `qa/fixtures/`.
 
 Against a real model, point at a serving runtime:
 

@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 320" width="980" height="320">
+<rect width="980" height="320" fill="#161715"/>
+<text x="20" y="30" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#e6e5df">A blast radius is two counts over two populations. They are never divided.</text>
+<rect x="20" y="52" width="440" height="196" rx="6" fill="#1b1c1a" stroke="#8a74e0" stroke-width="1.5"/>
+<text x="34" y="76" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#8a74e0">reach</text>
+<text x="34" y="94" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">call sites that reach this symbol, followed edge by edge</text>
+<text x="70" y="124" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" text-anchor="end" fill="#e6e5df">25</text>
+<text x="84" y="124" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#e6e5df">resolved</text>
+<text x="180" y="124" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">bound here by a single edge</text>
+<text x="70" y="154" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" text-anchor="end" fill="#e6e5df">0</text>
+<text x="84" y="154" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#e6e5df">ambiguous</text>
+<text x="180" y="154" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">one of several candidates, none chosen</text>
+<text x="70" y="184" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" text-anchor="end" fill="#e6e5df">24</text>
+<text x="84" y="184" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#e6e5df">transitive</text>
+<text x="180" y="184" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">symbols reached through the callers</text>
+<text x="34" y="232" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#9b9a92">Precision 100% on two hand-audited samples; every resolved edge mechanically checked.</text>
+<rect x="520" y="52" width="440" height="196" rx="6" fill="#1b1c1a" stroke="#d2508a" stroke-width="1.5"/>
+<text x="534" y="76" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#d2508a">doubt</text>
+<text x="534" y="94" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9b9a92">calls in the touched files bound to nothing; any of them may reach it</text>
+<text x="570" y="124" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" text-anchor="end" fill="#e6e5df">272</text>
+<text x="584" y="124" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#e6e5df">MethodDispatchUntyped</text>
+<text x="742" y="124" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#9b9a92">obj.method(), type of obj unknown</text>
+<text x="570" y="154" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" text-anchor="end" fill="#e6e5df">42</text>
+<text x="584" y="154" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#e6e5df">LocalBinding</text>
+<text x="742" y="154" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#9b9a92">the callee is whatever was passed in</text>
+<text x="570" y="184" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" text-anchor="end" fill="#e6e5df">1</text>
+<text x="584" y="184" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#e6e5df">DynamicAttribute</text>
+<text x="742" y="184" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#9b9a92">getattr, __getattr__, dict dispatch</text>
+<text x="534" y="232" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#9b9a92">Counted, not hidden. Over-counts on purpose. Shrinks when a test covers the symbol.</text>
+<text x="490" y="158" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="28" text-anchor="middle" fill="#f08a7e">&#247;</text>
+<line x1="476" y1="166" x2="504" y2="136" stroke="#f08a7e" stroke-width="2.5" stroke-linecap="round"/>
+<text x="20" y="276" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#9b9a92">Figures: <tspan font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">trellis radius choose_for</tspan> on poetry 2.5.0. RadiusCoverage has no total() and no fraction, because the two counts come from</text>
+<text x="20" y="292" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#9b9a92">different populations; dividing them once printed "3.7% resolved" for a resolver audited at 72%. ADR 0002, ADR 0014.</text>
+<text x="20" y="308" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#9b9a92">Recall is explicitly incomplete: hand-audited at 72.0% (95% CI 63.2–80.8%). Roughly three call edges in ten are statically invisible in Python.</text>
+</svg>
