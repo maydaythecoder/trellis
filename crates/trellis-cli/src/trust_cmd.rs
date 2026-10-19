@@ -83,11 +83,16 @@ pub(crate) fn run_with(
     )?;
     // Every item here is a hook, a custom tool, bash, a process agent or a
     // service.
-    // Each runs in a throwaway clone (ADR 0032), but with the user's
-    // authority and no OS sandbox: one that reaches the repository by
-    // absolute path is still a writer trellis does not control, and
-    // rollback is best-effort against it (ADR 0032 "Limits").
-    writeln!(out, "{ROLLBACK_LIMIT}")?;
+    // Each but a service runs in a throwaway clone (ADR 0032), under an OS
+    // sandbox only where this machine has one that works (ADR 0055): one
+    // that reaches the repository by absolute path is still a writer
+    // trellis does not control, and rollback is best-effort against it
+    // (ADR 0032 "Limits").
+    writeln!(
+        out,
+        "{}",
+        rollback_limit(trellis_loop::OsSandbox::detected())
+    )?;
     Ok(())
 }
 
@@ -137,13 +142,32 @@ pub(crate) fn changed_items(store: &TrustStore, root: &Path, fp: &Fingerprint) -
 
 /// Printed when trust is recorded. One line, plain: what the person gives
 /// up by trusting these, which no git check after the fact restores. The
-/// clone (ADR 0032) contains a writer that edits where it stands; it is
-/// not an OS sandbox, so what is named here is what ADR 0032 "Limits"
-/// lists, and the text claims no more isolation than that.
-pub(crate) const ROLLBACK_LIMIT: &str = "Note: these run in a throwaway clone of the \
-     repository, not an OS sandbox, with your permissions: they can read anything you can \
-     and use the network, and one that reaches the repository by absolute path can write \
-     there, .git included, where rollback is best-effort (ADR 0032 \"Limits\").";
+/// clone (ADR 0032) contains a writer that edits where it stands; the OS
+/// sandbox (ADR 0055), where this machine has a working one, takes away
+/// the network and the home directory. The text names which of the two
+/// holds here and claims no more isolation than that.
+pub(crate) fn rollback_limit(os: &trellis_loop::OsSandbox) -> String {
+    if os.is_active() {
+        format!(
+            "Note: bash, custom tools, hooks and process agents run in a throwaway clone of \
+             the repository under {} (ADR 0055): no network, your home directory hidden, \
+             writes only to the clone and the temporary directory. They can still read the \
+             rest of what you can and reach local sockets, and services run with your \
+             permissions and none of this; a writer that reaches the repository by absolute \
+             path can write there, .git included, where rollback is best-effort (ADR 0032 \
+             \"Limits\").",
+            os.label()
+        )
+    } else {
+        format!(
+            "Note: these run in a throwaway clone of the repository, not an OS sandbox \
+             (sandbox: {}), with your permissions: they can read anything you can and use \
+             the network, and one that reaches the repository by absolute path can write \
+             there, .git included, where rollback is best-effort (ADR 0032 \"Limits\").",
+            os.label()
+        )
+    }
+}
 
 /// Each item, its argv, the files it names with their digests, and what else
 /// decides what runs. Printed whole: a summary of what will execute is not
@@ -233,8 +257,9 @@ mod tests {
         run_with(d.path(), &store, false, false, &mut out).unwrap();
         let recorded = String::from_utf8(out).unwrap();
         assert!(recorded.contains("trusted."), "{recorded}");
+        let limit = rollback_limit(trellis_loop::OsSandbox::detected());
         assert!(
-            recorded.contains(ROLLBACK_LIMIT),
+            recorded.contains(&limit),
             "recording trust in something that writes says what rollback no longer \
              guarantees: {recorded}"
         );
@@ -243,12 +268,22 @@ mod tests {
         // clone and the limit that remains, and the section that lists it.
         for fact in [
             "throwaway clone",
-            "not an OS sandbox",
             "by absolute path",
             "best-effort",
             "ADR 0032 \"Limits\"",
         ] {
             assert!(recorded.contains(fact), "missing {fact:?}: {recorded}");
+        }
+        // ADR 0055: which isolation holds on this machine, never more.
+        let os = trellis_loop::OsSandbox::detected();
+        if os.is_active() {
+            assert!(recorded.contains("no network"), "{recorded}");
+            assert!(
+                recorded.contains(&format!("under {}", os.label())),
+                "{recorded}"
+            );
+        } else {
+            assert!(recorded.contains("not an OS sandbox"), "{recorded}");
         }
         assert!(
             !recorded.contains("can write anywhere in the repository"),
@@ -288,7 +323,10 @@ mod tests {
         assert!(e.contains("move it to .trellis/hooks/"), "{e}");
         assert!(!home.path().join("trust.json").exists(), "nothing recorded");
         let shown = String::from_utf8(out).unwrap();
-        assert!(!shown.contains(ROLLBACK_LIMIT), "{shown}");
+        assert!(
+            !shown.contains(&rollback_limit(trellis_loop::OsSandbox::detected())),
+            "{shown}"
+        );
         assert!(!shown.contains("ADR 0032 \"Limits\""), "{shown}");
     }
 
@@ -627,5 +665,18 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let line = doctor(d.path(), &TrustStore::at(home.path().join("trust.json")));
         assert!(line.contains("1 service(s)"), "{line}");
+    }
+
+    #[test]
+    fn trust_note_without_a_sandbox_says_so_and_why() {
+        // ADR 0055: with no working sandbox the note must not read as if
+        // the network and the home directory were taken away.
+        let note = rollback_limit(&trellis_loop::OsSandbox::none("bwrap not found"));
+        assert!(
+            note.contains("not an OS sandbox (sandbox: none (bwrap not found))"),
+            "{note}"
+        );
+        assert!(note.contains("use the network"), "{note}");
+        assert!(!note.contains("no network"), "{note}");
     }
 }

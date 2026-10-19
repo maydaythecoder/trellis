@@ -591,6 +591,14 @@ pub struct Outcome {
     /// Why it ended, in words.
     pub exit: String,
     pub finished_at: String,
+    /// The task worktree the run had for its root, and its branch (ADR 0053
+    /// decision 4): where a converged change waits, or which branch holds a
+    /// failed run's trail. Omitted while unset, as `stale_releases` is, so
+    /// a file written before them loads and is written back unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
 }
 
 /// One task file as `queue list` sees it.
@@ -1487,6 +1495,33 @@ pub enum RunEnd {
     },
 }
 
+/// The worktree a claimed task runs in, made by [`Runner::prepare`]
+/// (ADR 0053 decision 1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Workspace {
+    pub path: PathBuf,
+    pub branch: String,
+}
+
+/// What is left of a [`Workspace`] after [`Runner::remove_workspace`]: what
+/// the task's outcome then records (ADR 0053 decision 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Left {
+    /// The directory is still there: its removal failed.
+    pub worktree: bool,
+    /// The branch is still there: it holds a commit past its base (a trail),
+    /// or its removal failed.
+    pub branch: bool,
+}
+
+impl Left {
+    /// Nothing was removed.
+    pub const ALL: Left = Left {
+        worktree: true,
+        branch: true,
+    };
+}
+
 /// What the heartbeat needs from the binary.
 pub trait Runner {
     /// Why a run cannot start right now, or `None`. Asked before claiming,
@@ -1514,6 +1549,20 @@ pub trait Runner {
     /// The id of the task about to run, before `run`: what a process agent
     /// receives as `TRELLIS_TASK_ID`.
     fn starting(&mut self, _id: &str) {}
+    /// Makes the place the claimed task runs in, after the claim and before
+    /// [`Runner::starting`]: a worktree of its own (ADR 0053). `Ok(None)`
+    /// runs it where `work` started. `Err` refuses it, having removed
+    /// whatever it created: the task goes back to `pending/` untouched and
+    /// `work` stops, exit 1 (decision 2).
+    fn prepare(&mut self, _id: &str, _task: &Task) -> Result<Option<Workspace>, String> {
+        Ok(None)
+    }
+    /// Removes the workspace `prepare` made, after an outcome whose tree
+    /// was restored (ADR 0053 decision 4). Says what it kept and why, and
+    /// returns what is left for the task's outcome to record.
+    fn remove_workspace(&mut self, _out: &mut dyn Write) -> Left {
+        Left::ALL
+    }
     /// The platform probe `[work] stale_claims = "release"` needs. Without
     /// one, stale claims are listed and nothing is released.
     fn liveness(&self) -> Option<&dyn Liveness> {
@@ -1541,10 +1590,11 @@ pub enum Stop {
     Waiting(usize),
     /// `max_tasks` runs happened.
     MaxTasks,
-    /// A run converged; its change awaits review.
-    Converged { id: String },
     /// The worktree is not clean; nothing was claimed.
     Blocked(String),
+    /// The claimed task's worktree was refused before its run; the task is
+    /// back in `pending/` untouched (ADR 0053 decision 2).
+    Refused { id: String, why: String },
     /// A run left the tree in a state it could not restore.
     NotRestored { id: String },
     /// Ctrl-C, during a run or between them.
@@ -1559,8 +1609,8 @@ impl Stop {
     /// not restored, 130 for Ctrl-C.
     pub fn code(&self) -> i32 {
         match self {
-            Stop::Empty | Stop::Waiting(_) | Stop::MaxTasks | Stop::Converged { .. } => 0,
-            Stop::Blocked(_) | Stop::Error { .. } => 1,
+            Stop::Empty | Stop::Waiting(_) | Stop::MaxTasks => 0,
+            Stop::Blocked(_) | Stop::Refused { .. } | Stop::Error { .. } => 1,
             Stop::NotRestored { .. } => 2,
             Stop::Interrupted => 130,
         }
@@ -1573,8 +1623,8 @@ impl std::fmt::Display for Stop {
             Stop::Empty => write!(f, "queue empty"),
             Stop::Waiting(n) => write!(f, "nothing claimable; {n} pending task(s) waiting"),
             Stop::MaxTasks => write!(f, "task limit for this invocation reached"),
-            Stop::Converged { id } => write!(f, "{id} converged; its change awaits review"),
             Stop::Blocked(_) => write!(f, "worktree not clean; nothing claimed"),
+            Stop::Refused { id, .. } => write!(f, "{id} not run; put back in pending/"),
             Stop::NotRestored { id } => write!(f, "{id} left the tree NOT restored"),
             Stop::Interrupted => write!(f, "interrupted"),
             Stop::Error { id } => write!(f, "{id} ended in an error"),
@@ -1803,16 +1853,71 @@ pub fn work(
             Event::new(Actor::Work, "task.claim", format!("task:{}", claim.id)),
             out,
         );
+        // After the claim, so the id is this process's to use, and before
+        // the run: a refusal puts the task back as it was, not counted as
+        // an attempt (ADR 0053 decision 2).
+        let workspace = match runner.prepare(&claim.id, &claim.task) {
+            Ok(w) => w,
+            Err(why) => {
+                let id = claim.id.clone();
+                claim.release(false)?;
+                log_or_say(
+                    q,
+                    Event::new(Actor::Work, "task.release", format!("task:{id}"))
+                        .detail(format!("not run: {why}")),
+                    out,
+                );
+                let _ = writeln!(
+                    out,
+                    "work:     {id} -> pending/ (not run; attempts unchanged): {}",
+                    plain(&why)
+                );
+                return Ok((ran, Stop::Refused { id, why }));
+            }
+        };
+        if let Some(w) = &workspace {
+            let _ = writeln!(
+                out,
+                "work:     in {} on {}",
+                plain(&w.path.display().to_string()),
+                plain(&w.branch)
+            );
+        }
         runner.starting(&claim.id);
         let end = runner.run(&claim.task);
         ran += 1;
         let id = claim.id.clone();
         let entity = format!("task:{id}");
         let now = iso_now();
-        let outcome = |run_id: &Option<String>, exit: &str| Outcome {
-            run_id: run_id.clone(),
-            exit: exit.to_string(),
-            finished_at: now.clone(),
+        // ADR 0053 decision 4: a restored tree's worktree is removed (its
+        // branch kept when it holds the trail), every other is kept. What
+        // is left is what the outcome records.
+        let mut settle = |keep: bool, out: &mut dyn Write| match &workspace {
+            None => None,
+            Some(w) => {
+                let left = if keep {
+                    Left::ALL
+                } else {
+                    runner.remove_workspace(out)
+                };
+                Some((w.clone(), left))
+            }
+        };
+        let outcome = |run_id: &Option<String>, exit: &str, left: &Option<(Workspace, Left)>| {
+            let (worktree, branch) = match left {
+                Some((w, l)) => (
+                    l.worktree.then(|| w.path.display().to_string()),
+                    l.branch.then(|| w.branch.clone()),
+                ),
+                None => (None, None),
+            };
+            Outcome {
+                run_id: run_id.clone(),
+                exit: exit.to_string(),
+                finished_at: now.clone(),
+                worktree,
+                branch,
+            }
         };
         let finished = |run_id: &Option<String>, status: &str, out: &mut dyn Write| {
             log_or_say(
@@ -1825,28 +1930,41 @@ pub fn work(
         };
         match end {
             RunEnd::Converged { run_id } => {
+                let left = settle(true, out);
                 claim.finish(
                     State::Done,
-                    outcome(&run_id, "converged; change left uncommitted for review"),
+                    outcome(
+                        &run_id,
+                        "converged; change left uncommitted for review",
+                        &left,
+                    ),
                 )?;
                 finished(&run_id, "in_review", out);
                 let _ = writeln!(out, "work:     {id} -> done/ (converged; in review)");
-                let _ = writeln!(
-                    out,
-                    "work:     stopping. The converged change awaits review; accept or \
-                     revert it, then run `trellis work` again"
-                );
+                if let Some((w, _)) = &left {
+                    let _ = writeln!(
+                        out,
+                        "work:     the change is uncommitted in {} on {}; trellis does not \
+                         commit, merge or remove it",
+                        plain(&w.path.display().to_string()),
+                        plain(&w.branch)
+                    );
+                }
                 let _ = writeln!(
                     out,
                     "          once accepted, `trellis queue set {id} --status done` \
                      releases whatever it blocks"
                 );
-                return Ok((ran, Stop::Converged { id }));
+                // The change is in its own worktree, so the tree the next
+                // task is based on is untouched: `work` goes on (ADR 0053
+                // decision 4). A runner that ran it in place left the change
+                // here, and the next claim's clean check stops on it.
             }
             RunEnd::RolledBack { run_id } => {
+                let left = settle(false, out);
                 claim.finish(
                     State::Failed,
-                    outcome(&run_id, "not converged; tree restored"),
+                    outcome(&run_id, "not converged; tree restored", &left),
                 )?;
                 finished(&run_id, "failed", out);
                 let _ = writeln!(
@@ -1855,15 +1973,19 @@ pub fn work(
                 );
             }
             RunEnd::NotRestored { run_id } => {
+                // Kept: nobody has looked at it, and removing it would
+                // destroy the evidence.
+                let left = settle(true, out);
                 claim.finish(
                     State::Failed,
-                    outcome(&run_id, "not converged; tree NOT restored"),
+                    outcome(&run_id, "not converged; tree NOT restored", &left),
                 )?;
                 finished(&run_id, "failed; tree NOT restored", out);
                 let _ = writeln!(
                     out,
                     "work:     {id} -> failed/. The tree was NOT restored; stopping"
                 );
+                say_kept(&left, out);
                 return Ok((ran, Stop::NotRestored { id }));
             }
             RunEnd::Interrupted {
@@ -1872,6 +1994,7 @@ pub fn work(
             } => {
                 // The run's rollback put the tree back, and the task never
                 // produced an outcome, so it is safe to run again later.
+                settle(false, out);
                 claim.release(true)?;
                 log_or_say(
                     q,
@@ -1892,15 +2015,17 @@ pub fn work(
             } => {
                 // The tree is not known to be as it was, so re-running the
                 // task later is a guess about a state nobody has looked at.
+                let left = settle(true, out);
                 claim.finish(
                     State::Failed,
-                    outcome(&run_id, "interrupted; tree NOT restored"),
+                    outcome(&run_id, "interrupted; tree NOT restored", &left),
                 )?;
                 finished(&run_id, "failed; interrupted, tree NOT restored", out);
                 let _ = writeln!(
                     out,
                     "work:     {id} -> failed/ (interrupted; the tree was NOT restored)"
                 );
+                say_kept(&left, out);
                 return Ok((ran, Stop::Interrupted));
             }
             RunEnd::Asked {
@@ -1908,8 +2033,10 @@ pub fn work(
                 question,
                 options,
             } => {
-                // The tree is back as it was, so the heartbeat goes on to
-                // the next task; this one waits for a person.
+                // The tree is back as it was, so its worktree goes as a
+                // rolled-back run's does, and the heartbeat goes on to the
+                // next task; this one waits for a person.
+                settle(false, out);
                 claim.ask(&question, &options)?;
                 let note = question_note(&question, &options);
                 log_or_say(
@@ -1931,7 +2058,11 @@ pub fn work(
                 );
             }
             RunEnd::Error { run_id, error } => {
-                claim.finish(State::Failed, outcome(&run_id, &format!("error: {error}")))?;
+                let left = settle(false, out);
+                claim.finish(
+                    State::Failed,
+                    outcome(&run_id, &format!("error: {error}"), &left),
+                )?;
                 finished(&run_id, "failed; error", out);
                 let _ = writeln!(out, "work:     {id} -> failed/ ({})", plain(&error));
                 // From here a bad task and a dead runtime look alike, and a
@@ -1940,6 +2071,18 @@ pub fn work(
                 return Ok((ran, Stop::Error { id }));
             }
         }
+    }
+}
+
+/// Where a kept worktree is, for the outcomes that keep one for a person.
+fn say_kept(left: &Option<(Workspace, Left)>, out: &mut dyn Write) {
+    if let Some((w, _)) = left {
+        let _ = writeln!(
+            out,
+            "          its worktree is kept for a person to look at: {} on {}",
+            plain(&w.path.display().to_string()),
+            plain(&w.branch)
+        );
     }
 }
 

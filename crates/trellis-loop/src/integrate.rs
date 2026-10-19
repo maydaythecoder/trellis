@@ -61,6 +61,10 @@ pub struct Integrated<T> {
     pub merged: Vec<String>,
     /// The integrated type check, then the integrated tests, run on the root.
     pub checks: Vec<Verdict>,
+    /// How long each of `checks` took, in milliseconds and the same order,
+    /// timed here by the monotonic clock around the call and never inside
+    /// `Verdict` (rule 1; #622), for the trail's check outcomes.
+    pub check_ms: Vec<u64>,
     pub suspected_recall_gaps: Vec<SuspectedRecallGap>,
     pub integration: Integration,
 }
@@ -115,10 +119,17 @@ impl Supervisor<'_> {
         // second verdict is more output to attribute a collision from, and
         // the run is already not converging, so it cannot mislead.
         let paths = [PathBuf::from(".")];
-        let verdicts = vec![
-            trellis_checks::typecheck(self.root, checks, &paths).await,
-            trellis_checks::run_tests(self.root, checks, &paths).await,
-        ];
+        let timed = |started: std::time::Instant| {
+            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+        };
+        let started = std::time::Instant::now();
+        let typecheck = trellis_checks::typecheck(self.root, checks, &paths).await;
+        let typecheck_ms = timed(started);
+        let started = std::time::Instant::now();
+        let tests = trellis_checks::run_tests(self.root, checks, &paths).await;
+        let tests_ms = timed(started);
+        let verdicts = vec![typecheck, tests];
+        let check_ms = vec![typecheck_ms, tests_ms];
         let gaps: Vec<SuspectedRecallGap> = verdicts
             .iter()
             .filter(|v| !v.passed())
@@ -157,6 +168,7 @@ impl Supervisor<'_> {
             reports,
             merged,
             checks: verdicts,
+            check_ms,
             suspected_recall_gaps: gaps,
             integration,
         })

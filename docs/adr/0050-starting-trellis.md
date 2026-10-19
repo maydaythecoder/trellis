@@ -1,6 +1,6 @@
 # ADR 0050 — Starting trellis: plain `trellis`, or `--tui`, `--dsk`, `--web`
 
-**Status:** Accepted (owner-directed). Not built (story S19, #377).
+**Status:** Accepted (owner-directed). Built (story S19, #377): sections 1–4 by #370–#374, #553, #555, #556, #558 and #561; section 5 by #375. The handoff to `trellis-tui` (section 1, amended) is built by #514, 2026-10-12.
 **Date:** 2026-10-04
 **Decided by:** the owner's request of 2026-10-04 ("make the startup more
 intuitive, limited flags; start with just `trellis`, with `--tui`, `--dsk`,
@@ -84,6 +84,25 @@ are unchanged. The decision is `launch_route` in `main.rs`, beside
 `bare_route`, whose tests are unchanged. `trellis --help` lists `trellis` as
 the desktop and the overview, `--tui` as the terminal interface and `--dsk`
 as the desktop only.
+*As built 2026-10-12 (#514):* every path that opened the ratatui TUI now
+goes through `terminal_ui` in `main.rs`: `--tui`, `trellis tui [task]
+[--model <spec>]`, and bare `trellis`'s fall back to the terminal after a
+desktop it could not start. It looks for `trellis-tui` (`trellis-tui.exe`
+on Windows) beside `current_exe()` only, never on PATH (`launch::find_tui`).
+Found, first-run's picker still runs in Rust when no model is configured or
+given (it needs a terminal on both ends; without one the ratatui path's
+refusal is unchanged), and the terminal is handed to `trellis-tui --root
+<root> --trellis <current_exe> [--model <spec>] [-- <task>]`: on Unix by
+`exec`, replacing the process; on Windows by waiting for it and exiting
+with its status. `--model` is passed only when the user gave one, never a
+spec from the repository's configuration, so rpc does not take a
+repository's choice for the user's (ADR 0024 section 3); `trellis-tui`
+confirms the configured model itself. The environment passes unchanged,
+the `trellis-tui` entry of `INTERFACE_LAUNCHES` (ADR 0052, amendment of
+2026-10-07). Not found, one stderr line names the path looked at and says
+the ratatui TUI follows, which it then does, for one release (ADR 0052
+decision 2.2); #516 removes the fallback. Held by the `launch_` tests in
+`tests/cli.rs` and `launch.rs`.
 
 ### 2. A first run with no model
 
@@ -95,6 +114,25 @@ user's own config file, never to `.trellis/config.toml`: the user decides
 where a model is, and a local spec carries no key (ADR 0024 §3). Nothing is
 written without a choice. With nothing found, it names the addresses it
 tried and the exact `--model` form.
+
+*Amended 2026-10-12 (#625):* a `/v1/models` list on 127.0.0.1:8000 owned by
+colibri (`owned_by: "colibri"`, ADR 0047 decision 3; `coli setup` serves
+there with no key) is offered as `provider:colibri#<id>`, never as the
+`vllm:` spec, which would run colibri at tier 4 with no chat template while
+tier 1 is there, and never as a bare `openai-chat:` spec, which would send
+the user's `OPENAI_API_KEY` to it (ADR 0024 §3). Choosing it writes a
+`[[providers]]` entry named `colibri` (`protocol = "openai"`, the base the
+probe read with `/v1`, `key_env = "COLI_API_KEY"`, ADR 0047 decision 2)
+and then the spec, both to the user's own config file and never to
+`.trellis/`: a `key_env` is the user's to name, and this is the one writer
+of one. An entry named `colibri` already there at the same base is left as
+it is; at another base it is refused with the file untouched and nothing
+written, since replacing it would move where the user's key is sent. A
+list owned by anyone else is offered as before. The same list feeds rpc's
+`list_models` (ADR 0025 §5), and the desktop's model rule forwards a
+`provider:` spec (desktop/src/commands.rs, `check_model`), read and not
+changed. Evidence: the `first_run_colibri_` tests in
+crates/trellis-cli/src/first_run.rs and crates/trellis-cli/src/rpc.rs.
 
 ### 3. Outside a repository
 
@@ -132,6 +170,17 @@ started in the root through `secrets::scrub` with no stdin and no token, as
 seconds, after which it and what it started are killed. Missing, not logged
 in, timed out, failing or not JSON, it is `{"available": false, "reason"}`
 and the command still exits 0. Nothing is written.
+*Amended 2026-10-12 (#654), owner-directed (the owner's decision of
+2026-10-12, on #654):* the overview still never indexes and never writes:
+its codebase is still `.trellis/index.bin` only when that cache is
+current. What changes is who else saves that cache. rpc's `get_codebase`,
+which the desktop's Codebase and Atlas sections send, now saves the
+worktree's index there through the writer `trellis index` uses (ADR 0048
+section 10, amended 2026-10-12), so after the desktop has drawn a
+repository's graph the overview shows its counts for the same root rather
+than "not indexed" or "index is stale". The desktop's pane says the counts
+come from `.trellis/index.bin`. The reasons the overview gives when no
+current cache exists are unchanged.
 *As built 2026-10-07 (#555):* a root is recorded only from an interface
 start (bare `trellis`, `trellis tui`, `--tui`, `--dsk`), never from another
 command, and never when it is under the temporary directory. In the home
@@ -155,6 +204,41 @@ is read. It serves the same static page and the same rpc-backed view-models
 as the desktop, so it adds no path around the orchestrator (ADR 0048
 sections 2, 5 and 10), and every trellis- or model-supplied string reaches
 the DOM through `textContent`.
+*As built 2026-10-11 (#375):* `trellis --web` starts `trellis-desktop
+--web` from beside `current_exe()` only, as `--dsk` does (#374), with
+`--root` only for a root found, in its own process group, its stdin and
+stdout piped and its stderr the terminal's. The desktop binds 127.0.0.1:0
+(`desktop/src/web.rs`) and prints `{"url": "http://127.0.0.1:<port>/?t=<token>"}`
+once on stdout; trellis prints the URL, opens it through the platform's
+opener (`xdg-open`, `open`, or `rundll32 url.dll,FileProtocolHandler`,
+each scrubbed of the key variables) and says so when the opener is
+missing. The token is 32 bytes from the OS's random source, through std's
+`RandomState` on a fresh thread so no crate is added, as 64 hex
+characters. `GET /?t=<token>` redirects to `/<token>/`, the page's root, so
+the page's relative imports and fetches carry the token on their own and
+the page is served byte for byte: `ui/web.js`, loaded first and the one
+module that fetches, defines `window.__TAURI__` over `fetch` and
+`EventSource` when Tauri has not, so every other module is unchanged. The
+four commands are `POST /<token>/invoke/<name>` and the core's events are
+one server-sent event stream at `/<token>/events`, whose first connection
+runs startup as the window's page load does. A request whose path lacks
+the token or whose Host is not `127.0.0.1:<port>` or `localhost:<port>` is
+refused with 403 before its body is read, with one answer for both. Every
+answer, a refusal too, then shuts the write side and reads and throws away
+what the client sent that was not read, until the client closes, 200 ms
+have passed or 64 KiB have come, before the socket is dropped: a socket
+closed with input unread sends a reset, and on Windows the reset discards
+the 403 the browser had already received (#666's Windows CI, 2026-10-12).
+The discarded bytes are not parsed, so a refusal is still decided on the
+request line and headers alone. Every response carries a
+Content-Security-Policy as strict as the window's (`connect-src 'self'`,
+nothing inline, `frame-ancestors 'none'`). The server stops when its stdin
+ends: trellis closes it on the first Ctrl-C, says so, and waits for the
+desktop, which sends its rpc child `quit` and waits (ADR 0048 section 9);
+a second Ctrl-C stops waiting. Tests whose names start with `web_` in
+`desktop/src/web.rs` hold the bind address, the token, the Host guard, the
+close, the policy, the file set, the commands and the stream; `launch_web_`
+tests in `crates/trellis-cli/src/launch.rs` hold the launch.
 
 ## Alternatives rejected
 

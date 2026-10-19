@@ -318,6 +318,17 @@ pub struct Action {
     /// same reason as `changed`.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub changed_count: u32,
+    /// How long the call took, in milliseconds, from the loop's monotonic
+    /// clock (`Instant`, never the wall clock, ADR 0046); a wait on a person
+    /// in approve mode is excluded, so it is the tool's time (#622). For a
+    /// `run_checks` action the same figure is on its `CheckOutcome`.
+    ///
+    /// Absent in a trail written before the field, and absent, never 0,
+    /// for an action the writer did not time (a partition's record, a
+    /// compaction, an approval): a 0 would read as a measurement. Omitted
+    /// when absent, so an old-shaped run keeps its bytes and its digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 /// The most paths one action's `changed` lists. A command that rewrites a
@@ -437,6 +448,12 @@ impl ModeCounts {
 pub struct CheckOutcome {
     pub kind: String,
     pub passed: bool,
+    /// How long the check call took, in milliseconds, timed by the loop
+    /// around the call and never inside `Verdict` (rule 1; #622). Absent
+    /// in a trail written before the field, and omitted when absent, so an
+    /// old-shaped run keeps its bytes and its digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -478,6 +495,14 @@ pub struct Trail {
     pub base_commit: String,
     /// ISO-8601, so a trail file sorts by name and by content.
     pub started_at: String,
+    /// When the trail was written, ISO-8601 from the wall clock as
+    /// `started_at` is (#622). Both are recorded as read: after a clock
+    /// step (ADR 0046) this can precede `started_at`, and no duration is
+    /// derived from the pair; the durations in `factual` come from the
+    /// monotonic clock. Omitted when absent, which only a trail written
+    /// before the field is. Outside `factual`, so it is not in the digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<String>,
     pub provenance: Provenance,
     pub factual: Factual,
     /// SHA-256 over the canonical JSON of `factual`.
@@ -507,7 +532,9 @@ pub struct Provenance {
     pub tier: Option<String>,
 }
 
-/// The current trail format.
+/// The current trail format. Still 1 after `ended_at` and `duration_ms`
+/// (#622): an additive field read with a serde default is not a schema
+/// bump, which the fixture tests in `untrusted.rs` pin.
 pub const SCHEMA: u32 = 1;
 
 impl Trail {
@@ -602,6 +629,7 @@ mod tests {
         let t = Trail {
             task: "rename Installer.run".into(),
             started_at: "2026-09-18T05:12:00Z".into(),
+            ended_at: Some("2026-09-18T05:14:00Z".into()),
             schema: SCHEMA,
             run_id: "20260920-000000-000-test".into(),
             base_commit: "0000000".into(),
@@ -623,6 +651,7 @@ mod tests {
                 check_outcomes: vec![CheckOutcome {
                     kind: "Tests".into(),
                     passed: true,
+                    duration_ms: Some(1_200),
                 }],
                 approved_by: Approval::Human,
                 mode_counts: ModeCounts {
@@ -643,6 +672,7 @@ mod tests {
                         wrote: false,
                         changed: Vec::new(),
                         changed_count: 0,
+                        duration_ms: Some(10),
                     },
                     Action {
                         turn: 2,
@@ -652,6 +682,7 @@ mod tests {
                         wrote: true,
                         changed: Vec::new(),
                         changed_count: 0,
+                        duration_ms: Some(10),
                     },
                     Action {
                         turn: 3,
@@ -661,6 +692,7 @@ mod tests {
                         wrote: false,
                         changed: Vec::new(),
                         changed_count: 0,
+                        duration_ms: Some(10),
                     },
                 ],
                 control: None,

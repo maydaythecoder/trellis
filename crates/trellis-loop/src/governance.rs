@@ -335,6 +335,163 @@ fn fold_case(s: &str) -> String {
     }
 }
 
+/// The line a conflict escalation opens with, word for word.
+pub const CONFLICT_LINE: &str =
+    "conflicting non-negotiable rules; trellis does not arbitrate between them";
+
+/// One rule as an escalation shows it: the user's own words, and the file
+/// they are in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EscalatedRule {
+    pub name: String,
+    /// `.trellis/governance/<file>.toml`, or `None` when no rule file under
+    /// that directory holds this rule when the escalation is made. Said
+    /// plainly rather than guessed: an attribution to the wrong file is worse
+    /// than none.
+    pub source: Option<String>,
+    pub description: String,
+}
+
+/// Two or more non-negotiable rules the run could not hold together, as far
+/// as anything mechanical can say (ADR 0054): at least one broke the audit,
+/// and the model's own summary names at least one other by its exact name.
+///
+/// Carries no ranking, no winner and no order of repair. The rules are in
+/// the order `trellis_checks::governance::load` read them, which is the
+/// order of their file names, and nothing else; the user declared every one
+/// of them inviolable, and choosing between them is theirs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictEscalation {
+    pub rules: Vec<EscalatedRule>,
+}
+
+impl std::fmt::Display for ConflictEscalation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "{CONFLICT_LINE}")?;
+        for r in &self.rules {
+            writeln!(f, "  rule: {}", r.name)?;
+            match &r.source {
+                Some(s) => writeln!(f, "  source: {s}")?,
+                None => writeln!(
+                    f,
+                    "  source: not known (no file under .trellis/governance/ holds this rule now)"
+                )?,
+            }
+            // Verbatim: the description is the user's prose, and an
+            // escalation that paraphrased it would be the harness restating
+            // a rule it has declined to interpret.
+            writeln!(f, "  description: {}", r.description)?;
+        }
+        Ok(())
+    }
+}
+
+/// The escalation for a failed governance audit, or `None` when there is
+/// nothing to escalate.
+///
+/// Mechanical on purpose (`trellis_checks::governance`'s "keep the
+/// enforcement mechanism dumb"): a non-negotiable rule is *broken* when the
+/// audit found a non-negotiable violation of it, and *named* when its exact
+/// `name` is a case-sensitive substring of the model's summary. An
+/// escalation needs at least one broken rule and at least one named rule
+/// that was not broken. Nothing here decides whether the conflict is real —
+/// deciding that would take the set of possible fixes, which the harness
+/// does not have, or a model's judgment of the rules it is held to, which is
+/// Constraint 2 (STATUS, "The one that is open"). What the summary claims
+/// is shown, attributed, and left to the user.
+///
+/// A nice-to-have rule is never part of one: it cannot fail the audit, so
+/// there is nothing for it to conflict with. A rule with an empty name is
+/// never named, since the empty string is in every summary.
+pub(crate) fn conflict_escalation(
+    root: &std::path::Path,
+    rules: &[trellis_checks::governance::Rule],
+    violations: &[trellis_checks::governance::Violation],
+    summary: &str,
+) -> Option<ConflictEscalation> {
+    let hard = |r: &trellis_checks::governance::Rule| r.rank.fails_the_audit();
+    let broken = |r: &trellis_checks::governance::Rule| {
+        hard(r)
+            && violations
+                .iter()
+                .any(|v| v.rank.fails_the_audit() && v.rule == r.name)
+    };
+    let named = |r: &trellis_checks::governance::Rule| {
+        hard(r) && !r.name.is_empty() && summary.contains(r.name.as_str()) && !broken(r)
+    };
+    if !rules.iter().any(broken) || !rules.iter().any(named) {
+        return None;
+    }
+    let sources = rule_sources(root, rules);
+    let escalated = rules
+        .iter()
+        .zip(sources)
+        .filter(|(r, _)| broken(r) || named(r))
+        .map(|(r, source)| EscalatedRule {
+            name: r.name.clone(),
+            source,
+            description: r.description.clone(),
+        })
+        .collect();
+    Some(ConflictEscalation { rules: escalated })
+}
+
+/// Each rule's file under `.trellis/governance/`, read again now.
+///
+/// `Rule` does not record its file, and `trellis-checks` is not changed for
+/// this (ADR 0054). So the directory is listed and loaded the way
+/// `trellis_checks::governance::load` does — every `*.toml`, sorted, one
+/// rule each — and a rule is attributed only to a file whose rule is equal
+/// to it field for field. When the run's rules are exactly what is on disk,
+/// position decides, so two files holding the same rule are each named
+/// once; otherwise the first equal file is named, and a rule no file now
+/// holds has no source.
+fn rule_sources(
+    root: &std::path::Path,
+    rules: &[trellis_checks::governance::Rule],
+) -> Vec<Option<String>> {
+    let unknown = || vec![None; rules.len()];
+    let Ok(on_disk) = trellis_checks::governance::load(root) else {
+        return unknown();
+    };
+    let dir = root.join(".trellis").join("governance");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return unknown();
+    };
+    let mut paths = Vec::new();
+    for e in entries {
+        let Ok(e) = e else {
+            return unknown();
+        };
+        let p = e.path();
+        if p.extension().is_some_and(|x| x == "toml") {
+            paths.push(p);
+        }
+    }
+    paths.sort();
+    // Load and listing are two reads; a directory that changed between them
+    // pairs nothing reliably.
+    if paths.len() != on_disk.len() {
+        return unknown();
+    }
+    let shown = |p: &std::path::PathBuf| {
+        p.file_name()
+            .map(|n| format!(".trellis/governance/{}", n.to_string_lossy()))
+    };
+    if on_disk.as_slice() == rules {
+        return paths.iter().map(shown).collect();
+    }
+    rules
+        .iter()
+        .map(|r| {
+            on_disk
+                .iter()
+                .position(|d| d == r)
+                .and_then(|j| shown(&paths[j]))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 thread_local! {
     /// Calls to `fold`, for the test that holds a lookup to one.

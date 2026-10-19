@@ -143,7 +143,13 @@ fn read_row(line: &str) -> Result<Value, String> {
     let mut row = Map::new();
     row.insert("integrity".into(), json!(integrity));
     row.insert("run_id".into(), required_text(&o, "run_id", "run id")?);
-    row.insert("outcome".into(), required_text(&o, "outcome", "outcome")?);
+    // The trail's word for how the run ended, in the vocabulary the Run
+    // pane's `run_end` uses (#653), still wrapped as the trail's text.
+    let mut outcome = required_text(&o, "outcome", "outcome")?;
+    if let Some(Value::String(word)) = outcome.get_mut("untrusted") {
+        *word = crate::state::outcome_words(word).to_string();
+    }
+    row.insert("outcome".into(), outcome);
     row.insert("task".into(), required_text(trail, "task", "task")?);
     // Only when the session was named (the contract's `optional`).
     if let Some(label) = factual.get("label").filter(|l| !l.is_null()) {

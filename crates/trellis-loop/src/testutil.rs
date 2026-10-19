@@ -157,8 +157,8 @@ fn walk(dir: &Path, base: &Path, dirs: &mut Vec<PathBuf>, files: &mut Vec<(PathB
 /// a 0.
 pub(crate) type TurnFields = std::collections::BTreeMap<String, String>;
 
-/// The `turn` events emitted on this thread while [`TurnEvents::install`]'s
-/// guard lives.
+/// The `turn` and `model call` events emitted on this thread while
+/// [`TurnEvents::install`]'s guard lives.
 ///
 /// Hand-written over `tracing` alone rather than `tracing-subscriber`, which
 /// this crate does not depend on. One process-wide subscriber hands each
@@ -195,7 +195,19 @@ impl TurnEvents {
         Installed
     }
 
+    /// The `turn` events only.
     pub(crate) fn taken(&self) -> Vec<TurnFields> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|f| f.get("message").map(String::as_str) == Some("turn"))
+            .cloned()
+            .collect()
+    }
+
+    /// Every kept event, `model call` and `turn`, in the order emitted.
+    pub(crate) fn taken_in_order(&self) -> Vec<TurnFields> {
         self.0.lock().unwrap().clone()
     }
 }
@@ -233,11 +245,14 @@ impl tracing::Subscriber for Router {
         };
         let mut f = Fields::default();
         event.record(&mut f);
-        // The test `TurnCapture` in trellis-cli's rpc applies.
-        if f.0.get("message").map(String::as_str) == Some("turn")
-            && f.0.contains_key("turn")
-            && f.0.contains_key("call")
-        {
+        // The test `TurnCapture` in trellis-cli's rpc applies. A `model
+        // call` is kept too, in stream order with the turns, so a test can
+        // hold that one precedes each turn (#614).
+        let message = f.0.get("message").map(String::as_str);
+        let is_turn =
+            message == Some("turn") && f.0.contains_key("turn") && f.0.contains_key("call");
+        let is_model_call = message == Some("model call") && f.0.contains_key("turn");
+        if is_turn || is_model_call {
             capture.0.lock().unwrap().push(f.0);
         }
     }
