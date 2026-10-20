@@ -4,7 +4,6 @@
 //! the vault) is in `doctor_extra.rs`.
 
 use crate::floor::floor_line;
-use crate::index_cmd::graph_lines;
 use crate::plain;
 use crate::{config, doctor_extra, hosted};
 use anyhow::{Context, Result};
@@ -50,17 +49,11 @@ pub(crate) fn runtime_tier_label(probed: &Result<bool, String>) -> &'static str 
     }
 }
 
-/// The codebase graph for `root`, as lines, for a caller with no stdout.
-///
-/// Builds the index rather than reading the cache: the interface offers this
-/// while a repository is being edited, and a cached graph would describe the
-/// tree as it stood before the run the user has just watched.
-pub(crate) fn codebase_lines(root: &Path, limit: usize) -> Vec<String> {
-    graph_lines(&codebase_graph(root), limit)
-}
-
-/// The module graph `codebase_lines` draws, built the same way: in memory,
-/// never reading or writing `.trellis/index.bin`.
+/// The module graph `codebase_json` draws: built in memory, never reading
+/// or writing `.trellis/index.bin`. The index is built rather than read from
+/// the cache because an interface asks for this while a repository is being
+/// edited, and a cached graph would describe the tree as it stood before the
+/// run the user has just watched.
 fn codebase_graph(root: &Path) -> trellis_index::ModuleGraph {
     let sources = trellis_index::read_sources(root);
     let index = trellis_index::build_from_sources(&sources);
@@ -82,7 +75,7 @@ pub(crate) enum Edges {
 /// commit, whose tree is copied out and never cached. The worktree's answer
 /// builds its index itself, since it saves it (`atlas::codebase`, #654).
 ///
-/// What `codebase_lines` draws for the same `limit`, field for field: the
+/// What `graph_lines` draws for the same `limit`, field for field: the
 /// same modules, busiest first, and the same edges per module, with what was
 /// left out counted rather than dropped. Bound, ambiguous and unresolved stay
 /// separate counts with no denominator beside them (CLAUDE.md rule 3).
@@ -1599,7 +1592,7 @@ mod doctor_tests {
 #[cfg(test)]
 mod init_tests {
     use super::*;
-    use crate::index_cmd::MAX_EDGES_DRAWN;
+    use crate::index_cmd::{MAX_EDGES_DRAWN, graph_lines};
     use crate::run_cmd::{action_from, summarise};
 
     fn bare(name: &str) -> PathBuf {
@@ -2010,11 +2003,11 @@ carried back from the clone: app/util.py",
     }
 
     #[test]
-    fn codebase_lines_draws_the_repository_s_own_modules() {
+    fn codebase_graph_draws_the_repository_s_own_modules() {
         let d = repo("codebase-lines");
         std::fs::create_dir_all(d.join("app")).unwrap();
         std::fs::write(d.join("app/util.py"), "def helper():\n    return 1\n").unwrap();
-        let lines = codebase_lines(&d, 40);
+        let lines = graph_lines(&codebase_graph(&d), 40);
         assert_eq!(lines[0], "codebase graph — 1 module(s)", "{lines:#?}");
         assert!(lines.iter().any(|l| l.contains("app.util")), "{lines:#?}");
         let _ = std::fs::remove_dir_all(&d);

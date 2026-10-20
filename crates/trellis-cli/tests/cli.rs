@@ -6035,12 +6035,38 @@ fn under_pty_as(exe: &Path, name: &str, cwd: &Path, after: &str, input: &str) ->
 fn startup_pty_bare_trellis_outside_a_repository_asks_where_to_go() {
     // The start screen, not the refusal: with a person at a terminal, bare
     // `trellis` outside a repository offers somewhere to go, and `q` leaves.
+    // A trellis-tui beside the binary, since the screen's answer is handed
+    // to it and without one the refusal comes first (#516).
     let d = scratch("pty-no-repo");
-    let (ok, s) = under_pty("pty-no-repo", &d, "", "q\n");
+    let exe = trellis_with_stub_tui("pty-no-repo-bin");
+    let (ok, s) = under_pty_as(&exe, "pty-no-repo", &d, "", "q\n");
     assert!(ok, "quitting the start screen is not a failure: {s}");
     assert!(s.contains("is not inside a git repository"), "{s}");
     assert!(!s.contains("no git repository found"), "{s}");
     let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(exe.parent().unwrap());
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_pty_bare_trellis_outside_a_repository_with_no_tui_refuses_before_asking() {
+    // The risk: the start screen asking where to go, then the handoff
+    // refusing with the answer in hand (#516). With no desktop and no
+    // trellis-tui beside the binary the refusal comes first, names where
+    // trellis-tui was looked for and `trellis session`, and no screen is
+    // offered.
+    let d = scratch("pty-no-repo-no-tui");
+    let exe = trellis_copy("pty-no-repo-no-tui-bin");
+    let (ok, s) = under_pty_as(&exe, "pty-no-repo-no-tui", &d, "", "q\n");
+    assert!(!ok, "{s}");
+    assert!(
+        s.contains("trellis-tui is not installed beside this trellis"),
+        "{s}"
+    );
+    assert!(s.contains("`trellis session` is the line interface"), "{s}");
+    assert!(!s.contains("or q to quit"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(exe.parent().unwrap());
 }
 
 #[cfg(unix)]
@@ -6089,6 +6115,27 @@ fn trellis_copy(name: &str) -> PathBuf {
     std::fs::copy(env!("CARGO_BIN_EXE_trellis"), &exe).unwrap();
     wait_until_executable(&exe);
     exe
+}
+
+/// [`trellis_copy`] with a stub `trellis-tui` beside it (the one
+/// `stub_tui` writes), so the start screen has something to hand its answer
+/// to and is offered rather than refused (#516).
+#[cfg(unix)]
+fn trellis_with_stub_tui(name: &str) -> PathBuf {
+    let exe = trellis_copy(name);
+    stub_tui_ready(exe.parent().unwrap());
+    exe
+}
+
+/// [`stub_tui`] in `dir`, run once so it is executable, with what that run
+/// wrote (`--version` as its arguments) removed, so a reader of `args.txt`
+/// there sees only what trellis passed.
+#[cfg(unix)]
+fn stub_tui_ready(dir: &Path) {
+    let stub = stub_tui(dir);
+    wait_until_executable(&stub);
+    let _ = std::fs::remove_file(dir.join("args.txt"));
+    let _ = std::fs::remove_file(dir.join("env.txt"));
 }
 
 /// [`trellis_copy`] with a stub `trellis-desktop` beside it that writes its
@@ -6194,9 +6241,10 @@ fn startup_pty_bare_outside_a_repository_opens_the_desktop_with_no_root() {
 fn startup_pty_bare_with_no_desktop_says_so_then_falls_back() {
     // No desktop beside the binary: one line saying where it looked and
     // what to install, the overview, then today's start screen. A copy, so
-    // a desktop built beside the original cannot open a window here.
+    // a desktop built beside the original cannot open a window here; a
+    // stub trellis-tui beside it, so the screen is offered (#516).
     let d = scratch("pty-bare-no-desktop");
-    let exe = trellis_copy("pty-bare-no-desktop-bin");
+    let exe = trellis_with_stub_tui("pty-bare-no-desktop-bin");
     let (ok, s) = under_pty_as(&exe, "pty-bare-no-desktop", &d, "", "q\n");
     assert!(ok, "{s}");
     let line = s
@@ -6215,9 +6263,11 @@ fn startup_pty_bare_with_no_desktop_says_so_then_falls_back() {
 fn launch_route_tui_flag_keeps_the_terminal() {
     // The risk: `--tui`, the way back to the terminal interface, opening
     // the desktop anyway. Outside a repository it is today's start screen,
-    // with no overview and no desktop started.
+    // with no overview and no desktop started. A stub trellis-tui beside
+    // the binary, so the screen is offered rather than refused (#516).
     let d = scratch("pty-tui-flag");
     let exe = trellis_with_stub_desktop("pty-tui-flag-bin");
+    stub_tui_ready(exe.parent().unwrap());
     let (ok, s) = under_pty_as(&exe, "pty-tui-flag", &d, " --tui", "q\n");
     assert!(ok, "{s}");
     assert!(s.contains("or q to quit"), "{s}");
@@ -7966,7 +8016,7 @@ fn launch_a_tui_on_path_but_not_beside_the_binary_is_not_used() {
         combined(&out)
     );
     assert!(
-        combined(&out).contains("the Go TUI is not installed beside this trellis"),
+        combined(&out).contains("trellis-tui is not installed beside this trellis"),
         "{}",
         combined(&out)
     );
@@ -7976,9 +8026,11 @@ fn launch_a_tui_on_path_but_not_beside_the_binary_is_not_used() {
 }
 
 #[test]
-fn launch_without_a_tui_beside_it_falls_back_to_the_ratatui_tui_and_says_where_it_looked() {
+fn launch_without_a_tui_beside_it_refuses_naming_where_it_looked_and_the_session() {
     // The risk: a missing trellis-tui leaves `trellis tui` doing nothing,
-    // or falls back without saying so.
+    // or refusing without saying where to put it and what still runs. The
+    // Rust TUI fallback that ran here for one release is retired (#516), so
+    // nothing opens: the refusal is the whole answer, and it exits non-zero.
     let repo = empty_repo("launch-missing");
     let bin = scratch("launch-missing-bin");
     let me = trellis_in(&bin);
@@ -7987,16 +8039,55 @@ fn launch_without_a_tui_beside_it_falls_back_to_the_ratatui_tui_and_says_where_i
     let looked = bin.join(format!("trellis-tui{}", std::env::consts::EXE_SUFFIX));
     assert!(
         said.contains(&format!(
-            "the Go TUI is not installed beside this trellis (looked for {})",
+            "trellis-tui is not installed beside this trellis (looked for {})",
             looked.display()
         )),
         "{said}"
     );
-    // The ratatui TUI then ran, and refused the pipe as it always has.
-    assert!(said.contains("needs a terminal"), "{said}");
+    assert!(
+        said.contains("`trellis session` is the line interface"),
+        "{said}"
+    );
+    assert!(!said.contains("opening"), "{said}");
+    // Nothing ran after the refusal: the pipe refusal the Rust TUI gave
+    // belongs to the picker now, which a `--model` never reaches.
+    assert!(!said.contains("needs a terminal"), "{said}");
     assert!(!out.status.success(), "{said}");
     let _ = std::fs::remove_dir_all(&bin);
     let _ = std::fs::remove_dir_all(&repo);
+}
+
+#[cfg(unix)]
+#[test]
+fn launch_bare_with_a_terminal_and_no_tui_refuses_naming_the_session() {
+    // The risk: bare `trellis` in a repository at a terminal, with no
+    // desktop and no trellis-tui beside it, opening something anyway or
+    // exiting 0 having opened nothing. After #516 it prints where
+    // trellis-tui was looked for and that `trellis session` is the line
+    // interface, after the desktop line and the overview, and exits
+    // non-zero. A copy, so nothing built beside the original is found. No
+    // model is configured: the refusal comes before first-run's picker,
+    // which would otherwise wait here for a choice that has nowhere to go.
+    let d = repo("pty-bare-no-tui");
+    let exe = trellis_copy("pty-bare-no-tui-bin");
+    let (ok, s) = under_pty_as(&exe, "pty-bare-no-tui", &d, "", "");
+    assert!(!ok, "{s}");
+    let desktop = s
+        .find("the desktop is not installed beside this trellis")
+        .unwrap_or_else(|| panic!("no desktop line: {s}"));
+    let overview = s.find("recent repositories:").expect(&s);
+    let looked = exe.parent().unwrap().join("trellis-tui");
+    let tui = s
+        .find(&format!(
+            "trellis-tui is not installed beside this trellis (looked for {})",
+            looked.display()
+        ))
+        .unwrap_or_else(|| panic!("no trellis-tui line: {s}"));
+    assert!(desktop < overview && overview < tui, "{s}");
+    assert!(s.contains("`trellis session` is the line interface"), "{s}");
+    assert!(!s.contains("opening"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(exe.parent().unwrap());
 }
 
 #[cfg(unix)]

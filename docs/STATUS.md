@@ -37,8 +37,8 @@ desktop that renders a whole run and a Go/Bubble Tea TUI that replaces the
 ratatui TUI at parity. When this section was written it was **Proposed**,
 pending the owner's acceptance on #500, and nothing in it was built. The
 owner accepted it on 2026-10-07; the desktop and the Go TUI are built since
-(the dated paragraphs below), and the ratatui TUI still ships as the fallback
-for one release (#516).
+(the dated paragraphs below), and the ratatui TUI, the fallback for one
+release, is retired (#516, the last dated paragraph).
 
 *As built 2026-10-07 (#558, #560, #374, #561):* the Tauri desktop
 (`desktop/`) now starts from the command line. `trellis overview` (and
@@ -107,9 +107,20 @@ reason, and the ADR has no amendment accepting them); `scripts/checks/go-parity.
 `trellis tui [task] [--model <spec>]` hand the terminal to `trellis-tui`
 when it is beside `current_exe()` (ADR 0050 section 1, as built 2026-10-12);
 when it is not, the ratatui TUI runs as before, for one release (ADR 0052
-decision 2.2). With that, MISSION.md goal 8 reads "Built, with the ratatui
+decision 2.2). With that, MISSION.md goal 8 read "Built, with the ratatui
 fallback still shipping", short of the parity bar as above; the retirement
 is #516.
+
+*As built 2026-10-20 (#516):* the ratatui TUI is retired. `crates/tui-demo`,
+`tui_run.rs` and `tui_bridge.rs` are deleted, `ratatui` and `crossterm` have
+left `Cargo.lock`, and `--tui`, `trellis tui` and bare `trellis` with no
+desktop refuse when `trellis-tui` is not beside the binary, naming where it
+was looked for and `trellis session` as the line interface
+(`launch_without_a_tui_beside_it_refuses_naming_where_it_looked_and_the_session`,
+`launch_bare_with_a_terminal_and_no_tui_refuses_naming_the_session`, in
+`crates/trellis-cli/tests/cli.rs`). The parity bar is unchanged: the rows of
+`tui/PARITY.md` are the record of what the retired tests held. MISSION.md goal 8
+reads "Built; the ratatui TUI is retired".
 
 ## The measurement (resolves S1's reach; S16 fired, then averted)
 

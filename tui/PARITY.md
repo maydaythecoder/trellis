@@ -1,5 +1,10 @@
 # Go TUI parity with the ratatui TUI
 
+*2026-10-20 (#516): the ratatui TUI is retired.* The five Rust files below
+are deleted; their rows stay as the record of the rules each held, and
+`scripts/checks/go-parity.sh` keeps checking that every Go test a row
+names exists. A rule marked "not ported" is still not ported.
+
 ADR 0052 section 7: the Go TUI (`tui/`) replaces the ratatui TUI once every
 rule the ratatui TUI's tests hold maps to a Go test that passes in
 `scripts/checks/go-test.sh` on both runners. This file has one row per test

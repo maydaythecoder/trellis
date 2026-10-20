@@ -278,7 +278,8 @@ fn starting_with(paths: Vec<String>, prefix: &str) -> Vec<String> {
 static TURNS: LazyLock<Arc<Mutex<Vec<Value>>>> = LazyLock::new(Arc::default);
 
 /// A layer on the one subscriber that keeps each `turn` event's fields. The
-/// same event path `tui_bridge` reads; not a second telemetry channel.
+/// same event path the retired Rust TUI's bridge read (#516); not a second
+/// telemetry channel.
 pub(crate) struct TurnCapture {
     store: Arc<Mutex<Vec<Value>>>,
 }
@@ -316,8 +317,8 @@ impl<S: tracing::Subscriber> Layer<S> for TurnCapture {
     fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
         let mut f = Fields::default();
         event.record(&mut f);
-        // A turn has both a `turn` number and a `call`, the same test
-        // `tui_bridge` applies so a diagnosis event is not taken for one.
+        // A turn has both a `turn` number and a `call`; a diagnosis event
+        // has neither, so it is not taken for one.
         if f.0.get("message") == Some(&json!("turn"))
             && f.0.contains_key("turn")
             && f.0.contains_key("call")

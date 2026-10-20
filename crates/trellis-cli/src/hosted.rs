@@ -1909,17 +1909,14 @@ context_bytes = {set}
 }
 
 /// A loopback server answering as colibri does, for the binary's unit tests
-/// (here and in `tui_run`). Bodies as `tests/colibri_run.rs` transcribes
-/// them from colibri's source at ce370e8; nothing connects anywhere but
-/// 127.0.0.1.
+/// here. Bodies as `tests/colibri_run.rs` transcribes them from colibri's
+/// source at ce370e8; nothing connects anywhere but 127.0.0.1. The refused
+/// and not-verified probe answers it once served went with the Rust TUI's
+/// status-bar tests (#516); `tests/colibri_run.rs` still holds those bodies.
 #[cfg(test)]
 pub(crate) mod colibri_stub {
     use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
-
-    /// ce370e8, c/openai_server.py:1364-1367 (OLMoE refuses `tools` while
-    /// rendering, naming the fallback setting).
-    pub(crate) const REFUSED_OLMOE: &str = r#"{"error":{"message":"OLMoE has no tool-calling chat template; set COLI_TOOL_FALLBACK=1 to render tools as text.","type":"invalid_request_error","param":"tools","code":"unsupported_parameter"}}"#;
 
     /// ce370e8, c/openai_server.py:5169-5241, cut at one token.
     const ACCEPTED: &str = r#"{"id":"chatcmpl-1","object":"chat.completion","created":1758800000,"model":"glm-5.2","choices":[{"index":0,"message":{"role":"assistant","content":"I"},"finish_reason":"length"}],"usage":{"prompt_tokens":40,"completion_tokens":1,"total_tokens":41}}"#;
@@ -1929,17 +1926,6 @@ pub(crate) mod colibri_stub {
 
     pub(crate) fn accepted() -> Probe {
         ("200 OK", ACCEPTED.to_string())
-    }
-
-    pub(crate) fn refused() -> Probe {
-        ("400 Bad Request", REFUSED_OLMOE.to_string())
-    }
-
-    pub(crate) fn not_verified() -> Probe {
-        (
-            "500 Internal Server Error",
-            r#"{"error":"boom"}"#.to_string(),
-        )
     }
 
     pub(crate) struct Stub {
