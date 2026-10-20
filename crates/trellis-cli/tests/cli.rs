@@ -8059,6 +8059,36 @@ fn launch_without_a_tui_beside_it_refuses_naming_where_it_looked_and_the_session
 
 #[cfg(unix)]
 #[test]
+fn launch_first_run_on_a_pipe_refuses_before_the_picker_and_the_handoff() {
+    // The risk: `trellis tui` with no model configured, on a pipe, with a
+    // trellis-tui beside it. The picker runs in Rust before the handoff and
+    // waits on console input that a pipe never sends, so the refusal the
+    // Rust TUI gave here has to survive its retirement (#516): without it
+    // the command hangs, or hands a pipe to trellis-tui. Nothing may run
+    // after the refusal, so the stub must not have been started.
+    let repo = empty_repo("launch-pipe");
+    let bin = scratch("launch-pipe-bin");
+    let me = trellis_in(&bin);
+    stub_tui(&bin);
+    let out = run_at(&me, &repo, &["tui"], &[]);
+    let said = combined(&out);
+    assert!(said.contains("needs a terminal"), "{said}");
+    assert!(said.contains("`trellis run`"), "{said}");
+    assert!(!out.status.success(), "{said}");
+    assert!(
+        !bin.join("args.txt").exists(),
+        "trellis-tui ran on a pipe: {said}"
+    );
+    assert!(
+        !said.contains("No model is configured. These are running"),
+        "the picker ran: {said}"
+    );
+    let _ = std::fs::remove_dir_all(&bin);
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+#[cfg(unix)]
+#[test]
 fn launch_bare_with_a_terminal_and_no_tui_refuses_naming_the_session() {
     // The risk: bare `trellis` in a repository at a terminal, with no
     // desktop and no trellis-tui beside it, opening something anyway or

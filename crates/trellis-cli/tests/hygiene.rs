@@ -100,7 +100,9 @@ fn every_conversational_surface_asks_whether_the_input_is_a_task() {
     // A third surface is the likely future mistake, so the rule is a test
     // rather than a thing to remember. The TUI's surface is `rpc.rs` since
     // the Rust TUI was retired (#516): `trellis-tui` sends what is typed
-    // to `trellis rpc`, whose `classify` command (R1, #501) asks.
+    // to `trellis rpc`, whose `classify` command (R1, #501) asks. This
+    // holds that the command exists; that the Go client calls it before
+    // `prompt` is `tui/internal/model/route_test.go`'s to hold.
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut missing = Vec::new();
     for name in CONVERSATIONAL {

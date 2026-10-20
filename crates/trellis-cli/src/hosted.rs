@@ -1906,6 +1906,116 @@ context_bytes = {set}
         let out = printed_self_report(&"a".repeat(1 << 20));
         assert!(out.len() < 1024, "{} bytes", out.len());
     }
+
+    // ---- #519: one tier-label vocabulary for rpc's get_state ----
+    //
+    // These lived with the Rust TUI's status bar until #516 retired it; the
+    // producers they check are the ones `record_tier` still reads.
+
+    /// Whether `label` has a shape `client_contract.json` documents for
+    /// `get_state`'s `tier`. Read from the contract, so the two cannot drift.
+    fn has_documented_shape(label: &str) -> bool {
+        let c: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/client_contract.json"
+        )))
+        .expect("the contract is JSON");
+        let shapes = &c["rpc"]["commands"]["get_state"]["data"]["tier_label"];
+        let heads: Vec<&str> = shapes["heads"]
+            .as_array()
+            .expect("the contract lists the label heads")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        let sep = shapes["detail_separator"]
+            .as_str()
+            .expect("the contract names the separator");
+        let head = label.split_once(sep).map_or(
+            label,
+            |(h, detail)| {
+                if detail.is_empty() { "" } else { h }
+            },
+        );
+        heads.contains(&head)
+    }
+
+    #[test]
+    fn tier_label_vocabulary_every_backend_s_label_has_a_documented_shape() {
+        // The risk: the Go TUI (#511) and the desktop reading `get_state`'s
+        // tier by its head, while one backend writes `tier 1, …`, another
+        // `2` and a third `?`. Every producer `run_cmd::record_tier` is
+        // handed, by name.
+        let id = || "glm-5.2".to_string();
+        let mut labels = vec![
+            ("hosted, not colibri", ColibriTier::NotColibri.label()),
+            ("colibri probed", ColibriTier::Probed { id: id() }.label()),
+            (
+                "colibri assumed",
+                ColibriTier::Assumed {
+                    id: id(),
+                    reason: "HTTP 500".into(),
+                }
+                .label(),
+            ),
+            (
+                "colibri refused",
+                ColibriTier::Refused {
+                    id: id(),
+                    origin: "http://127.0.0.1:8000".into(),
+                    fallback_named: true,
+                }
+                .label(),
+            ),
+            ("scripted", "scripted".to_string()),
+        ];
+        for probed in [Ok(true), Ok(false), Err("connection refused".to_string())] {
+            labels.push((
+                "runtime",
+                crate::doctor_cmd::runtime_tier_label(&probed).to_string(),
+            ));
+        }
+        let bad: Vec<_> = labels
+            .iter()
+            .filter(|(_, l)| !has_documented_shape(l) || l.starts_with("tier"))
+            .collect();
+        assert!(bad.is_empty(), "labels outside the vocabulary: {bad:?}");
+    }
+
+    #[test]
+    fn tier_label_vocabulary_shape_check_refuses_what_the_contract_does_not_list() {
+        // The check above is only as good as this one: it must not pass a
+        // doubled word, an unknown head or a bare separator.
+        for ok in ["2", "1, native tool calls", "unknown", "scripted"] {
+            assert!(has_documented_shape(ok), "{ok}");
+        }
+        for bad in ["tier 1, native tool calls", "?", "probing…", "1, ", "two"] {
+            assert!(!has_documented_shape(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn tier_label_colibri_escapes_an_esc_byte_in_the_served_id() {
+        // The risk: a served id repainting whichever terminal shows
+        // `get_state`'s tier. Escaped here, before it leaves trellis-cli.
+        let id = "glm\u{1b}[2Kfake".to_string();
+        for label in [
+            ColibriTier::Probed { id: id.clone() }.label(),
+            ColibriTier::Assumed {
+                id: id.clone(),
+                reason: "HTTP 500".into(),
+            }
+            .label(),
+            ColibriTier::Refused {
+                id: id.clone(),
+                origin: "http://127.0.0.1:8000".into(),
+                fallback_named: false,
+            }
+            .label(),
+        ] {
+            assert!(!label.contains('\x1b'), "{label:?}");
+            assert!(label.contains(r"glm\u{1b}[2Kfake"), "{label:?}");
+        }
+    }
 }
 
 /// A loopback server answering as colibri does, for the binary's unit tests
