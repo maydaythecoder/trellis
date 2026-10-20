@@ -3,7 +3,13 @@
 *2026-10-20 (#516): the ratatui TUI is retired.* The five Rust files below
 are deleted; their rows stay as the record of the rules each held, and
 `scripts/checks/go-parity.sh` keeps checking that every Go test a row
-names exists. A rule marked "not ported" is still not ported.
+names exists. A rule marked "not ported" is still not ported. Of the
+`tui_run.rs` rows that say "tested in Rust where it lives", the two
+`tier_label_vocabulary_` tests and `tier_label_colibri_escapes_an_esc_byte_`
+now live in `crates/trellis-cli/src/hosted.rs`, against `ColibriTier::label`
+and `runtime_tier_label` directly; the other `tier_label_colibri_` rows
+tested the status bar's probe, which went with the file, and the run's
+own probe is held by `crates/trellis-cli/tests/colibri_run.rs`.
 
 ADR 0052 section 7: the Go TUI (`tui/`) replaces the ratatui TUI once every
 rule the ratatui TUI's tests hold maps to a Go test that passes in
