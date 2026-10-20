@@ -55,7 +55,6 @@ rustyline.workspace = true
 # trellis-queue's (`std`, `tzdb-bundle-platform`, `tzdb-zoneinfo`), so its
 # zone lookup is unaffected.
 jiff = { version = "0.2.37", default-features = false, features = ["std", "tz-system", "tzdb-bundle-platform", "tzdb-zoneinfo"] }
-tui-demo = { path = "../tui-demo", default-features = false }
 
 # Windows Job Objects for what this crate spawns (ADR 0035).
 [target.'cfg(windows)'.dependencies]

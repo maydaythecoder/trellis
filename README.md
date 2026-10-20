@@ -124,10 +124,10 @@ half no longer matches its digest is shown as altered.
 actions, edits, checks, radius, budget, and a task line that steers a run in
 flight. It is a Go and Bubble Tea client of `trellis rpc` (`tui/`,
 [ADR 0052](docs/adr/0052-two-rpc-clients-and-go-for-the-tui.md)), handed the
-terminal when `trellis-tui` is installed beside `trellis`. Without it, the
-earlier ratatui interface runs for one more release, after a line saying
-where `trellis-tui` was looked for. Every rule the ratatui tests hold is
-mapped to a Go test or marked not ported, with its reason, in
+terminal when `trellis-tui` is installed beside `trellis`. Without it, they
+say where `trellis-tui` was looked for and that `trellis session` is the
+line interface, and stop. Every rule the retired ratatui interface's tests
+held is mapped to a Go test or marked not ported, with its reason, in
 [`tui/PARITY.md`](tui/PARITY.md).
 
 ---
