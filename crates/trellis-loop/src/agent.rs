@@ -769,6 +769,16 @@ pub trait Model {
     fn step_usage(&self) -> StepUsage {
         StepUsage::default()
     }
+
+    /// The run's wall-clock budget left, handed over immediately before
+    /// each [`Model::next_step`]: `max_wall_clock` less the time charged to
+    /// the run so far, the figure a check's `call_within` gets (#280).
+    ///
+    /// The loop checks the budget only between steps, so a call that never
+    /// returns holds the run past it. A driver whose call could run without
+    /// end, a streamed hosted reply kept alive by keepalives, bounds the
+    /// call with this; every other driver ignores it.
+    fn budget_left(&mut self, _left: std::time::Duration) {}
 }
 
 /// The figures the replies behind one step reported, each summed over every
@@ -889,6 +899,11 @@ pub async fn run_seeded<M: Model>(
         // `Instant`, not the wall clock: a host's clock can step mid-call,
         // and a model time that went backwards would be an invented figure.
         let asked = Instant::now();
+        model.budget_left(
+            budget
+                .max_wall_clock
+                .saturating_sub(started.elapsed().saturating_sub(waited_on_human)),
+        );
         let step = model.next_step(&t).await;
         let model_ms = millis(asked.elapsed());
         let step = match step {
@@ -4725,5 +4740,56 @@ mod selector_tests {
         assert!(unread.iter().all(|s| s.line.is_none()));
         let r = render_radius(&report, &unread);
         assert!(r.text.contains("app/main.py:? go certain"), "{}", r.text);
+    }
+}
+
+/// The run's wall-clock budget handed to the model before each call (#280).
+#[cfg(test)]
+mod budget_left_tests {
+    use super::*;
+    use crate::orchestrator::Orchestrator;
+    use crate::testutil::{budget, checker, repo};
+
+    /// Records the budget left it is handed before each call, and sleeps
+    /// before answering so the figure has time to fall.
+    struct BudgetSeen {
+        seen: Vec<std::time::Duration>,
+    }
+
+    impl Model for BudgetSeen {
+        async fn next_step(&mut self, _: &Transcript) -> Result<Step, String> {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            Ok(if self.seen.len() < 2 {
+                Step::Call(ToolCall::ReadFile {
+                    path: "app/util.py".into(),
+                })
+            } else {
+                Step::Done {
+                    summary: "read".into(),
+                }
+            })
+        }
+
+        fn budget_left(&mut self, left: std::time::Duration) {
+            self.seen.push(left);
+        }
+    }
+
+    #[tokio::test]
+    async fn colibri_stream_budget_left_reaches_the_model() {
+        // The risk (#280): a model call bounded by a figure the loop never
+        // hands over, or by a stale one, so a streamed call outlives the
+        // run's wall-clock budget.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), checker(0)).spawn();
+        let mut m = BudgetSeen { seen: Vec::new() };
+        let b = Budget {
+            max_wall_clock: std::time::Duration::from_secs(60),
+            ..budget()
+        };
+        run("read", &mut m, &h, &b).await;
+        assert!(m.seen.len() >= 2, "{:?}", m.seen);
+        assert!(m.seen[0] <= b.max_wall_clock);
+        assert!(m.seen[1] < m.seen[0], "{:?}", m.seen);
     }
 }

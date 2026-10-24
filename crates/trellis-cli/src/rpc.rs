@@ -557,6 +557,10 @@ impl<M: trellis_loop::Model> trellis_loop::Model for Watched<'_, M> {
     fn step_usage(&self) -> trellis_loop::StepUsage {
         self.model.step_usage()
     }
+
+    fn budget_left(&mut self, left: std::time::Duration) {
+        self.model.budget_left(left);
+    }
 }
 
 /// The run of a chain in progress. A follow-up replaces it when it starts.

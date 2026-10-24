@@ -9,7 +9,7 @@
 
 use crate::runtime::RuntimeError;
 use crate::secret::ApiKey;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -355,9 +355,19 @@ pub(crate) enum SendError {
     /// The connection was made and then failed mid-request. Worth a retry.
     #[error("{0}")]
     Broken(String),
-    /// The whole request outran the client's timeout.
+    /// The whole request outran the client's timeout; for a streamed
+    /// request, the server was silent for that long (#280).
     #[error("the request timed out")]
     Timeout,
+    /// A streamed request reached the deadline its caller set, however
+    /// recently the server last sent something (#280).
+    #[error("the request reached its deadline")]
+    Deadline,
+    /// A streamed reply's events were not what the protocol sends. Not
+    /// retried, as a whole reply that is not JSON is not: the server
+    /// answered, and asking again regenerates the reply to the same end.
+    #[error("{0}")]
+    Stream(String),
     #[error("{0}")]
     Config(String),
 }
@@ -412,10 +422,10 @@ fn connect_error(e: std::io::Error, what: String) -> SendError {
 }
 
 /// The request line and the fixed headers, without the key.
-fn request_head(ep: &Endpoint, path: &str, body_len: usize) -> String {
+fn request_head(ep: &Endpoint, path: &str, body_len: usize, accept: &str) -> String {
     format!(
         "POST {}{path} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\n\
-         Accept: application/json\r\nContent-Length: {body_len}\r\nConnection: close\r\n",
+         Accept: {accept}\r\nContent-Length: {body_len}\r\nConnection: close\r\n",
         ep.prefix,
         ep.authority(),
     )
@@ -435,7 +445,7 @@ pub(crate) async fn post(
     body: &str,
     timeout: Duration,
 ) -> Result<Response, SendError> {
-    let mut req = request_head(ep, path, body.len());
+    let mut req = request_head(ep, path, body.len(), "application/json");
     for (k, v) in extra_headers {
         req.push_str(k);
         req.push_str(": ");
@@ -528,14 +538,22 @@ async fn send(
 
 #[cfg(feature = "hosted")]
 async fn tls_exchange(tcp: TcpStream, host: &str, req: &[u8]) -> Result<Response, SendError> {
+    exchange(tls_connect(tcp, host).await?, req).await
+}
+
+/// The TLS session over `tcp`, its handshake done.
+#[cfg(feature = "hosted")]
+async fn tls_connect(
+    tcp: TcpStream,
+    host: &str,
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>, SendError> {
     let connector = tokio_rustls::TlsConnector::from(tls_config().map_err(SendError::Config)?);
     let name = rustls::pki_types::ServerName::try_from(host.to_string())
         .map_err(|e| SendError::Config(format!("`{host}` is not a TLS server name: {e}")))?;
-    let stream = connector
+    connector
         .connect(name, tcp)
         .await
-        .map_err(|e| SendError::Broken(format!("TLS handshake with {host} failed: {e}")))?;
-    exchange(stream, req).await
+        .map_err(|e| SendError::Broken(format!("TLS handshake with {host} failed: {e}")))
 }
 
 #[cfg(not(feature = "hosted"))]
@@ -577,12 +595,6 @@ async fn exchange<S: AsyncRead + AsyncWrite + Unpin>(
     let mut raw: Vec<u8> = Vec::new();
     let mut buf = vec![0u8; 16 * 1024];
     let mut framer = Framer::default();
-    let too_large = || {
-        SendError::Broken(format!(
-            "the response is larger than {} MiB, which no model reply is; nothing more was read",
-            MAX_RESPONSE >> 20
-        ))
-    };
     loop {
         match s.read(&mut buf).await {
             Ok(0) => break,
@@ -611,6 +623,426 @@ async fn exchange<S: AsyncRead + AsyncWrite + Unpin>(
         }
     }
     parse_response(&raw).map_err(SendError::Broken)
+}
+
+/// The bounds one streamed request runs under (#280).
+///
+/// Two, because neither alone ends a stream: colibri sends a keepalive
+/// every 10 s for as long as it generates, so an idle bound never fires on a
+/// stalled engine or a very long reply, and a deadline alone would let a
+/// dead connection sit until it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StreamBounds {
+    /// The longest the server may be silent. Any bytes from it, a
+    /// keepalive comment included, start the bound again.
+    pub idle: Duration,
+    /// When the request ends, whatever is still arriving.
+    pub deadline: Instant,
+}
+
+impl StreamBounds {
+    /// `fut`, bounded by whichever comes first: `idle` from now, or the
+    /// deadline. Each is its own error, so the caller can name the bound
+    /// that ended the request.
+    async fn within<T>(&self, fut: impl std::future::Future<Output = T>) -> Result<T, SendError> {
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(SendError::Deadline);
+        }
+        let wait = self.idle.min(left);
+        tokio::time::timeout(wait, fut).await.map_err(|_| {
+            if left <= self.idle {
+                SendError::Deadline
+            } else {
+                SendError::Timeout
+            }
+        })
+    }
+}
+
+/// How a streamed request ended.
+#[derive(Debug)]
+pub(crate) enum Streamed {
+    /// A success status and an event stream that reached `[DONE]`; every
+    /// event's data went to the caller's handler.
+    Done {
+        status: u16,
+        headers: Vec<(String, String)>,
+    },
+    /// Any other status, read whole as [`post`] reads it, for the caller's
+    /// retry policy. Nothing went to the handler.
+    Status(Response),
+}
+
+/// Sends one POST asking for a server-sent event stream and hands each
+/// event's `data` to `on_data` as it arrives, until `data: [DONE]`.
+///
+/// Never through a proxy: a streamed request goes only to this machine
+/// (`HostedClient::with_streaming`), which `proxy_for` never proxies. A
+/// stream that ends before `[DONE]` is an error, never a partial reply, and
+/// every byte read counts against [`MAX_RESPONSE`], as a whole reply's do.
+pub(crate) async fn post_stream<F>(
+    ep: &Endpoint,
+    path: &str,
+    auth: Option<(Auth, &ApiKey)>,
+    body: &str,
+    bounds: StreamBounds,
+    on_data: F,
+) -> Result<Streamed, SendError>
+where
+    F: FnMut(&str) -> Result<(), String> + Send,
+{
+    let mut req = request_head(ep, path, body.len(), "text/event-stream");
+    push_auth(&mut req, auth);
+    req.push_str("\r\n");
+    req.push_str(body);
+    let addr = socket_addr(&ep.host, ep.port);
+    let tcp = bounds
+        .within(TcpStream::connect(&addr))
+        .await?
+        .map_err(|e| connect_error(e, format!("cannot reach {addr}")))?;
+    if ep.tls {
+        tls_stream(tcp, &ep.host, req.as_bytes(), bounds, on_data).await
+    } else {
+        stream_exchange(tcp, req.as_bytes(), bounds, on_data).await
+    }
+}
+
+#[cfg(feature = "hosted")]
+async fn tls_stream<F>(
+    tcp: TcpStream,
+    host: &str,
+    req: &[u8],
+    bounds: StreamBounds,
+    on_data: F,
+) -> Result<Streamed, SendError>
+where
+    F: FnMut(&str) -> Result<(), String> + Send,
+{
+    let s = bounds.within(tls_connect(tcp, host)).await??;
+    stream_exchange(s, req, bounds, on_data).await
+}
+
+#[cfg(not(feature = "hosted"))]
+async fn tls_stream<F>(
+    _: TcpStream,
+    _: &str,
+    _: &[u8],
+    _: StreamBounds,
+    _: F,
+) -> Result<Streamed, SendError>
+where
+    F: FnMut(&str) -> Result<(), String> + Send,
+{
+    Err(SendError::Config(NO_TLS.to_string()))
+}
+
+fn too_large() -> SendError {
+    SendError::Broken(format!(
+        "the response is larger than {} MiB, which no model reply is; nothing more was read",
+        MAX_RESPONSE >> 20
+    ))
+}
+
+/// The stream half of [`post_stream`]: every read under `bounds`, the
+/// header parsed once, then the body decoded and split into events as it
+/// arrives.
+async fn stream_exchange<S, F>(
+    mut s: S,
+    req: &[u8],
+    bounds: StreamBounds,
+    mut on_data: F,
+) -> Result<Streamed, SendError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    F: FnMut(&str) -> Result<(), String> + Send,
+{
+    let broken = |e: std::io::Error| SendError::Broken(format!("sending the request failed: {e}"));
+    bounds.within(s.write_all(req)).await?.map_err(broken)?;
+    bounds.within(s.flush()).await?.map_err(broken)?;
+    let mut raw: Vec<u8> = Vec::new();
+    let mut buf = vec![0u8; 16 * 1024];
+    let mut read = 0usize;
+    // One read, under the bounds and the cap. `Ok(0)` is the end of the
+    // stream, a TLS close without close_notify included.
+    macro_rules! next {
+        () => {{
+            match bounds.within(s.read(&mut buf)).await? {
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => 0,
+                Err(e) => {
+                    return Err(SendError::Broken(format!(
+                        "reading the response failed: {e}"
+                    )));
+                }
+            }
+        }};
+    }
+    let head_end = loop {
+        let n = next!();
+        if n == 0 {
+            return Err(SendError::Broken(
+                "the connection closed before the response header arrived".to_string(),
+            ));
+        }
+        read += n;
+        if read > MAX_RESPONSE {
+            return Err(too_large());
+        }
+        let from = raw.len().saturating_sub(3);
+        raw.extend_from_slice(&buf[..n]);
+        if let Some(i) = find_subslice(&raw[from..], b"\r\n\r\n") {
+            break from + i + 4;
+        }
+    };
+    let head = parse_head(&raw[..head_end - 4]).map_err(SendError::Broken)?;
+    if !(200..300).contains(&head.status) {
+        // A refusal is a whole response, read as `exchange` reads one, so
+        // the caller's retry policy sees exactly what it sees there.
+        let mut framer = Framer::default();
+        while !framer.complete(&raw) {
+            if framer.declared().is_some_and(|n| n > MAX_RESPONSE) {
+                return Err(too_large());
+            }
+            let n = next!();
+            if n == 0 {
+                break;
+            }
+            read += n;
+            if read > MAX_RESPONSE {
+                return Err(too_large());
+            }
+            raw.extend_from_slice(&buf[..n]);
+        }
+        return parse_response(&raw)
+            .map(Streamed::Status)
+            .map_err(SendError::Broken);
+    }
+    let mut body = BodyDecoder::new(&head.framing);
+    let mut events = SseReader::default();
+    let mut decoded = Vec::new();
+    let mut feed = |bytes: &[u8], body: &mut BodyDecoder, events: &mut SseReader| {
+        decoded.clear();
+        body.feed(bytes, &mut decoded).map_err(SendError::Broken)?;
+        events.feed(&decoded, &mut on_data)
+    };
+    feed(&raw[head_end..], &mut body, &mut events)?;
+    drop(raw);
+    while !events.done {
+        if body.finished() {
+            break;
+        }
+        let n = next!();
+        if n == 0 {
+            break;
+        }
+        read += n;
+        if read > MAX_RESPONSE {
+            return Err(too_large());
+        }
+        feed(&buf[..n], &mut body, &mut events)?;
+    }
+    if !events.done {
+        return Err(SendError::Broken(
+            "the event stream was cut short: it ended before `data: [DONE]`, so the reply \
+             is incomplete and none of it was used"
+                .to_string(),
+        ));
+    }
+    Ok(Streamed::Done {
+        status: head.status,
+        headers: head.headers,
+    })
+}
+
+/// A success response's body, undone from its transfer framing as it
+/// arrives.
+enum BodyDecoder {
+    /// `Content-Length`: this many bytes still to come.
+    Length(usize),
+    Unframed,
+    Chunked(Dechunker),
+}
+
+impl BodyDecoder {
+    fn new(framing: &Framing) -> Self {
+        match framing {
+            Framing::Length(n) => Self::Length(*n),
+            Framing::Unframed => Self::Unframed,
+            Framing::Chunked => Self::Chunked(Dechunker::default()),
+        }
+    }
+
+    fn feed(&mut self, b: &[u8], out: &mut Vec<u8>) -> Result<(), String> {
+        match self {
+            Self::Length(left) => {
+                let k = (*left).min(b.len());
+                out.extend_from_slice(&b[..k]);
+                *left -= k;
+                Ok(())
+            }
+            Self::Unframed => {
+                out.extend_from_slice(b);
+                Ok(())
+            }
+            Self::Chunked(d) => d.feed(b, out),
+        }
+    }
+
+    /// Whether the framing says the body is over.
+    fn finished(&self) -> bool {
+        match self {
+            Self::Length(left) => *left == 0,
+            Self::Unframed => false,
+            Self::Chunked(d) => matches!(d.at, Dechunk::Done),
+        }
+    }
+}
+
+/// Chunked transfer coding undone a piece at a time: what [`dechunk`] does
+/// to a whole body, for one that has not finished arriving.
+#[derive(Default)]
+struct Dechunker {
+    /// A size or trailer line not yet ended.
+    line: Vec<u8>,
+    at: Dechunk,
+}
+
+#[derive(Default)]
+enum Dechunk {
+    #[default]
+    Size,
+    Data(usize),
+    /// After a chunk's data: its CR, then its LF.
+    DataCr,
+    DataLf,
+    Trailers,
+    Done,
+}
+
+impl Dechunker {
+    fn feed(&mut self, mut b: &[u8], out: &mut Vec<u8>) -> Result<(), String> {
+        while let Some(&first) = b.first() {
+            match self.at {
+                Dechunk::Size | Dechunk::Trailers => {
+                    let Some(i) = b.iter().position(|&c| c == b'\n') else {
+                        self.line.extend_from_slice(b);
+                        if self.line.len() > MAX_SIZE_LINE {
+                            return Err("a chunk size line is longer than any is".to_string());
+                        }
+                        return Ok(());
+                    };
+                    self.line.extend_from_slice(&b[..i]);
+                    b = &b[i + 1..];
+                    let line = std::mem::take(&mut self.line);
+                    let line = line.strip_suffix(b"\r").unwrap_or(&line);
+                    self.at = match self.at {
+                        Dechunk::Size => match chunk_size(line)? {
+                            0 => Dechunk::Trailers,
+                            n => Dechunk::Data(n),
+                        },
+                        _ if line.is_empty() => Dechunk::Done,
+                        _ => Dechunk::Trailers,
+                    };
+                }
+                Dechunk::Data(n) => {
+                    let k = n.min(b.len());
+                    out.extend_from_slice(&b[..k]);
+                    b = &b[k..];
+                    self.at = if k == n {
+                        Dechunk::DataCr
+                    } else {
+                        Dechunk::Data(n - k)
+                    };
+                }
+                Dechunk::DataCr | Dechunk::DataLf => {
+                    let want = if matches!(self.at, Dechunk::DataCr) {
+                        b'\r'
+                    } else {
+                        b'\n'
+                    };
+                    if first != want {
+                        return Err("a chunk's data does not end in CRLF".to_string());
+                    }
+                    b = &b[1..];
+                    self.at = if want == b'\r' {
+                        Dechunk::DataLf
+                    } else {
+                        Dechunk::Size
+                    };
+                }
+                Dechunk::Done => return Ok(()),
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Server-sent events, split from a body as it arrives (the WHATWG
+/// event-stream format): lines end in LF or CRLF, a blank line ends an
+/// event, `data:` lines are its data, and a line starting with `:` is a
+/// comment, which is what a keepalive is.
+#[derive(Default)]
+struct SseReader {
+    line: Vec<u8>,
+    data: Option<String>,
+    /// `data: [DONE]` arrived: the reply is whole.
+    done: bool,
+}
+
+impl SseReader {
+    fn feed<F>(&mut self, mut b: &[u8], on_data: &mut F) -> Result<(), SendError>
+    where
+        F: FnMut(&str) -> Result<(), String>,
+    {
+        while !self.done {
+            let Some(i) = b.iter().position(|&c| c == b'\n') else {
+                self.line.extend_from_slice(b);
+                return Ok(());
+            };
+            self.line.extend_from_slice(&b[..i]);
+            b = &b[i + 1..];
+            let line = std::mem::take(&mut self.line);
+            self.one_line(line.strip_suffix(b"\r").unwrap_or(&line), on_data)?;
+        }
+        Ok(())
+    }
+
+    fn one_line<F>(&mut self, line: &[u8], on_data: &mut F) -> Result<(), SendError>
+    where
+        F: FnMut(&str) -> Result<(), String>,
+    {
+        if line.is_empty() {
+            match self.data.take() {
+                Some(d) if d == "[DONE]" => self.done = true,
+                Some(d) => on_data(&d).map_err(SendError::Stream)?,
+                None => {}
+            }
+            return Ok(());
+        }
+        if line.starts_with(b":") {
+            return Ok(());
+        }
+        let (field, value) = match line.iter().position(|&c| c == b':') {
+            Some(i) => (&line[..i], &line[i + 1..]),
+            None => (line, &line[line.len()..]),
+        };
+        if field != b"data" {
+            // `event`, `id` and `retry` say nothing a reply is made of.
+            return Ok(());
+        }
+        let value = value.strip_prefix(b" ").unwrap_or(value);
+        let value = std::str::from_utf8(value)
+            .map_err(|_| SendError::Stream("an event's data is not UTF-8".to_string()))?;
+        match &mut self.data {
+            Some(d) => {
+                d.push('\n');
+                d.push_str(value);
+            }
+            None => self.data = Some(value.to_string()),
+        }
+        Ok(())
+    }
 }
 
 /// Decides when a response read in pieces is whole, by its own framing,
@@ -942,7 +1374,7 @@ mod tests {
         // `127.0.0.1:8080` behind a name-based proxy was sent `Host:
         // 127.0.0.1`, which RFC 9110 §7.2 says names port 80.
         let host = |base: &str| {
-            let head = request_head(&Endpoint::parse(base).unwrap(), "/x", 0);
+            let head = request_head(&Endpoint::parse(base).unwrap(), "/x", 0, "application/json");
             head.lines()
                 .find_map(|l| l.strip_prefix("Host: ").map(str::to_string))
                 .unwrap()
