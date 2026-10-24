@@ -310,7 +310,7 @@ about it.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/crates-dark.svg">
-  <img src="docs/assets/crates-light.svg" width="980" alt="The workspace in four rows. Interfaces: trellis-cli, desktop, tui-demo, trellis-tickets. The loop: trellis-loop, trellis-queue, trellis-trail, trellis-vcs. The facts: trellis-index, trellis-checks, trellis-model, trellis-vault. The base: trellis-core, which depends on nothing. Arrows show which crates may depend on which. A footer names the two boundaries that are load-bearing.">
+  <img src="docs/assets/crates-light.svg" width="980" alt="The workspace in four rows. Interfaces: trellis-cli, desktop, tui/ (Go), trellis-tickets. The loop: trellis-loop, trellis-queue, trellis-trail, trellis-vcs. The facts: trellis-index, trellis-checks, trellis-model, trellis-vault. The base: trellis-core, which depends on nothing. Arrows show which crates may depend on which. A footer names the two boundaries that are load-bearing.">
 </picture>
 
 Two boundaries are held by tests and review rather than by convention.
