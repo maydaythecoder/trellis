@@ -116,6 +116,16 @@ Two layers (#206):
   runs the full audit: history, live credentials, GitHub settings, Actions,
   code and supply chain. It writes `security/AUDIT-<date>.md`. It runs before
   every merge of `dev` into `main`.
+- **`.github/workflows/audit.yml`**, a weekly scheduled run (Mondays, 08:17
+  UTC, and `workflow_dispatch`) of the same `cargo deny --locked check` and
+  `cargo audit` the `supply-chain` job runs, against `main`. New advisories
+  land against unchanged code, and nothing else re-checks a tree that sits
+  still (#213 T6, #220). Decided 2026-10-04 for the self-hosted runners
+  after #219; recorded 2026-10-23 on a GitHub-hosted runner instead, since
+  those runners are set aside and a hosted runner holds none of the owner's
+  credentials. Same pins as `ci.yml`. GitHub runs a schedule only from the
+  file on `main`, so the first scheduled run follows the next `dev` → `main`
+  promotion.
 
 The workflows pass `zizmor` at medium and above since #215: every action is
 pinned to a commit SHA resolved from its tag through the GitHub API (the tag
