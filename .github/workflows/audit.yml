@@ -1,0 +1,61 @@
+name: Weekly audit
+
+# New advisories land against unchanged code. CI's `supply-chain` job only
+# runs when something is pushed or a pull request moves, so a tree that sits
+# still is never re-checked; the security audit (#213, T6) found that gap.
+# This runs the same two checks against `main` once a week, and on
+# `workflow_dispatch` so the schedule can be exercised without waiting.
+#
+# Decision (#220): a weekly scheduled audit, so it never runs with the
+# owner's credentials in reach. Decided 2026-10-04 for the self-hosted
+# runners after #219; with those runners set aside (2026-10-19) it runs on a
+# GitHub-hosted runner, which has no credentials of the owner's at all. A
+# scheduled run checks out the default branch, `main`.
+#
+# Same pins as `ci.yml`'s supply-chain job: action SHAs, toolchain 1.93.0,
+# cargo-deny 0.20.2, cargo-audit 0.22.2, `--locked` on every cargo command.
+# Nothing here writes to the repository.
+on:
+  schedule:
+    # Mondays, 08:17 UTC. Off the hour: scheduled runs on the hour are the
+    # ones GitHub delays or drops under load.
+    - cron: "17 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  supply-chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head, resolved 2026-09-30
+        with:
+          toolchain: "1.93.0"
+      # Caches ~/.cargo/bin, so the pinned tools are not recompiled per run.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # RUSTFLAGS is cleared for this step only, as in ci.yml: a lint in the
+      # tools' own dependency tree must not fail the install.
+      - name: Install cargo-deny and cargo-audit (pinned)
+        env:
+          RUSTFLAGS: ""
+        run: |
+          cargo install --locked cargo-deny --version 0.20.2
+          cargo install --locked cargo-audit --version 0.22.2
+
+      # Fails on any advisory not listed, with its reason, in `deny.toml`.
+      - name: Licences, bans, sources, advisories
+        run: cargo deny --locked check
+
+      # cargo-audit does not read `deny.toml`; it exits non-zero on a
+      # vulnerability and reports unmaintained crates as warnings.
+      - name: RustSec advisories
+        run: cargo audit
