@@ -1,6 +1,7 @@
 # ADR 0048 — A Tauri desktop interface, in `desktop/`, as a `trellis rpc` client
 
-**Status:** Accepted (owner-directed). Not built (story S15, #365).
+**Status:** Accepted (owner-directed). Built (story S15, #365, every ticket
+closed; the page's panes, the last of it, by #513, 2026-10-10).
 **Date:** 2026-10-04
 **Decided by:** the session, under the owner's 2026-10-04 delegation of the
 upstream plan's open questions ("ready for completion without decisions"),
@@ -156,6 +157,15 @@ The event and trail fields listed in
 `crates/trellis-cli/tests/client_contract.json` (DESK-07) are what an rpc or
 `log --json` client may rely on, held by tests through the binary. Fields it
 does not list stay as unversioned as ADR 0025 §4 leaves them.
+*Added 2026-10-12 (#627):* the `runtime identified` event (ADR 0047
+decision 13) is listed: `runtime` and `served` always, and `kv_slots`,
+`tiers_vram`, `tiers_ram` and `tiers_disk` only when colibri's `/health`
+reported them, absent and never 0 otherwise, with the contract saying when
+each is left off. It is sent once per run, before the first model request,
+only for an endpoint identified as colibri, and stays out of the trail.
+Held by `rpc_runtime_identified_carries_every_field_the_contract_lists_once_per_run`
+and `rpc_runtime_identified_leaves_unreported_counts_absent_never_0` in
+`tests/modes.rs`. The desktop pane that draws it is #628.
 
 ### 7. Auditing Tauri's tree
 
@@ -255,6 +265,38 @@ commit's tree is read through `trellis_vcs` into a temporary directory
 outside the repository and removed; nothing the repository holds is
 written. No `--json` is added to `index`, `radius` or any other command,
 and section 2's spawns are unchanged.
+*Added 2026-10-12 (#632):* the vault view also reads `vault_check` (ADR
+0025 §5, added 2026-10-12, #631), one more read-only type `rpc_send`
+forwards: the report line, the issues, the warnings and the run gate's
+answer `trellis vault check` prints, as text under the vault section's
+Check pane, asked as each child starts and on the pane's button. The gate
+answer is vault validation, not a verdict (ADR 0004): it never reaches the
+run section's checks pane, held by
+`vault_check_is_drawn_in_the_vault_section_and_never_as_a_check_row` in
+`src/lockdown.rs`. No `fix` is sent; rpc refuses the field by name, and
+every vault write stays a `trellis vault` command (#70). Section 2's
+spawns are unchanged.
+*Amended 2026-10-12 (#654), owner-directed (the owner's decision of
+2026-10-12, on #654):* after `get_codebase` indexes the worktree, it saves
+that index to `.trellis/index.bin`, so the overview's codebase pane, which
+reads only a current cache (ADR 0050 section 3), describes the graph the
+Codebase section just drew instead of saying "not indexed; run trellis
+index". This is the one write a read-only view causes, and it is not a new
+writer: it goes through `index_cmd::save_index`, the function `trellis
+index` saves through, onto `trellis_index::cache::save`, after the same
+refusal of a root with no `.git` entry; the self-ignoring
+`.trellis/.gitignore` that writer makes keeps the worktree clean (ADR
+0009), and the trust digest already leaves the blob out (ADR 0023, amended
+2026-09-27). A `get_codebase` with `ref` saves nothing, since the cache
+describes the worktree. The answer says which as `index_saved`, with
+`index_bytes` when saved and `index_not_saved` (why) when not; a failed
+save does not fail the answer. `get_radius`, `get_symbols`, `get_history`,
+`get_queue`, `vault_search`, `vault_graph` and `vault_check` still write
+nothing, and the vault and the queue are still written only through
+`prompt`. The desktop
+reads the overview again when the Codebase section's answer says it saved;
+the Atlas's worktree answers save too, and the overview shows them at its
+next read. Built 2026-10-12 (#654).
 
 ## Alternatives rejected
 

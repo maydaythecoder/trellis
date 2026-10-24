@@ -7,7 +7,7 @@ Conventions for this repository. Read before changing anything.
 TRELLIS: a Rust agent harness for Python repositories. It builds a call graph of
 first-party code, drives an agent loop against it, verifies changes with the
 repo's own type checker and test suite, and commits a decision trail. Two
-planned rpc clients: a Tauri desktop and a Go/Bubble Tea TUI (ADR 0048, 0052).
+rpc clients, both built: a Tauri desktop and a Go/Bubble Tea TUI (ADR 0048, 0052).
 
 `docs/BRIEF.md` is the specification. `docs/MISSION.md` is the short version.
 
@@ -78,8 +78,8 @@ trellis-vault    Apex vault -> one note's context  (must NEVER depend on trellis
 trellis-queue    local task queue + heartbeat loop (file-backed, in the git dir; no trellis-loop/model)
 trellis-tickets  ticketing standard's label rules    (pure functions + a separate binary; depends only on trellis-core; ADR 0040)
 trellis-cli      the binary
-tui-demo         the TUI against a mock event source (depends on no trellis crate; trellis-cli takes it with default-features = false)
-desktop/         its own workspace and lock; depends on no trellis crate (ADR 0048; rules in desktop/CLAUDE.md)
+tui/             the Go `trellis rpc` client, `trellis-tui`; its own Go module, parity in tui/PARITY.md (ADR 0052)
+desktop/         the Tauri `trellis rpc` client; its own workspace and lock; depends on no trellis crate (ADR 0048; rules in desktop/CLAUDE.md)
 ```
 
 Two of these are not stylistic:
@@ -173,8 +173,7 @@ good the reason sounds.
 
 `tree-sitter` and `tree-sitter-python` share a C ABI. **Do not bump them
 independently.** The verified pairing is 0.27.0 / 0.25.0, asserted by
-`crates/trellis-index/tests/grammar_abi.rs`, which turns a runtime failure into
-a test failure.
+`crates/trellis-index/tests/grammar_abi.rs` (runtime failure -> test failure).
 
 `bincode` 3.0.0 is a protest release that deliberately fails to compile. The
 workspace uses `postcard`.

@@ -120,6 +120,11 @@ pub fn now() -> (String, String) {
 pub fn write(root: &Path, trail: &Trail, timestamp: &str, slug: &str) -> std::io::Result<PathBuf> {
     let rel = Trail::path(timestamp, slug);
     let path = root.join(&rel);
+    // Not through a link: a repository can commit `.trellis` or
+    // `.trellis/runs` as a link to a directory outside itself, and the trail
+    // would land wherever it points (#721, the shape `index.bin` had).
+    // Checked before anything is created, as `replay.rs` does for its paths.
+    trellis_core::links::refuse_links_below(root, Path::new(&rel), "the trail")?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -188,6 +193,7 @@ mod tests {
         Trail {
             task: task.into(),
             started_at: iso_now(),
+            ended_at: None,
             schema: SCHEMA,
             run_id: "20260920-000000-000-test".into(),
             base_commit: "0000000".into(),
@@ -307,6 +313,31 @@ mod tests {
         assert_eq!(
             t.task, "newer",
             "names sort chronologically, so the last is the newest"
+        );
+    }
+
+    #[test]
+    fn a_runs_directory_linked_outside_the_repository_is_refused_and_nothing_written() {
+        // #721's shape for trails: a committed `.trellis/runs` link to a
+        // directory outside the repository would receive every trail.
+        let d = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join(".trellis")).unwrap();
+        let link = d.path().join(".trellis/runs");
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_dir(outside.path(), &link);
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(outside.path(), &link);
+        if let Err(e) = made {
+            eprintln!("skipped: cannot create a directory symlink here: {e}");
+            return;
+        }
+        let e = write(d.path(), &trail("x"), "20260920-000000", "x").unwrap_err();
+        assert!(e.to_string().contains("symbolic link"), "{e}");
+        assert_eq!(
+            std::fs::read_dir(outside.path()).unwrap().count(),
+            0,
+            "a trail was written through the link"
         );
     }
 

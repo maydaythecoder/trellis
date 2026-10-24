@@ -1,10 +1,10 @@
 //! The run's action graph, laid out for the page to draw as SVG (#303).
 //!
-//! The TUI's action graph (`crates/tui-demo/src/tui/view.rs`,
-//! `render_actions`) draws the tools the prompt offers as nodes converging
+//! The ratatui TUI's action graph (`render_actions` in its `view.rs`, retired
+//! with #516) drew the tools the prompt offers as nodes converging
 //! on a focus: filled for a tool that ran, a ring for one offered and not
 //! called, its calls counted against it and its writes counted apart. The
-//! desktop draws the same picture. Everything the picture needs (where each
+//! desktop draws that picture. Everything the picture needs (where each
 //! node sits in a fixed `viewBox`, fill or ring, the count text, which
 //! target labels show and where) is decided here, where `cargo test` holds
 //! it, and `ui/graph.js` only draws what this sends in the `view` event.

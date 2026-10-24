@@ -1,6 +1,6 @@
 # colibri engine and serving side: capability inventory (v1.12.1, Apache-2.0)
 
-**Upstream:** `JustVugg/colibri` at commit `ce370e87d7b623d7759b52ec2007d75fc5b0e87e` (2026-09-25, "Merge pull request #1663 from JustVugg/dev"), version 1.12.1 (`c/version.py`). Read from a local clone at that commit.
+**Upstream:** `JustVugg/colibri` at commit `ce370e87d7b623d7759b52ec2007d75fc5b0e87e` (2026-09-25, "Merge pull request #1663 from JustVugg/dev"), version 1.12.1 (`c/version.py`). Read from a local clone at that commit. Re-read in part at 2.0.0 for #612: see Re-inventory at 2.0.0, at the end; the rows above are as read at 1.12.1.
 **Scope:** the engine and serving side: `c/`, `colibri/`, `docs/`, `docker/`, `Makefile`, `flake.nix`, `pyproject.toml`, `README*`, `CHANGELOG.md`, `GPU_BACKENDS.md`, `.github/workflows/`. `web/`, `desktop/` and `site/` are out of scope. The one exception is the data the Brain and Profiling pages read, which comes from server endpoints and is covered here.
 
 ## Method
@@ -201,3 +201,26 @@ TRELLIS is also Apache-2.0 (`LICENSE`, `Cargo.toml`, `deny.toml`). Porting code 
 - per-model docs beyond headings and targeted reads;
 - most of `c/tools/*.py`;
 - `web/`, `desktop/` and `site/`.
+
+## Re-inventory at 2.0.0
+
+**Upstream:** `JustVugg/colibri` at `bf2442915d6e3dd4cdfd2eb9c2a3d2aa44a25850` (2026-10-06, "Merge pull request #1966 from JustVugg/dev"), version 2.0.0 (`c/version.py:3`; `CHANGELOG.md:6`, 169 pull requests since 1.12.1). Read for #612 from a sparse clone at that commit.
+
+**Read:** `CHANGELOG.md` (the 2.0.0 section); `c/version.py`; `c/family_registry.py` (the dataclasses and every descriptor, `:1242-1790`); `c/coli` (the `serve` flags, `:3570-3577`, and the slot check, `:3003-3004`); in `c/openai_server.py`, the error envelope, the chat-template dispatch (`:3470-3506`) and the templates it names for qwen36, Qwen3-Coder and MiMo, the tools refusals, the Anthropic translation and image path, the `/v1/models` object, the `/health` payload and the engine's `TIERS`/`HWINFO` lines, the SSE keepalives and the `/v1/systemone` route; `docs/systemone.md`. Nothing else was re-read; a row not named below is as read at 1.12.1.
+
+| Row | At 2.0.0 | Where (bf24429) |
+|---|---|---|
+| COL-ENG-29 KV slots | `--kv-slots` 1 to 16 on every chat family, default 1; above the family's maximum refused; with more than one slot nothing drafts and the dense chain stays off | `CHANGELOG.md:20-28` (#1955); `c/family_registry.py:1279-1651` (`max_kv_slots` 16); `c/coli:3576`, `:3003-3004` |
+| COL-ENG-53 Qwen3.6 | tools rendered by Qwen3.6's own template; no `COLI_TOOL_FALLBACK` needed. The registry's `tools` bit for qwen36 is still `False` (`c/family_registry.py:1491`); TRELLIS probes rather than reading it (ADR 0047 decision 4) | `CHANGELOG.md:185-186` (#1794); `c/openai_server.py:1779-1800`, `:3485-3487` |
+| COL-ENG-48 Inkling, COL-ENG-54 OLMoE | unchanged: Inkling refuses tools with no fallback; OLMoE refuses them unless `COLI_TOOL_FALLBACK=1` | `c/openai_server.py:2522-2524`; `:1735-1738` |
+| COL-ENG-20 POST /v1/messages | serves Anthropic `image` blocks in user messages (base64 or url source), one image per request as on the chat route | `CHANGELOG.md:190-192` (#1791); `c/openai_server.py:3646-3672`, `:3747-3751`, `:7864`, `:7850-7852` |
+| COL-ENG-39 POST /v1/brio | removed | `CHANGELOG.md:133-134` (#1856); `docs/systemone.md:132-134` |
+| COL-ENG-40 POST /v1/systemone | the one decision API: a state and typed questions (`noul`, `choice`, `score`); each answer carries probabilities and a `confidence`; no entropy field in the reply (the terminal and page show entropy) | `docs/systemone.md:1-10`, `:24`, `:77-79`; `c/openai_server.py:6009`, `:6696` |
+| COL-ENG-55 Family registry | ten chat families: the nine of 1.12.1 and MiMo-V2.6 (Flash, Pro); the qwen36 family also serves Qwen3.8-27B (dense), Qwen3-Coder-30B-A3B and Qwen3-Coder-REAP-25B-A3B; plus Qwen-Image-2.1 (image) and Laya and GLiNER2.5-Decide (decision, no text) | `c/family_registry.py:1446-1474`, `:1615-1654`, `:1663-1790` |
+| COL-ENG-56 chat templates | Qwen3-Coder (`render_chat_qwen3_coder`) and MiMo (`render_chat_mimo`) take tools; a qwen36 checkpoint whose template is Qwen3.8's or Qwen3-Coder's renders with that one | `c/openai_server.py:1103-1118`, `:2042`, `:2261`, `:3480-3487`, `:3504` |
+
+**Unchanged where TRELLIS reads (S14):** `owned_by: "colibri"` on `/v1/models` (`c/openai_server.py:5997`); the error envelope (`:97-99`); the `TIERS` and `HWINFO` fields `Tiers` and `HwInfo` require (`:5595-5624`), sent on `/health` with `kv_slots` (`:6598-6604`); SSE keepalives on the streaming OpenAI routes (`:7511-7545`, `_keepalive_choice` at `:4309`).
+
+**Changed in TRELLIS for #612:** docs/runtimes/colibri.md (KV slots, the families table, Anthropic images, `/v1/systemone`), ADR 0047 (dated amendments), and `COLIBRI_FAMILIES` in crates/trellis-cli/src/models_cmd.rs (the 2.0.0 chat names, held by `model_pull_colibri_2_0_0_families_get_colibris_tooling_too`).
+
+**Open:** whether 2.0.0 still hashes a conversation to a KV slot when a request sends no `cache_slot` (ADR 0047, What is not built) was not re-read.

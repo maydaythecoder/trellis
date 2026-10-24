@@ -32,6 +32,9 @@ serde.workspace = true
 # `log --json` and `rpc` framing (ADR 0025); already in the tree.
 serde_json.workspace = true
 toml.workspace = true
+# The per-file digest `trellis install` records in packages.toml (ADR 0039
+# §4, #617); already in the tree through trellis-loop (ADR 0044).
+sha2.workspace = true
 tracing.workspace = true
 # `json`: the `--log-json` formatter (ADR 0020 §7). Adds `tracing-serde`;
 # serde and serde_json were already in the tree.
@@ -52,7 +55,6 @@ rustyline.workspace = true
 # trellis-queue's (`std`, `tzdb-bundle-platform`, `tzdb-zoneinfo`), so its
 # zone lookup is unaffected.
 jiff = { version = "0.2.37", default-features = false, features = ["std", "tz-system", "tzdb-bundle-platform", "tzdb-zoneinfo"] }
-tui-demo = { path = "../tui-demo", default-features = false }
 
 # Windows Job Objects for what this crate spawns (ADR 0035).
 [target.'cfg(windows)'.dependencies]

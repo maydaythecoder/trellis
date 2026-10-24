@@ -158,6 +158,8 @@ pub struct Hooks {
     /// its script each time, and a script rewritten since trust was given
     /// is not what the person trusted.
     guard: Option<crate::trust::TrustGuard>,
+    /// The OS sandbox each hook runs under inside its clone (ADR 0055).
+    os: crate::os_sandbox::OsSandbox,
 }
 
 impl Hooks {
@@ -171,7 +173,16 @@ impl Hooks {
             timeout,
             env,
             guard: None,
+            os: crate::os_sandbox::OsSandbox::detected().clone(),
         }
+    }
+
+    /// The OS sandbox hooks run under, in place of the one detected for
+    /// this machine.
+    #[must_use]
+    pub fn with_os_sandbox(mut self, os: crate::os_sandbox::OsSandbox) -> Self {
+        self.os = os;
+        self
     }
 
     /// Refuses every spawn once `guard` finds the trusted code changed.
@@ -249,6 +260,7 @@ impl Hooks {
             cap: OUTPUT_CAP,
             head,
             whole: false,
+            os: Some(&self.os),
         }))
         .await
         .map_err(HookError::from)

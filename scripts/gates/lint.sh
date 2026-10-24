@@ -17,4 +17,21 @@ bash scripts/checks/adr-numbers.sh --self-test > /dev/null || fail "adr-numbers.
 # The exit-gate check holds a ticked box to a test that exists (#467, #484).
 bash scripts/checks/gate-checked.sh --self-test > /dev/null || fail "gate-checked.sh self-test failed"
 adr=$(bash scripts/checks/adr-numbers.sh "$GATE_BASE") || { printf '%s\n' "$adr"; fail "two ADRs share a number, or a held number is misused"; }
-echo "OK: fmt, clippy -D warnings, no #[allow] added; $adr"
+# Go branch (ADR 0052, #504): gofmt clean, go vet clean, and no `//nolint`
+# added, Go's form of a lint suppression.
+if go_module_present; then
+  go_require
+  unformatted=$(cd tui && gofmt -l .)
+  [ -z "$unformatted" ] || { printf '%s\n' "$unformatted"; fail "gofmt -l lists the files above under tui/"; }
+  (cd tui && go vet ./...)
+  added=$(git diff -U0 "$GATE_BASE"...HEAD -- 'tui/*.go' 'tui/**/*.go' | grep -vE '^\+\+\+' | grep -E '^\+.*//[[:space:]]*nolint' || true)
+  if [ -n "$added" ]; then
+    echo "FAIL: this change adds //nolint suppressions (against $GATE_BASE):"
+    printf '%s\n' "$added"
+    exit 1
+  fi
+  gomsg="; tui/: gofmt, go vet, no //nolint added"
+else
+  gomsg="; Go branch skipped: tui/ is absent"
+fi
+echo "OK: fmt, clippy -D warnings, no #[allow] added; $adr$gomsg"

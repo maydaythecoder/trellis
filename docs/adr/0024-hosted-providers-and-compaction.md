@@ -521,6 +521,25 @@ repository may no longer name `key_env`.
   the key or the request body. Evidence: the `connect_retry_` tests in
   `crates/trellis-model/src/hosted.rs` and `transport.rs`.
 
+  *Amended 2026-10-11 (#613): an overload without `Retry-After` waits
+  longer.* A 529 or 503 that names no `Retry-After` waits 15, 30 and 60 s
+  before its second, third and fourth attempt, each within the 60 s
+  `MAX_RETRY_WAIT`, instead of 1, 2 and 4 s. Anthropic's 529 carries no
+  `Retry-After`, so a ten-second overload ended the model call and the run
+  went `ModelFailed` and was rolled back. The attempt count is unchanged:
+  the fourth failure still ends the call and reports its status, and
+  now reads `(after 4 attempts)` after the body, as a timed-out connect
+  does. A
+  `Retry-After` is still honoured as above whatever the status, and 429,
+  500, 502, 504 and the transport failures keep 1, 2, 4 s. The waits count
+  inside the run's wall-clock budget (ADR 0008), and no key path changes
+  (rule 8). Each wait logs one `provider asked for a retry` event with the
+  status and `wait_s`. Evidence: `status_retry_delay` and the tests
+  `an_overloaded_529_or_503_without_retry_after_waits_15_30_60_s`,
+  `an_overloaded_status_with_retry_after_waits_what_it_asked_for` and
+  `not_overloaded_statuses_keep_the_1_2_4_s_schedule` in
+  `crates/trellis-model/src/hosted.rs`.
+
 ### 5. Compaction: elision, not summary
 
 `[model] context_bytes` sets a ceiling on the bytes of one request's

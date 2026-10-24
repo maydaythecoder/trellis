@@ -126,6 +126,11 @@ const COMMANDS: &[(&str, &str)] = &[
          read-only: {note}",
     ),
     (
+        "vault_check",
+        "the report line, issues, warnings and run-gate answer `trellis vault check` \
+         prints, as data, read-only; `--fix` has no rpc form, and a `fix` field is refused",
+    ),
+    (
         "classify",
         "whether {text} is a question or a task, by the rule the TUI routes on; starts no \
          run: {intent}, and {answer} when it is a question",
@@ -273,7 +278,8 @@ fn starting_with(paths: Vec<String>, prefix: &str) -> Vec<String> {
 static TURNS: LazyLock<Arc<Mutex<Vec<Value>>>> = LazyLock::new(Arc::default);
 
 /// A layer on the one subscriber that keeps each `turn` event's fields. The
-/// same event path `tui_bridge` reads; not a second telemetry channel.
+/// same event path the retired Rust TUI's bridge read (#516); not a second
+/// telemetry channel.
 pub(crate) struct TurnCapture {
     store: Arc<Mutex<Vec<Value>>>,
 }
@@ -311,8 +317,8 @@ impl<S: tracing::Subscriber> Layer<S> for TurnCapture {
     fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
         let mut f = Fields::default();
         event.record(&mut f);
-        // A turn has both a `turn` number and a `call`, the same test
-        // `tui_bridge` applies so a diagnosis event is not taken for one.
+        // A turn has both a `turn` number and a `call`; a diagnosis event
+        // has neither, so it is not taken for one.
         if f.0.get("message") == Some(&json!("turn"))
             && f.0.contains_key("turn")
             && f.0.contains_key("call")
@@ -650,6 +656,11 @@ struct Server {
     waiters: Vec<std::thread::JoinHandle<()>>,
     /// Where `list_models` looks and `set_model {save}` writes.
     sources: ModelSources,
+    /// The `provider:colibri#<id>` specs `list_models` has offered, each
+    /// with the base its `[[providers]]` entry names (#625), so `set_model
+    /// {save: true}` on one writes the entry the spec needs beside the spec.
+    /// Shared with `list_models`'s thread, which fills it.
+    colibri_offers: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
 /// Where `list_models` probes for local runtimes and which user config file
@@ -723,6 +734,7 @@ fn serve_with(
         input_closed: Arc::default(),
         waiters: Vec::new(),
         sources,
+        colibri_offers: Arc::default(),
     };
     // A read error is the end of input, not a return: `?` here left `serve`
     // with a run in flight, and the process exited with no rollback and no
@@ -831,8 +843,11 @@ impl Server {
         }));
     }
 
-    /// `get_codebase`: the module graph as data, built in memory as the
-    /// interface's `/codebase` builds it; nothing is written.
+    /// `get_codebase`: the module graph as data, built as the interface's
+    /// `/codebase` builds it. The worktree's index is then saved to
+    /// `.trellis/index.bin` through the writer `trellis index` uses, so the
+    /// overview reads the index this answer drew (#654, the owner's
+    /// decision of 2026-10-12); nothing else is written.
     ///
     /// Answered from another thread, as `compact` is: indexing a large
     /// repository takes seconds, and on this thread it would hold up the
@@ -1049,6 +1064,33 @@ impl Server {
         self.waiters.push(std::thread::spawn(move || {
             let result = crate::vault_cmd::graph_json(&root, &note).map_err(|e| format!("{e:#}"));
             respond_on(&sink, id.as_deref(), "vault_graph", result);
+        }));
+    }
+
+    /// `vault_check`: what `trellis vault check` prints, from the same
+    /// report, as data; nothing is written. `--fix` is a vault write, and
+    /// every vault write stays a `trellis vault` command (#70), so a `fix`
+    /// field is refused by name rather than ignored: a client that sent it
+    /// would otherwise read the unrepaired report as the repaired one. The
+    /// CLI's path exits the process on a refusing gate and is not reused.
+    /// Answered from another thread, as `vault_search` is.
+    fn vault_check(&mut self, cmd: &Value, id: Option<&str>) {
+        if cmd.get("fix").is_some() {
+            self.respond(
+                id,
+                "vault_check",
+                Err(
+                    "`fix` is not an rpc field: rpc reads the vault and never repairs it; \
+                     `trellis vault check --fix` does (#70)"
+                        .into(),
+                ),
+            );
+            return;
+        }
+        let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
+        self.waiters.push(std::thread::spawn(move || {
+            let result = crate::vault_cmd::check_json(&root).map_err(|e| format!("{e:#}"));
+            respond_on(&sink, id.as_deref(), "vault_check", result);
         }));
     }
 
@@ -1341,6 +1383,7 @@ impl Server {
             "list_paths" => self.list_paths(cmd, id),
             "vault_search" => self.vault_search(cmd, id),
             "vault_graph" => self.vault_graph(cmd, id),
+            "vault_check" => self.vault_check(cmd, id),
             "classify" => {
                 if let Err(e) = self.classify(cmd, id) {
                     self.respond(id, kind, Err(e));
@@ -1488,6 +1531,22 @@ impl Server {
                 file.display()
             ));
         }
+        // A colibri `list_models` offered needs its `[[providers]]` entry
+        // beside the spec (#625), written first for the reason `first_run`
+        // writes it first: an entry refused (one named `colibri` already,
+        // at another address) leaves no spec naming a provider that points
+        // elsewhere. Only for a spec this session offered: the base is the
+        // one its probe read, and nothing else names one.
+        let offered = self
+            .colibri_offers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(spec)
+            .cloned();
+        if let Some(base) = offered {
+            crate::user_config::set_colibri_provider(file, &base)
+                .map_err(|e| format!("{e:#}; no model was set"))?;
+        }
         crate::user_config::set_model_spec(file, spec)
             .map_err(|e| format!("{e:#}; no model was set"))?;
         Ok(file.clone())
@@ -1530,8 +1589,19 @@ impl Server {
             .collect();
         let runtimes = self.sources.runtimes.clone();
         let (sink, id) = (self.sink.clone(), id.map(str::to_string));
+        let colibri_offers = self.colibri_offers.clone();
         self.waiters.push(std::thread::spawn(move || {
             let probed = crate::first_run::probe(&runtimes, crate::first_run::BOUND);
+            {
+                let mut known = colibri_offers
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                for o in crate::first_run::offers(&probed) {
+                    if let Some(base) = o.colibri_base {
+                        known.insert(o.spec, base);
+                    }
+                }
+            }
             let tried: Vec<Value> = probed
                 .iter()
                 .map(|p| {
@@ -1942,6 +2012,7 @@ impl Chain {
                 model_source: crate::hosted::SpecSource::Repository,
                 queued: false,
                 services: &[],
+                trust_root: None,
             },
             RunControl {
                 flag: self.flag,
@@ -2366,6 +2437,7 @@ mod tests {
                 runtimes: Vec::new(),
                 user_file: None,
             },
+            colibri_offers: Arc::default(),
         };
         let answered = std::thread::spawn(|| {});
         while !answered.is_finished() {
@@ -2709,6 +2781,7 @@ mod tests {
                 runtimes: Vec::new(),
                 user_file: None,
             },
+            colibri_offers: Arc::default(),
         };
         for cmd in [
             json!({"id": "g", "type": "get_codebase"}),
@@ -2760,6 +2833,7 @@ mod tests {
                 runtimes: Vec::new(),
                 user_file: None,
             },
+            colibri_offers: Arc::default(),
         };
         let cmds = [
             json!({"id": "s", "type": "get_symbols"}),
@@ -3088,6 +3162,92 @@ mod tests {
         assert_eq!(
             d["providers"],
             json!([{"name": "mine", "key_variable": "ANTHROPIC_API_KEY"}])
+        );
+        let _ = std::fs::remove_dir_all(&user);
+    }
+
+    /// A loopback stub answering `GET /v1/models` as colibri 2.0.0 does
+    /// (bf244291, c/openai_server.py:5997: `owned_by: "colibri"`).
+    fn colibri_stub() -> (std::net::SocketAddr, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        const BODY: &str = r#"{"object":"list","data":[{"id":"glm-5.2","object":"model","created":1758800000,"owned_by":"colibri"}]}"#;
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let h = std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            let mut req = Vec::new();
+            let mut b = [0u8; 1];
+            while !req.ends_with(b"\r\n\r\n") && s.read(&mut b).unwrap() == 1 {
+                req.push(b[0]);
+            }
+            assert!(req.starts_with(b"GET /v1/models "), "{req:?}");
+            write!(
+                s,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{BODY}",
+                BODY.len()
+            )
+            .unwrap();
+        });
+        (addr, h)
+    }
+
+    #[test]
+    fn first_run_colibri_rpc_list_models_offers_the_provider_spec_and_save_writes_its_entry() {
+        // The risk (#625): the desktop's picker offers colibri as a `vllm:`
+        // spec (tier 4, no chat template), or offers `provider:colibri#<id>`
+        // and a save writes the spec without the `[[providers]]` entry it
+        // resolves through, so the saved model names nothing.
+        let (dir, _) = fixture("list-models-colibri", "");
+        let (addr, stub) = colibri_stub();
+        let user = crate::testutil::scratch("rpc-list-models-colibri-user");
+        let file = user.join("config.toml");
+        std::fs::write(&file, "# mine\n").unwrap();
+        let c = Client::start_with(
+            &dir,
+            ModelSources {
+                runtimes: vec![crate::first_run::Runtime {
+                    name: "vLLM",
+                    addr,
+                    api: crate::first_run::Api::OpenAiModels,
+                }],
+                user_file: Some(file.clone()),
+            },
+        );
+        c.send(json!({"id": "l", "type": "list_models"}));
+        let r = c.wait_for(|r| r["id"] == "l");
+        stub.join().unwrap();
+        assert_eq!(r["success"], true, "{r}");
+        assert_eq!(
+            r["data"]["local"],
+            json!(["provider:colibri#glm-5.2"]),
+            "the provider spec and no vllm: one: {r}"
+        );
+        c.send(
+            json!({"id": "s", "type": "set_model", "model": "provider:colibri#glm-5.2",
+                      "save": true}),
+        );
+        let r = c.wait_for(|r| r["id"] == "s");
+        c.finish();
+        assert_eq!(r["success"], true, "{r}");
+        assert_eq!(
+            r["data"]["saved_to"],
+            json!(file.display().to_string()),
+            "{r}"
+        );
+        let written = std::fs::read_to_string(&file).unwrap();
+        assert!(written.starts_with("# mine\n"), "{written}");
+        let cfg = crate::config::RepoConfig::load_with_user(&dir, Some(&file)).unwrap();
+        assert_eq!(cfg.model().as_deref(), Some("provider:colibri#glm-5.2"));
+        let p = cfg.provider("colibri").unwrap();
+        assert_eq!(p.base_url, format!("http://{addr}/v1"));
+        assert_eq!(p.key_env, "COLI_API_KEY");
+        assert!(
+            !dir.join(".trellis/config.toml").exists()
+                || !std::fs::read_to_string(dir.join(".trellis/config.toml"))
+                    .unwrap()
+                    .contains("colibri"),
+            "nothing under .trellis/ names the provider"
         );
         let _ = std::fs::remove_dir_all(&user);
     }

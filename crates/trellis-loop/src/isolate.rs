@@ -604,22 +604,7 @@ mod tests {
     }
 
     fn with_bash(root: &Path) -> Handle {
-        let mut shell = shell_argv("");
-        shell.pop();
-        let tools = ToolSet::build(ToolSelection {
-            bash: Some(BashSettings {
-                shell,
-                timeout: Duration::from_secs(60),
-                allow: Vec::new(),
-                unattended: true,
-            }),
-            ..Default::default()
-        })
-        .unwrap();
-        Orchestrator::new(root, CheckConfig::default())
-            .with_tools(tools)
-            .spawn()
-            .0
+        with_bash_under(root, crate::os_sandbox::OsSandbox::detected().clone())
     }
 
     async fn bash(orch: &Handle, command: &str) -> (String, bool) {
@@ -1376,6 +1361,217 @@ mod tests {
         drop(clone);
         git_dir_untouched(root, &before);
         assert_eq!(git(root, &["status", "--porcelain"]), "");
+    }
+
+    // --- The OS sandbox around the clone's command (ADR 0055, #621) ------
+    //
+    // Each test runs its probe twice: once with no sandbox, which must
+    // succeed (so a probe that could never have worked cannot pass), then
+    // under this platform's sandbox, given a fake home directory to hide.
+    // On a machine where the sandbox is missing or fails its trial run the
+    // second run must go ahead unconfined and say why, which is the
+    // owner's warn-not-refuse decision; the confinement half is then not
+    // exercised, and the test says so on stderr.
+
+    /// This platform's sandbox, probed with `home` as the directory to hide.
+    /// Only the unix tests below use these four helpers; on Windows they
+    /// would be dead code under `-D warnings`.
+    #[cfg(unix)]
+    fn platform_sandbox(home: &Path) -> crate::os_sandbox::OsSandbox {
+        use crate::os_sandbox::{OsSandbox, OsSandboxKind};
+        let temp = std::env::temp_dir();
+        if cfg!(target_os = "linux") {
+            OsSandbox::probe(OsSandboxKind::Bwrap, Some(home), &temp)
+        } else if cfg!(target_os = "macos") {
+            OsSandbox::probe(OsSandboxKind::SandboxExec, Some(home), &temp)
+        } else {
+            OsSandbox::none("no OS sandbox on this platform")
+        }
+    }
+
+    fn with_bash_under(root: &Path, os: crate::os_sandbox::OsSandbox) -> Handle {
+        let mut shell = shell_argv("");
+        shell.pop();
+        let tools = ToolSet::build(ToolSelection {
+            bash: Some(BashSettings {
+                shell,
+                timeout: Duration::from_secs(60),
+                allow: Vec::new(),
+                unattended: true,
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+        Orchestrator::new(root, CheckConfig::default())
+            .with_tools(tools)
+            .with_os_sandbox(os)
+            .spawn()
+            .0
+    }
+
+    /// A shell line that prints `CONNECTED` if a TCP connection to
+    /// 127.0.0.1:`port` opens, and `NO-CONNECTION` otherwise.
+    #[cfg(unix)]
+    fn connect_line(port: u16) -> String {
+        format!(
+            "bash -c 'echo x > /dev/tcp/127.0.0.1/{port}' 2>/dev/null && echo CONNECTED \
+             || echo NO-CONNECTION"
+        )
+    }
+
+    /// A fake home directory holding a canary built at run time.
+    #[cfg(unix)]
+    fn fake_home() -> (tempfile::TempDir, std::path::PathBuf, String) {
+        let home = tempfile::tempdir().unwrap();
+        let canary = format!("canary-621-{}", std::process::id());
+        let file = home.path().join("credentials");
+        std::fs::write(&file, &canary).unwrap();
+        (home, file, canary)
+    }
+
+    #[cfg(unix)]
+    fn unconfined_said_why(os: &crate::os_sandbox::OsSandbox) {
+        let label = os.label();
+        assert!(label.starts_with("none ("), "{label}");
+        eprintln!("no working OS sandbox here ({label}); the confinement half was not exercised");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sandboxed_writer_bash_cannot_open_a_tcp_connection_to_loopback() {
+        // The risk (ADR 0032, "Limits"): the clone's command could open any
+        // connection the user can and send anything it read. Loopback is
+        // the hardest case for a namespace that keeps a `lo` of its own: a
+        // port trellis's machine listens on must not be reachable from it.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let d = committed();
+        let root = d.path();
+        let (home, _, _) = fake_home();
+
+        let open = with_bash_under(root, crate::os_sandbox::OsSandbox::none("control"));
+        let (said, _) = bash(&open, &connect_line(port)).await;
+        assert!(
+            said.contains("CONNECTED") && !said.contains("NO-CONNECTION"),
+            "{said}"
+        );
+
+        let os = platform_sandbox(home.path());
+        let confined = with_bash_under(root, os.clone());
+        let (said, _) = bash(&confined, &connect_line(port)).await;
+        if os.is_active() {
+            assert!(said.contains("NO-CONNECTION"), "{}: {said}", os.label());
+        } else {
+            unconfined_said_why(&os);
+            assert!(said.contains("CONNECTED"), "{said}");
+        }
+        drop(listener);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sandboxed_writer_bash_cannot_read_a_file_under_a_fake_home() {
+        // The risk (ADR 0032, "Limits"): the home directory, credentials
+        // files and other repositories were readable to the command, which
+        // could copy a key's bytes into a tracked file or its output.
+        let d = committed();
+        let root = d.path();
+        let (home, file, canary) = fake_home();
+        let read = format!("cat '{}' 2>/dev/null || echo UNREADABLE", file.display());
+
+        let open = with_bash_under(root, crate::os_sandbox::OsSandbox::none("control"));
+        let (said, _) = bash(&open, &read).await;
+        assert!(said.contains(&canary), "{said}");
+
+        let os = platform_sandbox(home.path());
+        let confined = with_bash_under(root, os.clone());
+        let (said, _) = bash(&confined, &read).await;
+        if os.is_active() {
+            assert!(!said.contains(&canary), "{}: {said}", os.label());
+            assert!(said.contains("UNREADABLE"), "{said}");
+            // The clone itself is still the command's to read and write.
+            let (said, _) = bash(
+                &confined,
+                "cat app/util.py && echo w > scratch.txt && echo WROTE",
+            )
+            .await;
+            assert!(
+                said.contains("def helper") && said.contains("WROTE"),
+                "{said}"
+            );
+        } else {
+            unconfined_said_why(&os);
+            assert!(said.contains(&canary), "{said}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn sandboxed_writer_bash_cannot_see_trellis_s_process() {
+        // The risk: `/proc/<trellis pid>/environ` holds the provider key
+        // trellis reads, and `/proc/<trellis pid>/cwd` leads to the
+        // repository through the host's mounts, around a read-only root.
+        // In its own pid namespace the command sees neither.
+        let d = committed();
+        let root = d.path();
+        let (home, _, _) = fake_home();
+        let probe = format!(
+            "test -e /proc/{}/environ && echo VISIBLE || echo HIDDEN",
+            std::process::id()
+        );
+        let open = with_bash_under(root, crate::os_sandbox::OsSandbox::none("control"));
+        let (said, _) = bash(&open, &probe).await;
+        assert!(said.contains("VISIBLE"), "{said}");
+
+        let os = platform_sandbox(home.path());
+        let (said, _) = bash(&with_bash_under(root, os.clone()), &probe).await;
+        if os.is_active() {
+            assert!(said.contains("HIDDEN"), "{said}");
+        } else {
+            unconfined_said_why(&os);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sandboxed_writer_hook_cannot_open_a_tcp_connection_or_read_a_fake_home() {
+        // Hooks run through the same `exec::run` as `bash`, from their own
+        // clone; the sandbox must reach them as well, not only the tool.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let d = committed();
+        let root = d.path();
+        let (home, file, canary) = fake_home();
+        let script = format!(
+            "{}; cat '{}' 2>/dev/null || echo UNREADABLE",
+            connect_line(port),
+            file.display()
+        );
+        let os = platform_sandbox(home.path());
+        let h = hooked(
+            root,
+            crate::hooks::HookConfig {
+                before_run: Some(shell_argv(&script)),
+                timeout_s: Some(30),
+                ..Default::default()
+            },
+        )
+        .with_os_sandbox(os.clone());
+        let said = h.before_run().await.unwrap().unwrap();
+        if os.is_active() {
+            assert!(said.contains("NO-CONNECTION"), "{said}");
+            assert!(
+                !said.contains(&canary) && said.contains("UNREADABLE"),
+                "{said}"
+            );
+        } else {
+            unconfined_said_why(&os);
+            assert!(
+                said.contains("CONNECTED") && said.contains(&canary),
+                "{said}"
+            );
+        }
+        drop(listener);
     }
 
     #[test]
