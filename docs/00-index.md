@@ -75,8 +75,9 @@ trellis/
     ├── trellis-vault/         # Apex vault → one note's context; must not depend on trellis-model
     ├── trellis-queue/         # local task queue + heartbeat loop, file-backed in the git dir
     ├── trellis-tickets/       # ticketing label rules + separate binary; depends only on trellis-core (ADR 0040)
-    ├── trellis-cli/           # binary
-    └── tui-demo/              # what `trellis tui` runs; the one TUI (Q-19)
+    └── trellis-cli/           # binary
+tui/                           # the Go `trellis rpc` client, `trellis-tui` (ADR 0052)
+desktop/                       # the Tauri `trellis rpc` client (ADR 0048)
 ```
 
 Crate boundaries are load-bearing. `trellis-index` must not depend on `trellis-model` — the graph has to be testable with no model anywhere near it. `trellis-checks` owning `Verdict` is what makes Constraint 2 structural.
