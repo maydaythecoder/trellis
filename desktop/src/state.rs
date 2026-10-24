@@ -3,9 +3,9 @@
 //! The TUI's `AppState::update` is synchronous and does no I/O, which is why
 //! its tests run without a terminal; `DesktopState::update` is the same for
 //! the desktop: a [`Frame`] in, the panes it changed out, and nothing read
-//! or written anywhere else. It follows `crates/trellis-cli/src/tui_bridge.rs`
-//! for what a turn means, so the desktop and the TUI draw one run the same
-//! way.
+//! or written anywhere else. It follows what `crates/trellis-cli/src/rpc.rs`
+//! serves as a turn (the rule `tui_bridge.rs` held until the ratatui TUI was
+//! retired, #516), so the desktop and the Go TUI draw one run the same way.
 //!
 //! What it shows is what trellis reported (ADR 0048 §8): radius is three
 //! counts and never a ratio (CLAUDE.md rule 3); the budget is iterations,
