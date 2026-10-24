@@ -478,13 +478,14 @@ fn area_of_root_claude_md_is_docs() {
 }
 
 #[test]
-fn area_of_the_tickets_crate_is_build_and_tui_demo_is_tui() {
-    // #282: #194's mapping left both crates out, so every ticket touching
-    // them went to a person. The tickets crate is repository tooling, as
-    // scripts/ is; tui-demo is an interface, as the desktop is.
+fn area_of_the_tickets_crate_is_build_and_the_go_tui_is_tui() {
+    // #282: #194's mapping left the tickets crate out, so every ticket
+    // touching it went to a person. It is repository tooling, as scripts/
+    // is; tui/ is an interface, as the desktop is (#777: the ratatui crate
+    // this once asserted is gone, #516).
     for (file, want) in [
         ("crates/trellis-tickets/src/rules.rs", "area:build"),
-        ("crates/tui-demo/src/tui/app.rs", "area:tui"),
+        ("tui/internal/model/model.go", "area:tui"),
     ] {
         let t = ticket("Add a thing", &body(&format!("**Files:** {file}")), &[]);
         assert_eq!(value(&area(&t)).label(), want, "{file}");
