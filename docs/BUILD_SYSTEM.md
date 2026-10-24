@@ -116,6 +116,16 @@ Two layers (#206):
   runs the full audit: history, live credentials, GitHub settings, Actions,
   code and supply chain. It writes `security/AUDIT-<date>.md`. It runs before
   every merge of `dev` into `main`.
+- **`.github/workflows/audit.yml`**, a weekly scheduled run (Mondays, 08:17
+  UTC, and `workflow_dispatch`) of the same `cargo deny --locked check` and
+  `cargo audit` the `supply-chain` job runs, against `main`. New advisories
+  land against unchanged code, and nothing else re-checks a tree that sits
+  still (#213 T6, #220). Decided 2026-10-04 for the self-hosted runners
+  after #219; recorded 2026-10-23 on a GitHub-hosted runner instead, since
+  those runners are set aside and a hosted runner holds none of the owner's
+  credentials. Same pins as `ci.yml`. GitHub runs a schedule only from the
+  file on `main`, so the first scheduled run follows the next `dev` → `main`
+  promotion.
 
 The workflows pass `zizmor` at medium and above since #215: every action is
 pinned to a commit SHA resolved from its tag through the GitHub API (the tag
@@ -269,9 +279,9 @@ instead; a smoke job on one ran while GitHub-hosted jobs were blocked (run
 - Until #736, each `runs-on` in `ci.yml` read `vars.LINUX_RUNNER` /
   `vars.WINDOWS_RUNNER` (repository variables holding a JSON label list) and
   fell back to `ubuntu-latest` / `windows-latest` when unset. `ci.yml` and
-  `release.yml` no longer read those variables, so bringing a self-hosted
-  runner back to them is a workflow change, not a variable. `mutants.yml`
-  still reads them, with the same hosted fallback.
+  `release.yml` no longer read those variables, and since 2026-10-23 (#248)
+  neither does `mutants.yml`, so bringing a self-hosted runner back to any of
+  them is a workflow change, not a variable.
 - Each runner's `.env` gives jobs their own `CARGO_HOME`, `RUSTUP_HOME` and
   `GIT_CONFIG_GLOBAL` under the runner's directory. Without them a job runs as
   the owner with the owner's homes: on 2026-09-28 `Swatinem/rust-cache`'s
@@ -458,9 +468,9 @@ dropped from `.path`, and its directory can be deleted by hand.
 suite against each mutant. These are the flags `WORKSPACE_TESTS=1
 scripts/mutate-by-crate.sh` uses: `-p <crate> --test-workspace true
 --timeout 300 -j 1`. It runs on `workflow_dispatch` only, never on a push or
-a pull request. It still reads the runner variables `ci.yml` read until
-#736 (`vars.LINUX_RUNNER`, `vars.WINDOWS_RUNNER`, hosted fallback) and uses
-the same pins as `ci.yml`: action SHAs, toolchain 1.93.0, cargo-mutants 27.1.0 installed with
+a pull request. It runs on GitHub-hosted runners (`ubuntu-latest`,
+`windows-latest`; it read `vars.LINUX_RUNNER` / `vars.WINDOWS_RUNNER` until
+2026-10-23, see "CI runners") and uses the same pins as `ci.yml`: action SHAs, toolchain 1.93.0, cargo-mutants 27.1.0 installed with
 `--locked`, and `--locked` on every cargo command it runs. It uploads
 `mutants.out/` as the artifact `mutants-<crate>-<os>-<commit>[-shard-k-of-n][-file-<stem>]`,
 kept for 30 days. The job limit is 360 minutes, GitHub's limit for hosted
@@ -468,10 +478,8 @@ runners. A shard that reaches the step's 345-minute limit still uploads the
 outcomes it has.
 
 GitHub dispatches a workflow by name only when the file is on the default
-branch (`main`). `--ref` picks the branch whose head is tested. On the
-self-hosted runners, run it only when they are idle: the Linux leg holds the
-runner `ci.yml` needs. (Written for the self-hosted runners, set aside
-2026-10-19; `ci.yml` no longer reads the runner variables.)
+branch (`main`), so the hosted `runs-on` takes effect once the change is
+promoted to `main`. `--ref` picks the branch whose head is tested.
 
 ```
 gh workflow run mutants.yml -f crate=trellis-cli                      # whole crate, one job
@@ -487,11 +495,10 @@ which takes about 46 seconds warm, plus each mutant's build. One job cannot run 
 all in 6 hours. Dispatch shard `0/10` first and read its wall time, then size
 `n` for the other shards. Every shard of one run must use the same `n`, or the
 shards do not split the mutants between them. Dispatch the next shard after
-the previous one finishes. A job that waits more than 24 hours for a
-self-hosted runner is cancelled. Since 2026-10-19 the self-hosted runners
-are set aside; `mutants.yml` still reads `vars.LINUX_RUNNER` and
-`vars.WINDOWS_RUNNER`, so a dispatch runs on a hosted runner only once those
-variables are unset, and queues on an offline runner while they are set.
+the previous one finishes. (Until 2026-10-23 the workflow read the runner
+variables; with the self-hosted runners set aside, a dispatch queued on an
+offline runner and was cancelled after 24 hours. It now names the hosted
+runners directly.)
 
 The optional `file` input (#556) passes `-f <path>` to cargo-mutants, so only
 that source file's mutants run, e.g. `-f file=crates/trellis-cli/src/main.rs`.

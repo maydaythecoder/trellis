@@ -87,7 +87,7 @@ fn nothing_read_from_a_trail_is_printed_to_a_terminal_unsanitised() {
 ///
 /// Not `run`: naming a task on the command line says it is one. These are the
 /// ones where the next thing typed might be a question.
-const CONVERSATIONAL: &[&str] = &["tui_run.rs", "session.rs"];
+const CONVERSATIONAL: &[&str] = &["rpc.rs", "session.rs"];
 
 #[test]
 fn every_conversational_surface_asks_whether_the_input_is_a_task() {
@@ -98,7 +98,11 @@ fn every_conversational_surface_asks_whether_the_input_is_a_task() {
     // for days with nothing to catch it.
     //
     // A third surface is the likely future mistake, so the rule is a test
-    // rather than a thing to remember.
+    // rather than a thing to remember. The TUI's surface is `rpc.rs` since
+    // the Rust TUI was retired (#516): `trellis-tui` sends what is typed
+    // to `trellis rpc`, whose `classify` command (R1, #501) asks. This
+    // holds that the command exists; that the Go client calls it before
+    // `prompt` is `tui/internal/model/route_test.go`'s to hold.
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut missing = Vec::new();
     for name in CONVERSATIONAL {

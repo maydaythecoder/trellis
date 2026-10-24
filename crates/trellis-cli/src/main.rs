@@ -44,8 +44,6 @@ mod templates; // prompt templates with arguments (ADR 0025 §3)
 mod testutil; // fixtures shared by this crate's tests
 mod tooling; // what a run may execute beyond its checks
 mod trust_cmd; // `trust` (ADR 0023 §4)
-mod tui_bridge; // the agent loop as a stream of TUI messages
-mod tui_run; // `tui <task>`
 mod user_config; // the user-level configuration directory and its layering
 mod vault_cmd; // `vault` (ADR 0022)
 mod work; // `queue` and `work` (ADR 0020, ADR 0026)
@@ -65,9 +63,7 @@ pub(crate) use run_cmd::{
     cmd_run_with, show_answer, show_question,
 };
 #[cfg(test)]
-pub(crate) use run_cmd::{
-    PANIC_IN_RUN, RUN_POLLED_ON, RUN_THREAD, print_undelivered, steering_entries,
-};
+pub(crate) use run_cmd::{PANIC_IN_RUN, RUN_POLLED_ON, RUN_THREAD, print_undelivered};
 
 #[derive(Parser)]
 #[command(
@@ -263,9 +259,9 @@ enum Command {
     ///
     /// `trellis --tui` opens it too, as bare `trellis` does at a terminal
     /// with no desktop to open. This is the surface for watching one run
-    /// rather than issuing a sequence of commands, and it renders the same
-    /// `AppState` the standalone `tui_demo` binary does — only the source of
-    /// events differs.
+    /// rather than issuing a sequence of commands. It is `trellis-tui`, the
+    /// Go client of `trellis rpc`, installed beside this binary (ADR 0052);
+    /// without one, this says where it was looked for and stops.
     Tui {
         /// A task to start immediately. Omit it to open idle and type one.
         task: Option<String>,
@@ -634,6 +630,15 @@ fn main() -> Result<()> {
                     return Ok(());
                 }
                 terminal_only = true;
+                // The repository the start screen picks is handed to
+                // `trellis-tui` (#516). With none beside this binary that
+                // handoff refuses, so refuse before asking a question whose
+                // answer would go nowhere.
+                let exe = std::env::current_exe()
+                    .context("cannot find the running trellis executable")?;
+                if let Err(tried) = launch::find_tui(&exe) {
+                    anyhow::bail!(launch::tui_not_found(&tried));
+                }
                 match start_screen::offer_start_screen()? {
                     Some(r) => r,
                     None => return Ok(()),
@@ -710,7 +715,8 @@ fn main() -> Result<()> {
         // Bare `trellis` at a terminal opens the desktop on this root and
         // prints the overview (ADR 0050 §1, the owner's decision of
         // 2026-10-07, #561). Without a desktop to open, and for `--tui`, it
-        // opens the full-screen interface.
+        // hands the terminal to `trellis-tui`, or refuses naming where it
+        // looked (#516).
         //
         // The line session is still there as `trellis session`, and is still
         // what runs when there is no terminal to take over: a pipe, a
@@ -1020,12 +1026,13 @@ fn launch_route(route: Route, desktop: Option<&Path>, display: bool) -> Launch {
     }
 }
 
-/// The terminal interface (ADR 0052 decision 2.2, ADR 0050 §1, #514).
+/// The terminal interface (ADR 0052 decision 2.2, ADR 0050 §1, #514, #516).
 ///
 /// With `trellis-tui` beside this executable, first run keeps its turn in
 /// Rust (ADR 0050 §2) and then the terminal is handed to it. Without one,
-/// the ratatui TUI runs as before, for one release, after a line on stderr
-/// saying where `trellis-tui` was looked for. `spec` is the model to use,
+/// this refuses, naming where `trellis-tui` was looked for and the line
+/// interface that still runs: the Rust TUI fallback shipped for one release
+/// after the handoff and is retired (#516). `spec` is the model to use,
 /// `--model`'s when `from_user`, otherwise the configured one.
 fn terminal_ui(
     root: &Path,
@@ -1034,23 +1041,21 @@ fn terminal_ui(
     from_user: bool,
 ) -> Result<()> {
     let exe = std::env::current_exe().context("cannot find the running trellis executable")?;
-    let tui = match launch::find_tui(&exe) {
-        Ok(t) => t,
-        Err(tried) => {
-            let _ = writeln!(std::io::stderr(), "{}", launch::tui_not_found(&tried));
-            return tui_run::run(root, task, spec, from_user);
-        }
-    };
+    let tui =
+        launch::find_tui(&exe).map_err(|tried| anyhow::anyhow!(launch::tui_not_found(&tried)))?;
     if spec.is_none() {
-        // First run: the picker, in this terminal, before the handoff, as
-        // `tui_run` offers it. It needs a terminal on both ends, so without
-        // one `tui_run` refuses as it always has. A config that does not
-        // load says why rather than reading as "no model"; the picker's
-        // choice is saved to the user's config, which `trellis-tui`
-        // confirms; quitting it starts nothing.
+        // First run: the picker, in this terminal, before the handoff. It
+        // needs a terminal on both ends: it waits on console input, which
+        // never arrives from a pipe, so a pipe is refused rather than hung
+        // on. A config that does not load says why rather than reading as
+        // "no model"; the picker's choice is saved to the user's config,
+        // which `trellis-tui` confirms; quitting it starts nothing.
         use std::io::IsTerminal;
         if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-            return tui_run::run(root, task, spec, from_user);
+            anyhow::bail!(concat!(
+                "`trellis tui` needs a terminal, and this is a pipe or a redirect.\n",
+                "Run it directly, or use `trellis run` which works fine without one."
+            ));
         }
         config::RepoConfig::load(root)?;
         if first_run::offer_model_choice()?.is_none() {
@@ -1078,7 +1083,7 @@ fn bare_desktop(route: Route, root: Option<&Path>, here: &Path) -> Result<bool> 
             // ADR 0050 §2: with no model, the picker runs here, in the
             // terminal, before the window opens. A config that does not load
             // says why rather than reading as "no model", and quitting the
-            // picker starts nothing, both as in `tui_run`.
+            // picker starts nothing, both as in `terminal_ui`.
             if rooted
                 && let Some(r) = root
                 && config::RepoConfig::load(r)?.model().is_none()

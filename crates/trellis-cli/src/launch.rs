@@ -62,7 +62,8 @@ fn not_found(tried: &[PathBuf]) -> String {
 const FALLING_BACK: &str = "falling back to the terminal";
 
 /// [`not_found`] on one line, for bare `trellis`, where the overview and
-/// the terminal interface follow it and a paragraph would scroll away.
+/// the terminal interface (or, with no `trellis-tui` either, its refusal)
+/// follow it and a paragraph would scroll away.
 fn not_found_line(tried: &[PathBuf]) -> String {
     let places: Vec<String> = tried.iter().map(|p| p.display().to_string()).collect();
     format!(
@@ -322,12 +323,16 @@ pub(crate) fn find_tui(exe: &Path) -> Result<PathBuf, PathBuf> {
     }
 }
 
-/// What `trellis tui` and `trellis --tui` say on stderr when there is no
-/// `trellis-tui` to hand off to, before the ratatui TUI runs as it did.
+/// What `trellis tui`, `trellis --tui` and bare `trellis` with no desktop
+/// say when there is no `trellis-tui` to hand off to. Nothing runs in its
+/// place: the Rust TUI shipped as the fallback for one release after the
+/// handoff and is retired (ADR 0052 section 7, #516). The line interface
+/// is named so the person is not left with a refusal and no way on.
 pub(crate) fn tui_not_found(tried: &Path) -> String {
     format!(
-        "the Go TUI is not installed beside this trellis (looked for {}); opening the \
-         ratatui TUI, which stays for one release after the switch (ADR 0052)",
+        "trellis-tui is not installed beside this trellis (looked for {}); build it in the \
+         repository's `tui/` directory with `go build ./cmd/trellis-tui` and put it at that \
+         path, or install both from a release; `trellis session` is the line interface",
         tried.display()
     )
 }
@@ -509,12 +514,15 @@ mod tests {
     }
 
     #[test]
-    fn launch_tui_not_found_names_where_it_looked_and_the_fallback() {
+    fn launch_tui_not_found_names_where_it_looked_and_the_line_interface() {
+        // The risk: a refusal that names neither where to put trellis-tui
+        // nor what still runs without it (#516).
         let d = tempfile::tempdir().unwrap();
         let tried = d.path().join(TUI);
         let said = tui_not_found(&tried);
         assert!(said.contains(&tried.display().to_string()), "{said}");
-        assert!(said.contains("ratatui"), "{said}");
+        assert!(said.contains("trellis session"), "{said}");
+        assert!(!said.contains("opening"), "{said}");
     }
 
     #[test]
