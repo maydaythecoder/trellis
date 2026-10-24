@@ -76,6 +76,8 @@ fn queue_operations_leave_the_worktree_clean() {
             run_id: None,
             exit: "x".into(),
             finished_at: iso_now(),
+            worktree: None,
+            branch: None,
         },
     )
     .unwrap();
@@ -202,6 +204,8 @@ fn requeue_moves_a_stale_claim_back_and_refuses_what_is_not_there() {
             run_id: Some("r".into()),
             exit: "not converged".into(),
             finished_at: iso_now(),
+            worktree: None,
+            branch: None,
         },
     )
     .unwrap();
@@ -281,12 +285,13 @@ fn three(q: &Queue) -> [String; 3] {
 }
 
 #[test]
-fn a_converged_run_stops_work_and_records_the_outcome_in_done() {
-    // The change is uncommitted and the next run needs a clean tree, so
-    // going on would mean either refusing every later task or committing
-    // the human's decision for them.
+fn work_goes_on_past_a_converged_run_and_records_the_outcome_in_done() {
+    // ADR 0053 decision 4: the change waits in the task's own worktree, so
+    // the tree the next task is based on is untouched and `work` goes on.
+    // Stopping here, as ADR 0020 §5 did, ends an unattended queue at its
+    // first success.
     let (_d, q) = queue();
-    let [a, _, _] = three(&q);
+    let [a, b, c] = three(&q);
     let mut f = Fake {
         ends: [RunEnd::Converged {
             run_id: Some("20260927-x".into()),
@@ -295,16 +300,19 @@ fn a_converged_run_stops_work_and_records_the_outcome_in_done() {
         ..Fake::default()
     };
     let (n, stop, out) = drain(&q, &mut f, WorkOptions::default());
-    assert_eq!((n, &stop), (1, &Stop::Converged { id: a.clone() }));
+    assert_eq!((n, &stop), (3, &Stop::Empty), "{out}");
     assert_eq!(stop.code(), 0);
-    assert!(out.contains("converged change awaits review"), "{out}");
-    assert!(out.contains("run `trellis work` again"), "{out}");
+    assert!(
+        out.contains(&format!("{a} -> done/ (converged; in review)")),
+        "{out}"
+    );
     let t = read_task(&q.path(State::Done, &a)).unwrap();
     let o = t.outcome.unwrap();
     assert_eq!(o.run_id.as_deref(), Some("20260927-x"));
     assert!(o.exit.contains("converged"));
+    assert_eq!((o.worktree, o.branch), (None, None), "ran in place");
     assert_eq!(t.attempts, 1);
-    assert_eq!(q.ids(State::Pending).unwrap().len(), 2);
+    assert_eq!(q.ids(State::Failed).unwrap(), vec![b, c]);
 }
 
 #[test]
@@ -324,7 +332,8 @@ fn a_rolled_back_run_continues_to_the_next_task() {
     };
     let (n, stop, _) = drain(&q, &mut f, WorkOptions::default());
     assert_eq!(f.ran, vec!["one", "two", "three"], "oldest first");
-    assert_eq!((n, stop), (3, Stop::Converged { id: c.clone() }));
+    assert_eq!((n, stop), (3, Stop::Empty));
+    assert_eq!(q.ids(State::Done).unwrap(), vec![c]);
     assert_eq!(q.ids(State::Failed).unwrap(), vec![a.clone(), b]);
     let t = read_task(&q.path(State::Failed, &a)).unwrap();
     assert_eq!(t.outcome.unwrap().run_id.as_deref(), Some("r1"));
@@ -900,6 +909,8 @@ fn a_finished_task_is_edited_under_a_lock_and_a_stale_lock_is_named() {
                 run_id: None,
                 exit: "x".into(),
                 finished_at: iso_now(),
+                worktree: None,
+                branch: None,
             },
         )
         .unwrap();
@@ -929,6 +940,8 @@ fn failed_task(q: &Queue) -> String {
                 run_id: None,
                 exit: "x".into(),
                 finished_at: iso_now(),
+                worktree: None,
+                branch: None,
             },
         )
         .unwrap();
@@ -1856,9 +1869,15 @@ fn question_blocks_the_task_as_a_model_note_and_the_heartbeat_goes_on() {
         .into(),
         ..Fake::default()
     };
-    let (n, stop, out) = drain(&q, &mut f, WorkOptions::default());
+    // Two runs, so the third task is still pending for the claim below.
+    let opts = WorkOptions {
+        max_tasks: Some(2),
+        ..WorkOptions::default()
+    };
+    let (n, stop, out) = drain(&q, &mut f, opts);
     assert_eq!(f.ran, vec!["one", "two"], "went on to the next task");
-    assert_eq!((n, stop), (2, Stop::Converged { id: b }));
+    assert_eq!((n, stop), (2, Stop::MaxTasks));
+    assert_eq!(q.ids(State::Done).unwrap(), vec![b]);
 
     let (s, t) = q.find(&a).unwrap();
     assert_eq!(s, State::Pending);
@@ -2087,7 +2106,7 @@ fn mention_wake_requeues_the_task_for_the_named_profile_on_the_next_tick_once_pe
     };
     let (n, stop, out) = drain(&q, &mut r, WorkOptions::default());
     assert_eq!(n, 1, "{out}");
-    assert_eq!(stop, Stop::Converged { id: id.clone() });
+    assert_eq!(stop, Stop::Empty);
     assert_eq!(r.ran, vec![("x".to_string(), Some("reviewer".to_string()))]);
     assert!(
         out.contains("-> todo for `reviewer` (@reviewer in note n1)"),
@@ -2409,8 +2428,12 @@ fn a_runner_that_overrides_nothing_has_the_real_clock_no_schedule_and_no_profile
 fn every_stop_says_why_work_returned() {
     assert_eq!(Stop::Empty.to_string(), "queue empty");
     assert_eq!(
-        Stop::Converged { id: "t".into() }.to_string(),
-        "t converged; its change awaits review"
+        Stop::Refused {
+            id: "t".into(),
+            why: "x".into()
+        }
+        .to_string(),
+        "t not run; put back in pending/"
     );
 }
 
@@ -3080,6 +3103,8 @@ fn stale_claim_block_changes_only_the_status_the_block_and_the_claim() {
             run_id: Some("r1".into()),
             exit: "killed".into(),
             finished_at: secs_to_iso(at - 5),
+            worktree: None,
+            branch: None,
         });
         t.blocked = Some(Blocked::Children);
         t.priority = Priority::High;
@@ -3225,4 +3250,259 @@ fn stale_claim_block_again_after_a_person_sets_it_back_to_todo() {
         "no fourth release"
     );
     assert_eq!(events(&q, "stale_claim_blocked").len(), 2);
+}
+
+// ---------------------------------------------------------------------------
+// A worktree per queued task (ADR 0053)
+// ---------------------------------------------------------------------------
+
+/// A runner that gives each task a workspace, as the binary's does, and
+/// records what it was asked to prepare and remove.
+#[derive(Default)]
+struct Placed {
+    ends: VecDeque<RunEnd>,
+    refuse: Option<String>,
+    prepared: Vec<String>,
+    removed: Vec<String>,
+    /// What a removal leaves: the branch, as when it holds a trail.
+    leaves_branch: bool,
+    current: Option<Workspace>,
+}
+
+impl Runner for Placed {
+    fn blocker(&mut self) -> Option<String> {
+        None
+    }
+    fn run(&mut self, _: &Task) -> RunEnd {
+        self.ends
+            .pop_front()
+            .unwrap_or(RunEnd::Converged { run_id: None })
+    }
+    fn stop_requested(&self) -> bool {
+        false
+    }
+    fn idle(&mut self, _: Duration) -> bool {
+        false
+    }
+    fn prepare(&mut self, id: &str, _: &Task) -> Result<Option<Workspace>, String> {
+        if let Some(why) = &self.refuse {
+            return Err(why.clone());
+        }
+        self.prepared.push(id.to_string());
+        let w = Workspace {
+            path: PathBuf::from(format!("/r/.trellis/work/task/{id}")),
+            branch: format!("trellis/task/{id}"),
+        };
+        self.current = Some(w.clone());
+        Ok(Some(w))
+    }
+    fn remove_workspace(&mut self, _: &mut dyn Write) -> Left {
+        let w = self.current.take().expect("removes only what it prepared");
+        self.removed.push(w.branch);
+        Left {
+            worktree: false,
+            branch: self.leaves_branch,
+        }
+    }
+}
+
+#[test]
+fn work_runs_two_converging_tasks_and_records_each_kept_worktree() {
+    // ADR 0053 decision 4: each converged change waits in its own
+    // worktree, recorded in done/ so `queue list` can say where; neither is
+    // removed, and `work` goes on to the second task.
+    let (_d, q) = queue();
+    let a = q.add("one", None, None).unwrap();
+    let b = q.add("two", None, None).unwrap();
+    let mut r = Placed::default();
+    let (n, stop, out) = drain(&q, &mut r, WorkOptions::default());
+    assert_eq!((n, &stop), (2, &Stop::Empty), "{out}");
+    assert_eq!(r.prepared, vec![a.clone(), b.clone()]);
+    assert!(r.removed.is_empty(), "a converged task's worktree is kept");
+    for id in [&a, &b] {
+        let o = read_task(&q.path(State::Done, id))
+            .unwrap()
+            .outcome
+            .unwrap();
+        assert_eq!(
+            o.worktree.as_deref(),
+            Some(format!("/r/.trellis/work/task/{id}").as_str())
+        );
+        assert_eq!(o.branch, Some(format!("trellis/task/{id}")));
+        assert!(
+            out.contains(&format!("uncommitted in /r/.trellis/work/task/{id}")),
+            "{out}"
+        );
+    }
+}
+
+#[test]
+fn work_removes_a_rolled_back_tasks_worktree_and_records_the_branch_left() {
+    // The risk: a failed task's worktree left to accumulate, or its branch
+    // recorded as gone when it holds the trail (ADR 0053 decision 4).
+    let (_d, q) = queue();
+    let a = q.add("one", None, None).unwrap();
+    let mut r = Placed {
+        ends: [RunEnd::RolledBack {
+            run_id: Some("r1".into()),
+        }]
+        .into(),
+        leaves_branch: true,
+        ..Placed::default()
+    };
+    let (n, stop, _) = drain(&q, &mut r, WorkOptions::default());
+    assert_eq!((n, stop), (1, Stop::Empty));
+    assert_eq!(r.removed, vec![format!("trellis/task/{a}")]);
+    let o = read_task(&q.path(State::Failed, &a))
+        .unwrap()
+        .outcome
+        .unwrap();
+    assert_eq!(o.worktree, None, "the directory is gone");
+    assert_eq!(
+        o.branch,
+        Some(format!("trellis/task/{a}")),
+        "the trail's branch"
+    );
+}
+
+#[test]
+fn work_keeps_a_not_restored_tasks_worktree_and_exits_2() {
+    // Nobody has looked at it; removing it would destroy the evidence.
+    let (_d, q) = queue();
+    let a = q.add("one", None, None).unwrap();
+    q.add("two", None, None).unwrap();
+    let mut r = Placed {
+        ends: [RunEnd::NotRestored { run_id: None }].into(),
+        ..Placed::default()
+    };
+    let (n, stop, out) = drain(&q, &mut r, WorkOptions::default());
+    assert_eq!((n, &stop), (1, &Stop::NotRestored { id: a.clone() }));
+    assert_eq!(stop.code(), 2);
+    assert!(r.removed.is_empty());
+    assert!(out.contains("kept for a person to look at"), "{out}");
+    let o = read_task(&q.path(State::Failed, &a))
+        .unwrap()
+        .outcome
+        .unwrap();
+    assert!(o.worktree.is_some() && o.branch.is_some());
+}
+
+#[test]
+fn work_removes_the_worktree_of_an_errored_or_interrupted_restored_task() {
+    for (end, code) in [
+        (
+            RunEnd::Error {
+                run_id: None,
+                error: "runtime down".into(),
+            },
+            1,
+        ),
+        (
+            RunEnd::Interrupted {
+                run_id: None,
+                restored: true,
+            },
+            130,
+        ),
+    ] {
+        let (_d, q) = queue();
+        let a = q.add("one", None, None).unwrap();
+        let mut r = Placed {
+            ends: [end.clone()].into(),
+            ..Placed::default()
+        };
+        let (_, stop, _) = drain(&q, &mut r, WorkOptions::default());
+        assert_eq!(stop.code(), code, "{end:?}");
+        assert_eq!(r.removed, vec![format!("trellis/task/{a}")], "{end:?}");
+    }
+    // Interrupted with the tree not restored keeps it, as not-restored does.
+    let (_d, q) = queue();
+    q.add("one", None, None).unwrap();
+    let mut r = Placed {
+        ends: [RunEnd::Interrupted {
+            run_id: None,
+            restored: false,
+        }]
+        .into(),
+        ..Placed::default()
+    };
+    let (_, stop, _) = drain(&q, &mut r, WorkOptions::default());
+    assert_eq!(stop, Stop::Interrupted);
+    assert!(r.removed.is_empty());
+}
+
+#[test]
+fn work_puts_a_task_whose_worktree_was_refused_back_untouched_and_exits_1() {
+    // ADR 0053 decision 2: a refused worktree is not an attempt. The risk is
+    // a task counted, moved to failed/ or left in claimed/ for a refusal
+    // that happened before its run started; and a refusal that `work`
+    // carries past, refusing every task behind it the same way.
+    let (_d, q) = queue();
+    let a = q.add("one", None, None).unwrap();
+    let b = q.add("two", None, None).unwrap();
+    let before = std::fs::read(q.path(State::Pending, &a)).unwrap();
+    let mut r = Placed {
+        refuse: Some("branch trellis/task/x already exists".into()),
+        ..Placed::default()
+    };
+    let (n, stop, out) = drain(&q, &mut r, WorkOptions::default());
+    assert_eq!(n, 0, "nothing ran");
+    assert_eq!(
+        stop,
+        Stop::Refused {
+            id: a.clone(),
+            why: "branch trellis/task/x already exists".into()
+        }
+    );
+    assert_eq!(stop.code(), 1);
+    assert!(out.contains("attempts unchanged"), "{out}");
+    assert_eq!(
+        std::fs::read(q.path(State::Pending, &a)).unwrap(),
+        before,
+        "put back byte for byte"
+    );
+    assert!(q.ids(State::Claimed).unwrap().is_empty());
+    assert_eq!(q.ids(State::Pending).unwrap(), vec![a, b]);
+}
+
+#[test]
+fn work_max_tasks_counts_converged_runs_as_it_always_did() {
+    // ADR 0053 decision 6: `--max-tasks` bounds runs, converged or not.
+    let (_d, q) = queue();
+    let a = q.add("one", None, None).unwrap();
+    q.add("two", None, None).unwrap();
+    let mut r = Placed::default();
+    let opts = WorkOptions {
+        max_tasks: Some(1),
+        ..WorkOptions::default()
+    };
+    let (n, stop, _) = drain(&q, &mut r, opts);
+    assert_eq!((n, stop), (1, Stop::MaxTasks));
+    assert_eq!(q.ids(State::Done).unwrap(), vec![a]);
+}
+
+#[test]
+fn work_an_outcome_written_before_the_worktree_fields_reads_back_byte_for_byte() {
+    // The risk: `worktree` and `branch` written as `null` when unset, so a
+    // task file from before them is rewritten on its next edit, and what an
+    // older binary reads back changes.
+    let (_d, q) = queue();
+    let done = q.dir().join("done");
+    std::fs::create_dir_all(&done).unwrap();
+    let id = "20260101-000000-000000001-old";
+    let old = "{\n  \"task\": \"t\",\n  \"focus\": null,\n  \"prompt\": null,\n  \
+               \"added_at\": \"2026-01-01T00:00:00Z\",\n  \"attempts\": 1,\n  \
+               \"outcome\": {\n    \"run_id\": \"r1\",\n    \"exit\": \"converged\",\n    \
+               \"finished_at\": \"2026-01-01T00:01:00Z\"\n  },\n  \"status\": \"in_review\"\n}\n";
+    std::fs::write(done.join(format!("{id}.json")), old).unwrap();
+
+    let (_, t) = q.find(id).unwrap();
+    let o = t.outcome.as_ref().unwrap();
+    assert_eq!((&o.worktree, &o.branch), (&None, &None));
+    q.edit(id, |_, _| Ok(None)).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(done.join(format!("{id}.json"))).unwrap(),
+        old,
+        "written back unchanged"
+    );
 }

@@ -113,6 +113,10 @@ pub struct UntrustedTrail {
     #[serde(default)]
     pub base_commit: Option<String>,
     pub started_at: Option<String>,
+    /// Absent in a trail written before #622; never derived from
+    /// `started_at`.
+    #[serde(default)]
+    pub ended_at: Option<String>,
     /// Kept for trails written before `provenance` existed.
     #[serde(default)]
     pub trellis_version: Option<String>,
@@ -564,6 +568,7 @@ mod tests {
             task: "rename Installer.run".into(),
             base_commit: "abc1234".into(),
             started_at: "2026-09-21T05:30:00Z".into(),
+            ended_at: None,
             provenance: crate::Provenance {
                 trellis_version: "0.0.1".into(),
                 model: None,
@@ -577,6 +582,7 @@ mod tests {
                 check_outcomes: vec![crate::CheckOutcome {
                     kind: "Tests".into(),
                     passed: true,
+                    duration_ms: None,
                 }],
                 approved_by: crate::Approval::Human,
                 mode_counts: crate::ModeCounts::default(),
@@ -1088,6 +1094,7 @@ mod tests {
                 wrote,
                 changed: Vec::new(),
                 changed_count: 0,
+                duration_ms: None,
             };
         t.factual.actions = vec![
             action(1, "bash", "python gen.py", "exit 0", false).with_changed(bash_changed),
@@ -1116,6 +1123,64 @@ mod tests {
         assert_eq!(t.factual_sha256, BEFORE_CHANGED_DIGEST);
         assert_eq!(json, BEFORE_CHANGED, "an old-shaped run keeps its bytes");
         assert_eq!(crate::SCHEMA, 1, "an additive field is not a schema bump");
+    }
+
+    #[test]
+    fn duration_absent_in_an_older_trail_reads_as_none_and_keeps_its_bytes_and_digest() {
+        // The risk (#622): `ended_at` or a `duration_ms` serializing as null
+        // or 0 for a trail that never measured one, so each committed trail
+        // reads as altered (or re-hashes), or an unmeasured time reads as
+        // an instant run. Absent is None, never 0, and an old-shaped run
+        // written today keeps the old bytes, the old digest and schema 1.
+        let read = UntrustedTrail::from_json(BEFORE_CHANGED).expect("old trail must parse");
+        assert_eq!(read.ended_at, None);
+        for a in &read.factual.actions {
+            assert_eq!(a.duration_ms, None, "{a:?}");
+        }
+        for c in &read.factual.check_outcomes {
+            assert_eq!(c.duration_ms, None, "{c:?}");
+        }
+        let mut t = bash_then_edit(&[]);
+        let json = written(&mut t);
+        assert_eq!(json, BEFORE_CHANGED, "an old-shaped run keeps its bytes");
+        assert_eq!(t.factual_sha256, BEFORE_CHANGED_DIGEST);
+        assert_eq!(crate::SCHEMA, 1, "an additive field is not a schema bump");
+    }
+
+    #[test]
+    fn duration_and_ended_at_round_trip_under_the_digest_and_outside_it() {
+        // The risk: a duration dropped on the way to disk or back, or
+        // `ended_at` landing inside `factual`, where a wall-clock reading
+        // taken after the digest would make every trail read as altered.
+        let mut t = bash_then_edit(&[]);
+        t.ended_at = Some("2026-09-28T10:19:40Z".into());
+        t.factual.actions[0].duration_ms = Some(910);
+        t.factual.check_outcomes[0].duration_ms = Some(12_400);
+        let json = written(&mut t);
+        let read = UntrustedTrail::from_json(&json).unwrap();
+        assert_eq!(read.integrity(&json), Integrity::Intact);
+        assert_eq!(read.ended_at.as_deref(), Some("2026-09-28T10:19:40Z"));
+        assert_eq!(read.factual.actions[0].duration_ms, Some(910));
+        assert_eq!(
+            read.factual.actions[1].duration_ms, None,
+            "untimed stays absent"
+        );
+        assert_eq!(read.factual.check_outcomes[0].duration_ms, Some(12_400));
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(v["factual"].get("ended_at").is_none(), "{json}");
+        assert!(
+            v["factual"]["actions"][1].get("duration_ms").is_none(),
+            "{json}"
+        );
+        // The digest covers the durations: a changed one reads as altered.
+        let edited = json.replace("\"duration_ms\":910", "\"duration_ms\":9");
+        assert_ne!(edited, json);
+        assert_eq!(
+            UntrustedTrail::from_json(&edited)
+                .unwrap()
+                .integrity(&edited),
+            Integrity::Altered
+        );
     }
 
     #[test]

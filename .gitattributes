@@ -18,3 +18,7 @@ docs/bench/** text eol=lf
 # packfile. `text=auto` would sniff it as binary today, but a line-ending
 # rewrite of one byte makes `git bundle verify` fail, so it is stated.
 *.bundle binary
+
+# The pictures under docs/assets/ (screenshots and terminal recordings).
+*.png binary
+*.gif binary

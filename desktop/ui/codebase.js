@@ -10,6 +10,14 @@
 // viewBox at once. Nothing here moves on its own, so there is no motion to
 // reduce.
 //
+// The regions and circles are out of the tab order (tabindex -1): a package
+// of hundreds of modules would otherwise be hundreds of tab stops, with
+// names only in tooltips. The graph is one tab stop, for pan and zoom, and
+// the list beside it (#cb-modules) is the keyboard's and the screen
+// reader's way through the same level: the packages, or the open package's
+// modules with their figures, each doing what its region or circle does,
+// with the selection marked in both (#648).
+//
 // Module names and paths are repository text (ADR 0007, S10): every
 // element is made with createElement or createElementNS, and every name is
 // written through textContent, so text that carries markup is drawn as
@@ -42,6 +50,10 @@ const DRAG_PX = 3;
 
 function isCount(v) {
   return typeof v === "number" && Number.isFinite(v);
+}
+
+function figure(v) {
+  return isCount(v) ? String(v) : "not reported";
 }
 
 function str(v) {
@@ -104,6 +116,12 @@ function summary(d) {
     `${n(d.bound_call_sites)} call sites bound across modules, ${n(d.ambiguous)} ambiguous, ` +
       `${n(d.unresolved)} unresolved: three counts, not a ratio`,
   );
+  // Whether trellis saved this index where the overview reads it (#654).
+  // Said only as trellis said it; an answer that said nothing says nothing.
+  if (d.index_saved === true) parts.push("saved to .trellis/index.bin");
+  else if (d.index_saved === false && typeof d.index_not_saved === "string") {
+    parts.push(`not saved: ${d.index_not_saved}`);
+  }
   return parts.join(" · ");
 }
 
@@ -210,7 +228,7 @@ function drawRegions(doc, ctx) {
   }
   o.regions.forEach((r, i) => {
     if (!r || !isCount(r.x) || !isCount(r.y) || !isCount(r.r)) return;
-    const g = make(doc, "g", { class: "cb-region", tabindex: 0, role: "button" });
+    const g = make(doc, "g", { class: "cb-region", tabindex: -1, role: "button" });
     const count = r.count && typeof r.count.text === "string" ? r.count.text : "";
     g.append(
       title(doc, `${str(r.package) ?? "package"}: ${count}, open`),
@@ -250,7 +268,7 @@ function drawPackage(doc, ctx) {
       cy: m.y,
       r: isCount(m.r) ? m.r : 5,
       class: "cb-module",
-      tabindex: 0,
+      tabindex: -1,
       role: "button",
     });
     const name = str(m.module) ?? "module";
@@ -269,13 +287,73 @@ function drawPackage(doc, ctx) {
 }
 
 function markSelected(ctx) {
+  const on = (k) => ctx.selected !== null && ctx.selected.pkg === ctx.pkg && ctx.selected.module === k;
   for (const [k, c] of (ctx.nodes ?? []).entries()) {
     if (!c) continue;
-    const on = ctx.selected !== null && ctx.selected.pkg === ctx.pkg && ctx.selected.module === k;
-    c.setAttribute("class", on ? "cb-module cb-selected" : "cb-module");
-    if (on) c.setAttribute("aria-pressed", "true");
+    c.setAttribute("class", on(k) ? "cb-module cb-selected" : "cb-module");
+    if (on(k)) c.setAttribute("aria-pressed", "true");
     else c.removeAttribute("aria-pressed");
   }
+  for (const [k, b] of (ctx.items ?? []).entries()) {
+    if (b) b.setAttribute("aria-pressed", on(k) ? "true" : "false");
+  }
+}
+
+// A module's edges in as the details say it: a floor when trellis left
+// modules out of the answer.
+function edgesIn(ctx, m) {
+  if (!isCount(m && m.edges_in)) return "not reported";
+  return ctx.data.edges_in_complete === true ? String(m.edges_in) : `at least ${m.edges_in}`;
+}
+
+// The graph's level as a list: with no package open the packages, each
+// opening its package as its region does; with one open its modules, each
+// with edges in, edges out and doubt as three figures, never combined,
+// selecting the module as its circle does.
+function drawList(doc, ctx) {
+  const head = doc.getElementById("cb-modules-title");
+  const out = doc.getElementById("cb-modules");
+  ctx.items = [];
+  const p = openPackage(ctx);
+  head.textContent = p === null ? "Packages" : `Modules in ${str(p.package) ?? "this package"}`;
+  if (ctx.data === null) {
+    out.replaceChildren();
+    return;
+  }
+  const row = (name, act, said) => {
+    const li = el(doc, "li");
+    const b = el(doc, "button", name);
+    b.type = "button";
+    b.addEventListener("click", act);
+    const s = el(doc, "span", said);
+    s.className = "muted";
+    li.append(b, " ", s);
+    return [li, b];
+  };
+  let rows;
+  if (p === null) {
+    rows = packages(ctx).map((pk, i) => {
+      const n = Array.isArray(pk && pk.modules) ? pk.modules.length : null;
+      const said = n === null ? "modules not reported" : `${n} module${n === 1 ? "" : "s"} listed`;
+      return row(str(pk && pk.package) ?? "package", () => enter(doc, ctx, i, null), said)[0];
+    });
+  } else {
+    rows = (Array.isArray(p.modules) ? p.modules : []).map((m, k) => {
+      const said =
+        `edges in ${edgesIn(ctx, m)} · edges out ${figure(m && m.edges_out)} · ` +
+        `doubt ${figure(m && m.doubt)}`;
+      const [li, b] = row(str(m && m.module) ?? "module", () => select(doc, ctx, ctx.pkg, k), said);
+      ctx.items[k] = b;
+      return li;
+    });
+  }
+  if (rows.length === 0) {
+    const li = el(doc, "li", "Nothing listed.");
+    li.className = "empty";
+    rows.push(li);
+  }
+  out.replaceChildren(...rows);
+  markSelected(ctx);
 }
 
 function drawCrumbs(doc, ctx) {
@@ -322,12 +400,9 @@ function drawDetails(doc, ctx) {
   const dl = el(doc, "dl");
   const row = (name, value) => dl.append(el(doc, "dt", name), el(doc, "dd", value));
   const complete = ctx.data.edges_in_complete === true;
-  row(
-    "edges in",
-    isCount(m.edges_in) ? (complete ? String(m.edges_in) : `at least ${m.edges_in}`) : "not reported",
-  );
-  row("edges out", isCount(m.edges_out) ? String(m.edges_out) : "not reported");
-  row("doubt", isCount(m.doubt) ? String(m.doubt) : "not reported");
+  row("edges in", edgesIn(ctx, m));
+  row("edges out", figure(m.edges_out));
+  row("doubt", figure(m.doubt));
   const note = el(
     doc,
     "p",
@@ -389,6 +464,7 @@ function draw(doc, ctx) {
   else drawPackage(doc, ctx);
   drawCrumbs(doc, ctx);
   drawDetails(doc, ctx);
+  drawList(doc, ctx);
 }
 
 // --- moving between views ------------------------------------------------
@@ -428,6 +504,7 @@ function clear(doc, ctx, said) {
   drawCrumbs(doc, ctx);
   drawDetails(doc, ctx);
   drawResults(doc, ctx);
+  drawList(doc, ctx);
 }
 
 // Draws one `codebase` event: the layout, or why there is none.
@@ -563,6 +640,7 @@ export async function wireCodebase(doc, tauri) {
     view: null,
     base: null,
     nodes: [],
+    items: [],
     dragged: false,
     pending: false,
     stale: true,
@@ -573,6 +651,7 @@ export async function wireCodebase(doc, tauri) {
   doc.getElementById("cb-search").addEventListener("input", () => drawResults(doc, ctx));
   drawCrumbs(doc, ctx);
   drawDetails(doc, ctx);
+  drawList(doc, ctx);
 
   await tauri.event.listen("codebase", (event) => drawCodebase(doc, ctx, event.payload));
   await tauri.event.listen("child-started", () => {

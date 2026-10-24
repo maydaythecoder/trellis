@@ -30,8 +30,9 @@ pub const READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// What `GET /v1/models` said about the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Identity {
-    /// colibri, serving this model id.
-    Identified { id: String },
+    /// colibri, serving this model id, with what its model card said the
+    /// model does.
+    Identified { id: String, card: Card },
     /// An OpenAI-compatible server that is not colibri; `owned_by` is what
     /// its model list said.
     NotColibri { owned_by: String },
@@ -44,6 +45,39 @@ pub enum Identity {
     /// The base is not this machine, so nothing was read: remote endpoints
     /// are never identified (ADR 0047 decision 3).
     NotLoopback,
+}
+
+/// What colibri 2.0.0's model card says the served model does (bf244291,
+/// c/openai_server.py:6091-6101: `capabilities` and `input_modalities` on
+/// each `/v1/models` entry). Either list is `None` when the body did not
+/// carry it, as pre-2.0 bodies do not, so the absence of a field is never
+/// read as the absence of a capability (#626). Every entry is the server's
+/// own string: compared against fixed names here, escaped by the caller
+/// before it is printed.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Card {
+    pub capabilities: Option<Vec<String>>,
+    pub input_modalities: Option<Vec<String>>,
+}
+
+impl Card {
+    /// Whether the chat routes answer for this model: `Some(false)` only
+    /// when the card listed capabilities and `chat` was not among them, as
+    /// colibri's image and decision engines list (its chat routes then
+    /// answer 400 `unsupported_endpoint`, c/openai_server.py:6679-6689).
+    pub fn chats(&self) -> Option<bool> {
+        self.capabilities
+            .as_ref()
+            .map(|c| c.iter().any(|s| s == "chat"))
+    }
+
+    /// Whether the model takes an image in a message: `Some(false)` only
+    /// when the card listed input modalities and `image` was not among them.
+    pub fn takes_images(&self) -> Option<bool> {
+        self.input_modalities
+            .as_ref()
+            .map(|m| m.iter().any(|s| s == "image"))
+    }
 }
 
 /// What `GET /health` reported beyond liveness. colibri adds these only for
@@ -95,10 +129,15 @@ struct ModelList {
     data: Vec<ModelObject>,
 }
 
+/// The two card lists are typed exactly, so a list of another shape is a
+/// `Shape` error (the module's rule for every body), never a card with
+/// nothing in it.
 #[derive(Deserialize)]
 struct ModelObject {
     id: String,
     owned_by: String,
+    capabilities: Option<Vec<String>>,
+    input_modalities: Option<Vec<String>>,
 }
 
 /// `/health`: `scheduler` and `continue_assistant` are not read.
@@ -128,7 +167,13 @@ pub async fn identify(base: &str, key: Option<&ApiKey>) -> Result<Identity, Runt
     // colibri lists exactly the one id it serves (c/openai_server.py:4360-4362
     // at ce370e8), so the first entry decides.
     match list.data.into_iter().next() {
-        Some(m) if m.owned_by == "colibri" => Ok(Identity::Identified { id: m.id }),
+        Some(m) if m.owned_by == "colibri" => Ok(Identity::Identified {
+            id: m.id,
+            card: Card {
+                capabilities: m.capabilities,
+                input_modalities: m.input_modalities,
+            },
+        }),
         Some(m) => Ok(Identity::NotColibri {
             owned_by: m.owned_by,
         }),
@@ -170,8 +215,8 @@ pub async fn health(base: &str, key: Option<&ApiKey>) -> Result<Health, RuntimeE
 pub enum ToolsProbe {
     /// A 400 whose `param` is `tools`: the served family's template cannot
     /// render tools. `fallback_named` is true only when colibri's own
-    /// message named `COLI_TOOL_FALLBACK` (OLMoE's and Qwen3.6's do,
-    /// Inkling's does not).
+    /// message named `COLI_TOOL_FALLBACK` (OLMoE's does, Inkling's does not;
+    /// Qwen3.6's did before colibri 2.0.0, which renders its tools, #612).
     Refused { fallback_named: bool },
     /// A 200: the template accepted the tools. Not evidence the model calls
     /// them well.
@@ -441,9 +486,63 @@ mod tests {
         assert_eq!(
             identify(&base, None).await.unwrap(),
             Identity::Identified {
-                id: "glm-5.2".into()
+                id: "glm-5.2".into(),
+                card: Card::default(),
             }
         );
+    }
+
+    /// bf244291 (v2.0.0), c/openai_server.py:6091-6101: a chat model's entry
+    /// with its card.
+    const MODELS_COLIBRI_CHAT_CARD: &str = r#"{"object":"list","data":[{"id":"glm-5.2","object":"model","created":1758800000,"owned_by":"colibri","capabilities":["chat","tools"],"input_modalities":["text","image"]}]}"#;
+
+    /// The same shape for a decision engine: no `chat`, text only
+    /// (c/openai_server.py:6113-6121, :6679-6689).
+    const MODELS_COLIBRI_DECISION_CARD: &str = r#"{"object":"list","data":[{"id":"systemone","object":"model","created":1758800000,"owned_by":"colibri","capabilities":["decision"],"input_modalities":["text"]}]}"#;
+
+    #[tokio::test]
+    async fn colibri_capabilities_are_read_from_a_2_0_0_card() {
+        let (base, _h) = stub(vec![("200 OK", Some(MODELS_COLIBRI_CHAT_CARD))]).await;
+        let Identity::Identified { id, card } = identify(&base, None).await.unwrap() else {
+            panic!("not identified");
+        };
+        assert_eq!(id, "glm-5.2");
+        assert_eq!(card.chats(), Some(true));
+        assert_eq!(card.takes_images(), Some(true));
+    }
+
+    #[tokio::test]
+    async fn colibri_capabilities_a_card_without_chat_or_image_says_so() {
+        // The risk: a decision engine run as a chat model, failing after the
+        // snapshot (#626).
+        let (base, _h) = stub(vec![("200 OK", Some(MODELS_COLIBRI_DECISION_CARD))]).await;
+        let Identity::Identified { card, .. } = identify(&base, None).await.unwrap() else {
+            panic!("not identified");
+        };
+        assert_eq!(card.chats(), Some(false));
+        assert_eq!(card.takes_images(), Some(false));
+    }
+
+    #[tokio::test]
+    async fn colibri_capabilities_a_pre_2_0_body_without_the_fields_decides_nothing() {
+        // The risk: a missing field read as a missing capability, refusing
+        // every colibri before 2.0.0.
+        let (base, _h) = stub(vec![("200 OK", Some(MODELS_COLIBRI))]).await;
+        let Identity::Identified { card, .. } = identify(&base, None).await.unwrap() else {
+            panic!("not identified");
+        };
+        assert_eq!(card.chats(), None);
+        assert_eq!(card.takes_images(), None);
+    }
+
+    #[tokio::test]
+    async fn colibri_capabilities_a_list_of_another_shape_is_a_shape_error_not_an_empty_card() {
+        let body = r#"{"object":"list","data":[{"id":"glm-5.2","object":"model","created":1758800000,"owned_by":"colibri","capabilities":"chat"}]}"#;
+        let (base, _h) = stub(vec![("200 OK", Some(body))]).await;
+        assert!(matches!(
+            identify(&base, None).await,
+            Err(RuntimeError::Shape(_))
+        ));
     }
 
     #[tokio::test]

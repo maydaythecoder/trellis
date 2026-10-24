@@ -21,6 +21,7 @@ mod isolate;
 mod listing;
 mod notes;
 mod orchestrator;
+mod os_sandbox;
 pub mod partition;
 mod path_rules;
 mod registry;
@@ -51,20 +52,21 @@ pub use gate::{
     APPROVABLE_TOOLS, ApprovalGate, ApprovalRequest, BashPolicyGate, DECLINED, EditPreview,
     GateDecision, GateFuture, GovernanceGate, ToolGate, preview_edit, tool_name,
 };
-pub use governance::{Governance, Refusal, Rule};
+pub use governance::{CONFLICT_LINE, ConflictEscalation, EscalatedRule, Governance, Refusal, Rule};
 pub use hooks::{
     BEFORE_RUN_CAP, DEFAULT_HOOK_TIMEOUT_S, DENY_EXIT, HookConfig, HookError, HookGate, Hooks,
     InputDecision, fence_before_run,
 };
 pub use integrate::{Integrated, Integration, SuspectedRecallGap};
 pub use orchestrator::{Dispatched, GateDenial, Handle, HumanDecision, Orchestrator, Request};
+pub use os_sandbox::{OsSandbox, OsSandboxKind};
 pub use partition::{FailurePolicy, Partition, WorkUnit, plan};
 pub use path_rules::names_trellis_dir;
 pub use registry::{
     BUILTIN_TOOLS, BashSettings, CustomTool, DEFAULT_CUSTOM_TIMEOUT_S, NotesSource, ToolCallError,
-    ToolConfigError, ToolSelection, ToolSet, call_json,
+    ToolConfigError, ToolSelection, ToolSet, call_json, step_json,
 };
-pub use scripted::{ScriptError, ScriptedModel};
+pub use scripted::{REPLAY_IGNORE, REPLAYS_DIR, Recording, ScriptError, ScriptedModel};
 pub use skills::{
     DISCLOSURE_CAP, Disclosed, InvalidSkill, SKILLS_DIR, Skill, SkillAccess, SkillCatalog,
     SkillError, SkillPolicy, read_body, read_body_in,

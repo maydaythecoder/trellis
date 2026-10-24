@@ -73,6 +73,17 @@ impl Tail {
         s
     }
 
+    /// [`render`](Self::render) with the colour codes removed (#623): what
+    /// `bash` and a custom tool hand the model and the trail. A shell with
+    /// `FORCE_COLOR` exported puts them in the tail the model reads, and a
+    /// sequence split across two reads is whole here, since the strip runs
+    /// over the kept bytes and not over each read. Only these two callers:
+    /// a grounded check's output is not touched, because its environment
+    /// and what it printed stay the person's own (ADR 0021 row 1.16).
+    pub(crate) fn render_plain(&self) -> String {
+        trellis_core::text::strip_sgr(&self.render())
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.total == 0
     }
@@ -137,6 +148,10 @@ pub(crate) struct Spec<'a> {
     /// `find`, which refuses a list past the cap rather than show part of
     /// one, so storing its tail was work for nothing.
     pub(crate) whole: bool,
+    /// The OS sandbox `argv` runs under, confined to `cwd` (ADR 0055):
+    /// set for a command in a throwaway clone, `None` for trellis's own
+    /// `git` listings, which run in the repository.
+    pub(crate) os: Option<&'a crate::os_sandbox::OsSandbox>,
 }
 
 /// Runs `spec`, writing stdin and reading both streams concurrently.
@@ -149,11 +164,25 @@ pub(crate) struct Spec<'a> {
 /// when the process could not be started (on Windows, that includes a Job
 /// Object that could not be created or joined).
 pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, ExecError> {
-    let Some((program, args)) = spec.argv.split_first() else {
+    let Some(program) = spec.argv.first() else {
         return Err(ExecError::Empty);
     };
-    let mut cmd = tokio::process::Command::new(program);
-    cmd.args(args)
+    // Under the sandbox the process spawned is `bwrap` or `sandbox-exec`,
+    // and the command is its argument; without one, the command itself.
+    let argv = match spec.os {
+        Some(os) => os.wrap(spec.argv, spec.cwd),
+        None => spec.argv.iter().map(std::ffi::OsString::from).collect(),
+    };
+    // What a start or wait failure names: the sandbox's binary as well,
+    // since it is the process that failed to start.
+    let program = match spec.os {
+        Some(os) if os.is_active() => {
+            format!("{} {program}", std::path::Path::new(&argv[0]).display())
+        }
+        _ => program.clone(),
+    };
+    let mut cmd = tokio::process::Command::new(&argv[0]);
+    cmd.args(&argv[1..])
         .current_dir(spec.cwd)
         .envs(spec.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(if spec.stdin.is_some() {
@@ -532,6 +561,7 @@ mod tests {
             cap,
             head: false,
             whole: false,
+            os: None,
         }
     }
 
@@ -573,6 +603,25 @@ mod tests {
         let mut t = Tail::default();
         read_tail(Some(&bytes[..500]), &mut t, 1000, false, true).await;
         assert_eq!(t.kept(), &bytes[..500]);
+    }
+
+    #[tokio::test]
+    async fn sgr_sequence_split_across_two_reads_is_still_removed() {
+        // #623: a reader that stripped each 8 KiB read on its own would keep
+        // the half of a sequence that each side holds. The strip runs over
+        // the kept bytes, so a sequence straddling the read boundary goes
+        // whole, and the bytes around it are the ones the command wrote.
+        let mut bytes = vec![b'a'; 8190];
+        bytes.extend_from_slice(b"\x1b[31mred\x1b[0m\n");
+        let mut t = Tail::default();
+        read_tail(Some(&bytes[..]), &mut t, 1 << 20, false, false).await;
+        assert_eq!(t.total, bytes.len());
+        let plain = t.render_plain();
+        assert_eq!(&plain[8190..], "red\n", "{plain:?}");
+        assert_eq!(plain.len(), 8194);
+        // The capture itself is byte for byte what was written: the strip
+        // is on the way out, not in the ring.
+        assert_eq!(t.kept(), bytes);
     }
 
     #[tokio::test]
@@ -680,6 +729,79 @@ mod tests {
         assert!(c.stdout.head().is_empty(), "{:?}", c.stdout.head());
     }
 
+    /// Whether `pid` is still running. `kill -0` alone also succeeds on a
+    /// zombie: a process that has died but that its parent has not reaped.
+    /// A killed background child is reparented when its shell dies, and a
+    /// container's PID 1 or a loaded host can reap it after the test's
+    /// polling window closes (#667), so on Linux `/proc/<pid>/stat` decides:
+    /// state `Z` is dead, any other state alive. Where `/proc` is absent
+    /// (macOS), `kill -0` stays the check.
+    #[cfg(unix)]
+    fn liveness_probe(pid: &str) -> bool {
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            // The comm field is parenthesised and may contain spaces, so the
+            // state is the first field after the last `)`.
+            return match stat.rsplit_once(')') {
+                Some((_, rest)) => rest.split_whitespace().next() != Some("Z"),
+                // A stat line without a comm is not one Linux writes; say
+                // alive rather than let a parse gap hide a survivor.
+                None => true,
+            };
+        }
+        if std::path::Path::new("/proc").is_dir() {
+            // /proc is present and the entry is gone: the pid was reaped.
+            return false;
+        }
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|st| st.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn liveness_probe_calls_a_running_process_alive() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id().to_string();
+        let alive = liveness_probe(&pid);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(alive, "a running sleep read as dead");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn liveness_probe_calls_an_exited_but_unreaped_child_dead() {
+        // The risk: the probe counts a zombie as a survivor, which is the
+        // flake #667 saw. The child is ours and never waited on until the
+        // end, so it stays a zombie for as long as the probe looks.
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id().to_string();
+        let mut dead = false;
+        for _ in 0..50 {
+            if !liveness_probe(&pid) {
+                dead = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // `kill -0` on the same pid still succeeds: the test defends the
+        // difference between the two checks, not only the probe's answer.
+        let kill_0 = std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .status()
+            .unwrap()
+            .success();
+        child.wait().unwrap();
+        assert!(dead, "an exited, unreaped child read as alive");
+        assert!(kill_0, "the child was reaped before the probe ran");
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn a_timeout_kills_what_the_command_started_not_only_the_shell() {
@@ -693,12 +815,7 @@ mod tests {
         // Give the kill a moment to land, then ask whether it is still there.
         let mut alive = true;
         for _ in 0..20 {
-            let st = std::process::Command::new("kill")
-                .args(["-0", pid.trim()])
-                .stderr(std::process::Stdio::null())
-                .status()
-                .unwrap();
-            if !st.success() {
+            if !liveness_probe(pid.trim()) {
                 alive = false;
                 break;
             }

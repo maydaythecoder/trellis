@@ -19,11 +19,17 @@
 // core's record of the child's answer; the composer reads the same key, and
 // the core refuses a prompt before it.
 //
+// With no trellis rpc child at all (none started, or it exited), nothing is
+// asked and there is no session to choose a model for: the pane says that,
+// with the core's reason, instead of a list it is still "asking" for, and
+// does not open itself to ask for a choice nobody can take (#638).
+//
 // Every spec, address, error and provider name is trellis- or
 // configuration-supplied text, so it reaches the DOM through textContent
 // only (ADR 0007, S10).
 
 import { modelChoices } from "./settings.js";
+import { exitText } from "./status.js";
 
 function el(doc, tag, text) {
   const e = doc.createElement(tag);
@@ -49,6 +55,11 @@ let models = null;
 let offered = new Map();
 // Whether the child's session had a model when the view last said.
 let chosen = false;
+// The view's `model` as last sent, redrawn when the child's state changes.
+let lastModel = null;
+// Why no trellis rpc child is running, as the core last said, or null while
+// one is (or none has been reported missing yet).
+let stopped = null;
 
 function parts(doc) {
   return {
@@ -120,7 +131,9 @@ function drawFound(doc) {
   const p = parts(doc);
   const probed = [];
   const providers = [];
-  if (models === null || typeof models !== "object") {
+  if (stopped !== null) {
+    p.note.textContent = "Not asked: trellis rpc is not running.";
+  } else if (models === null || typeof models !== "object") {
     p.note.textContent = "Asking trellis which models there are.";
   } else if (str(models.error) !== null) {
     p.note.textContent = `trellis could not list models: ${models.error}`;
@@ -159,12 +172,18 @@ function drawFound(doc) {
 }
 
 // The session's model as the child last confirmed it. The pane stays open
-// until one is chosen, and closes on the first choice.
+// until one is chosen, and closes on the first choice. With no child there
+// is no session, which the pane says without opening.
 function drawModel(doc, model) {
   const p = parts(doc);
   const spec = model && str(model.spec);
   const was = chosen;
   chosen = spec !== null && spec !== undefined;
+  if (!chosen && stopped !== null) {
+    p.summary.textContent = "Model: trellis rpc is not running";
+    p.current.textContent = `trellis rpc is not running: ${stopped}`;
+    return;
+  }
   if (!chosen) {
     p.summary.textContent = "Model: none chosen yet";
     p.current.textContent =
@@ -189,7 +208,19 @@ export function drawModelPane(doc, view) {
     drawFound(doc);
   }
   if ("available" in view || "models" in view) drawChoices(doc);
-  if ("model" in view) drawModel(doc, view.model);
+  if ("model" in view) {
+    lastModel = view.model;
+    drawModel(doc, lastModel);
+  }
+}
+
+// No trellis rpc child is running, for `why`: from `no-child`, from
+// `rpc-exited`, or from main.js when a page that loaded late had the
+// core refuse its `get_state` for want of one, having heard neither.
+export function modelPaneStopped(doc, why) {
+  stopped = why;
+  drawFound(doc);
+  drawModel(doc, lastModel);
 }
 
 async function send(tauri, p, line) {
@@ -208,11 +239,23 @@ export function askModels(doc, tauri) {
   return send(tauri, p, { id: lineId("list"), type: "list_models" });
 }
 
-// Wires the pane once, and listens for `child-started`: each new child is a
-// session with no model, and a repository whose configured spec may differ.
+// Wires the pane once, and listens for the child's events: `child-started`
+// is a session with no model, and a repository whose configured spec may
+// differ, and ends whatever `no-child` or `rpc-exited` said.
 export async function wireModelPane(doc, tauri) {
   const p = parts(doc);
-  await tauri.event.listen("child-started", () => askModels(doc, tauri));
+  await tauri.event.listen("child-started", () => {
+    if (stopped !== null) {
+      stopped = null;
+      drawFound(doc);
+      drawModel(doc, lastModel);
+    }
+    askModels(doc, tauri);
+  });
+  await tauri.event.listen("no-child", (event) => modelPaneStopped(doc, String(event.payload)));
+  await tauri.event.listen("rpc-exited", (event) => {
+    modelPaneStopped(doc, `it ${exitText(event.payload)}; start it again from the Overview`);
+  });
   p.typed.addEventListener("input", () => {
     const typed = p.options.querySelector('input[name="model-choice"][value="typed"]');
     if (typed) typed.checked = true;

@@ -684,7 +684,9 @@ fn queue_wait_ms(value: Option<&str>) -> Option<u64> {
 /// is asking a run to sit idle for longer than a turn is worth.
 pub const MAX_RETRY_WAIT: Duration = Duration::from_secs(60);
 
-/// The wait before attempt `attempt + 1`, `attempt` counting from 1.
+/// The wait before attempt `attempt + 1`, `attempt` counting from 1, for a
+/// failure with no status of its own (a transport failure), or a status
+/// whose overload schedule does not apply (see `status_retry_delay`).
 ///
 /// `Retry-After` in seconds or as an IMF-fixdate HTTP date
 /// (`Sun, 06 Nov 1994 08:49:37 GMT`) when present, capped; a date at or
@@ -693,6 +695,29 @@ pub const MAX_RETRY_WAIT: Duration = Duration::from_secs(60);
 /// (ADR 0024 §4).
 pub fn retry_delay(retry_after: Option<&str>, attempt: u32) -> Duration {
     retry_delay_at(retry_after, attempt, SystemTime::now())
+}
+
+/// The waits before the second, third and fourth attempt after a 529 or 503
+/// that names no `Retry-After` (#613). Anthropic's 529 never carries one, so
+/// on the 1, 2, 4 s schedule a ten-second overload ended the model call and
+/// rolled the run back. Each is within `MAX_RETRY_WAIT`.
+pub const OVERLOADED_WAITS: [Duration; 3] = [
+    Duration::from_secs(15),
+    Duration::from_secs(30),
+    Duration::from_secs(60),
+];
+
+/// The wait before attempt `attempt + 1` after a retryable `status`.
+///
+/// A `Retry-After` is honoured as `retry_delay` honours it, whatever the
+/// status. Without one, an overload (529, 503) waits `OVERLOADED_WAITS`,
+/// and every other status keeps the 1, 2, 4 s backoff (ADR 0024 §4).
+pub fn status_retry_delay(status: u16, retry_after: Option<&str>, attempt: u32) -> Duration {
+    if retry_after.is_none() && matches!(status, 503 | 529) {
+        let i = attempt.saturating_sub(1) as usize;
+        return OVERLOADED_WAITS[i.min(OVERLOADED_WAITS.len() - 1)].min(MAX_RETRY_WAIT);
+    }
+    retry_delay(retry_after, attempt)
 }
 
 /// `retry_delay` against a given clock, so the date form is testable
@@ -1127,14 +1152,29 @@ impl HostedClient {
                     return Err(RuntimeError::ContextOverflow(cut(&self.scrub(&r.body))));
                 }
                 Ok(r) if retryable(r.status) && attempt < MAX_ATTEMPTS => {
-                    let d = retry_delay(r.header("retry-after"), attempt);
+                    let d = status_retry_delay(r.status, r.header("retry-after"), attempt);
+                    // One event per wait, so a run idle for up to a minute
+                    // says why (#613).
                     tracing::warn!(
                         status = r.status,
                         attempt,
+                        wait_s = d.as_secs_f64(),
                         wait_ms = d.as_millis() as u64,
                         "provider asked for a retry"
                     );
                     d
+                }
+                // Retries spent: say so, as a timed-out connect does, so an
+                // overload that outlasted every wait is not read as a
+                // one-off refusal (#613).
+                Ok(r) if retryable(r.status) => {
+                    return Err(match transport::status_error(&r, self.key.as_ref()) {
+                        RuntimeError::Http { status, body } => RuntimeError::Http {
+                            status,
+                            body: format!("{body} (after {MAX_ATTEMPTS} attempts)"),
+                        },
+                        other => other,
+                    });
                 }
                 Ok(r) => {
                     return Err(transport::status_error(&r, self.key.as_ref()));
@@ -2078,7 +2118,10 @@ mod tests {
             r#"{"content":[{"type":"tool_use","id":"t","name":"done","input":{"summary":"x"}}]}"#;
         let (base, h) = stub(vec![
             ("429 Too Many Requests", "Retry-After: 0\r\n", "{}"),
-            ("529 Overloaded", "", "{}"),
+            // With a Retry-After of its own: a bare 529 now waits 15 s (#613),
+            // past this stub's accept timeout. That schedule is held by
+            // an_overloaded_529_or_503_without_retry_after_waits_15_30_60_s.
+            ("529 Overloaded", "Retry-After: 0\r\n", "{}"),
             ("200 OK", "", ok),
         ])
         .await;
@@ -2106,6 +2149,52 @@ mod tests {
         assert!(got[0].contains("x-api-key: sk-test-key-1"));
     }
 
+    #[test]
+    fn an_overloaded_529_or_503_without_retry_after_waits_15_30_60_s() {
+        // The risk (#613): Anthropic's 529 carries no Retry-After, so on the
+        // 1, 2, 4 s schedule a ten-second overload ended the model call and
+        // the run was rolled back.
+        for status in [529, 503] {
+            let waits: Vec<_> = (1..MAX_ATTEMPTS)
+                .map(|a| status_retry_delay(status, None, a))
+                .collect();
+            assert_eq!(
+                waits,
+                [15, 30, 60].map(Duration::from_secs),
+                "status {status}"
+            );
+            assert!(waits.iter().all(|w| *w <= MAX_RETRY_WAIT));
+        }
+    }
+
+    #[test]
+    fn an_overloaded_status_with_retry_after_waits_what_it_asked_for() {
+        // The provider's own figure wins over the overload schedule, and is
+        // still capped.
+        assert_eq!(status_retry_delay(529, Some("0"), 1), Duration::ZERO);
+        assert_eq!(
+            status_retry_delay(503, Some("7"), 3),
+            Duration::from_secs(7)
+        );
+        assert_eq!(status_retry_delay(503, Some("86400"), 1), MAX_RETRY_WAIT);
+    }
+
+    #[test]
+    fn not_overloaded_statuses_keep_the_1_2_4_s_schedule() {
+        // The risk: the longer overload waits spreading to a rate limit or a
+        // plain 5xx, which #613 leaves as they were.
+        for status in [429, 500, 502, 504] {
+            let waits: Vec<_> = (1..MAX_ATTEMPTS)
+                .map(|a| status_retry_delay(status, None, a))
+                .collect();
+            assert_eq!(waits, [1, 2, 4].map(Duration::from_secs), "status {status}");
+        }
+        assert_eq!(
+            status_retry_delay(429, Some("3"), 1),
+            Duration::from_secs(3)
+        );
+    }
+
     #[tokio::test]
     async fn retries_stop_at_the_cap_and_report_the_status() {
         let (base, h) = stub(vec![
@@ -2117,7 +2206,12 @@ mod tests {
         .await;
         let c = HostedClient::with_key(Protocol::OpenAiChat, &base, "m", "K", None).unwrap();
         let e = c.send(&json!({})).await.unwrap_err();
-        assert!(matches!(e, RuntimeError::Http { status: 503, .. }), "{e}");
+        match &e {
+            RuntimeError::Http { status: 503, body } => {
+                assert_eq!(body, "down (after 4 attempts)");
+            }
+            other => panic!("expected the 503, got {other:?}"),
+        }
         assert_eq!(h.await.unwrap().len(), MAX_ATTEMPTS as usize);
     }
 

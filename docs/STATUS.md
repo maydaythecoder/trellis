@@ -4,8 +4,8 @@ Part 8 of the brief is the *project's* definition of done, not any one
 session's. This maps each item to its actual state, so nothing is quietly
 assumed complete.
 
-Last updated 2026-09-27. Gate tables for v0.2, v0.3 and v1.0 are
-below, each audited against the code rather than against the milestone prose.
+Last updated 2026-10-19 (the "Clients" section; the rest is as of
+2026-09-27). Gate tables for v0.2, v0.3 and v1.0 are below, each audited against the code rather than against the milestone prose.
 
 | # | Part 8 item | State | Where |
 |---|---|---|---|
@@ -30,13 +30,15 @@ below, each audited against the code rather than against the milestone prose.
 | 19 | Factual claims cited; unverifiable ones flagged | **Done** | `OPEN_QUESTIONS.md`, final section |
 | 20 | No marketing language anywhere | **Done** | — |
 
-## Clients: recorded 2026-10-06, not built
+## Clients: recorded 2026-10-06, built 2026-10-19
 
 ADR 0052 (#500) records the owner's goal of two `trellis rpc` clients, a Tauri
 desktop that renders a whole run and a Go/Bubble Tea TUI that replaces the
-ratatui TUI at parity. It is **Proposed**, pending the owner's acceptance on
-#500, and nothing in it is built: the ratatui TUI is still the one that ships.
-MISSION.md goal 8 reads "Not delivered".
+ratatui TUI at parity. When this section was written it was **Proposed**,
+pending the owner's acceptance on #500, and nothing in it was built. The
+owner accepted it on 2026-10-07; the desktop and the Go TUI are built since
+(the dated paragraphs below), and the ratatui TUI, the fallback for one
+release, is retired (#516, the last dated paragraph).
 
 *As built 2026-10-07 (#558, #560, #374, #561):* the Tauri desktop
 (`desktop/`) now starts from the command line. `trellis overview` (and
@@ -50,9 +52,11 @@ detached, with its environment unchanged: the one key-exempt launch
 now starts the desktop and prints the overview; with no desktop installed, no
 display or a failed start, it says so on stderr, prints the overview and falls
 back to the start screen and the TUI. `--tui` and `trellis tui` keep the TUI
-(ADR 0050 section 1). Not built: the desktop drawing the overview (#562),
-its model prompt before input (#564), the web view, and the handoff to the
-Go TUI (#514).
+(ADR 0050 section 1). Not built as of 2026-10-07: the desktop drawing the
+overview (#562), its model prompt before input (#564), the web view, and
+the handoff to the Go TUI (#514). Each is built since: #562 and #564 with
+#513 below, the web view by #375 (ADR 0050 section 5) and the handoff by
+#514 (ADR 0050 section 1), the last two on `dev` as of 2026-10-19.
 
 *As built 2026-10-10 (#513), on the desktop S15 branch:* the desktop half of
 goal 8, "a Tauri desktop that renders a whole run" (ADR 0052 section 1:
@@ -78,8 +82,9 @@ guards against (a pane added to the reducer, a key dropped from
 the planted cases are kept in the tests. The window: CI run
 [37731262937](https://github.com/maydaythecoder/trellis/actions/runs/37731262937)
 (push to `main` at 84cdc4a, 2026-10-08) built, linted and tested
-`desktop/` with `--locked` in its `desktop` job on both self-hosted runners,
-`trellis-win` (Windows) and `trellis-wsl` (Linux), and ran
+`desktop/` with `--locked` in its `desktop` job on both self-hosted runners
+of that date, `trellis-win` (Windows) and `trellis-wsl` (Linux; set aside
+2026-10-19, #736, the job runs on GitHub-hosted runners since), and ran
 `scripts/checks/desktop-guards.sh --self-test` (40 planted cases, each
 refused naming its rule) and `desktop-guards.sh` there. Since 84cdc4a,
 `desktop/tauri.conf.json`, `Cargo.toml`, `Cargo.lock`, `build.rs` and
@@ -87,9 +92,35 @@ refused naming its rule) and `desktop-guards.sh` there. Since 84cdc4a,
 declarations and its doc comment; the page under `desktop/ui/` and the
 panes are new since, and the three tests above have passed locally on Linux
 only. They run in the `desktop` job on both runners once this branch
-reaches a pull request into `dev`; until then, CI has not run them. Not
-built: the Go TUI half of goal 8 (T2 to T8, #514), so MISSION.md goal 8 as
-a whole still reads "Not delivered".
+reaches a pull request into `dev`; until then, CI has not run them. As of
+that date the Go TUI half of goal 8 (T2 to T8, #514) was not built, so
+MISSION.md goal 8 as a whole still read "Not delivered".
+
+*As built 2026-10-19 (T2 to T8: #508 to #512, #506 and #514, on `dev` by
+batch 46):* the Go TUI (`tui/`, its own Go module, built as `trellis-tui`)
+stands against the ratatui TUI by `tui/PARITY.md`, one row per test in the
+five Rust files ADR 0052 section 7 names, each mapped to a Go test or marked
+"not ported" with the reason (ADR 0052's parity bar reads "every row maps
+to a Go test"; the rows marked "not ported" are the gap, each with its
+reason, and the ADR has no amendment accepting them); `scripts/checks/go-parity.sh --complete` holds the mapping and
+`scripts/checks/go-test.sh` runs the Go tests in CI's `go` job. `--tui` and
+`trellis tui [task] [--model <spec>]` hand the terminal to `trellis-tui`
+when it is beside `current_exe()` (ADR 0050 section 1, as built 2026-10-12);
+when it is not, the ratatui TUI runs as before, for one release (ADR 0052
+decision 2.2). With that, MISSION.md goal 8 read "Built, with the ratatui
+fallback still shipping", short of the parity bar as above; the retirement
+is #516.
+
+*As built 2026-10-20 (#516):* the ratatui TUI is retired. `crates/tui-demo`,
+`tui_run.rs` and `tui_bridge.rs` are deleted, `ratatui` and `crossterm` have
+left `Cargo.lock`, and `--tui`, `trellis tui` and bare `trellis` with no
+desktop refuse when `trellis-tui` is not beside the binary, naming where it
+was looked for and `trellis session` as the line interface
+(`launch_without_a_tui_beside_it_refuses_naming_where_it_looked_and_the_session`,
+`launch_bare_with_a_terminal_and_no_tui_refuses_naming_the_session`, in
+`crates/trellis-cli/tests/cli.rs`). The parity bar is unchanged: the rows of
+`tui/PARITY.md` are the record of what the retired tests held. MISSION.md goal 8
+reads "Built; the ratatui TUI is retired".
 
 ## The measurement (resolves S1's reach; S16 fired, then averted)
 
@@ -374,7 +405,10 @@ repeat is a ~9% event, not a 20% one, and no code shipped for it.
 
 Every run against ollama printed `tier 2, schema enforced by the runtime —
 degradation: none for correctness`. Ollama does not implement `guided_json`;
-that is vLLM's parameter, and ollama accepts and ignores it. Measured: the same
+that is vLLM's parameter, and ollama accepts and ignores it. (vLLM itself
+removed `guided_json` in 0.12.0 and reads `structured_outputs.json` since, so
+the vLLM dialect now sends `structured_outputs: {"json": <schema>}` with
+`guided_json` beside it for servers older than 0.12.0; #610.) Measured: the same
 prompt three times with and without the schema returned byte-identical text and
 an identical completion-token count, which a schema that changed sampling could
 not produce.
@@ -1694,6 +1728,18 @@ attributed, with the harness declining to rule on it. That needs a model
 capable of saying so, and no measured configuration passes at a constrained
 tier (one repairs 5 of 20 at tier 4, #144). Left
 open rather than built against nothing and tested with a fixture that agrees.
+
+*2026-10-12 (#11, ADR 0054, proposed):* the owner lifted the block on the
+model floor, and that shape is built. When the convergence audit fails a
+non-negotiable rule and the model's `done` summary contains the exact name of
+another loaded non-negotiable rule the audit did not find broken, the failure
+is followed by `conflicting non-negotiable rules; trellis does not arbitrate
+between them` and every such rule's name, source file and description,
+verbatim. The outcome and rollback are unchanged. The four
+`conflict_escalation_` tests drive it with a scripted model; no measured
+model has yet been shown to produce such a summary, so how often a real run
+escalates is pending, and no ticket measures it yet. What remains open is the half no mechanism can
+do: whether the conflict the summary claims is real.
 
 ### What running the wedge found
 

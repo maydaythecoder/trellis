@@ -82,3 +82,51 @@ added_production_lines() {
       /^-/ { next }'
   done
 }
+
+# Go (ADR 0052, #504). tui/ is a Go module; each gate's Go branch runs only
+# when tui/go.mod exists and says it skipped otherwise, so the gates could
+# carry these branches before tui/ existed. With tui/ present a missing `go`
+# fails the gate: a gate that cannot run fails.
+go_module_present() { [ -f "$ROOT/tui/go.mod" ]; }
+
+# Fail unless `go` is on PATH, then hold every go command the gate runs to
+# the committed pins: go.sum read-only, and no toolchain download for a
+# `toolchain` line (decision 2.4).
+go_require() {
+  command -v go >/dev/null 2>&1 \
+    || fail "tui/go.mod exists but go is not on PATH (scripts/runners/install-go.sh installs the pinned one)"
+  export GOFLAGS=-mod=readonly GOTOOLCHAIN=local
+}
+
+# Go files this change added lines to, outside tests and testdata.
+changed_production_go() {
+  git diff --name-only --diff-filter=AM "$GATE_BASE"...HEAD -- 'tui/*.go' 'tui/**/*.go' \
+    | grep -Ev '_test\.go$|(^|/)testdata/' | sort -u || true
+}
+
+# `file:line:text` for every line this change added to production Go. Go
+# keeps tests in `_test.go` files, so there is no in-file cutoff.
+added_production_go_lines() {
+  local f
+  for f in $(changed_production_go); do
+    [ -f "$f" ] || continue
+    git diff -U0 "$GATE_BASE"...HEAD -- "$f" | awk -v f="$f" '
+      /^@@/ { split($3, a, ","); line = substr(a[1], 2) + 0; next }
+      /^\+\+\+/ { next }
+      /^\+/ { print f ":" line ":" substr($0, 2); line++; next }
+      /^-/ { next }'
+  done
+}
+
+# deny.toml's licence allow-list as one comma-separated line, so go-licenses
+# holds the Go tree to the list cargo deny holds the Rust tree to (ADR 0052
+# section 5).
+deny_allowed_licenses() {
+  awk '
+    /^\[licenses\]/ { in_l = 1; next }
+    /^\[/ { in_l = 0 }
+    in_l && /^allow[ \t]*=[ \t]*\[/ { in_a = 1; next }
+    in_a && /^\]/ { exit }
+    in_a && match($0, /^[ \t]*"[^"]+"/) { s = substr($0, RSTART, RLENGTH); gsub(/[ \t"]/, "", s); print s }
+  ' "$ROOT/deny.toml" | paste -sd, -
+}

@@ -73,12 +73,24 @@ section 4 on hosted model specs.
 4. **Go on the runners** comes from a pinned go.dev tarball, checked against
    its SHA-256 and unpacked user-local, with `GOTOOLCHAIN=local` so a
    `toolchain` line in `go.mod` never downloads another toolchain.
+   *Amended 2026-10-19 (#736, #754):* on a GitHub-hosted runner the same
+   pinned archive and hash are unpacked per job by
+   `scripts/runners/go-hosted.sh` into `$RUNNER_TEMP`; the pin stays in
+   `install-go.sh`.
 5. **Releases are Windows and Linux only**, built on the self-hosted runners.
    macOS is dropped from releases until a macOS runner exists.
+   *Amended 2026-10-19 (#736, #754):* built on GitHub-hosted runners
+   (`ubuntu-latest`, `windows-latest`); the self-hosted runners are set
+   aside as of 2026-10-19 (`docs/BUILD_SYSTEM.md`, "CI runners"). The
+   targets are unchanged. Whether macOS returns now that a hosted macOS
+   runner is available is the owner's question and is not decided here.
 6. **#289's decisions stand.** #290 first (now closed); the owner installs
    WebKitGTK on WSL; the identifier is `dev.trellis.desktop`; the change to
    `desktop/src/child.rs` is allowed; and if Tauri's generated code needs
    `unsafe`, the work stops and is escalated to the owner.
+   *Amended 2026-10-19 (#736, #754):* on the GitHub-hosted Linux runner the
+   `desktop` job installs WebKitGTK and the other Tauri prerequisites with
+   apt itself; the owner's WSL install stays the self-hosted step.
 
 ### 3. Go for `tui/` only
 
@@ -124,6 +136,10 @@ Linux-only.
 - The release job builds `trellis` and `trellis-tui` for Windows and Linux on
   the self-hosted runners, and lists both in `SHA256SUMS` and in #386's
   version check.
+- *Amended 2026-10-19 (#736, #754):* the `go`, `desktop` and release jobs,
+  and every other job in `ci.yml`, run on GitHub-hosted runners
+  (`ubuntu-latest`, `windows-latest`); "both runners" above reads as both
+  hosted platforms. The self-hosted runners are set aside.
 
 ### 7. The parity bar, and retiring the Rust TUI
 
@@ -131,6 +147,8 @@ Linux-only.
 `app.rs` (40 tests), `view.rs` (23), `events.rs` (6), `tui_bridge.rs` (16)
 and `tui_run.rs` (23). Parity is reached when every row maps to a Go test
 that passes in `go-test.sh` on both runners.
+*Amended 2026-10-19 (#736, #754):* "both runners" here and in section 6 reads
+as both hosted platforms, `ubuntu-latest` and `windows-latest`.
 
 At parity, bare `trellis` and `trellis tui` hand off to `trellis-tui`, with
 the ratatui fallback. One release later the Rust TUI is retired: deleting
@@ -160,6 +178,9 @@ Go.** Two copies of the question-or-task rule would drift.
   are held for Go by `go-guards.sh`, not by the Rust tests.
 - CI gains the `go` job and three supply-chain steps; cold Tauri and Go
   builds run one at a time on the runners, under the Windows commit limit.
+  (*Amended 2026-10-19 (#736, #754):* on GitHub-hosted runners the jobs run
+  in parallel as the matrix allows; the one-at-a-time limit was the
+  self-hosted runners'.)
 - Releases lose macOS until a macOS runner exists.
 - The protocol grows by `classify`, `list_paths` and a `tier` field in
   `get_state`, each with contract tests on both clients. Merges that touch
@@ -182,7 +203,9 @@ Go.** Two copies of the question-or-task rule would drift.
 
 Each ticket gets its own `t<n>-<slug>` branch and worktree, and goes through
 `audit` → `dev` → `main` (ADR 0051). The lettered tickets are filed once this
-ADR is accepted. `∥` marks tickets that can run in parallel.
+ADR is accepted. `∥` marks tickets that can run in parallel. (The plan is
+kept as written; the self-hosted runners it names were set aside on
+2026-10-19, #736, after every ticket but T9 had landed.)
 
 - **Owner actions (P0, not tickets):** apply #219 on WSL; install
   `libwebkit2gtk-4.1-dev`, `libxdo-dev` and `pkg-config` on WSL; check for
@@ -217,6 +240,10 @@ TRELLIS scrubs provider-key variables from every child it starts (`tests/child_e
 
 ## Amendment 2026-10-07: handoff targets, the desktop's environment, and G7 approvals (#557)
 
-Owner decision, 2026-10-07: bare `trellis` at a terminal opens the desktop and prints the overview (ADR 0050 section 1, amended 2026-10-07). Decision 2.2 and section 7's handoff therefore apply to `--tui` and `trellis tui` only: they, not bare `trellis`, hand off to `trellis-tui` at parity, with the ratatui fallback (#514). The amendment above names `trellis-tui` as the one launch that passes the environment unchanged; the desktop's own `trellis rpc` child needs the user's key variables for a hosted model the user chose, so the launch of `trellis-desktop` is to be the second, held by the same counted test. Accepted; built 2026-10-07 (#560 for the test, #374 for the launch, #561 for bare `trellis`; the as-built line above). The handoff to `trellis-tui` is not built (#514). Every other child stays scrubbed.
+Owner decision, 2026-10-07: bare `trellis` at a terminal opens the desktop and prints the overview (ADR 0050 section 1, amended 2026-10-07). Decision 2.2 and section 7's handoff therefore apply to `--tui` and `trellis tui` only: they, not bare `trellis`, hand off to `trellis-tui` at parity, with the ratatui fallback (#514). The amendment above names `trellis-tui` as the one launch that passes the environment unchanged; the desktop's own `trellis rpc` child needs the user's key variables for a hosted model the user chose, so the launch of `trellis-desktop` is to be the second, held by the same counted test. Accepted; built 2026-10-07 (#560 for the test, #374 for the launch, #561 for bare `trellis`; the as-built line above). The handoff to `trellis-tui` is not built (#514) as of 2026-10-07. Every other child stays scrubbed.
+
+*As built 2026-10-12 (#514), recorded 2026-10-19 (#753):* the handoff exists: `launch::find_tui` looks beside `current_exe()` only, and `--tui` and `trellis tui` hand the terminal to `trellis-tui` with the environment unchanged, the `trellis-tui` entry of `INTERFACE_LAUNCHES`; ADR 0050 section 1's as-built line of 2026-10-12 has the detail.
 
 G7 record: the owner approved #289 and #296, each with the scope added to it on 2026-10-07, and #560 and #561, on 2026-10-07.
+
+*As built 2026-10-20 (#516):* the retirement section 7 describes is done: `crates/tui-demo`, `tui_run.rs`, `tui_bridge.rs` and the fallback branches in `main.rs` are gone, `ratatui` and `crossterm` have left the root `Cargo.lock`, and the crate table in CLAUDE.md lists `tui/` and no `tui-demo`. Without `trellis-tui` beside the binary, `--tui`, `trellis tui` and bare `trellis` with no desktop refuse, naming where it was looked for and `trellis session` as the line interface, and exit non-zero; nothing runs in their place. The rows of `tui/PARITY.md` stay as the record of the rules the retired tests held; the "not ported" rows and their reasons are unchanged, and this line does not accept them. The ticket's Done-when asks that the release shipped with the fallback be named here: that release is the owner's to tag and is named in the pull request.

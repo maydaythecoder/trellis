@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 400" width="980" height="400">
+<rect width="980" height="400" fill="#fbfbfa"/>
+<defs><marker id="ah-6a6a64" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#6a6a64"/></marker>
+<marker id="ah-a3261b" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#a3261b"/></marker>
+</defs>
+<text x="20" y="30" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#1d1d1b">The workspace, top down. Arrows are "may depend on".</text>
+<text x="20" y="66" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#6a6a64">interfaces</text>
+<rect x="120" y="46" width="190" height="52" rx="6" fill="#ffffff" stroke="#d9d8d2" stroke-width="1.5"/>
+<text x="132" y="67" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" fill="#1d1d1b">trellis-cli</text>
+<text x="132" y="86" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#6a6a64">the trellis binary</text>
+<rect x="330" y="46" width="210" height="52" rx="6" fill="#ffffff" stroke="#d9d8d2" stroke-width="1.5"/>
+<text x="342" y="67" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" fill="#1d1d1b">desktop/</text>
+<text x="342" y="86" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#6a6a64">Tauri window; spawns trellis rpc</text>
+<rect x="560" y="46" width="170" height="52" rx="6" fill="#ffffff" stroke="#d9d8d2" stroke-width="1.5"/>
+<text x="572" y="67" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" fill="#1d1d1b">tui/ (Go)</text>
+<text x="572" y="86" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#6a6a64">trellis-tui; spawns trellis rpc</text>
+<rect x="750" y="46" width="210" height="52" rx="6" fill="#ffffff" stroke="#d9d8d2" stroke-width="1.5"/>
+<text x="762" y="67" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" fill="#1d1d1b">trellis-tickets</text>
+<text x="762" y="86" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#6a6a64">label rules; its own binary</text>
+<text x="20" y="150" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#6a6a64">the loop</text>
+<rect x="120" y="130" width="190" height="52" rx="6" fill="#ffffff" stroke="#2f5d50" stroke-width="1.5"/>
+<text x="132" y="151" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" fill="#1d1d1b">trellis-loop</text>
+<text x="132" y="170" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#6a6a64">agent loop, tools, budgets</text>
+<rect x="330" y="130" width="210" height="52" rx="6" fill="#ffffff" stroke="#d9d8d2" stroke-width="1.5"/>
+<text x="342" y="151" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" fill="#1d1d1b">trellis-queue</text>
+<text x="342" y="170" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#6a6a64">file-backed work queue</text>
+<rect x="560" y="130" width="170" height="52" rx="6" fill="#ffffff" stroke="#d9d8d2" stroke-width="1.5"/>
+<text x="572" y="151" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" fill="#1d1d1b">trellis-trail</text>
+<text x="572" y="170" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#6a6a64">the committed record</text>
+<rect x="750" y="130" width="210" height="52" rx="6" fill="#ffffff" stroke="#d9d8d2" stroke-width="1.5"/>
+<text x="762" y="151" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" fill="#1d1d1b">trellis-vcs</text>
+<text x="762" y="170" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#6a6a64">git snapshot and rollback</text>
+<text x="20" y="234" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#6a6a64">the facts</text>
+<rect x="120" y="214" width="190" height="52" rx="6" fill="#ffffff" stroke="#2f5d50" stroke-width="1.5"/>
+<text x="132" y="235" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" fill="#1d1d1b">trellis-index</text>
+<text x="132" y="254" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#6a6a64">tree-sitter call graph, radius</text>
+<rect x="330" y="214" width="210" height="52" rx="6" fill="#ffffff" stroke="#2f5d50" stroke-width="1.5"/>
+<text x="342" y="235" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" fill="#1d1d1b">trellis-checks</text>
+<text x="342" y="254" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#6a6a64">owns Verdict; may say pass</text>
+<rect x="560" y="214" width="170" height="52" rx="6" fill="#ffffff" stroke="#d9d8d2" stroke-width="1.5"/>
+<text x="572" y="235" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" fill="#1d1d1b">trellis-model</text>
+<text x="572" y="254" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#6a6a64">adapter tiers, llguidance</text>
+<rect x="750" y="214" width="210" height="52" rx="6" fill="#ffffff" stroke="#d9d8d2" stroke-width="1.5"/>
+<text x="762" y="235" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" fill="#1d1d1b">trellis-vault</text>
+<text x="762" y="254" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#6a6a64">an Apex vault, one note's context</text>
+<text x="20" y="318" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#6a6a64">the base</text>
+<rect x="120" y="298" width="840" height="52" rx="6" fill="#ffffff" stroke="#d9d8d2" stroke-width="1.5"/>
+<text x="132" y="319" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" fill="#1d1d1b">trellis-core</text>
+<text x="132" y="338" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#6a6a64">ids, interner, secrets::scrub, paths::resolve_repo_input. Depends on nothing.</text>
+<line x1="215" y1="98" x2="215" y2="128" stroke="#6a6a64" stroke-width="1.5" marker-end="url(#ah-6a6a64)"/>
+<path d="M 645 98 L 645 114 L 240 114" fill="none" stroke="#6a6a64" stroke-width="1.5" stroke-dasharray="4 3"/>
+<line x1="435" y1="98" x2="435" y2="114" stroke="#6a6a64" stroke-width="1.5" stroke-dasharray="4 3"/>
+<text x="250" y="110" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#6a6a64">both clients spawn trellis rpc and link no crate</text>
+<line x1="215" y1="182" x2="215" y2="212" stroke="#6a6a64" stroke-width="1.5" marker-end="url(#ah-6a6a64)"/>
+<path d="M 260 182 L 260 200 L 400 200 L 400 212" fill="none" stroke="#6a6a64" stroke-width="1.5" marker-end="url(#ah-6a6a64)"/>
+<path d="M 290 182 L 290 196 L 620 196 L 620 212" fill="none" stroke="#6a6a64" stroke-width="1.5" marker-end="url(#ah-6a6a64)"/>
+<path d="M 300 182 L 300 206 L 855 206 L 855 212" fill="none" stroke="#6a6a64" stroke-width="1.5" marker-end="url(#ah-6a6a64)"/>
+<line x1="215" y1="266" x2="215" y2="296" stroke="#6a6a64" stroke-width="1.5" marker-end="url(#ah-6a6a64)"/>
+<line x1="435" y1="266" x2="435" y2="296" stroke="#6a6a64" stroke-width="1.5" marker-end="url(#ah-6a6a64)"/>
+<line x1="855" y1="266" x2="855" y2="296" stroke="#6a6a64" stroke-width="1.5" marker-end="url(#ah-6a6a64)"/>
+<text x="20" y="374" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#a3261b">Two boundaries are load-bearing: trellis-index and trellis-vault never depend on trellis-model, so what the graph says and what the model</text>
+<text x="20" y="390" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#a3261b">is shown are functions of files on disk, testable with no model near them (ADR 0001, 0017). trellis-checks alone may construct a Verdict (ADR 0004).</text>
+</svg>

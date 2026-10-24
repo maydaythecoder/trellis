@@ -577,15 +577,17 @@ impl ColibriTier {
 ///
 /// `Ok(NotColibri)` when the base is not this machine (nothing is read) or
 /// the server is not colibri. `Err` is what stops a run before its
-/// snapshot: a refused connection, no answer, a 401 or 403, or a served id
-/// that is not the spec's. A tools refusal is an answer, not an error: the
+/// snapshot: a refused connection, no answer, a 401 or 403, a served id
+/// that is not the spec's, a model whose card says it does not chat, or,
+/// with `image` set (the run carries `--image`), one whose card says it
+/// takes no image (#626). A tools refusal is an answer, not an error: the
 /// run refuses on it in [`preflight`], and the status bar says it. Every
 /// read is bounded by `colibri::READ_TIMEOUT`, and every string the server
 /// supplied passes through [`plain`] before it is put in an error.
-pub(crate) async fn colibri_tier(r: &Resolved) -> Result<ColibriTier> {
+pub(crate) async fn colibri_tier(r: &Resolved, image: bool) -> Result<ColibriTier> {
     let key = colibri_key(r);
-    let id = match colibri::identify(&r.base, key.as_ref()).await {
-        Ok(Identity::Identified { id }) => id,
+    let (id, card) = match colibri::identify(&r.base, key.as_ref()).await {
+        Ok(Identity::Identified { id, card }) => (id, card),
         // Remote endpoints are never read; a server that is not colibri, or
         // answers the read as one that is not (a 404, a 405, a 5xx, a body
         // that is not a JSON model list), is run as today: refusing it would
@@ -637,7 +639,55 @@ pub(crate) async fn colibri_tier(r: &Resolved) -> Result<ColibriTier> {
             plain(&r.model)
         );
     }
+    // The card, before the probe: colibri's chat routes answer 400 for an
+    // image or decision engine with `param: "model"`, which the probe would
+    // read as "not verified" and the run would meet again after its
+    // snapshot (ADR 0047 decision 4, amended for #626). A card without the
+    // lists (pre-2.0.0) decides nothing.
+    if card.chats() == Some(false) {
+        anyhow::bail!(
+            "colibri at {} serves `{}`, whose model card lists capabilities {} and not `chat`: \
+             its chat routes answer 400 to every request, so no run can use it (ADR 0047 \
+             decision 4). Serve a chat model, or name one with --model. {NOT_STARTED}",
+            plain(&r.base),
+            plain(&id),
+            card_list(card.capabilities.as_deref()),
+        );
+    }
+    if image && card.takes_images() == Some(false) {
+        anyhow::bail!(
+            "--image: colibri at {} serves `{}`, whose model card lists input modalities {} \
+             and not `image`, so an image in the first message would be refused after the \
+             snapshot (ADR 0047 decision 4). Drop --image, or serve a model that takes one. \
+             {NOT_STARTED}",
+            plain(&r.base),
+            plain(&id),
+            card_list(card.input_modalities.as_deref()),
+        );
+    }
     probed_tier(r, id).await
+}
+
+/// The most of a card's list an error prints: the list is the server's,
+/// capped only at the transport's response size.
+const CARD_LIST_ENTRIES: usize = 8;
+const CARD_ENTRY_CHARS: usize = 40;
+
+/// A card's list as `[a, b]` for an error, each entry cut and passed
+/// through [`plain`]; `[]` for a list with nothing in it.
+fn card_list(list: Option<&[String]>) -> String {
+    let shown: Vec<String> = list
+        .unwrap_or_default()
+        .iter()
+        .take(CARD_LIST_ENTRIES)
+        .map(|s| plain(&s.chars().take(CARD_ENTRY_CHARS).collect::<String>()))
+        .collect();
+    let more = list.map_or(0, |l| l.len().saturating_sub(CARD_LIST_ENTRIES));
+    if more > 0 {
+        format!("[{}, and {more} more]", shown.join(", "))
+    } else {
+        format!("[{}]", shown.join(", "))
+    }
 }
 
 /// The tier of `r`, already identified as colibri serving `id`, from the
@@ -1311,6 +1361,9 @@ mod tests {
         colibri: bool,
     ) -> (Vec<String>, Vec<Compacted>, usize) {
         let d = tempfile::tempdir().unwrap();
+        // Under git: `read_file` asks git whether a path is ignored and
+        // refuses when it cannot (#611), and this run is made of reads.
+        crate::testutil::git_init(d.path());
         std::fs::create_dir_all(d.path().join("app")).unwrap();
         for i in 0..FILES {
             let body = format!("# module {i}\n{}", "value = 1\n".repeat(300));
@@ -1795,11 +1848,11 @@ context_bytes = {set}
         };
         let probed = |id: &str| ColibriTier::Probed { id: id.to_string() };
         assert_eq!(
-            colibri_tier(&r("glm-5.2")).await.unwrap(),
+            colibri_tier(&r("glm-5.2"), false).await.unwrap(),
             probed("glm-5.2")
         );
         assert_eq!(
-            colibri_tier(&r("glm-5.2")).await.unwrap(),
+            colibri_tier(&r("glm-5.2"), false).await.unwrap(),
             probed("glm-5.2")
         );
         assert_eq!(stub.probes(), 1, "{:?}", stub.requests());
@@ -1807,7 +1860,7 @@ context_bytes = {set}
         // (one GET each time), and probed once more for the new id.
         stub.serve("kimi-k3");
         assert_eq!(
-            colibri_tier(&r("kimi-k3")).await.unwrap(),
+            colibri_tier(&r("kimi-k3"), false).await.unwrap(),
             probed("kimi-k3")
         );
         assert_eq!(stub.probes(), 2, "{:?}", stub.requests());
@@ -1853,20 +1906,127 @@ context_bytes = {set}
         let out = printed_self_report(&"a".repeat(1 << 20));
         assert!(out.len() < 1024, "{} bytes", out.len());
     }
+
+    // ---- #519: one tier-label vocabulary for rpc's get_state ----
+    //
+    // These lived with the Rust TUI's status bar until #516 retired it; the
+    // producers they check are the ones `record_tier` still reads.
+
+    /// Whether `label` has a shape `client_contract.json` documents for
+    /// `get_state`'s `tier`. Read from the contract, so the two cannot drift.
+    fn has_documented_shape(label: &str) -> bool {
+        let c: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/client_contract.json"
+        )))
+        .expect("the contract is JSON");
+        let shapes = &c["rpc"]["commands"]["get_state"]["data"]["tier_label"];
+        let heads: Vec<&str> = shapes["heads"]
+            .as_array()
+            .expect("the contract lists the label heads")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        let sep = shapes["detail_separator"]
+            .as_str()
+            .expect("the contract names the separator");
+        let head = label.split_once(sep).map_or(
+            label,
+            |(h, detail)| {
+                if detail.is_empty() { "" } else { h }
+            },
+        );
+        heads.contains(&head)
+    }
+
+    #[test]
+    fn tier_label_vocabulary_every_backend_s_label_has_a_documented_shape() {
+        // The risk: the Go TUI (#511) and the desktop reading `get_state`'s
+        // tier by its head, while one backend writes `tier 1, …`, another
+        // `2` and a third `?`. Every producer `run_cmd::record_tier` is
+        // handed, by name.
+        let id = || "glm-5.2".to_string();
+        let mut labels = vec![
+            ("hosted, not colibri", ColibriTier::NotColibri.label()),
+            ("colibri probed", ColibriTier::Probed { id: id() }.label()),
+            (
+                "colibri assumed",
+                ColibriTier::Assumed {
+                    id: id(),
+                    reason: "HTTP 500".into(),
+                }
+                .label(),
+            ),
+            (
+                "colibri refused",
+                ColibriTier::Refused {
+                    id: id(),
+                    origin: "http://127.0.0.1:8000".into(),
+                    fallback_named: true,
+                }
+                .label(),
+            ),
+            ("scripted", "scripted".to_string()),
+        ];
+        for probed in [Ok(true), Ok(false), Err("connection refused".to_string())] {
+            labels.push((
+                "runtime",
+                crate::doctor_cmd::runtime_tier_label(&probed).to_string(),
+            ));
+        }
+        let bad: Vec<_> = labels
+            .iter()
+            .filter(|(_, l)| !has_documented_shape(l) || l.starts_with("tier"))
+            .collect();
+        assert!(bad.is_empty(), "labels outside the vocabulary: {bad:?}");
+    }
+
+    #[test]
+    fn tier_label_vocabulary_shape_check_refuses_what_the_contract_does_not_list() {
+        // The check above is only as good as this one: it must not pass a
+        // doubled word, an unknown head or a bare separator.
+        for ok in ["2", "1, native tool calls", "unknown", "scripted"] {
+            assert!(has_documented_shape(ok), "{ok}");
+        }
+        for bad in ["tier 1, native tool calls", "?", "probing…", "1, ", "two"] {
+            assert!(!has_documented_shape(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn tier_label_colibri_escapes_an_esc_byte_in_the_served_id() {
+        // The risk: a served id repainting whichever terminal shows
+        // `get_state`'s tier. Escaped here, before it leaves trellis-cli.
+        let id = "glm\u{1b}[2Kfake".to_string();
+        for label in [
+            ColibriTier::Probed { id: id.clone() }.label(),
+            ColibriTier::Assumed {
+                id: id.clone(),
+                reason: "HTTP 500".into(),
+            }
+            .label(),
+            ColibriTier::Refused {
+                id: id.clone(),
+                origin: "http://127.0.0.1:8000".into(),
+                fallback_named: false,
+            }
+            .label(),
+        ] {
+            assert!(!label.contains('\x1b'), "{label:?}");
+            assert!(label.contains(r"glm\u{1b}[2Kfake"), "{label:?}");
+        }
+    }
 }
 
 /// A loopback server answering as colibri does, for the binary's unit tests
-/// (here and in `tui_run`). Bodies as `tests/colibri_run.rs` transcribes
-/// them from colibri's source at ce370e8; nothing connects anywhere but
-/// 127.0.0.1.
+/// here. Bodies as `tests/colibri_run.rs` transcribes them from colibri's
+/// source at ce370e8; nothing connects anywhere but 127.0.0.1. The refused
+/// and not-verified probe answers it once served went with the Rust TUI's
+/// status-bar tests (#516); `tests/colibri_run.rs` still holds those bodies.
 #[cfg(test)]
 pub(crate) mod colibri_stub {
     use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
-
-    /// ce370e8, c/openai_server.py:1364-1367 (OLMoE refuses `tools` while
-    /// rendering, naming the fallback setting).
-    pub(crate) const REFUSED_OLMOE: &str = r#"{"error":{"message":"OLMoE has no tool-calling chat template; set COLI_TOOL_FALLBACK=1 to render tools as text.","type":"invalid_request_error","param":"tools","code":"unsupported_parameter"}}"#;
 
     /// ce370e8, c/openai_server.py:5169-5241, cut at one token.
     const ACCEPTED: &str = r#"{"id":"chatcmpl-1","object":"chat.completion","created":1758800000,"model":"glm-5.2","choices":[{"index":0,"message":{"role":"assistant","content":"I"},"finish_reason":"length"}],"usage":{"prompt_tokens":40,"completion_tokens":1,"total_tokens":41}}"#;
@@ -1876,17 +2036,6 @@ pub(crate) mod colibri_stub {
 
     pub(crate) fn accepted() -> Probe {
         ("200 OK", ACCEPTED.to_string())
-    }
-
-    pub(crate) fn refused() -> Probe {
-        ("400 Bad Request", REFUSED_OLMOE.to_string())
-    }
-
-    pub(crate) fn not_verified() -> Probe {
-        (
-            "500 Internal Server Error",
-            r#"{"error":"boom"}"#.to_string(),
-        )
     }
 
     pub(crate) struct Stub {
