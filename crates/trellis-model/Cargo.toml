@@ -59,11 +59,10 @@ workspace = true
 # Off by default, so the release binary loses llguidance's subtree.
 #
 # It does NOT fix the duplicate versions. An earlier version of this comment
-# said it removed the `syn` 2/3 and `hashbrown` 0.16/0.17 pairs; measuring
-# before and after showed the count unchanged, because `syn 3` also comes from
-# `clap_derive` and from `ratatui`'s `instability`, and `hashbrown 0.17` from
-# `lru` inside `ratatui-core`. `cargo tree -i` shows the first path only, which
-# is how the wrong conclusion was reached.
+# said it removed the `syn` 2/3 pair; measuring before and after showed the
+# count unchanged, because `syn 3` also comes from `clap_derive`. `cargo tree
+# -i` shows the first path only, which is how the wrong conclusion was
+# reached. (The `hashbrown` 0.16/0.17 pair left with the Rust TUI, #516.)
 #
 # The dev-dependency below turns this back on for this crate's own tests, and
 # `trellis-loop` turns it on for the one caller outside them.
