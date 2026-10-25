@@ -336,7 +336,8 @@ pub(crate) enum Human {
     /// output, and the answer is one line from this reader. `None` is end of
     /// input, which is a no.
     Line(Box<dyn FnMut() -> Option<String> + Send>),
-    /// The full-screen interface, which shows `Modal::Approval`.
+    /// A caller that answers off its own thread: `rpc`, whose client shows
+    /// the request and sends `approve`, and the session's in-flight reader.
     Channel(tokio::sync::mpsc::Sender<trellis_loop::ApprovalRequest>),
 }
 
@@ -3043,9 +3044,9 @@ const RUN_STACK_BYTES: usize = 8 * 1024 * 1024;
 /// process still fails as it did when `f` ran inline.
 ///
 /// The caller's `tracing` dispatcher goes with it. A default set with
-/// `with_default` is per thread, and the full-screen interface sets one
-/// around `cmd_run` to show the loop's events; without this the loop would
-/// emit them where nothing listens.
+/// `with_default` is per thread; the retired Rust TUI set one around
+/// `cmd_run` to show the loop's events (#516), and a caller that does so
+/// again would otherwise see the loop emit them where nothing listens.
 fn on_run_stack<T: Send>(f: impl FnOnce() -> T + Send) -> Result<T> {
     let dispatch = tracing::dispatcher::get_default(Clone::clone);
     std::thread::scope(|s| {
@@ -4897,10 +4898,11 @@ mod loop_stack_tests {
     }
 
     /// An event emitted on the run thread reaches a subscriber the caller
-    /// set for its own thread only. `tui_run` sets one around `cmd_run` to
-    /// show the loop's turns; if the run thread did not inherit it, those
-    /// events would go to the global subscriber and the screen would show
-    /// no turns while the run went on.
+    /// set for its own thread only. The retired Rust TUI set one around
+    /// `cmd_run` to show the loop's turns (retired, #516); the rule stays
+    /// for the next caller that does, since without it those events would
+    /// go to the global subscriber and the screen would show no turns while
+    /// the run went on.
     #[test]
     fn loop_stack_the_callers_thread_scoped_subscriber_sees_the_run() {
         use tracing_subscriber::layer::SubscriberExt;

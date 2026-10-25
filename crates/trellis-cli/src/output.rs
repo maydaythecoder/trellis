@@ -102,7 +102,7 @@ pub(crate) fn escape_c1(s: &str) -> String {
 /// What a run is given beyond `cmd_run`'s parameters (ADR 0025).
 ///
 /// Separate from `RunSeeding` and `RunControl` so the callers other work
-/// owns (`work.rs`, `tui_run.rs`) keep calling `cmd_run` unchanged.
+/// owns (`work.rs`, `rpc.rs`) keep calling `cmd_run` unchanged.
 pub(crate) struct RunExtras {
     /// `--skill` / `/skill`: bodies force-loaded into the context.
     pub skills: Vec<String>,
