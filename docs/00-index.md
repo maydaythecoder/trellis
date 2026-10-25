@@ -17,7 +17,7 @@ Read `00` and `01` before writing any code. Each version doc assumes the previou
 
 ## For engineers joining
 
-Start with `MISSION.md`, then `ARCHITECTURE.md` and `GLOSSARY.md`; `adr/README.md` indexes the decisions; `../CONTRIBUTING.md` covers setup, branches and review. The pictures in the README and in `ARCHITECTURE.md` (one run, the crate map, reach against doubt) are in `assets/`, with the method behind each in `assets/README.md`.
+Start with `MISSION.md`, then `ARCHITECTURE.md` and `GLOSSARY.md`; `adr/README.md` indexes the decisions; `../CONTRIBUTING.md` covers setup, branches and review. The pictures in the README and in `ARCHITECTURE.md` (one run, the crate map, reach against doubt) are in `assets/`, with the method behind each in `assets/README.md`. The run view the two rpc clients are built towards is `design/run-view-wireframe.html` (#786), with the research behind it beside it; `design/README.md` says how to read it.
 
 ## The two constraints
 
