@@ -491,3 +491,32 @@ fn area_of_the_tickets_crate_is_build_and_the_go_tui_is_tui() {
         assert_eq!(value(&area(&t)).label(), want, "{file}");
     }
 }
+
+#[test]
+fn a_decision_word_that_is_a_path_component_does_not_fail_ready() {
+    // docs/design/ is a directory of this repository, and DESIGN.md a file
+    // in it; a ticket that edits them names them on its Files line and in
+    // prose. Reading the path as "design" would route every such ticket to
+    // a person, so a word that touches a `/` or carries a file extension is
+    // a path, not a decision.
+    let t = ticket(
+        "Record the token meanings",
+        &body(
+            "**Files:** docs/design/DESIGN.md; docs/design/events.md\n\n\
+             Add the table to `docs/design/DESIGN.md` and DESIGN.md's index line.",
+        ),
+        &["origin:manual"],
+    );
+    assert!(value(&ready(&t, &no_blockers())).is_ready());
+}
+
+#[test]
+fn a_decision_word_in_prose_beside_a_path_still_fails_ready() {
+    // The exemption is for the path itself, not the sentence around it.
+    let t = ticket(
+        "Record the token meanings",
+        &body("**Files:** docs/design/DESIGN.md\n\nDesign the table, then add it."),
+        &["origin:manual"],
+    );
+    assert!(!value(&ready(&t, &no_blockers())).is_ready());
+}

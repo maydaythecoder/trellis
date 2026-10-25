@@ -266,7 +266,9 @@ const DECISION_STEMS: [&str; 5] = ["design", "decid", "investigat", "explor", "c
 ///
 /// The `## Decision` section and the generated triage block are not read:
 /// they record decisions already made ("Decided 2026-09-28 by the owner"),
-/// and the rule is about decisions the work would still have to make.
+/// and the rule is about decisions the work would still have to make. A
+/// path component is not read either: `docs/design/DESIGN.md` is a file, so
+/// a ticket that lists it is not one that still has something to design.
 pub(crate) fn decision_words(title: &str, body: &str) -> Vec<String> {
     let mut text = String::from(title);
     text.push('\n');
@@ -288,16 +290,43 @@ pub(crate) fn decision_words(title: &str, body: &str) -> Vec<String> {
         }
     }
 
-    let words: Vec<String> = text
-        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
-        .filter(|w| !w.is_empty())
-        .map(str::to_lowercase)
-        .collect();
+    // Each word with the character before and after it, so that a path
+    // component is told apart from prose: `docs/design/DESIGN.md` names a
+    // directory and a file, not a decision the work still has to make, and
+    // a ticket that only lists such a path must not fail readiness on it.
+    // A word is a path component when it touches a `/`, or is followed by
+    // `.<ext>` (a file name such as `DESIGN.md`).
+    let bytes = text.as_bytes();
+    let mut words: Vec<(String, bool)> = Vec::new();
+    let mut start: Option<usize> = None;
+    for (i, c) in text
+        .char_indices()
+        .chain(std::iter::once((text.len(), '\0')))
+    {
+        let is_word = c.is_alphanumeric() || c == '_';
+        match (start, is_word) {
+            (None, true) => start = Some(i),
+            (Some(s), false) => {
+                let before = if s == 0 { b' ' } else { bytes[s - 1] };
+                let after = bytes.get(i).copied().unwrap_or(b' ');
+                let after2 = bytes.get(i + 1).copied().unwrap_or(b' ');
+                let in_path = before == b'/'
+                    || after == b'/'
+                    || (after == b'.' && after2.is_ascii_alphanumeric());
+                words.push((text[s..i].to_lowercase(), in_path));
+                start = None;
+            }
+            _ => {}
+        }
+    }
     let mut found: Vec<String> = Vec::new();
-    for (i, w) in words.iter().enumerate() {
+    for (i, (w, in_path)) in words.iter().enumerate() {
+        if *in_path {
+            continue;
+        }
         let hit = if DECISION_STEMS.iter().any(|s| w.starts_with(s)) {
             Some(w.clone())
-        } else if w == "figure" && words.get(i + 1).is_some_and(|n| n == "out") {
+        } else if w == "figure" && words.get(i + 1).is_some_and(|(n, _)| n == "out") {
             Some("figure out".to_string())
         } else {
             None
