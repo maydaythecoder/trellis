@@ -25,8 +25,12 @@ fn repo(name: &str) -> PathBuf {
     d
 }
 
-/// `trellis doctor` in `root` with `path` as the child's PATH: an empty
-/// directory makes every tool absent, cargo-audit among them.
+/// `trellis doctor` in `root` with `path` as the child's PATH. An empty
+/// directory makes cargo-audit absent on every platform, because trellis
+/// looks the tool up on its own PATH before spawning it (ADR 0057 decision
+/// 2); std's Windows resolver alone would still find one installed on the
+/// host. git goes with it, which `doctor` reports on its `worktree:` line
+/// and exits 0.
 fn doctor(root: &Path, path: &Path) -> Output {
     let user = std::env::temp_dir().join("trellis-lockfile-no-user-config");
     Command::new(env!("CARGO_BIN_EXE_trellis"))

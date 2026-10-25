@@ -13,17 +13,21 @@
 
 use std::ffi::OsStr;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// The binary `cargo audit` dispatches to. Spawned by name rather than as
-/// `cargo audit` so that "not on PATH" means the tool, not cargo.
+/// The binary `cargo audit` dispatches to. Looked up on `PATH` and spawned
+/// by its path, rather than as `cargo audit`, so that "not on PATH" means
+/// the tool, not cargo, and means `PATH` alone: std's Windows resolver also
+/// searches the parent's `PATH` and the system directories, which would
+/// make the absent case depend on the host.
 pub(crate) const TOOL: &str = "cargo-audit";
 
-/// How long the whole check may take, fetch of the advisory database
-/// included. The fetch is a git pull of rustsec/advisory-db, which has taken
-/// tens of seconds on a cold cache; `doctor` must still end.
+/// How long the whole check may take, its network work included: cargo-audit
+/// fetches rustsec/advisory-db through a git library and refreshes the
+/// crates.io index for the yanked check, together tens of seconds on a cold
+/// cache; `doctor` must still end.
 pub(crate) const BOUND: Duration = Duration::from_secs(90);
 
 /// What CI runs, named when `doctor` could not, so the line still says
@@ -82,14 +86,17 @@ fn run(lock: &Path, ignored: &[String]) -> Report {
         OsStr::new("--file"),
         lock.as_os_str(),
     ];
-    match output_within(TOOL, &args, BOUND) {
+    let Some(tool) = on_path(TOOL) else {
+        return Report::NotChecked(format!("{TOOL} is not on PATH"));
+    };
+    match output_within(&tool, &args, BOUND) {
         Ok(out) => match parse(&out.stdout) {
-            Ok(all) => policy(all, ignored, database_date(&out.stdout)),
+            Ok(parsed) => policy(parsed.findings, ignored, parsed.database),
             Err(why) => {
                 // cargo-audit writes its own errors (no lockfile, no
                 // database, no network) to stderr; that line beats a
                 // parser's complaint about an empty stdout.
-                let stderr = first_line(&out.stderr);
+                let stderr = error_line(&out.stderr);
                 Report::NotChecked(if stderr.is_empty() {
                     format!("{TOOL} answered in a shape doctor does not read ({why})")
                 } else {
@@ -103,23 +110,46 @@ fn run(lock: &Path, ignored: &[String]) -> Report {
 
 /// The verdict `deny.toml` gives: every advisory is a finding unless its id
 /// is in `[advisories].ignore`, and a yanked version is a finding always
-/// (it has no id to ignore). This is cargo-deny's `version = 2` policy,
-/// which CI applies; cargo-audit on its own fails only on vulnerabilities.
+/// (it has no id to ignore). This is cargo-deny's default policy (its
+/// `version = 2`; `deny.toml` sets no `version` key), which CI applies;
+/// cargo-audit on its own fails only on vulnerabilities.
+///
+/// `ignored` counts advisories, not entries: one ignored advisory matched
+/// at two locked versions is one.
 pub(crate) fn policy(all: Vec<Finding>, ignored: &[String], database: Option<String>) -> Report {
     let (kept, dropped): (Vec<Finding>, Vec<Finding>) = all
         .into_iter()
         .partition(|f| !f.id.as_ref().is_some_and(|id| ignored.contains(id)));
+    let mut ids: Vec<&str> = dropped.iter().filter_map(|f| f.id.as_deref()).collect();
+    ids.sort_unstable();
+    ids.dedup();
     if kept.is_empty() {
         Report::Clean {
             database,
-            ignored: dropped.len(),
+            ignored: ids.len(),
         }
     } else {
         Report::Findings {
             found: kept,
-            ignored: dropped.len(),
+            ignored: ids.len(),
         }
     }
+}
+
+/// `name` in a directory on this process's `PATH`, as a regular file, with
+/// the executable suffix Windows needs. `PATH` only, on purpose (see
+/// [`TOOL`]).
+fn on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let file = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    };
+    std::env::split_paths(&path)
+        .filter(|d| d.is_absolute())
+        .map(|d| d.join(&file))
+        .find(|p| p.is_file())
 }
 
 /// The advisory ids `deny.toml` ignores, in either form cargo-deny takes:
@@ -159,8 +189,17 @@ struct Captured {
 
 /// Runs `program args...` and returns what it wrote, or why it was not run
 /// to completion. The process is killed at `bound`: std has no timed wait,
-/// so this polls `try_wait`, as `services::reap` does.
-fn output_within(program: &str, args: &[&OsStr], bound: Duration) -> Result<Captured, String> {
+/// so this polls `try_wait`, as `services::reap` does. The pipes are read
+/// under the same bound: a grandchild that inherited them and outlived the
+/// child would otherwise hold `doctor` after the child has exited.
+///
+/// `program` is a path (see [`TOOL`]); the name on the error lines is its
+/// file stem, so a reader sees `cargo-audit`, not where it was found.
+fn output_within(program: &Path, args: &[&OsStr], bound: Duration) -> Result<Captured, String> {
+    let name = program.file_stem().map_or_else(
+        || program.display().to_string(),
+        |s| s.to_string_lossy().into_owned(),
+    );
     let mut c = Command::new(program);
     c.args(args)
         .stdin(Stdio::null())
@@ -170,37 +209,44 @@ fn output_within(program: &str, args: &[&OsStr], bound: Duration) -> Result<Capt
     let mut child = match c.spawn() {
         Ok(child) => child,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(format!("{program} is not on PATH"));
+            return Err(format!("{name} is not on PATH"));
         }
-        Err(e) => return Err(format!("{program} could not be started: {e}")),
+        Err(e) => return Err(format!("{name} could not be started: {e}")),
     };
     // Both pipes are drained on their own threads: a child that fills one
     // while this thread waits on the other would block forever.
     let stdout = drain(child.stdout.take());
     let stderr = drain(child.stderr.take());
     let deadline = Instant::now() + bound;
+    let timed_out = || format!("{name} did not finish within {} s", bound.as_secs());
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
             Ok(None) if Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!(
-                    "{program} did not finish within {} s",
-                    bound.as_secs()
-                ));
+                return Err(timed_out());
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-            Err(e) => return Err(format!("{program} could not be waited for: {e}")),
+            Err(e) => {
+                let _ = child.kill();
+                return Err(format!("{name} could not be waited for: {e}"));
+            }
         }
     }
-    Ok(Captured {
-        stdout: stdout.join().unwrap_or_default(),
-        stderr: stderr.join().unwrap_or_default(),
-    })
+    let remaining = |now: Instant| deadline.saturating_duration_since(now);
+    let stdout = stdout
+        .recv_timeout(remaining(Instant::now()))
+        .map_err(|_| timed_out())?;
+    let stderr = stderr
+        .recv_timeout(remaining(Instant::now()))
+        .map_err(|_| timed_out())?;
+    Ok(Captured { stdout, stderr })
 }
 
-fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<String> {
+/// Reads `pipe` to its end on its own thread and sends what it held.
+fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::sync::mpsc::Receiver<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut text = String::new();
         if let Some(mut r) = pipe {
@@ -208,34 +254,48 @@ fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<S
             let _ = r.read_to_end(&mut raw);
             text = String::from_utf8_lossy(&raw).into_owned();
         }
-        text
-    })
+        let _ = tx.send(text);
+    });
+    rx
 }
 
-fn first_line(s: &str) -> String {
-    s.lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
+/// cargo-audit's own reason: its `error:` line when there is one, since a
+/// `warning:` about a locked cache directory can come first, else the first
+/// non-empty line.
+fn error_line(stderr: &str) -> String {
+    let lines = || stderr.lines().map(str::trim).filter(|l| !l.is_empty());
+    lines()
+        .find(|l| l.starts_with("error"))
+        .or_else(|| lines().next())
         .unwrap_or("")
         .to_string()
 }
 
-/// Everything in cargo-audit's `--json` report, before any policy:
-/// `vulnerabilities.list[]` as kind `vulnerability`, and every entry under
-/// `warnings.<kind>[]` as that kind (`unsound`, `unmaintained`, `notice`,
-/// `yanked`, and whatever a later cargo-audit adds).
-///
+/// cargo-audit's `--json` report, read once.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Parsed {
+    /// Everything in the report, before any policy: `vulnerabilities.list[]`
+    /// as kind `vulnerability`, and every entry under `warnings.<kind>[]` as
+    /// that kind (`unsound`, `unmaintained`, `notice`, `yanked`, and whatever
+    /// a later cargo-audit adds).
+    pub(crate) findings: Vec<Finding>,
+    /// The day the advisory database was last updated, from
+    /// `database.last-updated` (an RFC 3339 timestamp; the date is enough).
+    pub(crate) database: Option<String>,
+}
+
 /// The shape is what cargo-audit 0.22.2 writes (the `rustsec` crate's
-/// `Report`). A report with no `vulnerabilities.list` is an error, never an
-/// empty list: an empty stdout that parsed to nothing would print as clean.
-pub(crate) fn parse(json: &str) -> Result<Vec<Finding>, String> {
+/// `Report`). A report missing `vulnerabilities.list`, or with `warnings`
+/// or a `warnings.<kind>` in another shape, is an error, never an empty
+/// list: a report that parsed to nothing would print as clean.
+pub(crate) fn parse(json: &str) -> Result<Parsed, String> {
     let v: serde_json::Value =
         serde_json::from_str(json).map_err(|e| format!("not a JSON report: {e}"))?;
     let vulns = v
         .pointer("/vulnerabilities/list")
         .and_then(|l| l.as_array())
         .ok_or("no `vulnerabilities.list` in the report")?;
-    let mut out = Vec::new();
+    let mut findings = Vec::new();
     for item in vulns {
         let (krate, version) =
             package(item.get("package")).ok_or("a vulnerability names no package")?;
@@ -243,7 +303,7 @@ pub(crate) fn parse(json: &str) -> Result<Vec<Finding>, String> {
             .pointer("/advisory/id")
             .and_then(|s| s.as_str())
             .ok_or("a vulnerability names no advisory id")?;
-        out.push(Finding {
+        findings.push(Finding {
             krate,
             version,
             kind: "vulnerability".into(),
@@ -252,12 +312,16 @@ pub(crate) fn parse(json: &str) -> Result<Vec<Finding>, String> {
     }
     // `warnings` is keyed by kind; a report with none of a kind omits the
     // key, so a missing kind is "none", not "unreadable".
-    if let Some(warnings) = v.get("warnings").and_then(|w| w.as_object()) {
+    if let Some(warnings) = v.get("warnings") {
+        let warnings = warnings.as_object().ok_or("`warnings` is not an object")?;
         for (kind, list) in warnings {
-            for item in list.as_array().into_iter().flatten() {
+            let items = list
+                .as_array()
+                .ok_or_else(|| format!("`warnings.{kind}` is not a list"))?;
+            for item in items {
                 let (krate, version) =
                     package(item.get("package")).ok_or("a warning names no package")?;
-                out.push(Finding {
+                findings.push(Finding {
                     krate,
                     version,
                     kind: kind.clone(),
@@ -269,7 +333,11 @@ pub(crate) fn parse(json: &str) -> Result<Vec<Finding>, String> {
             }
         }
     }
-    Ok(out)
+    let database = v
+        .pointer("/database/last-updated")
+        .and_then(|s| s.as_str())
+        .map(|stamp| stamp.split('T').next().unwrap_or(stamp).to_string());
+    Ok(Parsed { findings, database })
 }
 
 fn package(p: Option<&serde_json::Value>) -> Option<(String, String)> {
@@ -277,14 +345,6 @@ fn package(p: Option<&serde_json::Value>) -> Option<(String, String)> {
     let name = p.get("name")?.as_str()?.to_string();
     let version = p.get("version")?.as_str()?.to_string();
     Some((name, version))
-}
-
-/// The day the advisory database was last updated, from the report's
-/// `database.last-updated` (an RFC 3339 timestamp; the date is enough).
-fn database_date(json: &str) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(json).ok()?;
-    let stamp = v.pointer("/database/last-updated")?.as_str()?;
-    Some(stamp.split('T').next().unwrap_or(stamp).to_string())
 }
 
 /// The report as `doctor` prints it. Crate names, versions and kinds come
@@ -321,16 +381,17 @@ pub(crate) fn render(report: &Report) -> String {
                     format!("{} {} ({why})", plain(&f.krate), plain(&f.version))
                 })
                 .collect();
-            // One `-p` per crate, each once: a crate can be both yanked and
-            // advised against, and `cargo update` takes a name once.
-            let mut crates: Vec<&str> = found.iter().map(|f| f.krate.as_str()).collect();
-            crates.sort_unstable();
-            crates.dedup();
-            let update = crates
+            // One `-p name@version` per locked version, each once: a crate
+            // can be both yanked and advised against, and a bare name is
+            // ambiguous to `cargo update` when the lock holds two versions
+            // of it, which a transitive dependency often does.
+            let mut pins: Vec<String> = found
                 .iter()
-                .map(|c| format!("-p {}", plain(c)))
-                .collect::<Vec<_>>()
-                .join(" ");
+                .map(|f| format!("-p {}@{}", plain(&f.krate), plain(&f.version)))
+                .collect();
+            pins.sort_unstable();
+            pins.dedup();
+            let update = pins.join(" ");
             format!(
                 "lockfile:   {} finding(s) in Cargo.lock — {}{}\n\
                  {:12}fix: `cargo update {update}`, committed on its own (CLAUDE.md); a crate\n\
@@ -397,11 +458,15 @@ mod tests {
         IGNORED.iter().map(|s| s.to_string()).collect()
     }
 
+    fn findings(json: &str) -> Vec<Finding> {
+        parse(json).unwrap().findings
+    }
+
     #[test]
     fn every_kind_of_warning_is_read_and_the_ignore_list_is_the_policy() {
         // The risk: reading only `vulnerabilities`, as cargo-audit's own
         // exit code does, and printing clean for the lock that failed CI.
-        let all = parse(MAIN_B49920E).unwrap();
+        let all = findings(MAIN_B49920E);
         assert_eq!(all.len(), 3, "{all:?}");
         let Report::Findings { found, ignored: n } = policy(all, &ignored(), None) else {
             panic!("clean for the lock that failed CI");
@@ -428,11 +493,9 @@ mod tests {
 
     #[test]
     fn findings_render_each_crate_its_reason_the_ignored_count_and_one_update_command() {
-        let text = render(&policy(
-            parse(MAIN_B49920E).unwrap(),
-            &ignored(),
-            database_date(MAIN_B49920E),
-        ));
+        let parsed = parse(MAIN_B49920E).unwrap();
+        assert_eq!(parsed.database.as_deref(), Some("2026-10-24"));
+        let text = render(&policy(parsed.findings, &ignored(), parsed.database));
         assert!(
             text.starts_with("lockfile:   2 finding(s) in Cargo.lock — "),
             "{text}"
@@ -447,29 +510,55 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("`cargo update -p clipboard-win -p tokio`"),
+            text.contains("`cargo update -p clipboard-win@5.4.1 -p tokio@1.53.1`"),
             "{text}"
         );
         assert!(!text.contains("atomic-polyfill"), "{text}");
     }
 
     #[test]
-    fn a_vulnerability_is_a_finding_and_a_crate_named_twice_is_updated_once() {
-        let text = render(&policy(parse(VULN).unwrap(), &[], None));
+    fn a_vulnerability_is_a_finding_and_a_version_named_twice_is_updated_once() {
+        let text = render(&policy(findings(VULN), &[], None));
         assert!(
             text.contains("x 1.0.0 (RUSTSEC-2026-0001, vulnerability)"),
             "{text}"
         );
         assert!(text.contains("x 1.0.0 (yanked)"), "{text}");
-        assert!(text.contains("`cargo update -p x`"), "{text}");
+        assert!(text.contains("`cargo update -p x@1.0.0`"), "{text}");
+    }
+
+    #[test]
+    fn two_locked_versions_of_one_crate_are_two_pins_and_one_ignored_advisory() {
+        // The risk: `cargo update -p syn` refused as ambiguous when the lock
+        // holds syn at two versions, which this workspace's lock does for
+        // six crates; and "2 advisories ignored" for one advisory matched
+        // twice.
+        let syn = |version: &str| Finding {
+            krate: "syn".into(),
+            version: version.into(),
+            kind: "unsound".into(),
+            id: Some("RUSTSEC-2026-0002".into()),
+        };
+        let text = render(&policy(vec![syn("1.0.0"), syn("2.0.0")], &[], None));
+        assert!(
+            text.contains("`cargo update -p syn@1.0.0 -p syn@2.0.0`"),
+            "{text}"
+        );
+        let Report::Clean { ignored, .. } = policy(
+            vec![syn("1.0.0"), syn("2.0.0")],
+            &["RUSTSEC-2026-0002".into()],
+            None,
+        ) else {
+            panic!()
+        };
+        assert_eq!(ignored, 1);
     }
 
     #[test]
     fn with_no_ignore_list_everything_is_a_finding() {
         // No `deny.toml` means nothing accepted: the line reports more,
         // never less.
-        let Report::Findings { found, ignored } = policy(parse(MAIN_B49920E).unwrap(), &[], None)
-        else {
+        let Report::Findings { found, ignored } = policy(findings(MAIN_B49920E), &[], None) else {
             panic!()
         };
         assert_eq!((found.len(), ignored), (3, 0));
@@ -479,14 +568,15 @@ mod tests {
     fn clean_names_the_database_date_it_is_clean_against() {
         // A clean verdict without its date would read as timeless, and the
         // whole reason this line exists is that a lock goes stale by time.
-        assert_eq!(parse(CLEAN).unwrap(), vec![]);
-        let text = render(&policy(vec![], &[], database_date(CLEAN)));
+        let parsed = parse(CLEAN).unwrap();
+        assert_eq!(parsed.findings, vec![]);
+        let text = render(&policy(vec![], &[], parsed.database));
         assert_eq!(
             text,
             "lockfile:   Cargo.lock clean — cargo-audit against the RustSec database of 2026-10-25"
         );
         let only_ignored = render(&policy(
-            parse(MAIN_B49920E).unwrap(),
+            findings(MAIN_B49920E),
             &["RUSTSEC-2023-0089".into(), "RUSTSEC-2026-0386".into()],
             None,
         ));
@@ -505,6 +595,10 @@ mod tests {
         assert!(parse("").is_err());
         assert!(parse("{}").is_err());
         assert!(parse(r#"{"vulnerabilities": {"list": [{"package": {"name": "a"}}]}}"#).is_err());
+        // A `warnings` in another shape is an error too, not "no warnings":
+        // the yanked crate that failed CI lives under `warnings`.
+        assert!(parse(r#"{"vulnerabilities": {"list": []}, "warnings": []}"#).is_err());
+        assert!(parse(r#"{"vulnerabilities": {"list": []}, "warnings": {"yanked": {}}}"#).is_err());
         let text = render(&Report::NotChecked(
             "cargo-audit: error: no such file".into(),
         ));
@@ -516,6 +610,16 @@ mod tests {
         );
         assert!(text.contains("cargo deny --locked check"), "{text}");
         assert!(!text.contains("clean"), "{text}");
+    }
+
+    #[test]
+    fn the_tool_s_error_line_is_preferred_over_a_warning_before_it() {
+        assert_eq!(
+            error_line("warning: directory is locked\nerror: couldn't fetch\n"),
+            "error: couldn't fetch"
+        );
+        assert_eq!(error_line("\n  only a warning  \n"), "only a warning");
+        assert_eq!(error_line(""), "");
     }
 
     #[test]
@@ -564,15 +668,30 @@ mod tests {
         a.iter().map(OsStr::new).collect()
     }
 
+    /// A shell found on `PATH`, since `output_within` takes a path.
+    fn shell(name: &str) -> PathBuf {
+        on_path(name).unwrap_or_else(|| panic!("{name} on PATH"))
+    }
+
     #[test]
     fn a_program_that_is_not_on_path_is_named_as_absent() {
+        assert_eq!(on_path("trellis-no-such-tool-7f3a"), None);
         let err = output_within(
-            "trellis-no-such-tool-7f3a",
+            Path::new("trellis-no-such-tool-7f3a"),
             &args(&["audit"]),
             Duration::from_secs(5),
         )
         .unwrap_err();
         assert_eq!(err, "trellis-no-such-tool-7f3a is not on PATH");
+    }
+
+    #[test]
+    fn the_tool_is_looked_up_on_path_alone() {
+        // The risk (Windows): std's resolver also searching the parent's
+        // PATH and the system directories, so "not on PATH" would depend
+        // on the host rather than on the PATH `doctor` was given.
+        let sh = shell(if cfg!(windows) { "cmd" } else { "sh" });
+        assert!(sh.is_absolute() && sh.is_file(), "{}", sh.display());
     }
 
     #[test]
@@ -585,7 +704,7 @@ mod tests {
             ("sh", &["-c", "sleep 30"])
         };
         let started = Instant::now();
-        let err = output_within(program, &args(a), Duration::from_millis(300)).unwrap_err();
+        let err = output_within(&shell(program), &args(a), Duration::from_millis(300)).unwrap_err();
         assert!(err.ends_with("did not finish within 0 s"), "{err}");
         assert!(started.elapsed() < Duration::from_secs(10));
     }
@@ -597,7 +716,7 @@ mod tests {
         } else {
             ("sh", &["-c", "echo out"])
         };
-        let got = output_within(program, &args(a), Duration::from_secs(10)).unwrap();
+        let got = output_within(&shell(program), &args(a), Duration::from_secs(10)).unwrap();
         assert!(got.stdout.contains("out"), "{:?}", got.stdout);
         // Something each shell writes to stderr without special characters.
         let (program, a): (&str, &[&str]) = if cfg!(windows) {
@@ -605,7 +724,7 @@ mod tests {
         } else {
             ("sh", &["-c", "echo err >&2"])
         };
-        let got = output_within(program, &args(a), Duration::from_secs(10)).unwrap();
+        let got = output_within(&shell(program), &args(a), Duration::from_secs(10)).unwrap();
         assert!(!got.stderr.trim().is_empty(), "{:?}", got.stderr);
     }
 }

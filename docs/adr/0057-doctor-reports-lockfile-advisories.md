@@ -34,12 +34,16 @@ they run first.
    reads "not applicable" teaches the reader to skip the column.
 
 2. **Read from cargo-audit**, spawned as `cargo-audit audit --json --file
-   <root>/Cargo.lock`: the binary `cargo audit` dispatches to, by name, so
-   "not on PATH" names the tool and not cargo. The provider keys are
-   scrubbed from its environment (ADR 0024 §3). It is bounded at 90 seconds
-   and killed at the bound: the advisory fetch is a git pull of
-   rustsec/advisory-db, and `doctor` must still end on a machine with no
-   route to GitHub.
+   <root>/Cargo.lock`: the binary `cargo audit` dispatches to, looked up on
+   `PATH` by trellis itself and spawned by that path, so "not on PATH"
+   names the tool and not cargo, and means this process's `PATH` alone
+   (std's Windows resolver would also search the parent's `PATH` and the
+   system directories). The provider keys are scrubbed from its
+   environment (ADR 0024 §3). It is bounded at 90 seconds and killed at the
+   bound, and its pipes are read under the same bound: its network work is
+   a fetch of rustsec/advisory-db through a git library and a refresh of
+   the crates.io index for the yanked check, and `doctor` must still end on
+   a machine with no route to either.
 
 3. **What counts as a finding is what `deny.toml` fails on**, not what
    cargo-audit's exit code does. cargo-audit exits non-zero only on a
@@ -63,12 +67,15 @@ they run first.
      and the whole reason the line exists is that a lock goes stale by time.
    - Findings: each crate with its locked version and, in parentheses, the
      advisory id and kind (`tokio 1.53.1 (RUSTSEC-2026-0386, unsound)`) or
-     `yanked`; the ignored count; then the one command that fixes them,
-     `cargo update -p <crate>` once per crate, with the note that the lock
-     is committed on its own and that a crate which stays after the update
-     needs its requirement in `Cargo.toml` raised first.
-   - Not checked: the tool is absent, timed out, failed (its own stderr
-     line is the reason), or answered in a shape the parser does not read.
+     `yanked`; the count of distinct advisories ignored; then the one
+     command that fixes them, `cargo update -p <crate>@<version>` once per
+     locked version (a bare name is ambiguous to cargo when the lock holds
+     two versions of a crate, which it does for six today), with the note
+     that the lock is committed on its own and that a crate which stays
+     after the update needs its requirement in `Cargo.toml` raised first.
+   - Not checked: the tool is absent, timed out, failed (its own `error:`
+     line is the reason, or its first line when there is none), or
+     answered in a shape the parser does not read.
      The line says which, and names what CI runs. An unreadable report is
      never rendered as clean: an empty stdout parses to an error, not to an
      empty list.
@@ -132,8 +139,11 @@ repository supplies.
 
 ## Reversibility
 
-Delete `crates/trellis-cli/src/doctor_supply.rs` and the one `extend` in
-`repo_lines`. Nothing else reads the line.
+Delete `crates/trellis-cli/src/doctor_supply.rs`, its `mod` line in
+`crates/trellis-cli/src/main.rs`, the one `extend` in `repo_lines`,
+`crates/trellis-cli/tests/doctor_lockfile.rs`, the note in
+`docs/COMMANDS.md` and this ADR's row in `docs/adr/README.md`. Nothing else
+reads the line.
 
 ## What would change it
 
