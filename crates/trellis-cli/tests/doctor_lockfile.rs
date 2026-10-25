@@ -29,8 +29,9 @@ fn repo(name: &str) -> PathBuf {
 /// directory makes cargo-audit absent on every platform, because trellis
 /// looks the tool up on its own PATH before spawning it (ADR 0057 decision
 /// 2); std's Windows resolver alone would still find one installed on the
-/// host. git goes with it, which `doctor` reports on its `worktree:` line
-/// and exits 0.
+/// host. git may or may not be found (std's Windows resolver still searches
+/// the parent's PATH for it); `doctor` exits 0 either way, with the
+/// `worktree:` line saying which.
 fn doctor(root: &Path, path: &Path) -> Output {
     let user = std::env::temp_dir().join("trellis-lockfile-no-user-config");
     Command::new(env!("CARGO_BIN_EXE_trellis"))

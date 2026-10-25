@@ -70,7 +70,8 @@ they run first.
      `yanked`; the count of distinct advisories ignored; then the one
      command that fixes them, `cargo update -p <crate>@<version>` once per
      locked version (a bare name is ambiguous to cargo when the lock holds
-     two versions of a crate, which it does for six today), with the note
+     two versions of a crate, as one with transitive dependencies often
+     does), with the note
      that the lock is committed on its own and that a crate which stays
      after the update needs its requirement in `Cargo.toml` raised first.
    - Not checked: the tool is absent, timed out, failed (its own `error:`

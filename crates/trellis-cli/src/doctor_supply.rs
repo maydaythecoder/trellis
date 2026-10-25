@@ -140,13 +140,20 @@ pub(crate) fn policy(all: Vec<Finding>, ignored: &[String], database: Option<Str
 /// the executable suffix Windows needs. `PATH` only, on purpose (see
 /// [`TOOL`]).
 fn on_path(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
+    on_path_in(&std::env::var_os("PATH")?, name)
+}
+
+/// [`on_path`] against a given `PATH` value, so a test can hand it one.
+fn on_path_in(path: &OsStr, name: &str) -> Option<PathBuf> {
     let file = if cfg!(windows) {
         format!("{name}.exe")
     } else {
         name.to_string()
     };
-    std::env::split_paths(&path)
+    std::env::split_paths(path)
+        // A relative entry (`.`) would resolve the tool from the working
+        // directory, which under `doctor` is the repository, where model
+        // writes land.
         .filter(|d| d.is_absolute())
         .map(|d| d.join(&file))
         .find(|p| p.is_file())
@@ -218,14 +225,14 @@ fn output_within(program: &Path, args: &[&OsStr], bound: Duration) -> Result<Cap
     let stdout = drain(child.stdout.take());
     let stderr = drain(child.stderr.take());
     let deadline = Instant::now() + bound;
-    let timed_out = || format!("{name} did not finish within {} s", bound.as_secs());
+    let timed_out = |what: &str| format!("{name} {what} within {} s", bound.as_secs());
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
             Ok(None) if Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(timed_out());
+                return Err(timed_out("did not finish"));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(e) => {
@@ -234,13 +241,16 @@ fn output_within(program: &Path, args: &[&OsStr], bound: Duration) -> Result<Cap
             }
         }
     }
+    // The child has exited; what can still hold the pipes open is a
+    // grandchild that inherited them.
     let remaining = |now: Instant| deadline.saturating_duration_since(now);
+    let unclosed = || timed_out("exited but its output was not closed");
     let stdout = stdout
         .recv_timeout(remaining(Instant::now()))
-        .map_err(|_| timed_out())?;
+        .map_err(|_| unclosed())?;
     let stderr = stderr
         .recv_timeout(remaining(Instant::now()))
-        .map_err(|_| timed_out())?;
+        .map_err(|_| unclosed())?;
     Ok(Captured { stdout, stderr })
 }
 
@@ -530,9 +540,9 @@ mod tests {
     #[test]
     fn two_locked_versions_of_one_crate_are_two_pins_and_one_ignored_advisory() {
         // The risk: `cargo update -p syn` refused as ambiguous when the lock
-        // holds syn at two versions, which this workspace's lock does for
-        // six crates; and "2 advisories ignored" for one advisory matched
-        // twice.
+        // holds syn at two versions, as a lock with transitive
+        // dependencies often does; and "2 advisories ignored" for one
+        // advisory matched twice.
         let syn = |version: &str| Finding {
             krate: "syn".into(),
             version: version.into(),
@@ -686,12 +696,25 @@ mod tests {
     }
 
     #[test]
-    fn the_tool_is_looked_up_on_path_alone() {
+    fn the_tool_is_looked_up_on_the_given_path_alone() {
         // The risk (Windows): std's resolver also searching the parent's
         // PATH and the system directories, so "not on PATH" would depend
-        // on the host rather than on the PATH `doctor` was given.
-        let sh = shell(if cfg!(windows) { "cmd" } else { "sh" });
-        assert!(sh.is_absolute() && sh.is_file(), "{}", sh.display());
+        // on the host rather than on the PATH `doctor` was given. cmd.exe
+        // lives in System32, which that resolver finds with no PATH at all;
+        // this lookup must not.
+        let name = if cfg!(windows) { "cmd" } else { "sh" };
+        let empty = crate::testutil::scratch("doctor-supply-empty-path");
+        assert_eq!(on_path_in(empty.as_os_str(), name), None);
+        let real = std::env::var_os("PATH").expect("PATH is set");
+        let found = on_path_in(&real, name).expect("the shell is on PATH");
+        assert!(
+            found.is_absolute() && found.is_file(),
+            "{}",
+            found.display()
+        );
+        // A relative entry is skipped even when the file is there.
+        let relative: std::ffi::OsString = ".".into();
+        assert_eq!(on_path_in(&relative, name), None);
     }
 
     #[test]
