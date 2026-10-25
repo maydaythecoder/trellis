@@ -1,6 +1,6 @@
 # ADR 0054 — Conflicting non-negotiable rules are escalated verbatim, not arbitrated
 
-**Status:** Proposed. Built in #11; awaiting the owner's confirmation (G7).
+**Status:** Accepted 2026-10-23 (owner's confirmation, G7). Built in #11, PR #712, on `main`.
 The behaviour is the one #11's `## Done when` specifies; this ADR records
 it and the choices the ticket left open.
 **Date:** 2026-10-12

@@ -62,12 +62,14 @@ env:
 
 jobs:
   mutants:
-    # Self-hosted when the repository variables name runners, as in ci.yml
-    # (#157); their `.env` gives the job its own CARGO_HOME and RUSTUP_HOME,
-    # so the cargo-mutants install below lands there and not in the owner's
-    # (#158). rust-cache is not used: a self-hosted runner keeps its target
-    # directory, and on one its cleanup deleted the owner's toolchain (#158).
-    runs-on: ${{ fromJSON(inputs.os == 'windows' && (vars.WINDOWS_RUNNER || '"windows-latest"') || (vars.LINUX_RUNNER || '"ubuntu-latest"')) }}
+    # GitHub-hosted, as ci.yml and release.yml since #736. Until 2026-10-23
+    # this read `vars.LINUX_RUNNER` / `vars.WINDOWS_RUNNER` (#157), so while
+    # those variables named the set-aside self-hosted runners (#219) a
+    # dispatch queued on an offline runner for 24 hours and was cancelled
+    # (#248). Bringing a self-hosted runner back is a workflow change, not a
+    # variable. rust-cache is not used: the install and build below are a
+    # small part of a job that runs the suite once per mutant.
+    runs-on: ${{ inputs.os == 'windows' && 'windows-latest' || 'ubuntu-latest' }}
     # 360 minutes. GitHub fails a job on a GitHub-hosted runner at 6 hours and
     # one on a self-hosted runner at 5 days. The ceiling is the hosted one
     # either way, so the workflow behaves the same if the runner variables

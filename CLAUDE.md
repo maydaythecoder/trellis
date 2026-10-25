@@ -78,7 +78,6 @@ trellis-vault    Apex vault -> one note's context  (must NEVER depend on trellis
 trellis-queue    local task queue + heartbeat loop (file-backed, in the git dir; no trellis-loop/model)
 trellis-tickets  ticketing standard's label rules    (pure functions + a separate binary; depends only on trellis-core; ADR 0040)
 trellis-cli      the binary
-tui-demo         the ratatui TUI against a mock event source, kept one release past the handoff (ADR 0052; depends on no trellis crate; trellis-cli takes it with default-features = false)
 tui/             the Go `trellis rpc` client, `trellis-tui`; its own Go module, parity in tui/PARITY.md (ADR 0052)
 desktop/         the Tauri `trellis rpc` client; its own workspace and lock; depends on no trellis crate (ADR 0048; rules in desktop/CLAUDE.md)
 ```
