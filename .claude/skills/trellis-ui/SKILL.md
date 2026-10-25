@@ -6,9 +6,12 @@ description: The rules, tokens and reference wireframe for trellis's two rpc cli
 # trellis-ui
 
 The desktop (`desktop/`, Tauri) and the TUI (`tui/`, Go) are two clients of one
-engine, `trellis rpc`. They draw what the engine reports. The reference for how
-a run should look is `docs/design/run-view-wireframe.html` (#786); open it with
-`sources` on to see what each region draws from and what is not built yet.
+engine, `trellis rpc`. They draw what the engine reports. What the interface is
+for, and the system it is built from, is `docs/design/DESIGN.md`: the person is
+the conductor, change is the main visual event, one view that burrows inward
+with no tabs, lines and glyphs, two faces of one vocabulary. The reference for
+how a run should look is `docs/design/run-view-wireframe.html` (#786); open it
+with `sources` on to see what each region draws from and what is not built yet.
 
 ## Rules that are not stylistic
 
@@ -89,7 +92,9 @@ Parity between the clients is tracked in `tui/PARITY.md`.
 
 ## Tokens
 
-Both themes live in the wireframe's first `<style>` block. The desktop's
+Both themes live in the wireframe's first `<style>` block, with a reading
+copy and each colour's meaning in `docs/design/DESIGN.md` §3 (held in step by
+`scripts/checks/design-tokens.py`). The desktop's
 `desktop/ui/style.css` still has its own, older names (`--bg`, `--fg`,
 `--accent`, `--passed`, `--failed`, …); mapping them onto these is part of
 building the wireframe, not a change to make on the side. Use the variables,
