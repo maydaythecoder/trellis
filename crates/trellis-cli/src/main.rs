@@ -18,6 +18,7 @@ mod config; // `.trellis/config.toml`
 mod context_files; // context files, system prompt and skills a run's prompt takes (ADR 0025)
 mod doctor_cmd; // `doctor`, `check` and `init`
 mod doctor_extra; // `doctor`'s lines on user config, context, trust, profiles and vault
+mod doctor_supply; // `doctor`'s lockfile line: advisories in Cargo.lock (ADR 0057)
 mod first_run; // choosing a model on a first run with none configured (ADR 0050 §2)
 mod floor; // the S7 floor as measured: doctor's floor line and run's warning
 mod hosted; // hosted providers: a spec resolved against the user's config (ADR 0024)

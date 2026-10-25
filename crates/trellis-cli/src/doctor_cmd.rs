@@ -5,7 +5,7 @@
 
 use crate::floor::floor_line;
 use crate::plain;
-use crate::{config, doctor_extra, hosted};
+use crate::{config, doctor_extra, doctor_supply, hosted};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use trellis_model::RuntimeError;
@@ -1256,6 +1256,11 @@ fn repo_lines(root: &Path, cfg: &config::RepoConfig) -> Vec<String> {
             ""
         )),
     }
+
+    // Lockfile (ADR 0057): advisories and yanked crates in a `Cargo.lock` at
+    // the root, so a lock that aged against the RustSec database is read
+    // here before CI reads it. No line when there is no lock.
+    out.extend(doctor_supply::line(root));
 
     // Skills (ADR 0019): what was found, what a run would list and leave out,
     // and every directory skipped with the reason. A skill that is silently
