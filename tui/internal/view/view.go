@@ -113,12 +113,12 @@ type Budget struct {
 	ModelMs          *uint64
 	QueueWaitMs      *uint64
 	// The run's other ceilings, from run budget, and the completion tokens
-	// spent against MaxTokens, from the last turn (#854). The wall clock's
+	// spent against MaxCompletionTokens, from the last turn (#854). The wall clock's
 	// ceiling is in milliseconds, as trellis sends it.
-	MaxWallClockMs *uint64
-	MaxTokens      *uint64
-	ContextBytes   *uint64
-	TokensUsed     *uint64
+	MaxWallClockMs      *uint64
+	MaxCompletionTokens *uint64
+	MaxContextBytes     *uint64
+	TokensUsed          *uint64
 }
 
 // Dropped is how many of a run pane's oldest rows the model no longer
@@ -703,7 +703,7 @@ func limitFigures(s State, l Limit) (label string, used, ceiling *uint64, readou
 		}
 		return "WALL CLOCK", usedMs, b.MaxWallClockMs, clockText(s) + "/" + c
 	case LimitTokens:
-		return "COMPLETION", b.TokensUsed, b.MaxTokens, figure(b.TokensUsed) + "/" + figure(b.MaxTokens) + " tokens"
+		return "COMPLETION", b.TokensUsed, b.MaxCompletionTokens, figure(b.TokensUsed) + "/" + figure(b.MaxCompletionTokens) + " tokens"
 	}
 	return "TURNS", turnUsed(s), b.MaxIterations, figure(turnUsed(s)) + "/" + figure(b.MaxIterations)
 }

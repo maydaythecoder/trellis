@@ -17,10 +17,13 @@
 // the vault: rpc has no vault write, and every write stays a `trellis vault`
 // command the person runs (#70, ADR 0049).
 //
+// The hit count is the Search panel's meta and a note's depth a Stat (ds.js,
+// #910); the rest of a note is the vault's own text.
+//
 // index.html loads this as a module of its own.
 
-import { stat, unreported } from "./ds.js";
-import { el } from "./dom.js";
+import { el, muted } from "./dom.js";
+import { panelMeta, stats } from "./ds.js";
 import { isCount, plural, str } from "./fmt.js";
 import { send, start } from "./rpc.js";
 
@@ -210,11 +213,15 @@ function drawNote(doc, tauri, g) {
   }
   const list = (xs, each) => (Array.isArray(xs) ? xs : []).map((x) => each(doc, tauri, x));
   const issues = (Array.isArray(g.issues) ? g.issues : []).map((i) => el(doc, "li", str(i) ?? "issue not reported"));
+  // A depth is a Stat where trellis printed a count; where it printed why
+  // the note has none, its words are kept as it wrote them.
+  const depth = str(g.depth) ?? "not reported";
+  const depthDrawn = /^\d+$/.test(depth) ? stats(doc, [{ label: "depth", value: depth }]) : section(doc, "depth", muted(doc, "p", depth));
 
   pane.replaceChildren(
     head,
     path,
-    stat(doc, { label: "depth", value: str(g.depth) ?? unreported(doc, "the vault graph did not carry it"), size: "sm" }),
+    depthDrawn,
     section(doc, "lineage", lineage),
     section(doc, "unresolved parent", el(doc, "p", str(g.unresolved_parent) ?? "none")),
     section(doc, "children", rows(doc, list(g.children, named), "none")),
@@ -234,15 +241,23 @@ function searching(doc, on) {
 
 export function drawVault(doc, tauri, v) {
   if (v === null || typeof v !== "object") return;
-  // How many notes the list holds, as the Search panel's head says it.
-  doc.getElementById("vt-search-meta").textContent = Array.isArray(v.hits) ? plural(v.hits.length, "note", "notes") : "";
   if (str(v.error) !== null || Array.isArray(v.hits)) searching(doc, false);
-  if (str(v.error) !== null) status(doc, v.error);
-  else if (Array.isArray(v.hits)) {
+  if (str(v.error) !== null) {
+    status(doc, v.error);
+    panelMeta(doc, "vt-search-meta");
+  } else if (Array.isArray(v.hits)) {
     const n = v.hits.length;
-    if (v.browse === true) status(doc, `${n} note${n === 1 ? "" : "s"} in the vault, listed by title; type a query to rank them.`);
-    else status(doc, `${n} note${n === 1 ? "" : "s"} matched, in the order trellis vault search ranks them.`);
-  } else status(doc, "Read-only: a note is changed with trellis vault or an editor, never from here.");
+    if (v.browse === true) {
+      status(doc, "Listed by title: type a query to rank them.");
+      panelMeta(doc, "vt-search-meta", plural(n, "note", "notes"));
+    } else {
+      status(doc, "In the order trellis vault search ranks them.");
+      panelMeta(doc, "vt-search-meta", `${n} matched`);
+    }
+  } else {
+    status(doc, "Read-only: a note is changed with trellis vault or an editor, never from here.");
+    panelMeta(doc, "vt-search-meta");
+  }
   drawHits(doc, tauri, v);
   drawNote(doc, tauri, v.graph);
   drawCheck(doc, v.check);

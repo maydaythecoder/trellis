@@ -9,9 +9,11 @@
 // Each cell is a button: pressed, the list below shows only the tasks whose
 // `status` is the cell's, and "Show all" lifts that (#656). Presentation
 // only: the rows are the view's tasks, and nothing is counted from them.
-// Below the cells, each task with its text, priority, labels, waiting reason
-// and chain (#559). PR and CI state is drawn by overview.js's drawPrCi, so
-// the board and the overview never draw it differently.
+// Below the cells, the tasks as a Rail, each with its text, priority,
+// labels, waiting reason and chain (#559). A task and PR and CI state are
+// drawn by overview.js's taskRow and drawPrCi, so the board and the
+// overview never draw them differently. Each cell's count is the design
+// system's Stat and the task count the Queue panel's meta (ds.js, #910).
 //
 // Task text, labels, waiting reasons, errors and everything `gh` reports are
 // written by others (ADR 0007, S10): they reach the DOM only through
@@ -20,10 +22,10 @@
 //
 // index.html loads this as a module of its own.
 
-import { dsStatus, figure, railRows, stat } from "./ds.js";
-import { el, muted } from "./dom.js";
+import { el, fill, muted } from "./dom.js";
+import { figure, panelMeta, railRows, stat } from "./ds.js";
 import { plural, str } from "./fmt.js";
-import { drawPrCi } from "./overview.js";
+import { drawPrCi, taskRow } from "./overview.js";
 import { onShown, runEnded, send, start } from "./rpc.js";
 
 let asked = 0;
@@ -39,17 +41,6 @@ let pressed = null;
 // The view's queue as last drawn, so a press redraws it.
 let lastQueue = null;
 
-// The tone each queue status is drawn in (DESIGN.md section 3.1): a task
-// done is ok, one failed is down, one in progress is the engine's own
-// activity, one in review waits on a person, one blocked waits; the rest
-// are idle. A Rail's dot has no waiting tone, so a blocked task's dot is
-// the plain one and its Status says blocked.
-const STATUS_TONES = { done: "ok", failed: "down", in_progress: "cool", in_review: "signal", blocked: "warn" };
-
-function texts(v) {
-  return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
-}
-
 function status(doc, text) {
   doc.getElementById("qb-status").textContent = text;
 }
@@ -64,8 +55,9 @@ function press(doc, status) {
   }
 }
 
-// The eight cells, in the order the view lists them, each a button that
-// filters the list by its status, then "Show all".
+// The eight cells, in the order the view lists them, each a button holding
+// its status's count as a Stat, that filters the list by its status, then
+// "Show all".
 function drawCounts(doc, counts) {
   const pane = doc.getElementById("qb-counts");
   if (!Array.isArray(counts)) {
@@ -78,14 +70,7 @@ function drawCounts(doc, counts) {
     const b = el(doc, "button");
     b.type = "button";
     b.className = "qb-cell";
-    b.append(
-      stat(doc, {
-        label: s ?? "status not reported",
-        value: figure(doc, c && c.count, "the queue did not count this status"),
-        size: "sm",
-        inline: true,
-      }),
-    );
+    b.append(stat(doc, { label: s ?? "status not reported", value: figure(doc, c && c.count, "the view did not count it"), size: "sm" }));
     b.setAttribute("aria-pressed", s !== null && s === pressed ? "true" : "false");
     if (s === null) b.disabled = true;
     else b.addEventListener("click", () => press(doc, s));
@@ -95,44 +80,15 @@ function drawCounts(doc, counts) {
   const all = el(doc, "li");
   const b = el(doc, "button", "Show all");
   b.type = "button";
-  b.className = "qb-all";
+  b.className = "qb-cell";
   b.disabled = pressed === null;
   b.addEventListener("click", () => press(doc, null));
   all.append(b);
   pane.replaceChildren(...cells, all);
 }
 
-// One task as a Rail row: its status as a Status, its id, priority and
-// words, and its labels and chain below; the dot takes the status's tone.
-function task(doc, t) {
-  const label = el(doc, "span");
-  const id = str(t && t.id) ?? "?";
-  const state = str(t && t.state) ?? "?";
-  if (str(t && t.error) !== null) {
-    label.append(el(doc, "code", id), " ", el(doc, "span", state), " ", dsStatus(doc, "down", `unreadable: ${t.error}`));
-    return { label, tone: "down" };
-  }
-  const status = str(t.status);
-  label.append(
-    dsStatus(doc, STATUS_TONES[status] ?? "idle", str(t.status) ?? "status not reported"),
-    " ",
-    el(doc, "code", id),
-    " ",
-    el(doc, "span", str(t.task) ?? "task not reported"),
-  );
-  const meta = [];
-  const labels = texts(t.labels);
-  if (labels.length > 0) meta.push(`labels: ${labels.join(", ")}`);
-  if (str(t.assignee) !== null) meta.push(`assignee: ${t.assignee}`);
-  if (str(t.parent) !== null) meta.push(`part of ${t.parent}`);
-  const blockers = texts(t.blockers);
-  if (blockers.length > 0) meta.push(`after ${blockers.join(", ")}`);
-  if (str(t.waiting) !== null) meta.push(`waiting: ${t.waiting}`);
-  if (meta.length > 0) label.append(el(doc, "span", meta.join(" · "), "muted qb-chain"));
-  const tone = STATUS_TONES[status] === "warn" ? null : STATUS_TONES[status] ?? null;
-  return { label, meta: str(t.priority) ?? "priority not reported", tone };
-}
-
+// The tasks as Rail rows, in the queue's order, each with its labels and
+// assignee too (overview.js's taskRow).
 function drawTasks(doc, tasks) {
   const pane = doc.getElementById("qb-tasks");
   if (!Array.isArray(tasks)) {
@@ -140,27 +96,23 @@ function drawTasks(doc, tasks) {
     return;
   }
   // With a cell pressed, only the tasks whose status is its; an
-  // unreadable task has none, as it is in no cell.
-  const items = tasks
+  // unreadable task has none, as it is in no cell. The rows are drawn,
+  // never counted.
+  const rows = tasks
     .filter((t) => pressed === null || str(t && t.status) === pressed)
-    .map((t) => task(doc, t));
-  if (items.length === 0) {
-    pane.replaceChildren(el(doc, "li", pressed === null ? "No tasks queued." : `No task is ${pressed}.`, "empty"));
-    return;
-  }
-  pane.replaceChildren(...railRows(doc, items));
+    .map((t) => taskRow(doc, t, true));
+  fill(doc, pane, railRows(doc, rows), pressed === null ? "No tasks queued." : `No task is ${pressed}.`);
 }
 
 export function drawQueue(doc, q) {
   if (q === null || typeof q !== "object") return;
   lastQueue = q;
-  const meta = doc.getElementById("qb-tasks-meta");
-  meta.textContent = "";
-  if (str(q.error) !== null) status(doc, q.error);
-  else if (Array.isArray(q.tasks)) {
-    const n = q.tasks.length;
-    status(doc, `${n} task${n === 1 ? "" : "s"} in the queue, read-only: trellis queue and trellis work change it.`);
-    meta.textContent = plural(n, "task", "tasks");
+  if (str(q.error) !== null) {
+    status(doc, q.error);
+    panelMeta(doc, "qb-tasks-meta");
+  } else if (Array.isArray(q.tasks)) {
+    status(doc, "Read-only: trellis queue and trellis work change it.");
+    panelMeta(doc, "qb-tasks-meta", plural(q.tasks.length, "task", "tasks"));
   }
   drawCounts(doc, q.counts);
   drawTasks(doc, q.tasks);

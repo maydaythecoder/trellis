@@ -219,26 +219,31 @@ path of `log_json`'s `always` and `optional`. Held by
 `log_json_carries_every_trail_field_the_desktop_reads` and
 `rpc_steer_abort_compact_answers_carry_what_the_contract_lists` in
 `tests/modes.rs`, with the `rpc_vault_` tests there for the vault answers.
-*Added 2026-10-26 (#799), owner decision of 2026-10-25 (build additive rpc
-fields):* trellis reports the budget's own elapsed time and every ceiling,
-so neither client runs a clock of its own against the budget. `model call`
-and every `turn`, the governance audit's included, carry `elapsed_ms`: the
-loop's monotonic wall-clock spend, with every wait on a person in approve
-mode taken out, the figure the wall-clock ceiling is checked against.
-`run_end` carries it when the loop ran and returned, and leaves it off,
-never sending part of a run as the whole, for an interrupt or abort, an
-error before the loop and a partitioned run. `run budget` carries, beside
-`max_iterations`, `max_wall_clock_ms`, `max_tokens` (the budget's own name,
-in tokens) and `context_bytes` (the driver's prompt ceiling in bytes, left
-off for the scripted driver, which has none). Every `turn` carries
-`completion_tokens_used`, the counter `max_tokens` is checked against: the
-budget counts completion tokens only, so the field says so, and it is never
-summed with prompt tokens. No client reads them yet, so they are under
-`rpc.not_every_client` with empty `read_by`, and the clients' contract
-tests are unchanged. Held by
-`rpc_elapsed_excludes_time_waiting_on_an_approval` and
-`rpc_run_budget_carries_every_ceiling` in `tests/modes.rs`, and on the audit
-turn by `rpc_every_turn_through_the_governance_audit_keeps_the_contract`.
+*Added 2026-10-26 (#799), owner-directed (the owner's decision of
+2026-10-25, about 22:50 New York time, recorded on story #790: build
+additive rpc fields, each with its amendment here):* the run's budget is
+reported, so no client keeps a clock or a ceiling of its own. `model call`,
+`turn` and `run_end` carry `elapsed_ms`, the run budget's wall clock: the
+loop's monotonic time with every wait on a person in approve mode taken out,
+the figure the wall-clock ceiling is checked against. `run budget` carries,
+beside `max_iterations`, `max_wall_clock_ms`, `max_completion_tokens` (the
+budget counts completion tokens only, `Model::tokens_used`) and
+`max_context_bytes` (the byte budget each request is held to; absent for a
+scripted run, which sends no prompt). Each `turn` carries
+`completion_tokens_used`, the count `max_completion_tokens` is checked
+against (absent for a scripted run, which has no count); prompt and
+completion tokens are never summed into it. `run_end` carries `elapsed_ms`
+only when the run's loop returned: a run refused before its loop, an
+interrupted run (a wait still open then was never measured) and a
+multi-agent run (each partition keeps its own clock against its share, and
+sends its own `run budget`) carry none, never a 0. Nothing emitted before
+changes. No client reads these yet; each is under `rpc.not_every_client`
+with `read_by` empty until the clients' own tickets switch to it. Held by
+`rpc_run_budget_carries_every_ceiling` and
+`rpc_elapsed_excludes_time_waiting_on_an_approval` in `tests/modes.rs`,
+the contract tests there that read `not_every_client`, and
+`a_multi_agent_run_end_carries_no_elapsed_and_each_partition_sends_its_share`
+in `tests/partitions.rs`.
 *Added 2026-10-26 (#800):* every `turn`, the governance audit's included,
 carries `tool`, `target` and `wrote`: the trail's record of the turn,
 computed by `trellis_loop::turn_action`, the function the trail's action
@@ -326,12 +331,12 @@ Held by `rpc_pause_holds_before_the_next_model_request`,
 `tests/modes.rs`.
 *Added 2026-10-26 (#807):* `set_budget`, for the Budget card's mid-run
 limits (ADR 0058 §2). It takes any of `max_iterations`,
-`max_wall_clock_ms` and `max_tokens`, the names and units `run budget`
+`max_wall_clock_ms` and `max_completion_tokens`, the names and units `run budget`
 sends, at least one, and is answered at once with all three after the
 change. It raises and never lowers: a value below the ceiling in force is
 refused naming it, a value equal to it changes nothing, and a request with
 any refused value changes nothing. Also refused: `no run in flight`, a
-value that is not a whole number above 0, `context_bytes` (the driver's,
+value that is not a whole number above 0, `max_context_bytes` (the driver's,
 fixed for the run), any other field, and a raise before the loop's first
 budget check or once the loop has returned; one accepted during the run's
 last turn reaches no check and changes nothing. The raise takes effect at

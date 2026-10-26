@@ -5,7 +5,7 @@
 //! escalates once with the current state, then rolls back.
 
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Which resource is actually scarce, which inverts by configuration.
 ///
@@ -47,6 +47,38 @@ impl Default for Budget {
             max_tokens: 2_000_000,
             regime: CostRegime::Local,
         }
+    }
+}
+
+/// The clock a run's wall-clock ceiling is checked against: monotonic time
+/// since the loop started, less the time spent waiting on a person in
+/// approve mode. A diff read carefully should not be what ends a run.
+///
+/// One clock for the ceiling and for the figure the run reports
+/// (`elapsed_ms` on its events and `run_end`), so a client draws elapsed
+/// against the ceiling with the number the ceiling is checked against.
+#[derive(Debug)]
+pub(crate) struct WallClock {
+    started: Instant,
+    waited_on_human: Duration,
+}
+
+impl WallClock {
+    pub(crate) fn start() -> Self {
+        Self {
+            started: Instant::now(),
+            waited_on_human: Duration::ZERO,
+        }
+    }
+
+    /// What the run has spent of its wall clock so far.
+    pub(crate) fn spent(&self) -> Duration {
+        self.started.elapsed().saturating_sub(self.waited_on_human)
+    }
+
+    /// Takes a person's answer time out of what the run has spent.
+    pub(crate) fn leave_out(&mut self, waited_on_human: Duration) {
+        self.waited_on_human += waited_on_human;
     }
 }
 
@@ -144,7 +176,7 @@ pub struct Raise {
 /// Why a [`Raise`] changed nothing.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RaiseRefused {
-    #[error("name a ceiling to raise: max_iterations, max_wall_clock_ms or max_tokens")]
+    #[error("name a ceiling to raise: max_iterations, max_wall_clock_ms or max_completion_tokens")]
     NothingNamed,
     /// Lowering is refused whole: a limit below the spend ends the run,
     /// which `abort` already does, and a lowered ceiling has no defined
@@ -194,7 +226,7 @@ impl Budget {
             r.max_wall_clock
                 .and_then(|v| lower("max_wall_clock_ms", ms(v), ms(self.max_wall_clock))),
             r.max_tokens
-                .and_then(|v| lower("max_tokens", v, self.max_tokens)),
+                .and_then(|v| lower("max_completion_tokens", v, self.max_tokens)),
         ];
         if let Some(e) = refused.into_iter().flatten().next() {
             return Err(e);
@@ -438,7 +470,7 @@ mod tests {
             })
             .err(),
             Some(RaiseRefused::Lower {
-                ceiling: "max_tokens",
+                ceiling: "max_completion_tokens",
                 asked: 999,
                 current: 1_000,
             })

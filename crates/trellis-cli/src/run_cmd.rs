@@ -126,7 +126,7 @@ impl<M: trellis_loop::Model + Send> trellis_loop::Model for SeesDone<'_, M> {
         step
     }
 
-    fn tokens_used(&self) -> u64 {
+    fn tokens_used(&self) -> Option<u64> {
         self.inner.tokens_used()
     }
 
@@ -254,13 +254,18 @@ impl Driver {
         }
     }
 
-    /// Completion tokens as the adapter counted them (ADR 0026 §8); `None`
-    /// for a scripted driver, and for a hosted one once a reply went
-    /// unreported. As `run_body` reads them.
+    /// Completion tokens as the adapter counted them, for the trail (ADR
+    /// 0026 §8); `None` for a scripted driver, and for a hosted one once a
+    /// reply went unreported.
     fn tokens(&self) -> Option<u64> {
         match self {
             Driver::Scripted(_) => None,
-            Driver::Runtime(m) => Some(trellis_loop::Model::tokens_used(m)),
+            Driver::Runtime(m) => trellis_loop::Model::tokens_used(m),
+            // Hosted runs count against a profile's budget too; the provider
+            // reports output tokens and the adapter sums them (ADR 0024).
+            // Not `tokens_used`, which charges an unreported reply its upper
+            // bound for the in-run ceiling: the trail takes only a measured
+            // count, and `None` once any reply went unreported.
             Driver::Hosted(m) => m.tokens_measured(),
         }
     }
@@ -1251,6 +1256,9 @@ fn run_body(
         },
         &mut *out,
     )?;
+    // The loop's spend when it returns, for `run_end` (`framed`). An
+    // interrupt drops the loop, which then sends nothing.
+    let (elapsed_tx, mut elapsed_rx) = tokio::sync::oneshot::channel();
     let mut seed = trellis_loop::Seed {
         prior,
         repo,
@@ -1258,8 +1266,7 @@ fn run_body(
         // terminal (#116) and `rpc` (ADR 0025 §5), and a run given `None` is
         // exactly the one before #113.
         steering: control.steering,
-        // Read by `output::framed` for `run_end`'s `elapsed_ms` (#799).
-        spent: Some(extras.spent.clone()),
+        elapsed: Some(elapsed_tx),
         // rpc's `pause` and `resume` (ADR 0058 §1); `None` everywhere else.
         hold: extras.hold.clone(),
         // rpc's `set_budget` (ADR 0058 §2), raising this one run's whole
@@ -1556,26 +1563,16 @@ fn run_body(
     // pool — so an interrupted run would hang until someone pressed Enter.
     rt.shutdown_background();
     rec.steps = recorded;
+    if let Ok(ms) = elapsed_rx.try_recv() {
+        let _ = extras.elapsed_ms.set(ms);
+    }
 
     // Completion tokens as the adapter counted them (ADR 0026 §8). A
     // scripted driver has no count, which is `None`, not a free run.
-    let tokens = match &driver {
-        Driver::Scripted(_) => None,
-        Driver::Runtime(m) => Some(trellis_loop::Model::tokens_used(m)),
-        // Hosted runs count against a profile's budget too; the provider
-        // reports output tokens and the adapter sums them (ADR 0024). Not
-        // `tokens_used`, which charges an unreported reply its upper bound
-        // for the in-run ceiling: the trail takes only a measured count,
-        // and `None` once any reply went unreported.
-        Driver::Hosted(m) => m.tokens_measured(),
-    };
+    let tokens = driver.tokens();
     // Prompt tokens, summed by the adapter and absent once any call went
     // unreported (ADR 0027, #106). Its own field, never added to `tokens`.
-    let prompt_tokens = match &driver {
-        Driver::Scripted(_) => None,
-        Driver::Runtime(m) => trellis_loop::Model::prompt_tokens(m),
-        Driver::Hosted(m) => trellis_loop::Model::prompt_tokens(m.as_ref()),
-    };
+    let prompt_tokens = driver.prompt_tokens();
     let compactions = driver.compactions();
     let requested = driver.requested_compactions();
     let facts = |approved| TrailFacts {
@@ -2454,9 +2451,10 @@ fn run_partitioned(p: Partitioned<'_>, out: &mut (dyn std::io::Write + Send)) ->
             prior: prior.clone(),
             repo: repo.clone(),
             steering: None,
-            // Each partition spends its own wall clock, concurrently, so no
-            // one partition's figure is the run's; `run_end` carries none.
-            spent: None,
+            // None for `run_end`: each partition's loop keeps its own clock
+            // against its own share (ADR 0008), alongside others at a width
+            // above 1, so no one of them is the run's spend.
+            elapsed: None,
             // rpc starts no partitioned run, and `pause` reaches only rpc's.
             hold: None,
             // A raise is to the run's whole ceiling and a partition runs on
@@ -4331,7 +4329,8 @@ mod interrupt_tests {
         // The risk: the budget counts tokens and the trail records prompt
         // bytes through `SeesDone` over `rpc::Watched`, the stack every
         // run drives; a wrapper answering a default would make a metered
-        // run look free and its context unmeasured.
+        // run look free, its context unmeasured and its `run budget`
+        // without a context ceiling.
         use trellis_loop::Model;
         let mut inner = crate::testutil::figures();
         let mut watched = crate::rpc::Watched::new(&mut inner, None);
@@ -4341,8 +4340,9 @@ mod interrupt_tests {
             done: &mut done,
             steps: &mut steps,
         };
-        assert_eq!(m.tokens_used(), 7);
+        assert_eq!(m.tokens_used(), Some(7));
         assert_eq!(m.prompt_bytes(), Some(4321));
+        assert_eq!(m.context_bytes(), Some(9_000));
         assert_eq!(m.compactions().len(), 1);
         assert_eq!(m.compactions()[0].elided_bytes, 50);
     }

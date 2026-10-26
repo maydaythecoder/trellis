@@ -256,7 +256,7 @@ on stderr.
     rules*)
   - `pause` and `resume` (*added 2026-10-26, #806; ADR 0058 §1 holds
     their rules*)
-  - `set_budget {max_iterations?, max_wall_clock_ms?, max_tokens?}`
+  - `set_budget {max_iterations?, max_wall_clock_ms?, max_completion_tokens?}`
     (*added 2026-10-26, #807; ADR 0058 §2 holds its rules*)
   - `withdraw {id}` (*added 2026-10-26, #808; ADR 0058 §3 holds its
     rules*)

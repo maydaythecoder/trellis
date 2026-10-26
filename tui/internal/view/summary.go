@@ -234,7 +234,7 @@ func limitRow(label string, used, ceiling *uint64, readout, why string, w int) [
 func summaryBudget(s State, w int) []Row {
 	b := s.Budget
 	rows := heading("BUDGET · used/ceiling")
-	noBudget := b.MaxIterations == nil && b.MaxWallClockMs == nil && b.MaxTokens == nil
+	noBudget := b.MaxIterations == nil && b.MaxWallClockMs == nil && b.MaxCompletionTokens == nil
 	if noBudget && (s.Running || summaryEnded(s)) {
 		rows = append(rows, wrapped("   ", "", "trellis has sent no run budget for this run", RoleLabel, w)...)
 	}
@@ -248,10 +248,10 @@ func summaryBudget(s State, w int) []Row {
 	}
 
 	why := ""
-	if b.ContextBytes == nil && !noBudget {
+	if b.MaxContextBytes == nil && !noBudget {
 		why = "this run's driver has no prompt ceiling: it elides nothing"
 	}
-	rows = append(rows, limitRow("LAST PROMPT", b.PromptBytes, b.ContextBytes, kB(b.PromptBytes)+"/"+kB(b.ContextBytes), why, w)...)
+	rows = append(rows, limitRow("LAST PROMPT", b.PromptBytes, b.MaxContextBytes, kB(b.PromptBytes)+"/"+kB(b.MaxContextBytes), why, w)...)
 	return rows
 }
 

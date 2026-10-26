@@ -82,9 +82,9 @@ type Frame struct {
 	// The run's other ceilings, from RunBudget (#799): the wall clock in
 	// milliseconds, completion tokens, and one prompt's bytes, which a
 	// driver with no context ceiling (the scripted one) does not send.
-	MaxWallClockMs *uint64
-	MaxTokens      *uint64
-	ContextBytes   *uint64
+	MaxWallClockMs      *uint64
+	MaxCompletionTokens *uint64
+	MaxContextBytes     *uint64
 	// HoldTurn is the model call a Paused or Resumed hold is before, and
 	// PausedMs how long a Resumed one held, by trellis's monotonic clock.
 	HoldTurn *uint64
@@ -137,7 +137,7 @@ type TurnFields struct {
 	ElapsedMs *uint64
 	// DurationMs is the tool call's own time, a wait on a person left out
 	// (#800). CompletionTokensUsed is the completion tokens over every reply
-	// so far, the counter run budget's max_tokens is checked against, never
+	// so far, the counter run budget's max_completion_tokens is checked against, never
 	// a sum with prompt tokens (#799).
 	DurationMs           *uint64
 	CompletionTokensUsed *uint64
@@ -317,7 +317,7 @@ func Parse(l rpc.Line) Frame {
 		}}
 	case msg != nil && *msg == "run budget":
 		return Frame{Kind: RunBudget, MaxIterations: u(f, "max_iterations"),
-			MaxWallClockMs: u(f, "max_wall_clock_ms"), MaxTokens: u(f, "max_tokens"), ContextBytes: u(f, "context_bytes")}
+			MaxWallClockMs: u(f, "max_wall_clock_ms"), MaxCompletionTokens: u(f, "max_completion_tokens"), MaxContextBytes: u(f, "max_context_bytes")}
 	case msg != nil && *msg == "steer delivered":
 		return Frame{Kind: SteerDelivered, AfterStep: u(f, "after_step")}
 	case msg != nil && *msg == "paused":

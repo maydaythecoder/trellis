@@ -123,7 +123,7 @@ pub struct Turn {
     /// the summary level shows beside each check (#832).
     pub duration_ms: Option<u64>,
     /// The completion (output) tokens over every reply so far, the counter
-    /// `run budget`'s `max_tokens` is checked against (#799): never prompt
+    /// `run budget`'s `max_completion_tokens` is checked against (#799): never prompt
     /// tokens, and never a sum of the two.
     pub completion_tokens_used: Option<u64>,
     /// An applied edit's whole lines added and removed (#802); absent on
@@ -140,15 +140,15 @@ pub struct Turn {
 
 /// A `run budget` event's ceilings (#799). Each is `None` when the event
 /// did not carry it: an older trellis sends `max_iterations` alone, and the
-/// scripted driver, which elides nothing, sends no `context_bytes`.
+/// scripted driver, which elides nothing, sends no `max_context_bytes`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct RunBudget {
     pub max_iterations: Option<u64>,
     pub max_wall_clock_ms: Option<u64>,
     /// A ceiling on completion tokens only, as `completion_tokens_used`.
-    pub max_tokens: Option<u64>,
+    pub max_completion_tokens: Option<u64>,
     /// The ceiling on one prompt, in bytes.
-    pub context_bytes: Option<u64>,
+    pub max_context_bytes: Option<u64>,
 }
 
 /// colibri's self-report (client_contract.json's `runtime identified`).
@@ -296,8 +296,8 @@ pub fn parse_stdout(line: &str) -> Frame {
         Some("run budget") => Frame::RunBudget(RunBudget {
             max_iterations: json::u64(f, "max_iterations"),
             max_wall_clock_ms: json::u64(f, "max_wall_clock_ms"),
-            max_tokens: json::u64(f, "max_tokens"),
-            context_bytes: json::u64(f, "context_bytes"),
+            max_completion_tokens: json::u64(f, "max_completion_tokens"),
+            max_context_bytes: json::u64(f, "max_context_bytes"),
         }),
         Some("paused") => match json::u64(f, "turn") {
             Some(turn) => Frame::Paused { turn },

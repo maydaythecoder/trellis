@@ -99,10 +99,10 @@ func (m *Model) panesTurn(t *frames.TurnFields) {
 		ModelMs:          t.ModelMs,
 		QueueWaitMs:      t.QueueWaitMs,
 		// The ceilings stay the run budget's; a turn carries none.
-		MaxWallClockMs: m.Budget.MaxWallClockMs,
-		MaxTokens:      m.Budget.MaxTokens,
-		ContextBytes:   m.Budget.ContextBytes,
-		TokensUsed:     t.CompletionTokensUsed,
+		MaxWallClockMs:      m.Budget.MaxWallClockMs,
+		MaxCompletionTokens: m.Budget.MaxCompletionTokens,
+		MaxContextBytes:     m.Budget.MaxContextBytes,
+		TokensUsed:          t.CompletionTokensUsed,
 	}
 }
 
@@ -113,7 +113,7 @@ func (m *Model) panesTurn(t *frames.TurnFields) {
 // time and the tokens mid-run (#857).
 func (m *Model) runBudget(f frames.Frame) {
 	m.Budget.MaxIterations, m.Budget.MaxWallClockMs = f.MaxIterations, f.MaxWallClockMs
-	m.Budget.MaxTokens, m.Budget.ContextBytes = f.MaxTokens, f.ContextBytes
+	m.Budget.MaxCompletionTokens, m.Budget.MaxContextBytes = f.MaxCompletionTokens, f.MaxContextBytes
 }
 
 // tick keeps the budget's elapsed time current between turns (#641): the

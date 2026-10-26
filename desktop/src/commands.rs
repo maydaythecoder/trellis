@@ -124,9 +124,13 @@ pub const FORWARDED: [&str; 27] = [
 ];
 
 /// The ceilings `set_budget` raises, as `run budget` names them (ADR 0058
-/// section 2). `context_bytes` is not among them: the driver fixes it for
+/// section 2). `max_context_bytes` is not among them: the driver fixes it for
 /// the run.
-const RAISABLE: [&str; 3] = ["max_iterations", "max_wall_clock_ms", "max_tokens"];
+const RAISABLE: [&str; 3] = [
+    "max_iterations",
+    "max_wall_clock_ms",
+    "max_completion_tokens",
+];
 
 /// The longest `ref` `rpc_send` forwards, in bytes.
 pub const REF_CAP: usize = 200;
@@ -924,7 +928,7 @@ fn check_arguments(o: &serde_json::Map<String, Value>) -> Result<(), String> {
 /// A `set_budget` (#837, ADR 0058 section 2), held to the shape rpc takes
 /// before it leaves the core: at least one of [`RAISABLE`], each a whole
 /// number above 0 (`max_iterations` at most `u32::MAX`, the loop's own
-/// width), and no other field but `id` and `type`. `context_bytes` is
+/// width), and no other field but `id` and `type`. `max_context_bytes` is
 /// refused by name, since the driver fixes it for the run. Whether a value
 /// is above the ceiling in force is rpc's to say: the view's ceiling is the
 /// last `run budget`'s, which a raise rpc has taken but not yet applied
@@ -940,9 +944,9 @@ fn check_raise(line: &Value) -> Result<(), String> {
     for (k, v) in o {
         match k.as_str() {
             "id" | "type" => {}
-            "context_bytes" => {
+            "max_context_bytes" => {
                 return Err(
-                    "rpc_send: set_budget does not raise context_bytes: the driver fixes the \
+                    "rpc_send: set_budget does not raise max_context_bytes: the driver fixes the \
                      context ceiling for the run"
                         .into(),
                 );
@@ -1964,7 +1968,7 @@ mod tests {
     fn run_controls_need_a_run_and_a_raise_is_checked_before_it_leaves_the_core() {
         // The risk (#837): the strip's Pause or a budget's Raise sent with
         // no run, or a raise of the wrong shape reaching rpc: a ceiling it
-        // does not take (context_bytes, fixed for the run), a value that is
+        // does not take (max_context_bytes, fixed for the run), a value that is
         // not a whole number above 0, as a wall clock typed in seconds and
         // sent unconverted as a fraction would be, or no ceiling at all.
         // Each is refused here, by name, before it is written; a line
@@ -1984,8 +1988,8 @@ mod tests {
         for (l, want) in [
             (json!({"id": "b", "type": "set_budget"}), "names no ceiling"),
             (
-                json!({"id": "b", "type": "set_budget", "context_bytes": 9}),
-                "does not raise context_bytes",
+                json!({"id": "b", "type": "set_budget", "max_context_bytes": 9}),
+                "does not raise max_context_bytes",
             ),
             (
                 json!({"id": "b", "type": "set_budget", "max_iterations": 0}),
@@ -1996,7 +2000,7 @@ mod tests {
                 "whole number from 1",
             ),
             (
-                json!({"id": "b", "type": "set_budget", "max_tokens": "900"}),
+                json!({"id": "b", "type": "set_budget", "max_completion_tokens": "900"}),
                 "whole number from 1",
             ),
             (
@@ -2004,7 +2008,7 @@ mod tests {
                 "4294967295",
             ),
             (
-                json!({"id": "b", "type": "set_budget", "max_tokens": 9, "max_turns": 3}),
+                json!({"id": "b", "type": "set_budget", "max_completion_tokens": 9, "max_turns": 3}),
                 "not \"max_turns\"",
             ),
         ] {
@@ -2013,7 +2017,7 @@ mod tests {
         }
         for l in [
             json!({"id": "b", "type": "set_budget", "max_iterations": 20,
-                   "max_wall_clock_ms": 120_000, "max_tokens": 900}),
+                   "max_wall_clock_ms": 120_000, "max_completion_tokens": 900}),
             json!({"id": "p", "type": "pause"}),
             json!({"id": "r", "type": "resume"}),
         ] {

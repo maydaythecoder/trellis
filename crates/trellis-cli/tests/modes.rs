@@ -2852,10 +2852,13 @@ fn rpc_stream_carries_every_field_the_desktop_reads() {
     for t in &turns {
         let at = format!("turn {} ({})", t["turn"], t["call"]);
         gaps.extend(missing(t, &turn["always"], &at));
+        gaps.extend(missing(t, &later["events"]["turn"]["always"], &at));
         // No turn of this run is the governance audit: each called the
         // model.
         gaps.extend(missing(t, &turn["model_call_only"], &at));
         gaps.extend(missing(t, &later["events"]["turn"]["model_call_only"], &at));
+        // The provider stub is a driver that sends a prompt.
+        gaps.extend(missing(t, &turn["prompt_driver_only"], &at));
         if let Some(v) = t.get("verdict")
             && !v.as_str().is_some_and(|v| verdicts.contains(&v))
         {
@@ -2916,7 +2919,14 @@ fn rpc_stream_carries_every_field_the_desktop_reads() {
         None => gaps.push("no applied edit turn".into()),
     }
     match of("run budget").first() {
-        Some(b) => gaps.extend(missing(b, &events["run budget"]["always"], "run budget")),
+        Some(b) => {
+            gaps.extend(missing(b, &events["run budget"]["always"], "run budget"));
+            gaps.extend(missing(
+                b,
+                &events["run budget"]["prompt_driver_only"],
+                "run budget",
+            ));
+        }
         None => gaps.push("no run budget event".into()),
     }
     let compacted = of("compacted");
@@ -2940,12 +2950,25 @@ fn rpc_stream_carries_every_field_the_desktop_reads() {
         }
     }
     let outcomes = names(&rpc_c["framing"]["run_end"]["outcome_values"]);
+    // Of run_end's optional fields, the one a converged run's returned
+    // loop always gives.
+    let after_the_loop = ["elapsed_ms"];
+    assert!(
+        rpc_c["framing"]["run_end"]["optional"]["elapsed_ms"].is_string(),
+        "framing.run_end.optional lists no elapsed_ms"
+    );
     for r in records.iter().filter(|r| r["type"] == "run_end") {
         if !r["outcome"].as_str().is_some_and(|o| outcomes.contains(&o)) {
             gaps.push(format!(
                 "run_end outcome {}, not one of {outcomes:?}",
                 r["outcome"]
             ));
+        }
+        // This run's loop returned, so what it measured is on its end.
+        for field in after_the_loop {
+            if r.get(field).is_none() {
+                gaps.push(format!("run_end.{field}"));
+            }
         }
     }
     assert!(
@@ -3026,242 +3049,18 @@ fn rpc_turn_carries_queue_wait_from_the_reply_header() {
 }
 
 #[test]
-fn rpc_elapsed_excludes_time_waiting_on_an_approval() {
-    // The risk (#799): a client draws a run's elapsed time from its own
-    // clock, or trellis reports one that counts a person's time reading a
-    // diff, so the figure on screen is not the one the wall-clock budget
-    // checks and a run "ends early" against it. The approval is held well
-    // past what the rest of the run takes; the edit's `turn` spans that
-    // hold, so its elapsed_ms over the `model call` before it is the hold
-    // if the wait is charged and milliseconds if it is not. The fields
-    // checked are the ones the contract lists, so a rename fails here.
-    const HOLD_MS: u64 = 2500;
-    let c = contract();
-    let later = &c["rpc"]["not_every_client"];
-    let f = fixture("rpc-elapsed-approval");
-    let (base, server) = provider_stub(vec![
-        openai_call("c1", "read_file", serde_json::json!({"path": "a.py"})),
-        openai_call(
-            "c2",
-            "edit",
-            serde_json::json!({"path": "a.py", "old": "return 1", "new": "return 2"}),
-        ),
-        openai_call("c3", "done", serde_json::json!({"summary": "changed it"})),
-    ]);
-    // A variable nobody sets: a loopback endpoint is then used with no key.
-    let key_env = "TRELLIS_TEST_RPC_ELAPSED_KEY";
-    std::fs::write(
-        f.user.join("config.toml"),
-        format!(
-            "[control]\nmode = \"approve\"\n\n[[providers]]\nname = \"stub\"\n\
-             protocol = \"openai\"\nbase_url = \"{base}\"\nkey_env = \"{key_env}\"\n"
-        ),
-    )
-    .unwrap();
-    let mut cmd = trellis(&f);
-    cmd.env_remove(key_env);
-    let mut rpc = Rpc::start(cmd);
-    rpc.choose("provider:stub#m");
-    rpc.send(
-        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
-                           "model": "provider:stub#m"}),
-    );
-    let q = rpc.next(|v| v["type"] == "approval_request");
-    std::thread::sleep(std::time::Duration::from_millis(HOLD_MS));
-    rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": true}));
-    let records = rpc.finish();
-    assert_eq!(server.join().unwrap().len(), 3, "{records:?}");
-
-    let loop_events: Vec<&Value> = records
-        .iter()
-        .filter(|r| r["fields"]["message"] == "model call" || r["fields"]["message"] == "turn")
-        .map(|r| &r["fields"])
-        .collect();
-    let end = records
-        .iter()
-        .find(|r| r["type"] == "run_end")
-        .expect("a run_end");
-    let mut gaps: Vec<String> = Vec::new();
-    for e in &loop_events {
-        let what = format!("{} {}", e["message"].as_str().unwrap(), e["turn"]);
-        let message = e["message"].as_str().unwrap();
-        // elapsed_ms is in rpc.events since both clients read it (#906);
-        // what not every client reads yet is under not_every_client, which
-        // has no record for an event once all of its fields have moved.
-        gaps.extend(missing(e, &c["rpc"]["events"][message]["always"], &what));
-        // An approve-mode edit carries its lines and diff as an auto-mode
-        // one does (#802): they come from the write, not the question.
-        // They are in rpc.events since both clients read them (#853).
-        if e["tool"] == "edit" && e["wrote"] == true {
-            gaps.extend(missing(
-                e,
-                &c["rpc"]["events"]["turn"]["edit_applied_only"],
-                &what,
-            ));
-        }
-        if let Some(spec) = later["events"].get(message) {
-            gaps.extend(missing(e, &spec["always"], &what));
-        }
-    }
-    // Of run_end's optional fields only elapsed_ms is this run's case: a
-    // converged run restores nothing and has no error. Named through the
-    // contract, so a rename there fails here.
-    let run_end_optional = c["rpc"]["framing"]["run_end"]["optional"]
-        .as_object()
-        .expect("run_end's optional fields");
-    match run_end_optional.get_key_value("elapsed_ms") {
-        Some((k, _)) if end.get(k.as_str()).is_none() => gaps.push(format!("run_end.{k}")),
-        Some(_) => {}
-        None => gaps.push("the contract lists no run_end.elapsed_ms".into()),
-    }
-    assert!(
-        gaps.is_empty(),
-        "the stream lacks what tests/client_contract.json lists: {gaps:?}\n{records:?}"
-    );
-
-    let ms = |v: &Value| v["elapsed_ms"].as_u64().expect("elapsed_ms is a count");
-    // Counting up, as one clock: never back, and run_end at or past the
-    // last turn.
-    for w in loop_events.windows(2) {
-        assert!(ms(w[0]) <= ms(w[1]), "elapsed went back: {w:?}");
-    }
-    let edit = loop_events
-        .iter()
-        .position(|e| {
-            e["message"] == "turn" && e["call"].as_str().is_some_and(|c| c.starts_with("edit "))
-        })
-        .expect("an edit turn");
-    let asked = &loop_events[edit - 1];
-    assert_eq!(asked["message"], "model call", "{loop_events:?}");
-    let across_the_wait = ms(loop_events[edit]) - ms(asked);
-    assert!(
-        across_the_wait < HOLD_MS,
-        "the {HOLD_MS} ms spent waiting on the approval was charged: \
-         {across_the_wait} ms between the model call and its turn\n{loop_events:?}"
-    );
-    let last = loop_events.last().unwrap();
-    assert!(ms(end) >= ms(last), "{end} before {last}");
-    // Against the edit's turn, which already has the wait taken out, not
-    // against the hold alone: what the rest of the run takes on a slow host
-    // must not decide this, only whether run_end charged the wait.
-    let after_the_wait = ms(end) - ms(loop_events[edit]);
-    assert!(
-        after_the_wait < HOLD_MS,
-        "run_end's elapsed_ms counts the {HOLD_MS} ms approval wait: \
-         {after_the_wait} ms past the edit's turn\n{end}"
-    );
-}
-
-#[test]
-fn rpc_run_budget_carries_every_ceiling() {
-    // The risk (#799): `run budget` carried only max_iterations, so a client
-    // drew the wall-clock and token meters against a constant or its own
-    // reading of a config the run may not have used, and the meter and the
-    // budget disagreed about when a run ends. Every ceiling is set to a
-    // value no default has, so a figure from anywhere but this run's budget
-    // fails. The turn's token counter is held to the completion tokens the
-    // stub reported, with prompt tokens far larger beside them, so a counter
-    // that summed the two kinds (UI rule 5) fails too.
-    let c = contract();
-    let events = &c["rpc"]["events"];
-    let f = fixture("rpc-run-budget");
-    std::fs::create_dir_all(f.root.join(".trellis")).unwrap();
-    std::fs::write(
-        f.root.join(".trellis/config.toml"),
-        "[budget]\nmax_iterations = 9\nmax_wall_clock_s = 321\nmax_tokens = 54321\n\n\
-         [model]\ncontext_bytes = 123456\n",
-    )
-    .unwrap();
-    git(&f.root, &["add", "-A"]);
-    git(&f.root, &["commit", "-qm", "a budget"]);
-    let (base, server) = provider_stub(vec![
-        openai_call_with_usage("read_file", serde_json::json!({"path": "a.py"}), 1000, 7),
-        openai_call_with_usage("blast_radius", serde_json::json!({"symbol": "f"}), 1000, 11),
-        openai_call_with_usage("done", serde_json::json!({"summary": "looked"}), 1000, 13),
-    ]);
-    // A variable nobody sets: a loopback endpoint is then used with no key.
-    let key_env = "TRELLIS_TEST_RPC_RUN_BUDGET_KEY";
-    std::fs::write(
-        f.user.join("config.toml"),
-        format!(
-            "[[providers]]\nname = \"stub\"\nprotocol = \"openai\"\n\
-             base_url = \"{base}\"\nkey_env = \"{key_env}\"\n"
-        ),
-    )
-    .unwrap();
-    let mut cmd = trellis(&f);
-    cmd.env_remove(key_env);
-    let mut rpc = Rpc::start(cmd);
-    rpc.choose("provider:stub#m");
-    rpc.send(
-        serde_json::json!({"id": "p", "type": "prompt", "task": "look at f",
-                           "model": "provider:stub#m"}),
-    );
-    let records = rpc.finish();
-    assert_eq!(server.join().unwrap().len(), 3, "{records:?}");
-
-    let of = |message: &str| -> Vec<&Value> {
-        records
-            .iter()
-            .filter(|r| r["fields"]["message"] == message)
-            .map(|r| &r["fields"])
-            .collect()
-    };
-    let budgets = of("run budget");
-    assert_eq!(budgets.len(), 1, "one run budget event: {records:?}");
-    let b = budgets[0];
-    // Every ceiling is in rpc.events since both clients read them (#854).
-    let spec = &events["run budget"];
-    let mut gaps = missing(b, &spec["always"], "run budget");
-    // A hosted driver always has a context ceiling.
-    gaps.extend(missing(b, &spec["context_driver_only"], "run budget"));
-    for t in of("turn") {
-        gaps.extend(missing(
-            t,
-            &events["turn"]["always"],
-            &format!("turn {}", t["turn"]),
-        ));
-    }
-    assert!(
-        gaps.is_empty(),
-        "the stream lacks what tests/client_contract.json lists: {gaps:?}\n{records:?}"
-    );
-    assert_eq!(b["max_iterations"], 9, "{b}");
-    assert_eq!(b["max_wall_clock_ms"], 321_000, "{b}");
-    assert_eq!(b["max_tokens"], 54321, "{b}");
-    assert_eq!(b["context_bytes"], 123_456, "{b}");
-
-    let used: Vec<(String, u64)> = of("turn")
-        .iter()
-        .map(|t| {
-            (
-                t["call"].as_str().unwrap().to_string(),
-                t["completion_tokens_used"].as_u64().unwrap(),
-            )
-        })
-        .collect();
-    assert_eq!(used.len(), 2, "{used:?}");
-    assert!(used[0].0.starts_with("read_file "), "{used:?}");
-    assert!(used[1].0.starts_with("blast_radius "), "{used:?}");
-    assert_eq!(
-        used.iter().map(|(_, n)| *n).collect::<Vec<_>>(),
-        [7, 7 + 11],
-        "the counter max_tokens is checked against is completion tokens \
-         only, summed over the replies so far"
-    );
-}
-
-#[test]
 fn rpc_every_turn_through_the_governance_audit_keeps_the_contract() {
     // The risk: the contract promises a field on every turn that one kind
     // of turn never carries. The governance audit at convergence is a turn
     // event the loop sends without calling the model (trellis-loop
     // agent.rs), so a field from the model call listed as `always` is a
     // promise a client watching a governed run sees broken. Every turn is
-    // held to `always`; the turns that called the model to the categories
-    // a provider run fills too.
+    // held to `always` and, this being a provider run, to the budget's
+    // count, which the audit's turn carries too; the turns that called the
+    // model to the categories a provider run fills too.
     let c = contract();
     let turn = &c["rpc"]["events"]["turn"];
+    let later_turn = &c["rpc"]["not_every_client"]["events"]["turn"];
     let f = fixture("rpc-governance-contract");
     std::fs::create_dir_all(f.root.join(".trellis/governance")).unwrap();
     std::fs::write(
@@ -3319,11 +3118,11 @@ fn rpc_every_turn_through_the_governance_audit_keeps_the_contract() {
         .iter()
         .flat_map(|t| {
             let mut g = missing(t, &turn["always"], &label(t));
-            g.extend(missing(
-                t,
-                &c["rpc"]["not_every_client"]["events"]["turn"]["always"],
-                &label(t),
-            ));
+            // A provider run has a count, and the audit's turn carries it
+            // as the model's turns do.
+            if t.get("completion_tokens_used").is_none() {
+                g.push(format!("{}.completion_tokens_used", label(t)));
+            }
             g
         })
         .collect();
@@ -3337,11 +3136,7 @@ fn rpc_every_turn_through_the_governance_audit_keeps_the_contract() {
         .flat_map(|t| {
             let mut g = missing(t, &turn["model_call_only"], &label(t));
             g.extend(missing(t, &turn["prompt_driver_only"], &label(t)));
-            g.extend(missing(
-                t,
-                &c["rpc"]["not_every_client"]["events"]["turn"]["model_call_only"],
-                &label(t),
-            ));
+            g.extend(missing(t, &later_turn["model_call_only"], &label(t)));
             g
         })
         .collect();
@@ -3512,6 +3307,201 @@ fn rpc_turn_tool_target_wrote_match_the_trail_actions() {
     );
 }
 
+#[test]
+fn rpc_run_budget_carries_every_ceiling() {
+    // The risk (#799): a client draws progress against a ceiling the engine
+    // never sent, so it keeps a copy or a constant of its own; or a ceiling
+    // in another unit than the figure checked against it (tokens the budget
+    // does not count, seconds against milliseconds). The repository's own
+    // [budget] and [model] context_bytes hold figures no default has, so
+    // each value seen came from the run's budget. The stub's replies report
+    // prompt tokens far above their completion tokens, so a count that
+    // summed the two kinds (UI rule 5) fails too.
+    let c = contract();
+    // In rpc.events since both clients read them (#854).
+    let events = &c["rpc"]["events"];
+    let f = fixture("rpc-run-budget");
+    std::fs::create_dir_all(f.root.join(".trellis")).unwrap();
+    std::fs::write(
+        f.root.join(".trellis/config.toml"),
+        "[budget]\nmax_iterations = 7\nmax_wall_clock_s = 321\nmax_tokens = 4321\n\n\
+         [model]\ncontext_bytes = 50000\n",
+    )
+    .unwrap();
+    git(&f.root, &["add", "-A"]);
+    git(&f.root, &["commit", "-qm", "a budget"]);
+    let (base, server) = provider_stub(vec![
+        openai_call_with_usage("read_file", serde_json::json!({"path": "a.py"}), 1000, 3),
+        openai_call_with_usage("blast_radius", serde_json::json!({"symbol": "f"}), 1000, 3),
+        openai_call_with_usage("done", serde_json::json!({"summary": "read it"}), 1000, 3),
+    ]);
+    let mut rpc = rpc_on_stub_in(&f, &base, "");
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "read f",
+                           "model": "provider:stub#m"}),
+    );
+    let records = rpc.finish();
+    assert_eq!(server.join().unwrap().len(), 3, "{records:?}");
+    let of = |lines: &[Value], message: &str| -> Vec<Value> {
+        lines
+            .iter()
+            .filter(|r| r["fields"]["message"] == message)
+            .map(|r| r["fields"].clone())
+            .collect()
+    };
+
+    let budgets = of(&records, "run budget");
+    assert_eq!(budgets.len(), 1, "{records:?}");
+    let b = &budgets[0];
+    let mut gaps = missing(b, &events["run budget"]["always"], "run budget");
+    gaps.extend(missing(
+        b,
+        &events["run budget"]["prompt_driver_only"],
+        "run budget",
+    ));
+    assert!(
+        gaps.is_empty(),
+        "run budget lacks what tests/client_contract.json lists: {gaps:?}\n{records:?}"
+    );
+    assert_eq!(b["max_iterations"], 7, "{b}");
+    assert_eq!(b["max_wall_clock_ms"], 321_000, "elapsed_ms's unit: {b}");
+    assert_eq!(b["max_completion_tokens"], 4321, "{b}");
+    assert_eq!(b["max_context_bytes"], 50_000, "{b}");
+    // The count the token ceiling is checked against, over the run: every
+    // stub reply reports 3 completion tokens beside 1000 prompt tokens, so
+    // it grows by 3 a turn while the turn's own completion_tokens stays 3.
+    let counted: Vec<Value> = of(&records, "turn")
+        .iter()
+        .map(|t| serde_json::json!([t["completion_tokens"], t["completion_tokens_used"]]))
+        .collect();
+    assert_eq!(
+        counted,
+        [serde_json::json!([3, 3]), serde_json::json!([3, 6])],
+        "{records:?}"
+    );
+
+    // A scripted run sends no prompt and calls no model: no context ceiling
+    // and no token count, absent rather than a 0 that reads as a figure.
+    let o = run(&f, &["run", "change f", "--model", &f.spec, "--json"]);
+    let lines = jsonl(&o);
+    let budgets = of(&lines, "run budget");
+    assert_eq!(budgets.len(), 1, "{lines:?}");
+    let b = &budgets[0];
+    let gaps = missing(b, &events["run budget"]["always"], "scripted run budget");
+    assert!(gaps.is_empty(), "{gaps:?}\n{lines:?}");
+    for field in names(&events["run budget"]["prompt_driver_only"]) {
+        assert!(b.get(field).is_none(), "{field} on a scripted run: {b}");
+    }
+    let turns = of(&lines, "turn");
+    assert!(!turns.is_empty(), "{lines:?}");
+    for t in &turns {
+        for field in names(&events["turn"]["prompt_driver_only"]) {
+            assert!(t.get(field).is_none(), "{field} on a scripted turn: {t}");
+        }
+    }
+}
+
+#[test]
+fn rpc_elapsed_excludes_time_waiting_on_an_approval() {
+    // The risk (#799): an elapsed that counts the time a person took to
+    // answer an approval, so a client draws a run that waited on its user
+    // as one that spent its wall clock, against a ceiling that never
+    // counted the wait; or an interrupted run's `run_end` given a figure
+    // that counts a wait still open, which no clock took out. The edit's
+    // question is held for `HOLD`, so across that turn the budget's elapsed
+    // must advance by less than `HOLD`; a second run is aborted on its own
+    // question, and its `run_end` must carry no elapsed at all.
+    const HOLD: std::time::Duration = std::time::Duration::from_millis(2500);
+    let c = contract();
+    // In rpc.events and rpc.framing since both clients read it (#906).
+    let rpc_c = &c["rpc"];
+    for (fields, what) in [
+        (&rpc_c["events"]["model call"]["always"], "model call"),
+        (&rpc_c["events"]["turn"]["always"], "turn"),
+    ] {
+        assert!(names(fields).contains(&"elapsed_ms"), "{what}: {fields}");
+    }
+    assert!(rpc_c["framing"]["run_end"]["optional"]["elapsed_ms"].is_string());
+    let f = fixture("rpc-elapsed");
+    let edit = || {
+        openai_call(
+            "e",
+            "edit",
+            serde_json::json!({"path": "a.py", "old": "return 1", "new": "return 2"}),
+        )
+    };
+    let (base, server) = provider_stub(vec![
+        edit(),
+        openai_call("c2", "done", serde_json::json!({"summary": "changed it"})),
+        // The second run, held on its edit until the abort.
+        edit(),
+    ]);
+    let mut rpc = rpc_on_stub_in(&f, &base, "[control]\nmode = \"approve\"\n\n");
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                           "model": "provider:stub#m"}),
+    );
+    let q = rpc.next(|v| v["type"] == "approval_request");
+    std::thread::sleep(HOLD);
+    rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": true}));
+    rpc.next(|v| v["type"] == "run_end" && v["id"] == "p");
+    rpc.send(
+        serde_json::json!({"id": "p2", "type": "prompt", "task": "change f",
+                           "model": "provider:stub#m"}),
+    );
+    rpc.next(|v| v["type"] == "approval_request");
+    rpc.send(serde_json::json!({"id": "x", "type": "abort"}));
+    rpc.next(|v| v["type"] == "response" && v["id"] == "x");
+    let records = rpc.finish();
+    assert_eq!(server.join().unwrap().len(), 3, "{records:?}");
+
+    // The first run's figures, in stream order, by the budget's one clock.
+    let first_end = records
+        .iter()
+        .position(|r| r["type"] == "run_end" && r["id"] == "p")
+        .unwrap();
+    let clock: Vec<(&str, u64)> = records[..=first_end]
+        .iter()
+        .filter_map(|r| {
+            let (what, fields) = if r["type"] == "run_end" {
+                ("run_end", r)
+            } else {
+                let m = r["fields"]["message"].as_str()?;
+                if m != "model call" && m != "turn" {
+                    return None;
+                }
+                (m, &r["fields"])
+            };
+            let ms = fields["elapsed_ms"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("{what} carries no elapsed_ms: {r}"));
+            Some((what, ms))
+        })
+        .collect();
+    assert_eq!(
+        clock.iter().map(|(what, _)| *what).collect::<Vec<_>>(),
+        ["model call", "turn", "model call", "run_end"],
+        "{records:?}"
+    );
+    assert!(
+        clock.windows(2).all(|w| w[0].1 <= w[1].1),
+        "one clock, counting up: {clock:?}"
+    );
+    let held = u64::try_from(HOLD.as_millis()).unwrap();
+    let asked_at = clock[0].1;
+    assert!(
+        clock.iter().all(|(_, ms)| ms - asked_at < held),
+        "the {held} ms the question was held is in the run's elapsed: {clock:?}"
+    );
+
+    // The second run stopped while its question was open: that wait was
+    // never measured, so its run_end carries no elapsed, not a wrong one.
+    let ends: Vec<&Value> = records.iter().filter(|r| r["type"] == "run_end").collect();
+    assert_eq!(ends.len(), 2, "{records:?}");
+    assert_eq!(ends[1]["outcome"], "interrupted", "{}", ends[1]);
+    assert!(ends[1].get("elapsed_ms").is_none(), "{}", ends[1]);
+}
+
 /// Holds the `model call` contract over one stream: each carries what the
 /// contract lists and no `prompt_bytes`; each `turn` that called the model
 /// has one before it under its own number. Returns how many `model call`s
@@ -3529,11 +3519,8 @@ fn model_calls_precede_turns(records: &[Value], c: &Value) -> usize {
     for e in &loop_events {
         if e["message"] == "model call" {
             calls += 1;
-            gaps.extend(missing(
-                e,
-                &spec["always"],
-                &format!("model call {}", e["turn"]),
-            ));
+            let at = format!("model call {}", e["turn"]);
+            gaps.extend(missing(e, &spec["always"], &at));
             if e.get("prompt_bytes").is_some() {
                 gaps.push(format!(
                     "model call {} carries prompt_bytes, a size not measured before the call",
@@ -3927,23 +3914,29 @@ fn classify_against_stub(
 /// OpenAI-protocol endpoint at `base`.
 fn rpc_on_stub(name: &str, base: &str) -> (Fixture, Rpc) {
     let f = fixture(name);
-    // A variable nobody sets: a loopback endpoint is then used with no key.
-    let key_env = "TRELLIS_TEST_RPC_CLASSIFY_KEY";
+    let rpc = rpc_on_stub_in(&f, base, "");
+    (f, rpc)
+}
+
+/// [`rpc_on_stub`] on a fixture the caller built, with `before` ahead of
+/// the provider in the user config (a `[control]` section, say). The key
+/// is named under a variable nobody sets, so a loopback endpoint is used
+/// with no key and no key of this machine's reaches the stub.
+fn rpc_on_stub_in(f: &Fixture, base: &str, before: &str) -> Rpc {
+    const KEY_ENV: &str = "TRELLIS_TEST_RPC_STUB_KEY";
     std::fs::write(
         f.user.join("config.toml"),
         format!(
-            "[[providers]]\nname = \"stub\"\nprotocol = \"openai\"\n\
-             base_url = \"{base}\"\nkey_env = \"{key_env}\"\n"
+            "{before}[[providers]]\nname = \"stub\"\nprotocol = \"openai\"\n\
+             base_url = \"{base}\"\nkey_env = \"{KEY_ENV}\"\n"
         ),
     )
     .unwrap();
-    let mut cmd = trellis(&f);
-    cmd.env_remove(key_env);
+    let mut cmd = trellis(f);
+    cmd.env_remove(KEY_ENV);
     let mut rpc = Rpc::start(cmd);
-    rpc.send(serde_json::json!({"id": "m", "type": "set_model", "model": "provider:stub#m"}));
-    let m = rpc.next(|v| v["id"] == "m");
-    assert_eq!(m["success"], true, "{m}");
-    (f, rpc)
+    rpc.choose("provider:stub#m");
+    rpc
 }
 
 /// How a request [`holding_stub`] held open ended.
@@ -5390,14 +5383,14 @@ fn rpc_set_budget_sends_run_budget_again() {
         ],
     );
     rpc.send(serde_json::json!({"id": "b", "type": "set_budget",
-                                "max_iterations": 3, "max_tokens": 6000}));
+                                "max_iterations": 3, "max_completion_tokens": 6000}));
     let b = rpc.next(|v| v["type"] == "response" && v["id"] == "b");
     assert_eq!(b["command"], "set_budget");
     assert_eq!(b["success"], true, "{b}");
     assert_eq!(
         b["data"],
         serde_json::json!({"max_iterations": 3, "max_wall_clock_ms": 1_200_000,
-                           "max_tokens": 6000}),
+                           "max_completion_tokens": 6000}),
         "answered with every ceiling after the raise, the unraised one as it was"
     );
     // Equal to the ceiling now in force: accepted, and changes nothing.
@@ -5438,7 +5431,7 @@ fn rpc_set_budget_sends_run_budget_again() {
     );
     assert_eq!(first_b["max_iterations"], 1, "{first_b}");
     assert_eq!(again["max_iterations"], 3, "{again}");
-    assert_eq!(again["max_tokens"], 6000, "{again}");
+    assert_eq!(again["max_completion_tokens"], 6000, "{again}");
     assert_eq!(again["max_wall_clock_ms"], 1_200_000, "{again}");
     let answered = first(&records, "set_budget answer", |r| {
         r["type"] == "response" && r["id"] == "b"
@@ -5463,7 +5456,7 @@ fn rpc_set_budget_sends_run_budget_again() {
     ));
     gaps.extend(missing(
         again,
-        &c["rpc"]["events"]["run budget"]["context_driver_only"],
+        &c["rpc"]["events"]["run budget"]["prompt_driver_only"],
         "run budget",
     ));
     assert!(
@@ -5498,8 +5491,8 @@ fn rpc_set_budget_refuses_a_lower_limit() {
     );
     let refused: &[(Value, &str)] = &[
         (
-            serde_json::json!({"max_tokens": 4999}),
-            "max_tokens 4999 is below the run's ceiling of 5000",
+            serde_json::json!({"max_completion_tokens": 4999}),
+            "max_completion_tokens 4999 is below the run's ceiling of 5000",
         ),
         (
             serde_json::json!({"max_iterations": 5, "max_wall_clock_ms": 1000}),
@@ -5519,24 +5512,29 @@ fn rpc_set_budget_refuses_a_lower_limit() {
             "`max_iterations` must be a whole number above 0",
         ),
         (
-            serde_json::json!({"max_tokens": 6000.5}),
-            "`max_tokens` must be a whole number above 0",
+            serde_json::json!({"max_completion_tokens": 6000.5}),
+            "`max_completion_tokens` must be a whole number above 0",
         ),
         (
             serde_json::json!({"max_iterations": 4_294_967_296_u64}),
             "past the most a run can count",
         ),
         (
-            serde_json::json!({"max_tokens": 1e30}),
-            "`max_tokens` must be a whole number above 0",
+            serde_json::json!({"max_completion_tokens": 1e30}),
+            "`max_completion_tokens` must be a whole number above 0",
         ),
         (
             serde_json::json!({"max_wall_clock_s": 9000}),
             "`max_wall_clock_s` is not a set_budget field",
         ),
+        // The config's name for the token ceiling, not run budget's.
         (
-            serde_json::json!({"context_bytes": 999_999}),
-            "`context_bytes` is the driver's prompt size",
+            serde_json::json!({"max_tokens": 6000}),
+            "`max_tokens` is not a set_budget field",
+        ),
+        (
+            serde_json::json!({"max_context_bytes": 999_999}),
+            "`max_context_bytes` is the driver's prompt size",
         ),
     ];
     for (i, (fields, says)) in refused.iter().enumerate() {

@@ -585,7 +585,7 @@ func summaryState() State {
 		{Name: "Typecheck", Passed: true, Turn: 6},
 	}
 	s.Budget = Budget{Iteration: 6, MaxIterations: u(40), PromptBytes: u(24100), ElapsedSecs: u(83),
-		MaxWallClockMs: u(321000), MaxTokens: u(54321), ContextBytes: u(123456), TokensUsed: u(540)}
+		MaxWallClockMs: u(321000), MaxCompletionTokens: u(54321), MaxContextBytes: u(123456), TokensUsed: u(540)}
 	words := "Fixed the parser: the last token is kept.\nThe comment case has a test."
 	s.Summary = Summary{
 		RunID: "r-20261026-1",
@@ -727,7 +727,7 @@ func TestSummaryRadiusBudgetAndSteers(t *testing.T) {
 		}
 	}
 	s := summaryState()
-	s.Budget.ContextBytes, s.Budget.TokensUsed = nil, nil
+	s.Budget.MaxContextBytes, s.Budget.TokensUsed = nil, nil
 	out = summaryText(s, 80-railW)
 	if rowWith(out, "LAST PROMPT", "24.1 kB/"+Dash) == "" || rowWith(out, "no prompt ceiling") == "" ||
 		rowWith(out, "COMPLETION", Dash+"/54321") == "" || rowWith(out, "completion_tokens_used") == "" {

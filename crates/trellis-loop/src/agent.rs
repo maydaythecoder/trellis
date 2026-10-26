@@ -16,7 +16,7 @@
 //! "the model claims success" to "the run converged" passes through an
 //! executed check or it does not complete.
 
-use crate::budget::{Budget, Exhaustion, LiveBudget, Spend};
+use crate::budget::{Budget, Exhaustion, LiveBudget, Spend, WallClock};
 use crate::orchestrator::Handle;
 use crate::tools::ToolResult;
 use std::time::{Duration, Instant};
@@ -1068,10 +1068,15 @@ pub trait Model {
         t: &Transcript,
     ) -> impl std::future::Future<Output = Result<Step, String>> + Send;
 
-    /// Tokens consumed so far, for the budget. Local adapters may report 0;
+    /// Completion tokens consumed so far: the count the budget's token
+    /// ceiling is checked against, and the `turn` event's
+    /// `completion_tokens_used`. A local runtime that reports none adds 0;
     /// the wall-clock and iteration ceilings still apply (S8).
-    fn tokens_used(&self) -> u64 {
-        0
+    ///
+    /// `None` for a driver that calls no model, the scripted one: it has no
+    /// count, and a 0 on the event would read as a free run.
+    fn tokens_used(&self) -> Option<u64> {
+        None
     }
 
     /// Prompt tokens summed over every call so far, as the runtime or
@@ -1101,11 +1106,12 @@ pub trait Model {
         None
     }
 
-    /// The prompt's ceiling in bytes, `[model] context_bytes` as the driver
-    /// enforces it (ADR 0024 §5), for the `run budget` event (#799).
+    /// The byte budget each request is held to (ADR 0024 §5, ADR 0033), as
+    /// it stands when the run starts, for the `run budget` event: the
+    /// ceiling a client draws `prompt_bytes` against.
     ///
-    /// `None` for a driver that elides nothing, the scripted one: it has no
-    /// ceiling, and a 0 would read as one.
+    /// `None` for a driver that sends no prompt, the scripted one: it holds
+    /// nothing to a size, and a 0 would read as a ceiling.
     fn context_bytes(&self) -> Option<usize> {
         None
     }
@@ -1180,12 +1186,13 @@ pub struct Seed {
     /// Steering and follow-up input sent while the run is in progress. See
     /// [`Transcript::steering`]. `None` is a run exactly as before #113.
     pub steering: Option<SteeringRx>,
-    /// Where the loop leaves its wall-clock spend when it returns, for a
-    /// caller that reports the run after it (`run_end`'s `elapsed_ms`,
-    /// #799). Written only on return, so a run whose future was dropped
-    /// (an interrupt) leaves it empty rather than holding part of the run
-    /// presented as all of it. `None` records nothing.
-    pub spent: Option<SpentSlot>,
+    /// Where the loop sends its budget's wall-clock spend when it returns,
+    /// in the whole milliseconds its events carry as `elapsed_ms`, for a
+    /// caller that reports it on `run_end`. Sent on every return. A loop
+    /// dropped mid-run, as an interrupt drops it, sends nothing: a wait on
+    /// a person still open then was never measured, so there is no figure
+    /// to give. `None` asks for nothing.
+    pub elapsed: Option<tokio::sync::oneshot::Sender<u64>>,
     /// A person's pause (ADR 0058 §1), honoured at the top of each
     /// iteration. `None` never holds.
     pub hold: Option<std::sync::Arc<Hold>>,
@@ -1201,10 +1208,6 @@ pub struct Seed {
     pub fates: Option<std::sync::Arc<SteeringFates>>,
 }
 
-/// The cell [`Seed::spent`] writes into: the budget's own elapsed figure,
-/// with time waiting on a person taken out.
-pub type SpentSlot = std::sync::Arc<std::sync::Mutex<Option<Duration>>>;
-
 /// As [`run`], but seeded with prior context and the repository's own rules.
 #[tracing::instrument(
     skip_all,
@@ -1217,7 +1220,7 @@ pub async fn run_seeded<M: Model>(
     budget: &Budget,
     seed: Seed,
 ) -> (Outcome, Transcript) {
-    let started = Instant::now();
+    let mut clock = WallClock::start();
     // The ceilings in force, which only a person's raise moves (ADR 0058
     // §2). Every read of a ceiling below is of this, so a raise reaches the
     // budget check and the wall clock a check is given alike.
@@ -1228,18 +1231,10 @@ pub async fn run_seeded<M: Model>(
     }
     // The ceilings this run enforces, once, for an interface that draws
     // progress against them (#243): a constant there drew "3/4" for a run
-    // budgeted at 40. Every ceiling, not the iterations alone (#799), so a
-    // client draws the wall clock and tokens against the figures the budget
-    // checks and not ones it read from a config the run may not have used.
-    // `max_tokens` is checked against `completion_tokens_used` on each
-    // turn; `context_bytes` is the driver's, left off when it has none.
-    // Sent again with every ceiling when a raise takes effect.
+    // budgeted at 40. Sent again with every ceiling when a raise takes
+    // effect.
     announce_budget(&budget, model.context_bytes());
-    // Time spent waiting on a person in approve mode, and time a person held
-    // the run paused (ADR 0058 §1). Not charged to the wall-clock budget: a
-    // diff read carefully, or a run paused to be read, should not be what
-    // ends a run.
-    let mut waited_on_human = std::time::Duration::ZERO;
+    let report_to = seed.elapsed;
     let mut t = Transcript {
         task: task.to_string(),
         turns: Vec::new(),
@@ -1249,7 +1244,6 @@ pub async fn run_seeded<M: Model>(
         repo: seed.repo,
     };
     let mut steering = seed.steering;
-    let spent = seed.spent;
     let hold = seed.hold;
     let fates = seed.fates;
     let mut iterations: u32 = 0;
@@ -1266,7 +1260,10 @@ pub async fn run_seeded<M: Model>(
         if let Some(h) = &hold
             && let Some(held) = h.honour(iterations + 1).await
         {
-            waited_on_human += held;
+            // Not charged to the wall-clock budget, as a wait on a person
+            // in approve mode is not: a run paused to be read should not be
+            // what ends it.
+            clock.leave_out(held);
         }
         // A raise takes effect here, at the budget check, after a pause so
         // one sent while held counts at once. A tool call or check already
@@ -1278,8 +1275,9 @@ pub async fn run_seeded<M: Model>(
         }
         let spend = Spend {
             iterations,
-            elapsed: started.elapsed().saturating_sub(waited_on_human),
-            tokens: model.tokens_used(),
+            elapsed: clock.spent(),
+            // A driver with no count has spent none against the ceiling.
+            tokens: model.tokens_used().unwrap_or(0),
         };
         let exceeded = budget.exceeded(&spend);
         // A raise that lifts every ceiling above the spend after the one
@@ -1317,13 +1315,9 @@ pub async fn run_seeded<M: Model>(
         // builds the prompt inside `next_step`, so here its size is not
         // yet measured, and `prompt_bytes()` would be the previous call's
         // (ADR 0025 §4).
-        //
-        // `elapsed_ms` is the budget's own figure, the one just checked
-        // (#799): a client clock counts time a person spent reading a diff,
-        // which the budget does not charge.
         tracing::info!(
             turn = iterations + 1,
-            elapsed_ms = millis(spend.elapsed),
+            elapsed_ms = millis(clock.spent()),
             "model call"
         );
         // `Instant`, not the wall clock: a host's clock can step mid-call,
@@ -1405,8 +1399,7 @@ pub async fn run_seeded<M: Model>(
                             duration_ms = audit_ms,
                             // As on every turn (#799), so a field a client
                             // reads on each turn is not missing on this one.
-                            elapsed_ms =
-                                millis(started.elapsed().saturating_sub(waited_on_human)),
+                            elapsed_ms = millis(clock.spent()),
                             completion_tokens_used = model.tokens_used(),
                             "turn"
                         );
@@ -1472,9 +1465,7 @@ pub async fn run_seeded<M: Model>(
                         // started by this call ends when the budget does
                         // (ADR 0004), so one hung checker cannot hold the
                         // run past it.
-                        budget
-                            .max_wall_clock
-                            .saturating_sub(started.elapsed().saturating_sub(waited_on_human)),
+                        budget.max_wall_clock.saturating_sub(clock.spent()),
                     )
                     .await;
                 // The tool's time: a person's deliberation in approve mode
@@ -1485,7 +1476,7 @@ pub async fn run_seeded<M: Model>(
                         .saturating_sub(human.as_ref().map_or(Duration::ZERO, |h| h.waited)),
                 );
                 if let Some(h) = human {
-                    waited_on_human += h.waited;
+                    clock.leave_out(h.waited);
                 }
                 let human = human.map(|h| h.approved);
                 // The orchestrator owns the index and the only write path. If
@@ -1599,13 +1590,9 @@ pub async fn run_seeded<M: Model>(
                     completion_tokens = usage.completion_tokens,
                     queue_wait_ms = usage.queue_wait_ms,
                     duration_ms = duration_ms,
-                    // The budget's own spend after this turn (#799): its
-                    // monotonic elapsed time with any wait on a person taken
-                    // out, and the counter `max_tokens` is checked against.
-                    // That counter is completion tokens only (`tokens_used`),
-                    // so it is named as such and never summed with prompt
-                    // tokens into one figure.
-                    elapsed_ms = millis(started.elapsed().saturating_sub(waited_on_human)),
+                    // The budget's own figures after this turn, beside the
+                    // turn's: what its ceilings are checked against.
+                    elapsed_ms = millis(clock.spent()),
                     completion_tokens_used = model.tokens_used(),
                     "turn"
                 );
@@ -1659,7 +1646,7 @@ pub async fn run_seeded<M: Model>(
                     (&call, &result)
                 {
                     tracing::info!("the model asked a person a question; stopping");
-                    leave_spent(&spent, started.elapsed().saturating_sub(waited_on_human));
+                    report_elapsed(report_to, &clock);
                     close_budget(&live);
                     return (
                         Outcome::NotConverged {
@@ -1694,18 +1681,23 @@ pub async fn run_seeded<M: Model>(
     // goes back to the caller rather than being dropped with the receiver.
     t.steering
         .drain(&mut steering, fates.as_deref(), t.turns.len(), true);
-    leave_spent(&spent, started.elapsed().saturating_sub(waited_on_human));
+    report_elapsed(report_to, &clock);
     close_budget(&live);
     (outcome, t)
 }
 
-/// The `run budget` event: every ceiling in force.
+/// The `run budget` event: every ceiling in force. Each is in the unit of
+/// the figure checked against it (`turn`, `elapsed_ms`,
+/// `completion_tokens_used`, `prompt_bytes`), so a client draws two numbers
+/// per row and computes none.
 fn announce_budget(budget: &Budget, context_bytes: Option<usize>) {
     tracing::info!(
         max_iterations = budget.max_iterations,
         max_wall_clock_ms = millis(budget.max_wall_clock),
-        max_tokens = budget.max_tokens,
-        context_bytes,
+        // The budget counts completion tokens only (`Model::tokens_used`),
+        // so the ceiling's name says which; prompt tokens are never added.
+        max_completion_tokens = budget.max_tokens,
+        max_context_bytes = context_bytes,
         "run budget"
     );
 }
@@ -1718,13 +1710,11 @@ fn close_budget(live: &Option<std::sync::Arc<LiveBudget>>) {
     }
 }
 
-/// Writes the run's final spend into the caller's slot, when it gave one.
-///
-/// A poisoned lock still takes the figure: the slot holds a plain value,
-/// and a panic elsewhere while it was held cannot have left it half-written.
-fn leave_spent(slot: &Option<SpentSlot>, elapsed: Duration) {
-    if let Some(s) = slot {
-        *s.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(elapsed);
+/// Sends what `clock` has spent to the caller that asked ([`Seed::elapsed`]).
+fn report_elapsed(to: Option<tokio::sync::oneshot::Sender<u64>>, clock: &WallClock) {
+    if let Some(tx) = to {
+        // A caller that stopped listening is no reason to fail a run.
+        let _ = tx.send(millis(clock.spent()));
     }
 }
 
@@ -4319,7 +4309,12 @@ rank = \"non-negotiable\"
             max_wall_clock: std::time::Duration::from_millis(150),
             ..Budget::default()
         };
-        let (outcome, t) = run("look", &mut m, &h, &tight).await;
+        let (tx, mut spent) = tokio::sync::oneshot::channel();
+        let seed = Seed {
+            elapsed: Some(tx),
+            ..Seed::default()
+        };
+        let (outcome, t) = run_seeded("look", &mut m, &h, &tight, seed).await;
         assert!(
             matches!(
                 outcome,
@@ -4335,6 +4330,38 @@ rank = \"non-negotiable\"
             "and must not trigger the escalation turn"
         );
         assert_eq!(t.turns[0].human, Some(true));
+        // And the spend the run reports for `run_end` is the clock the
+        // ceiling read: the two 200 ms answers are not in it.
+        let ms = spent.try_recv().expect("a loop that returns reports");
+        assert!(ms < 400, "the person's 400 ms is not the run's: {ms} ms");
+    }
+
+    #[tokio::test]
+    async fn a_loop_dropped_while_a_person_decides_reports_no_spend() {
+        // The risk: an interrupted run's `run_end` given a spend that counts
+        // the wait still open when it stopped, which the clock never took
+        // out. A loop that does not return has no figure to give.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+            .with_gate(Box::new(SlowPerson(std::time::Duration::from_secs(60))))
+            .spawn();
+        let mut m = Scripted::new(vec![Step::Call(ToolCall::ReadFile {
+            path: "app/util.py".into(),
+        })]);
+        let (tx, mut spent) = tokio::sync::oneshot::channel();
+        let seed = Seed {
+            elapsed: Some(tx),
+            ..Seed::default()
+        };
+        let b = budget();
+        let run = run_seeded("look", &mut m, &h, &b, seed);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), run)
+                .await
+                .is_err(),
+            "the run is still waiting on the person"
+        );
+        assert!(spent.try_recv().is_err(), "a dropped loop reports nothing");
     }
 
     #[tokio::test]

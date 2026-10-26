@@ -1510,7 +1510,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       r('runtime', RUN.runtime),
       r('control', RUN.control + ' — each edit asks you first'),
       r('root', RUN.root + ' @ ' + RUN.base),
-      h(Src, { text: 'get_state (model, tier, root); phase from the last turn (tool, target) or model call event; prompt_bytes from turn events against run budget context_bytes; runtime identified {runtime, served}; compacted {turn, elided_turns, elided_bytes, request_bytes}: in the contract, read by neither face yet' }));
+      h(Src, { text: 'get_state (model, tier, root); phase from the last turn (tool, target) or model call event; prompt_bytes from turn events against run budget max_context_bytes; runtime identified {runtime, served}; compacted {turn, elided_turns, elided_bytes, request_bytes}: in the contract, read by neither face yet' }));
   }
   function Budget(props) {
     var L = props.limits, ed = useState(false), editing = ed[0], setEditing = ed[1];
@@ -1535,7 +1535,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
           h('button', { className: 'cd-bud-ext', onClick: function () { setEditing(!editing); } }, editing ? 'done' : 'raise a limit'),
           editing ? ' — takes effect at the next budget check, before the next model call; limits can be raised, never lowered, mid-run; no trail records a raise until #868.' : ' — the ceilings in force, from the latest run budget.')
         : 'Set in .trellis/config.toml [budget] and your user config; the lower of the two wins.'),
-      h(Src, { text: 'run budget {max_iterations, max_wall_clock_ms, max_tokens, context_bytes}, sent again where a raise takes effect; used from turn events (turn, elapsed_ms, completion_tokens_used); raise a limit: set_budget' }));
+      h(Src, { text: 'run budget {max_iterations, max_wall_clock_ms, max_completion_tokens, max_context_bytes}, sent again where a raise takes effect; used from turn events (turn, elapsed_ms, completion_tokens_used); raise a limit: set_budget' }));
   }
   function Plan(props) {
     return h('div', { className: 'cd-src-host' },
@@ -1652,7 +1652,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
               h('tr', null, h('td', null, 'prompt'), h('td', { className: 'num' }, 'peak ' + kb(98100)), h('td', { className: 'muted num' }, 'bytes, not tokens · first ' + kb(12400))),
               h('tr', null, h('td', null, 'prompt tokens'), h('td', { className: 'muted num' }, 'unreported'), h('td', { className: 'muted num' }, 'the runtime did not report them')),
               h('tr', null, h('td', null, 'spend'), h('td', { className: 'muted num' }, 'not metered'), h('td', { className: 'muted num' }, 'Local regime')))),
-            h(Src, { text: 'run budget (max_iterations, max_wall_clock_ms, max_tokens); turn events (turn, elapsed_ms, completion_tokens_used, model_ms, prompt_bytes); trail factual.context, listed, its fields NEW in the contract; get_session_stats (prompt_tokens and completion_tokens apart, never summed)' })))),
+            h(Src, { text: 'run budget (max_iterations, max_wall_clock_ms, max_completion_tokens); turn events (turn, elapsed_ms, completion_tokens_used, model_ms, prompt_bytes); trail factual.context, listed, its fields NEW in the contract; get_session_stats (prompt_tokens and completion_tokens apart, never summed)' })))),
       h('div', { className: 'cd-rv-col' },
         h(T.Panel, { title: 'The path', meta: props.turn + ' turns' },
           h('div', { className: 'cd-src-host' }, h(T.Rail, { rows: [
@@ -1671,7 +1671,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
         h(T.Panel, { title: 'Prompt size over the run', meta: 'bytes per turn' },
           h('div', { className: 'cd-src-host' }, h(T.Sparkline, { values: PROMPT_BYTES.slice(0, Math.max(2, props.turn)).map(function (b) { return Math.round(b / 1024); }), width: 520, height: 56, tone: 'cool', baseline: 115, label: 'prompt bytes per turn' }),
             h('div', { className: 'cd-plan-note', style: { marginTop: '8px' } }, 'dotted line: 115 kB, where compaction runs · bytes, not tokens'),
-            h(Src, { text: 'prompt_bytes on each turn event; run budget context_bytes; compacted {budget}, read by neither face yet' })))));
+            h(Src, { text: 'prompt_bytes on each turn event; run budget max_context_bytes; compacted {budget}, read by neither face yet' })))));
   }
 
   // ---------- TUI artboard ----------

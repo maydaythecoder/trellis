@@ -94,7 +94,7 @@ const COMMANDS: &[(&str, &str)] = &[
     (
         "set_budget",
         "raise the run in flight's ceilings, never lower one: any of {max_iterations?, \
-         max_wall_clock_ms?, max_tokens?}; answered with every ceiling after it, in force \
+         max_wall_clock_ms?, max_completion_tokens?}; answered with every ceiling after it, in force \
          from the loop's next budget check, where `run budget` is sent again",
     ),
     (
@@ -339,12 +339,12 @@ fn budget_raise(cmd: &Value) -> Result<trellis_loop::Raise, String> {
                 raise.max_wall_clock =
                     Some(std::time::Duration::from_millis(positive(name, value)?));
             }
-            "max_tokens" => raise.max_tokens = Some(positive(name, value)?),
+            "max_completion_tokens" => raise.max_tokens = Some(positive(name, value)?),
             // `run budget` carries it, but it is the driver's prompt size,
             // fixed when the driver is built, and no budget check reads it.
-            "context_bytes" => {
+            "max_context_bytes" => {
                 return Err(format!(
-                    "`context_bytes` is the driver's prompt size, fixed for the run; \
+                    "`max_context_bytes` is the driver's prompt size, fixed for the run; \
                      set_budget raises {SET_BUDGET_FIELDS}"
                 ));
             }
@@ -538,7 +538,7 @@ const HOLD_ENDED: &str = "the run ended before it reached the hold; it did not p
 const BUDGET_ENDED: &str = "the run has ended; nothing changed";
 
 /// The fields `set_budget` reads, as `run budget` names them.
-const SET_BUDGET_FIELDS: &str = "max_iterations, max_wall_clock_ms or max_tokens";
+const SET_BUDGET_FIELDS: &str = "max_iterations, max_wall_clock_ms or max_completion_tokens";
 
 /// What `prompt` and `classify` are refused with while a run is in flight.
 const ONE_AT_A_TIME: &str = "a run is in progress; one at a time (abort it, or wait)";
@@ -846,7 +846,7 @@ impl<M: trellis_loop::Model> trellis_loop::Model for Watched<'_, M> {
         self.model.next_step(t)
     }
 
-    fn tokens_used(&self) -> u64 {
+    fn tokens_used(&self) -> Option<u64> {
         self.model.tokens_used()
     }
 
@@ -1632,7 +1632,7 @@ impl Server {
         Ok(json!({
             "max_iterations": b.max_iterations,
             "max_wall_clock_ms": u64::try_from(b.max_wall_clock.as_millis()).unwrap_or(u64::MAX),
-            "max_tokens": b.max_tokens,
+            "max_completion_tokens": b.max_tokens,
         }))
     }
 
@@ -2526,8 +2526,8 @@ impl Chain {
             run_ids: Some(self.ran.clone()),
             run_ended: Some(self.ended.clone()),
             tier: Some(self.tier.clone()),
-            // Fresh per run, for this run's `run_end` `elapsed_ms` (#799).
-            spent: trellis_loop::SpentSlot::default(),
+            // This run's own, for its `run_end`.
+            elapsed_ms: std::sync::OnceLock::new(),
             hold: Some(cur.hold.clone()),
             budget: Some(cur.budget.clone()),
         };
@@ -2660,9 +2660,10 @@ fn same_place(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// `get_state`'s view of how the last run ended.
+/// `get_state`'s view of how the last run ended: `run_end`'s outcome
+/// fields, without its trail id or the loop's spend.
 fn run_end_response(r: &Result<RunExit>, id: Option<&str>) -> Value {
-    let mut v = output::run_end(r, None, id);
+    let mut v = output::run_end(r, None, None, id);
     if let Some(o) = v.as_object_mut() {
         o.remove("type");
     }
@@ -3550,8 +3551,9 @@ mod tests {
         use trellis_loop::Model;
         let mut inner = crate::testutil::figures();
         let w = Watched::new(&mut inner, None);
-        assert_eq!(w.tokens_used(), 7);
+        assert_eq!(w.tokens_used(), Some(7));
         assert_eq!(w.prompt_bytes(), Some(4321));
+        assert_eq!(w.context_bytes(), Some(9_000));
         assert_eq!(w.compactions().len(), 1);
         assert_eq!(w.compactions()[0].elided_bytes, 50);
         assert_eq!(w.requested_compactions().len(), 1);

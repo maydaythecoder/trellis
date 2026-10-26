@@ -39,9 +39,9 @@ pub use adapter::{
 };
 pub use agent::{
     Hold, HoldRefused, Model, NotConverged, Outcome, PauseAnswer, PriorContext, RadiusSite,
-    RepoContext, Seed, SpentSlot, Steer, Steering, SteeringFates, SteeringLog, SteeringRx, Step,
-    StepUsage, ToolCall, Transcript, Turn, TurnAction, VaultContext, WithdrawRefused, run,
-    run_seeded, summarise, turn_action,
+    RepoContext, Seed, Steer, Steering, SteeringFates, SteeringLog, SteeringRx, Step, StepUsage,
+    ToolCall, Transcript, Turn, TurnAction, VaultContext, WithdrawRefused, run, run_seeded,
+    summarise, turn_action,
 };
 pub use agent_clone::{AgentClone, AgentCloneError, CarriedBack, NEW_FILE_WALK_CAP, NotCarried};
 pub use budget::{
