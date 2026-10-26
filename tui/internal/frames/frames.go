@@ -42,7 +42,7 @@ const (
 	ApprovalRequest
 	// Warning is a loop event at WARN or ERROR that is not a turn, such as
 	// "no progress; stopping": the explanation for a run about to end, shown
-	// as text (tui_bridge.rs does the same).
+	// as text.
 	Warning
 	// ModelCall is the loop's "model call" event, sent before each call to
 	// the model with the turn number the turn it produces will carry
@@ -71,10 +71,17 @@ type Frame struct {
 }
 
 // TurnFields is a turn event. Turn and Call are what make an event a turn,
-// the test tui_bridge.rs and rpc.rs apply, so both are required.
+// the test rpc.rs applies, so both are required.
 type TurnFields struct {
 	Turn uint64
 	Call string
+	// What the trail records for the turn (#800), from the engine's own
+	// reading of the call and its whole observation, so the TUI never splits
+	// Call or searches Observation for them.
+	Tool   *string
+	Target *string
+	// True only for an edit that applied or a file write_file created.
+	Wrote *bool
 	// Verdict is the loop's Debug rendering, "Some(true)", "Some(false)" or
 	// "None", kept as sent.
 	Verdict     *string
@@ -208,6 +215,9 @@ func Parse(l rpc.Line) Frame {
 		return Frame{Kind: Turn, TurnFields: &TurnFields{
 			Turn:             *turn,
 			Call:             *call,
+			Tool:             s(f, "tool"),
+			Target:           s(f, "target"),
+			Wrote:            b(f, "wrote"),
 			Verdict:          s(f, "verdict"),
 			CheckKind:        s(f, "check_kind"),
 			Observation:      s(f, "observation"),

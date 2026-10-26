@@ -39,7 +39,7 @@ func TestNowStripShowsStateTurnAndActivity(t *testing.T) {
 	if s := stripOf(t, m); !strings.Contains(s, "● RUNNING") || !strings.Contains(s, "█░░░░░░░ 1/40") || !strings.Contains(s, "calling the model, turn 1") {
 		t.Fatalf("calling the model: %q", s)
 	}
-	feed(m, turn(1, "edit app/calc.py", map[string]any{"observation": "applied: true"}))
+	feed(m, turn(1, "edit app/calc.py", map[string]any{"observation": "applied: true", "tool": "edit", "target": "app/calc.py", "wrote": true}))
 	if s := stripOf(t, m); !strings.Contains(s, "█░░░░░░░ 1/40") || !strings.Contains(s, "ran edit, turn 1 → app/calc.py") {
 		t.Fatalf("after the turn: %q", s)
 	}
