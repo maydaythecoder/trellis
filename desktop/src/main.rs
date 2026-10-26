@@ -36,6 +36,7 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod atlas;
+mod capped;
 mod child;
 mod codebase;
 mod commands;
