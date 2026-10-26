@@ -44,6 +44,7 @@ mod codebase;
 mod commands;
 mod frames;
 mod graph;
+mod json;
 mod lockdown;
 mod queue;
 mod radius;
