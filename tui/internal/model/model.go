@@ -504,18 +504,19 @@ func (m *Model) frame(f frames.Frame) {
 	}
 }
 
-// turn adds the turn's row: what was called and, when a check ran, what
-// trellis said it returned. The verdict is shown, never computed (ADR 0004),
-// and it alone makes the row a passed or a failed check.
+// turn adds the turn's row: what was called, as ToolSentence words it, and,
+// when a check ran, what trellis said it returned. The verdict is shown,
+// never computed (ADR 0004), and it alone makes the row a passed or a
+// failed check.
 func (m *Model) turn(t *frames.TurnFields) {
-	row := view.Row{Text: "· " + view.Plain(t.Call), Role: view.RoleTool, Turn: int(t.Turn)}
+	row := view.Row{Text: "· " + ToolSentence(t), Role: view.RoleTool, Turn: int(t.Turn)}
 	if t.Verdict != nil {
 		switch *t.Verdict {
 		case "Some(true)":
-			row.Text += "  ✓ check passed"
+			row.Text += "  ✓ " + checkWords(t, "passed")
 			row.Role = view.RolePassed
 		case "Some(false)":
-			row.Text += "  ✗ check FAILED"
+			row.Text += "  ✗ " + checkWords(t, "failed")
 			row.Role = view.RoleFailed
 		}
 	}
@@ -536,6 +537,59 @@ func (m *Model) turn(t *frames.TurnFields) {
 		}
 	}
 	m.panesTurn(t)
+}
+
+// ToolSentence is a turn's call as the one sentence both clients show for
+// it (client_fixtures.json's tool_sentences, #803), made from the tool and
+// target the engine reported (#800) and never from splitting the call. A
+// turn whose event carried no tool shows its call as it came. The target is
+// the model's text, so it is made plain here.
+func ToolSentence(t *frames.TurnFields) string {
+	if t.Tool == nil || *t.Tool == "" {
+		return view.Plain(t.Call)
+	}
+	target := ""
+	if t.Target != nil {
+		target = view.Plain(*t.Target)
+	}
+	wrote := t.Wrote != nil && *t.Wrote
+	switch tool := *t.Tool; tool {
+	case "read_file":
+		return "Read " + target
+	case "edit":
+		if !wrote {
+			return "Edit to " + target + " not applied"
+		}
+		if t.LinesAdded != nil && t.LinesRemoved != nil {
+			return fmt.Sprintf("Edited %s (+%d −%d)", target, *t.LinesAdded, *t.LinesRemoved)
+		}
+		return "Edited " + target
+	case "write_file":
+		if !wrote {
+			return "Write to " + target + " not applied"
+		}
+		return "Wrote " + target
+	case "grep":
+		return "Searched for " + target
+	case "bash":
+		return "Ran " + target
+	case "run_checks":
+		return "Ran the checks: " + target
+	case "blast_radius":
+		return "Measured the blast radius of " + target
+	default:
+		return strings.TrimSpace(view.Plain(tool) + " " + target)
+	}
+}
+
+// checkWords is a check row's words: the kind trellis-checks named, or
+// "check" when it named none, then the word for the verdict it sent.
+func checkWords(t *frames.TurnFields, word string) string {
+	kind := "check"
+	if t.CheckKind != nil && strings.TrimSpace(*t.CheckKind) != "" {
+		kind = view.Plain(*t.CheckKind)
+	}
+	return kind + " " + word
 }
 
 // runEnd hands input back, whatever the ending, and says how it ended from
@@ -614,8 +668,10 @@ func (m *Model) errorLines(e *string) {
 	}
 }
 
-// OutcomeLine is how a run ended, in one line for the transcript's border,
-// worded as tui_run.rs's outcome_line words it.
+// OutcomeLine is how a run ended, in one line for the transcript's border:
+// run_end's own word and its exit code, as the desktop shows them
+// (DESIGN.md section 2 rule 5; client_fixtures.json's outcome_words, #803),
+// then whether the tree was restored or why it failed.
 func OutcomeLine(e *frames.RunEndFields) string {
 	restored := func() string {
 		if e.Restored == nil {
@@ -626,13 +682,15 @@ func OutcomeLine(e *frames.RunEndFields) string {
 	if e.Outcome == nil {
 		return "ended; trellis reported no outcome"
 	}
+	head := view.Plain(*e.Outcome)
+	if e.Exit != nil {
+		head += fmt.Sprintf(" · exit %d", *e.Exit)
+	} else {
+		head += " · trellis reported no exit code"
+	}
 	switch *e.Outcome {
-	case "converged":
-		return "converged"
-	case "not_converged":
-		return "did not converge; worktree restored: " + restored()
-	case "interrupted":
-		return "interrupted; worktree restored: " + restored()
+	case "not_converged", "interrupted":
+		return head + "; worktree restored: " + restored()
 	case "error":
 		first := "no reason given"
 		if e.Error != nil {
@@ -640,9 +698,9 @@ func OutcomeLine(e *frames.RunEndFields) string {
 				first = l
 			}
 		}
-		return "failed: " + view.Plain(first)
+		return head + ": " + view.Plain(first)
 	}
-	return view.Plain(*e.Outcome)
+	return head
 }
 
 // response handles an answer to a command this model sent. A refused

@@ -2,10 +2,10 @@
  ● RUNNING  1:23*  █░░░░░░░ 3/40  [^P] pause  ran edit, turn 3 → src/parser.py  
 ┌ transcript ──────────────────────────────────────────────────────────────────┐
 │> fix the failing parser test                                                 │
-│· blast_radius parse_expr                                                     │
+│· Measured the blast radius of parse_expr                                     │
 │    resolved 12 · candidates 1                                                │
 │The parser drops the last token when the input ends in a comment.             │
-│· run_checks  ✓ check passed                                                  │
+│· Ran the checks: Tests on whole repository  ✓ Tests passed                   │
 │                                                                              │
 │                                                                              │
 │                                                                              │

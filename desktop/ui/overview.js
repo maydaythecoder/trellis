@@ -116,7 +116,7 @@ export function drawOpenRefusal(doc, text) {
 
 // The tone a trail's outcome word is drawn in: an outcome is not a check,
 // so a converged run is ok and the rest are not, each with its word.
-const OUTCOME_TONES = { converged: "ok", "not converged": "down", interrupted: "warn", error: "down" };
+const OUTCOME_TONES = { converged: "ok", not_converged: "down", interrupted: "warn", error: "down" };
 
 // A trail's outcome as a Status, or unreported when it carries none.
 function outcomeStatus(doc, t) {

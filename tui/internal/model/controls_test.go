@@ -381,7 +381,7 @@ func TestPlanEditIsSentAsASteer(t *testing.T) {
 		t.Fatalf("the plan drawn changed on the edit:\n%s", v)
 	}
 	feed(m, steerDelivered(4))
-	if !strings.Contains(last(m), "delivered at turn 5: I edited your plan from turn 4.") || !strings.Contains(last(m), "to do): [x] find the bug [x] fix it") {
+	if !strings.Contains(last(m), "delivered after turn 4: I edited your plan from turn 4.") || !strings.Contains(last(m), "to do): [x] find the bug [x] fix it") {
 		t.Fatalf("delivered: %q", last(m))
 	}
 

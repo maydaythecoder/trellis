@@ -1,0 +1,54 @@
+{
+  "about": "Cases both rpc clients must word the same (#803). Each face has a test that walks every case: desktop/src/state.rs client_fixtures_outcome_words, client_fixtures_token_rate, client_fixtures_tool_sentences and client_fixtures_hostile_text; tui/internal/model/model_test.go TestClientFixturesOutcomeWords, TestClientFixturesToolSentences and TestClientFixturesHostileText, and tui/internal/view/view_test.go TestClientFixturesTokenRate. A case is the engine's own input, as client_contract.json lists it; a client that words one differently fails its own test, so the two faces cannot drift apart again. Choices between the faces' old wordings are recorded in docs/adr/0027-drain-run-decision-log.md (#803).",
+  "outcome_words": {
+    "about": "Every run_end trellis emits (crates/trellis-cli/src/output.rs run_end, with RunExit::code in run_cmd.rs): the outcome word is run_end's own, never reworded (DESIGN.md section 2 rule 5), shown with its exit code. word and exit are what each face shows; the TUI's transcript border writes them as `<word> · exit <n>`, the desktop draws the word as a Status and the exit as a Stat beside it.",
+    "cases": [
+      {"name": "converged", "run_end": {"outcome": "converged", "exit": 0}, "word": "converged", "exit": 0},
+      {"name": "not converged, tree restored (and a run that asked a person)", "run_end": {"outcome": "not_converged", "exit": 1, "restored": true}, "word": "not_converged", "exit": 1},
+      {"name": "not converged, tree not restored", "run_end": {"outcome": "not_converged", "exit": 2, "restored": false}, "word": "not_converged", "exit": 2},
+      {"name": "interrupted, tree restored", "run_end": {"outcome": "interrupted", "exit": 130, "restored": true}, "word": "interrupted", "exit": 130},
+      {"name": "interrupted, tree not restored", "run_end": {"outcome": "interrupted", "exit": 2, "restored": false}, "word": "interrupted", "exit": 2},
+      {"name": "error before or during the run", "run_end": {"outcome": "error", "exit": 1, "error": "dirty worktree: commit or stash first"}, "word": "error", "exit": 1}
+    ]
+  },
+  "token_rate": {
+    "about": "The last turn's output rate (#257, COL-11): completion_tokens over model_ms less queue_wait_ms (0 when unreported), in tokens a second to one decimal place. rate is that figure as text, or unreported where the turn did not report what it needs, or no model time is left after the wait: never 0 and never an estimate.",
+    "cases": [
+      {"name": "no wait reported", "completion_tokens": 100, "model_ms": 4000, "rate": "25.0"},
+      {"name": "the queue wait is left out", "completion_tokens": 20, "model_ms": 20000, "queue_wait_ms": 10000, "rate": "2.0"},
+      {"name": "a rate that is not whole", "completion_tokens": 7, "model_ms": 3000, "rate": "2.3"},
+      {"name": "no completion tokens reported", "model_ms": 4000, "queue_wait_ms": 0, "rate": "unreported"},
+      {"name": "no model time reported", "completion_tokens": 100, "rate": "unreported"},
+      {"name": "the whole call was queue wait", "completion_tokens": 100, "model_ms": 5000, "queue_wait_ms": 5000, "rate": "unreported"},
+      {"name": "a wait longer than the call", "completion_tokens": 100, "model_ms": 5000, "queue_wait_ms": 6000, "rate": "unreported"}
+    ]
+  },
+  "tool_sentences": {
+    "about": "A turn's tool call as one sentence, made from the turn event's tool and target (#800) and never from parsing call; the raw call and the observation stay one step away. check is the check row a turn whose verdict trellis-checks produced also shows (check_kind, then passed or failed), null where the verdict is None. A turn whose event carried no tool shows its raw call.",
+    "cases": [
+      {"name": "read a file", "turn": {"turn": 1, "call": "read_file app/core.py", "tool": "read_file", "target": "app/core.py", "wrote": false, "verdict": "None", "check_kind": "", "observation": "def f():"}, "sentence": "Read app/core.py", "check": null},
+      {"name": "an edit that applied", "turn": {"turn": 2, "call": "edit app/core.py", "tool": "edit", "target": "app/core.py", "wrote": true, "lines_added": 3, "lines_removed": 2, "verdict": "None", "check_kind": "", "observation": "applied: true"}, "sentence": "Edited app/core.py (+3 −2)", "check": null},
+      {"name": "an edit that applied with no line counts", "turn": {"turn": 2, "call": "edit app/core.py", "tool": "edit", "target": "app/core.py", "wrote": true, "verdict": "None", "check_kind": "", "observation": "applied: true"}, "sentence": "Edited app/core.py", "check": null},
+      {"name": "a refused edit", "turn": {"turn": 3, "call": "edit app/core.py", "tool": "edit", "target": "app/core.py", "wrote": false, "verdict": "None", "check_kind": "", "observation": "error: old text not found"}, "sentence": "Edit to app/core.py not applied", "check": null},
+      {"name": "a file written", "turn": {"turn": 3, "call": "write_file notes.md", "tool": "write_file", "target": "notes.md", "wrote": true, "verdict": "None", "check_kind": "", "observation": "created notes.md (2 lines)"}, "sentence": "Wrote notes.md", "check": null},
+      {"name": "a search", "turn": {"turn": 4, "call": "grep parse_args in src", "tool": "grep", "target": "parse_args in src", "wrote": false, "verdict": "None", "check_kind": "", "observation": "src/cli.py:3"}, "sentence": "Searched for parse_args in src", "check": null},
+      {"name": "bash", "turn": {"turn": 5, "call": "bash pytest -q", "tool": "bash", "target": "pytest -q", "wrote": false, "verdict": "None", "check_kind": "", "observation": "1 passed"}, "sentence": "Ran pytest -q", "check": null},
+      {"name": "run the tests, which pass", "turn": {"turn": 6, "call": "run_checks tests", "tool": "run_checks", "target": "Tests on whole repository", "wrote": false, "verdict": "Some(true)", "check_kind": "Tests", "observation": "Tests: passed"}, "sentence": "Ran the checks: Tests on whole repository", "check": "Tests passed"},
+      {"name": "a check that fails", "turn": {"turn": 7, "call": "run_checks typecheck", "tool": "run_checks", "target": "Typecheck on app/core.py", "wrote": false, "verdict": "Some(false)", "check_kind": "Typecheck", "observation": "Typecheck: FAILED"}, "sentence": "Ran the checks: Typecheck on app/core.py", "check": "Typecheck failed"},
+      {"name": "blast radius", "turn": {"turn": 8, "call": "blast_radius app.core.f", "tool": "blast_radius", "target": "app.core.f", "wrote": false, "verdict": "None", "check_kind": "", "observation": "reach: 3"}, "sentence": "Measured the blast radius of app.core.f", "check": null},
+      {"name": "a repository's own tool", "turn": {"turn": 9, "call": "lint {\"path\":\"a.py\"}", "tool": "lint", "target": "{\"path\":\"a.py\"}", "wrote": false, "verdict": "None", "check_kind": "", "observation": "ok"}, "sentence": "lint {\"path\":\"a.py\"}", "check": null},
+      {"name": "no tool reported", "turn": {"turn": 10, "call": "read_file a.py", "verdict": "None", "check_kind": "", "observation": "x"}, "sentence": "read_file a.py", "check": null}
+    ]
+  },
+  "hostile_text": {
+    "about": "Text from the model, the repository or trellis that a face must not pass through as it came: escape sequences (ESC, the C1 CSI, BEL), the bidirectional embeddings, overrides and isolates U+202A-U+202E and U+2066-U+2069, NUL, and a line longer than a face keeps. Each case is fed as a bash turn's target, call and observation. must_not_contain holds for every row either face makes from it. tui is what view.Plain leaves (the terminal draws nothing that moves the cursor or reorders text, so the characters are dropped); desktop is what the desktop's transcript row holds (the page writes text, and a control character is escaped, not dropped: ADR 0048 section 5). A case with repeat is that text repeated that many times: each face cuts it to its own limit, the TUI a transcript row to LineCap bytes and the desktop a row to TRANSCRIPT_BYTES, each saying it cut.",
+    "must_not_contain": ["\u001b", "\u009b", "\u0007", "\u0000", "\u202a", "\u202b", "\u202c", "\u202d", "\u202e", "\u2066", "\u2067", "\u2068", "\u2069"],
+    "cases": [
+      {"name": "escape sequences", "text": "\u001b[2J\u001b[31mred\u001b]0;title\u0007 \u009b1m", "tui": "[2J[31mred]0;title 1m", "desktop": "\\u{1b}[2J\\u{1b}[31mred\\u{1b}]0;title\\u{7} \\u{9b}1m"},
+      {"name": "bidirectional overrides", "text": "a\u202ab\u202bc\u202cd\u202de\u202ef", "tui": "abcdef", "desktop": "a\\u{202a}b\\u{202b}c\\u{202c}d\\u{202d}e\\u{202e}f"},
+      {"name": "bidirectional isolates", "text": "if admin\u2066 \u2067// check\u2069\u2068 x\u2069", "tui": "if admin // check x", "desktop": "if admin\\u{2066} \\u{2067}// check\\u{2069}\\u{2068} x\\u{2069}"},
+      {"name": "NUL", "text": "a\u0000b", "tui": "ab", "desktop": "a\\u{0}b"},
+      {"name": "a very long line", "text": "x", "repeat": 2097152}
+    ]
+  }
+}

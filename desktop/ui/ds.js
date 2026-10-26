@@ -169,7 +169,9 @@ export function txEntry(doc, row) {
     else sent.append(el(doc, "b", text.slice(0, space)), text.slice(space));
     const raw = el(doc, "pre", null, "cd-tx-raw");
     raw.hidden = true;
-    raw.append(el(doc, "span", "$ ", "k"), text);
+    // The row's words are the sentence (#803); the call as the model sent
+    // it is what opens under them.
+    raw.append(el(doc, "span", "$ ", "k"), str(row.call) ?? text);
     const detail = str(row.detail);
     if (detail !== null) raw.append(`\n${detail}`);
     e.append(glyph(doc, "→"), sent, el(doc, "span", turn, "cd-tx-meta"), raw);
