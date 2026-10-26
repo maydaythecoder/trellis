@@ -158,6 +158,9 @@ type State struct {
 	// Reviewing is set while the question on screen has been set aside to
 	// read its file's diff at the code level, where it is answered.
 	Reviewing bool
+	// Compose is the verb, the held line and the queue the task box draws
+	// (compose.go, #852).
+	Compose Compose
 }
 
 // radiusH is the radius pane's height: its three counts, the line that
@@ -702,9 +705,10 @@ func turnRate(b Budget) (rate, queued *string) {
 }
 
 // entryLines is the task box: the typed line with a block cursor, the @
-// candidates under it in at most room rows (none while a run holds the
-// input: what is typed then is a steer), and what Enter does now, on its
-// top border.
+// candidates under it (none while a run holds the input: what is typed
+// then is sent under the verb), then the queue (compose.go), together in at
+// most room rows; what ⏎ does now on its top border, and the verb Tab
+// changes to on its bottom one.
 //
 // The line keeps its end in view, where the cursor is: wider than the box,
 // it was cut at the right and the cursor went with it (#842). What scrolled
@@ -712,15 +716,10 @@ func turnRate(b Budget) (rate, queued *string) {
 //
 // The completions take at most room rows. When there are more, the last
 // row says how many are not shown, so a short list is never read as all
-// there is.
+// there is. The queue takes what they leave, and says the same.
 func entryLines(s State, w, room int) []string {
 	lines := []Row{{Text: CutLeft(Plain(s.Input)+"█", w-2), Role: RoleYou}}
-	// The title says what ⏎ does with the line now (#911: as keycaps; the
-	// status bar has the keys that move between levels and ^C).
-	title := "task  " + keyRow(key{"⏎", "run"}, key{"ESC", "clear"}) + "  /help"
-	if s.Running {
-		title = "steer  " + keyRow(key{"⏎", "queue for the next turn"})
-	} else {
+	if !s.Running {
 		offered := s.Offered
 		hidden := 0
 		if len(offered) > room {
@@ -743,7 +742,8 @@ func entryLines(s State, w, room int) []string {
 			lines = append(lines, Row{Text: fmt.Sprintf("%s… %d more", indent, hidden), Role: RoleLabel})
 		}
 	}
-	return Box(s.Theme, title, "", lines, w, 2+len(lines))
+	lines = append(lines, queueRows(s.Compose.Queue, room-(len(lines)-1))...)
+	return Box(s.Theme, composeTitle(s), composeBottom(s), lines, w, 2+len(lines))
 }
 
 func contains(xs []string, x string) bool {
