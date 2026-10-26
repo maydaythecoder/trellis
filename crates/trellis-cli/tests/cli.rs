@@ -116,6 +116,12 @@ fn run(root: &Path, args: &[&str]) -> Output {
             "TRELLIS_CONFIG_DIR",
             std::env::temp_dir().join("trellis-tests-no-user-config"),
         )
+        // Hermetic for the same reason: with either variable set, anyhow
+        // appends a backtrace to every error the binary prints, and a test
+        // that compares that text fails on a host that sets one (#783).
+        // RUST_LIB_BACKTRACE is read first, so both are pinned.
+        .env("RUST_BACKTRACE", "0")
+        .env("RUST_LIB_BACKTRACE", "0")
         .output()
         .expect("the binary must be built before its integration tests run")
 }
@@ -4467,6 +4473,9 @@ fn no_model_message_is_the_same_from_run_and_from_bare_trellis_on_a_pipe() {
                 "TRELLIS_CONFIG_DIR",
                 std::env::temp_dir().join("trellis-tests-no-user-config"),
             )
+            // As in `run`: the two texts are compared byte for byte (#783).
+            .env("RUST_BACKTRACE", "0")
+            .env("RUST_LIB_BACKTRACE", "0")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
