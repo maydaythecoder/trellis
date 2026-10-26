@@ -95,7 +95,7 @@ func TestCompleteCandidatesAreDrawnUnderTheInput(t *testing.T) {
 		return -1
 	}
 	typed, first, second := at("fix @models"), at("app/models.py"), at("src/models.py")
-	if !(typed < first && first < second) || !strings.Contains(rows[first], "tab") || at("budget") < 0 || len(rows) != 24 {
+	if !(typed < first && first < second) || !strings.Contains(rows[first], "[TAB]") || at("budget") < 0 || len(rows) != 24 {
 		t.Fatalf("%s", strings.Join(rows, "\n"))
 	}
 }
@@ -188,14 +188,37 @@ func TestCompleteListIsCapped(t *testing.T) {
 		m.Offered[OfferedCap] != "30 more path(s) not listed" {
 		t.Fatalf("offered %q", m.Offered)
 	}
-	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	// At 80x26 the whole capped list fits: at 80x24 the Now strip's row
+	// (#850) and the status bar's under the task box (#851) leave it two
+	// rows short, and the list then says what it cuts.
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 26})
 	screen := m.View()
-	if len(strings.Split(screen, "\n")) != 24 || !strings.Contains(screen, last) ||
+	if len(strings.Split(screen, "\n")) != 26 || !strings.Contains(screen, last) ||
 		!strings.Contains(screen, "30 more path(s) not listed") || strings.Contains(screen, fmt.Sprintf("src/m%02d.py", OfferedCap+1)) {
 		t.Fatalf("%s", screen)
 	}
 	tab(m)
 	if m.Input != "fix src/m01.py " || len(m.Offered) != 0 {
 		t.Fatalf("tab: input %q offered %q", m.Input, m.Offered)
+	}
+}
+
+// #904: Esc empties the line and the @ offer made for it, so the task box
+// lists no path for a fragment that is gone.
+func TestCompleteEscClearsTheOffer(t *testing.T) {
+	m := fresh(t)
+	typeLine(m, "fix @models")
+	tab(m)
+	respond(m, m.TakeOutbox()[0].Cmd["id"], "list_paths", map[string]any{"paths": []any{"app/models.py", "src/models.py"}})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	if !strings.Contains(m.View(), "app/models.py") {
+		t.Fatalf("the offer is not drawn before Esc:\n%s", m.View())
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.Input != "" || len(m.Offered) != 0 || strings.Contains(m.View(), "app/models.py") {
+		t.Fatalf("after Esc: input %q, offered %v\n%s", m.Input, m.Offered, m.View())
+	}
+	if m.Quitting {
+		t.Fatal("the first Esc, on a line with text, left the program")
 	}
 }
