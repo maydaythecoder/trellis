@@ -29,6 +29,7 @@ import (
 	"github.com/maydaythecoder/trellis/tui/internal/model"
 	"github.com/maydaythecoder/trellis/tui/internal/rpc"
 	"github.com/maydaythecoder/trellis/tui/internal/theme"
+	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
 // version is set at build time with
@@ -166,7 +167,7 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		// The child exited without being asked; say why on the way out.
 		lines, _ := c.Stderr()
 		for _, l := range lines {
-			fmt.Fprintln(stderr, model.Plain(l))
+			fmt.Fprintln(stderr, view.Plain(l))
 		}
 		return 1
 	}
