@@ -258,9 +258,14 @@ for most terminals and, in each row's text, the 16-colour fallback for a
 terminal that reports no more. A truecolor terminal uses the hex values in
 §3.1. Frames are box-drawing characters, meters `█` and `░`, sparklines
 `▁▂▃▄▅▆▇█`; `system/faces.md` has the full list of what the terminal draws
-with less. `tui/internal/view/view.go` sets its own colours today; the theme
-table that maps these rows into Lip Gloss joins `design-tokens.py` when it
-is written, with its parity row in `tui/PARITY.md`.
+with less. The TUI draws no colour today (no Lip Gloss style anywhere in
+`tui/`). The theme table that maps these rows into Lip Gloss gives every
+value explicitly as a `CompleteAdaptiveColor`, because Lip Gloss's own
+downgrading picks different colours from this table (at 16 colours `line`
+becomes black and `play` the same yellow as `signal`); it joins
+`design-tokens.py` when it is written, with its parity row in
+`tui/PARITY.md`. The table gives 256- and 16-colour values for dark
+terminals only; what a light terminal gets below truecolor is open.
 
 <!-- tokens:terminal -->
 | Token | 256-colour index | Usage, with the 16-colour fallback |
