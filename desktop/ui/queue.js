@@ -23,7 +23,7 @@
 import { el, muted } from "./dom.js";
 import { isCount, str } from "./fmt.js";
 import { drawPrCi } from "./overview.js";
-import { runEnded, send, start } from "./rpc.js";
+import { onShown, runEnded, send, start } from "./rpc.js";
 
 let asked = 0;
 // The overview reads for PR and CI state: each runs `trellis overview` and
@@ -208,8 +208,9 @@ export async function wireQueue(doc, tauri) {
     pressed = null;
     if (shown()) refresh();
   });
-  const button = doc.querySelector('nav.rail button[aria-controls="board"]');
-  if (button) button.addEventListener("click", refresh);
+  // Entering the Board level shows the section (keys.js), and the board is
+  // read then (#826).
+  onShown(doc, "board", refresh);
 }
 
 if (typeof window !== "undefined" && window.__TAURI__) {

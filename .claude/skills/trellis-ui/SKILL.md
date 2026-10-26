@@ -101,10 +101,9 @@ DESIGN.md §3.1, the terminal colours (256-colour index and 16-colour fallback)
 in §3.4, and where the brand book and the engine's rules differ in §2.1. The
 component cards are `docs/design/system/components/<Name>.md`; the icons and
 the mark are `docs/design/system/icons/` and `logos/`. The desktop's
-`desktop/ui/style.css` still has its own, older names (`--bg`, `--fg`,
-`--accent`, `--passed`, `--failed`, …); mapping them onto these is part of
-building the run view, not a change to make on the side. Use the variables,
-never a literal:
+`desktop/ui/style.css` holds a generated copy between its `tokens:start` and
+`tokens:end` markers (`--write` rewrites it), and its own tokens below (#813;
+DESIGN.md §3.5). Use the variables, never a literal:
 
 - Surfaces: `--ground`, `--panel`, `--panel-raised`, `--panel-inset`; lines
   `--line`, `--line-strong`; frames `--frame`, `--frame-strong`,

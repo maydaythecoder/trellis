@@ -108,9 +108,19 @@ type Model struct {
 	restored *bool
 
 	// now is the clock the budget's elapsed time is read from; tests set
-	// it. runStart is when the run in flight started.
+	// it. runStart is when the run in flight started; waited is the time
+	// this run's questions waited on the person, and askedAt when the one
+	// on screen was asked (ownElapsed, panes.go).
 	now      func() time.Time
 	runStart time.Time
+	waited   time.Duration
+	askedAt  time.Time
+	// strip is what the Now strip and Where it is draw that the panes do
+	// not hold (#850): the run's phase, the runtime, the repository, a
+	// stop on its way, and the last run's own run_end words.
+	strip view.Now
+	// nav is the level shown and the pane selected (nav.go, #851).
+	nav view.Nav
 
 	// theme is what the screen and the modal are painted with (Options).
 	theme theme.Theme
@@ -232,16 +242,11 @@ func (m *Model) key(k tea.KeyMsg) {
 		m.modalKey(k)
 		return
 	}
+	// ESC, Tab and ⏎ on an empty line move between levels (nav.go).
+	if m.navKey(k) {
+		return
+	}
 	switch k.Type {
-	case tea.KeyEsc:
-		// Esc clears the line; on an empty line it leaves as ^c does,
-		// stopping a run in flight first (#634): leaving mid-run used to
-		// be ^c's alone, and the ratatui TUI now stops on both.
-		if m.Input != "" {
-			m.Input = ""
-		} else {
-			m.ctrlC()
-		}
 	case tea.KeyEnter:
 		m.submit()
 	case tea.KeyTab:
@@ -267,16 +272,18 @@ func (m *Model) key(k tea.KeyMsg) {
 		// it was one Down spent before the view moved again (#843).
 		m.ScrollBack = min(m.ScrollBack+1, m.transcriptTop())
 	case tea.KeyDown:
-		// Saturating: Down at the end stays at the end, following.
-		if m.ScrollBack > 0 {
-			m.ScrollBack--
-		}
+		// From the top as the view now draws it: when the pane has grown
+		// under a scroll back (an @ offer closed), the held offset is past
+		// the top, and Down spent presses there before the view moved
+		// (#904). Saturating: Down at the end stays at the end, following.
+		m.ScrollBack = max(min(m.ScrollBack, m.transcriptTop())-1, 0)
 	case tea.KeyPgUp:
 		// Held at the top, so PgDn after it moves at once rather than
 		// first spending presses on rows above the first (#660).
 		m.ScrollBack = min(m.ScrollBack+view.TranscriptPage, m.transcriptTop())
 	case tea.KeyPgDown:
-		m.ScrollBack = max(m.ScrollBack-view.TranscriptPage, 0)
+		// From the top as the view now draws it, as Down (#904).
+		m.ScrollBack = max(min(m.ScrollBack, m.transcriptTop())-view.TranscriptPage, 0)
 	case tea.KeyHome:
 		m.ScrollBack = m.transcriptTop()
 	case tea.KeyEnd:
@@ -311,10 +318,11 @@ func (m *Model) ctrlC() {
 	if m.Quitting {
 		return
 	}
-	m.Modal = nil
+	m.closeModal()
 	m.approvals = nil
 	if m.Running {
 		m.send("abort", nil)
+		m.strip.Stopping = true
 		m.push(view.RoleNote, "· stopping: the run rolls back before trellis exits")
 	} else if m.classifying {
 		// abort also drops a pending classify, unanswered.
@@ -384,6 +392,10 @@ func (m *Model) frame(f frames.Frame) {
 		m.runStart = m.now()
 		m.Running = true
 		m.Outcome = ""
+	case frames.ModelCall:
+		m.strip.Phase = view.Phase{Kind: "model", Turn: *f.ModelCallTurn}
+	case frames.RuntimeIdentified:
+		m.strip.Runtime = runtimeText(f.Runtime)
 	case frames.ApprovalRequest:
 		m.approvalRequested(*f.Approval)
 	case frames.SteerDelivered:
@@ -449,10 +461,21 @@ func (m *Model) runEnd(e *frames.RunEndFields) {
 	m.refreshState()
 	m.steersNotDelivered()
 	// A question its run no longer waits on cannot be answered.
-	m.Modal = nil
+	m.closeModal()
 	m.approvals = nil
 	m.Outcome = OutcomeLine(e)
 	m.restored = e.Restored
+	// The strip names the ending in run_end's own words and exit code, and
+	// keeps the time the run took by this view's clock.
+	m.strip.Phase, m.strip.Stopping = view.Phase{}, false
+	m.strip.Outcome, m.strip.Exit = "", e.Exit
+	if e.Outcome != nil {
+		m.strip.Outcome = *e.Outcome
+	}
+	if !m.runStart.IsZero() {
+		secs := uint64(m.ownElapsed() / time.Second)
+		m.Budget.ElapsedSecs = &secs
+	}
 	if e.Outcome != nil && *e.Outcome == "error" {
 		m.errorLines(e.Error)
 		return
@@ -594,7 +617,7 @@ func (m *Model) exited(err error) {
 		}
 	}
 	m.Running = false
-	m.Modal = nil
+	m.closeModal()
 	m.approvals = nil
 	m.Done = true
 }
@@ -610,7 +633,7 @@ func exitReason(err error) string {
 func (m *Model) View() string {
 	w, h := m.size()
 	if m.Modal != nil {
-		return view.Modal(m.theme, m.Modal.Question, m.Modal.Diff, m.Modal.Scroll, w, h)
+		return view.Asking(m.viewState(), m.Modal.Question, m.Modal.Diff, m.Modal.Scroll, w, h)
 	}
 	return view.Render(m.viewState(), w, h)
 }
