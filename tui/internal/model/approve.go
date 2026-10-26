@@ -57,7 +57,7 @@ func (m *Model) approvalRequested(a frames.ApprovalFields) {
 	}
 	if len(m.approvals) >= ApprovalsCap {
 		m.send("approve", map[string]any{"id": ap.ID, "yes": false})
-		m.pushLine(fmt.Sprintf("· %s declined unseen: %d questions were already waiting", ap.Question, len(m.approvals)+1))
+		m.push(view.RoleNote, fmt.Sprintf("· %s declined unseen: %d questions were already waiting", ap.Question, len(m.approvals)+1))
 		return
 	}
 	m.approvals = append(m.approvals, ap)
@@ -111,7 +111,7 @@ func (m *Model) answer(yes bool) {
 	if yes {
 		word = "approved"
 	}
-	m.pushLine("· " + a.Question + " " + word)
+	m.push(view.RoleNote, "· "+a.Question+" "+word)
 	m.Modal = nil
 	if len(m.approvals) > 0 {
 		next := m.approvals[0]

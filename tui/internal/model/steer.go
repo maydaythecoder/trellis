@@ -41,15 +41,17 @@ func (m *Model) newRun() {
 // nothing the person typed is lost.
 func (m *Model) steer(text string) {
 	if text[0] == '/' {
-		m.pushLine("· a run is already in flight; wait for it to finish")
+		m.push(view.RoleNote, "· a run is already in flight; wait for it to finish")
 		return
 	}
 	if len(m.steers) >= SteersCap {
-		m.pushLine(fmt.Sprintf("· not sent: this run has %d steers already; the line stays on the task line", len(m.steers)))
+		m.push(view.RoleNote, fmt.Sprintf("· not sent: this run has %d steers already; the line stays on the task line", len(m.steers)))
 		return
 	}
 	m.Input = ""
-	m.pushLine("· queued: " + view.Plain(text))
+	// The person's own words, so the row is theirs; whether it reached the
+	// model is said by the notes below.
+	m.push(view.RoleYou, "· queued: "+view.Plain(text))
 	id := m.send("steer", map[string]any{"message": text})
 	m.steers = append(m.steers, steer{text: text, id: id})
 }
@@ -62,7 +64,7 @@ func (m *Model) delivered(nth, turn int) {
 	s := &m.steers[nth]
 	s.turn = turn
 	s.told = true
-	m.pushLine(fmt.Sprintf("· delivered at turn %d: %s", turn, view.Plain(s.text)))
+	m.push(view.RoleNote, fmt.Sprintf("· delivered at turn %d: %s", turn, view.Plain(s.text)))
 }
 
 // notDelivered says, once, that the nth steer never reached the model.
@@ -71,7 +73,7 @@ func (m *Model) notDelivered(nth int) {
 		return
 	}
 	m.steers[nth].told = true
-	m.pushLine("· not delivered: " + view.Plain(m.steers[nth].text))
+	m.push(view.RoleNote, "· not delivered: "+view.Plain(m.steers[nth].text))
 }
 
 // steerDeliveredEvent is the loop's "steer delivered" event. It carries no

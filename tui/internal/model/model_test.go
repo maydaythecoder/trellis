@@ -86,8 +86,8 @@ func TestModelSentTaskBecomesOnePrompt(t *testing.T) {
 	if out[0].Cmd["id"] == nil {
 		t.Fatal("the prompt has no id to match its run_end by")
 	}
-	if !m.Running || m.Input != "" || m.Transcript[len(m.Transcript)-1] != "> fix the bug" {
-		t.Fatalf("running %v, input %q, transcript %q", m.Running, m.Input, m.Transcript)
+	if !m.Running || m.Input != "" || texts(m)[len(m.Transcript)-1] != "> fix the bug" {
+		t.Fatalf("running %v, input %q, transcript %q", m.Running, m.Input, texts(m))
 	}
 	// A second Enter while it runs starts no second run (it is a steer,
 	// steer_test.go).
@@ -137,8 +137,8 @@ func TestModelTurnsFillTheTranscript(t *testing.T) {
 		"· run_check types  ✗ check FAILED",
 		"· edit a.py",
 	}
-	if strings.Join(m.Transcript, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("transcript:\n%s\nwant:\n%s", strings.Join(m.Transcript, "\n"), strings.Join(want, "\n"))
+	if strings.Join(texts(m), "\n") != strings.Join(want, "\n") {
+		t.Fatalf("transcript:\n%s\nwant:\n%s", strings.Join(texts(m), "\n"), strings.Join(want, "\n"))
 	}
 }
 
@@ -152,8 +152,8 @@ func TestModelTranscriptCapHolds(t *testing.T) {
 	if len(m.Transcript) != TranscriptCap {
 		t.Fatalf("%d lines kept, want %d", len(m.Transcript), TranscriptCap)
 	}
-	if m.Transcript[0] != "· step 501" || m.Transcript[TranscriptCap-1] != fmt.Sprintf("· step %d", TranscriptCap+500) {
-		t.Fatalf("kept %q .. %q", m.Transcript[0], m.Transcript[TranscriptCap-1])
+	if texts(m)[0] != "· step 501" || texts(m)[TranscriptCap-1] != fmt.Sprintf("· step %d", TranscriptCap+500) {
+		t.Fatalf("kept %q .. %q", texts(m)[0], texts(m)[TranscriptCap-1])
 	}
 }
 
@@ -173,7 +173,7 @@ func TestModelRunEndSetsTheOutcome(t *testing.T) {
 	if !strings.Contains(m.View(), "last run: did not converge; worktree restored: true") {
 		t.Fatalf("view does not show the outcome:\n%s", m.View())
 	}
-	if last := m.Transcript[len(m.Transcript)-1]; last != "· run finished, exit 2" {
+	if last := texts(m)[len(m.Transcript)-1]; last != "· run finished, exit 2" {
 		t.Fatalf("last line %q: the exit code, not a verdict, is reported", last)
 	}
 	feed(m, turn(1, "unrelated", nil))
@@ -181,7 +181,7 @@ func TestModelRunEndSetsTheOutcome(t *testing.T) {
 		t.Fatal("the outcome was dropped before the next run")
 	}
 	submit(m, "next")
-	if last := m.Transcript[len(m.Transcript)-1]; last != "> next" {
+	if last := texts(m)[len(m.Transcript)-1]; last != "> next" {
 		t.Fatalf("the second task's echo is not a line of its own: %q", last)
 	}
 	if m.Outcome != "" {
@@ -218,7 +218,7 @@ func TestModelRunEndErrorMarksEveryLine(t *testing.T) {
 	m := fresh(t)
 	submit(m, "t")
 	feed(m, runEnd(map[string]any{"outcome": "error", "exit": 1, "error": "run failed\n\ncaused by: worktree dirty\n  a.py"}))
-	got := m.Transcript[1:]
+	got := texts(m)[1:]
 	want := []string{"! run failed", "! caused by: worktree dirty", "!   a.py"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("got %q, want %q", got, want)
@@ -226,8 +226,8 @@ func TestModelRunEndErrorMarksEveryLine(t *testing.T) {
 	m = fresh(t)
 	submit(m, "t")
 	feed(m, runEnd(map[string]any{"outcome": "error", "exit": 1, "error": "  \n"}))
-	if last := m.Transcript[len(m.Transcript)-1]; last != "! the run failed and reported no reason" {
-		t.Fatalf("an empty error was silence: %q", m.Transcript)
+	if last := texts(m)[len(m.Transcript)-1]; last != "! the run failed and reported no reason" {
+		t.Fatalf("an empty error was silence: %q", texts(m))
 	}
 }
 
@@ -299,7 +299,7 @@ func TestModelRefusedPromptHandsInputBack(t *testing.T) {
 	if m.Running {
 		t.Fatal("still running after a refused prompt")
 	}
-	if last := m.Transcript[len(m.Transcript)-1]; last != "! prompt: choose a model first: set_model" {
+	if last := texts(m)[len(m.Transcript)-1]; last != "! prompt: choose a model first: set_model" {
 		t.Fatalf("last line %q", last)
 	}
 }
@@ -311,13 +311,13 @@ func TestModelServedTextIsPlainAndBlankLinesAreDropped(t *testing.T) {
 	feed(m, "\x1b[2Jcleared\x07")
 	feed(m, "   ")
 	feed(m, turn(1, "edit \x1b]0;title\x07a.py", nil))
-	for _, l := range m.Transcript {
+	for _, l := range texts(m) {
 		if strings.ContainsAny(l, "\x1b\x07") {
 			t.Fatalf("a control character reached the transcript: %q", l)
 		}
 	}
-	if len(m.Transcript) != 2 || m.Transcript[0] != "[2Jcleared" {
-		t.Fatalf("transcript %q", m.Transcript)
+	if len(m.Transcript) != 2 || texts(m)[0] != "[2Jcleared" {
+		t.Fatalf("transcript %q", texts(m))
 	}
 }
 
@@ -327,7 +327,7 @@ func TestModelChildExitMidRunIsReported(t *testing.T) {
 	m := fresh(t)
 	submit(m, "t")
 	m.Update(ExitedMsg{Err: errors.New("exit status 101")})
-	all := strings.Join(m.Transcript, "\n")
+	all := strings.Join(texts(m), "\n")
 	if !m.Done || m.Running || !strings.Contains(all, "exited unexpectedly: exit status 101") ||
 		!strings.Contains(all, "git status") {
 		t.Fatalf("done %v running %v transcript:\n%s", m.Done, m.Running, all)
@@ -373,8 +373,8 @@ func TestModelFailedSetModelIsShown(t *testing.T) {
 	id := m.TakeOutbox()[1].Cmd["id"]
 	feed(m, jsonLine(map[string]any{"type": "response", "command": "set_model", "id": id, "success": false,
 		"error": "unknown model spec `nonsense`\nexpected <backend>:<model>"}))
-	if len(m.Transcript) != 1 || m.Transcript[0] != "! set_model: unknown model spec `nonsense`" {
-		t.Fatalf("transcript %q", m.Transcript)
+	if len(m.Transcript) != 1 || texts(m)[0] != "! set_model: unknown model spec `nonsense`" {
+		t.Fatalf("transcript %q", texts(m))
 	}
 }
 

@@ -92,11 +92,11 @@ func wideState() State {
 	s := populated()
 	s.Model = "通义千问-编码器-三十二B-指令版-量化四位-中文" // a long spec, cut to the room left
 	s.Tier = "2, 工具已探测"
-	s.Transcript = []string{
-		"> 修复 应用/计算.py 中的类型错误，然后运行所有检查",
-		"· read_file 应用/计算.py 🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂",
-		strings.Repeat("中", 90),
-		"combining marks take no cell: " + strings.Repeat("e\u0301", 40),
+	s.Transcript = []Row{
+		{Text: "> 修复 应用/计算.py 中的类型错误，然后运行所有检查", Role: RoleYou},
+		{Text: "· read_file 应用/计算.py 🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂", Role: RoleTool, Turn: 1},
+		{Text: strings.Repeat("中", 90)},
+		{Text: "combining marks take no cell: " + strings.Repeat("e\u0301", 40)},
 	}
 	s.Outcome = "failed: 无法解析模块 应用/计算.py，类型检查没有通过"
 	s.Input = "修复 @应用/计"
