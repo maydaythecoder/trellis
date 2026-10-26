@@ -50,11 +50,14 @@ What the engine has to build on, on `dev` at e51f277:
 - The wall-clock spend already leaves out time spent waiting on a person in
   approve mode (`waited_on_human` in `run_seeded`).
 - `Budget::shares(n)` deals iterations and tokens across `n` partitions so
-  the shares sum to the ceiling, the remainder to the first; wall-clock is
-  copied whole, since partitions in a stage run at once (ADR 0008).
-- A steer enters an unbounded channel as soon as it is sent
-  (`SteeringPort` in `crates/trellis-cli/src/rpc.rs`); a follow-up waits in
-  the `Chain` until the run it was sent during has ended.
+  the shares sum to the ceiling, the remainder one apiece to the first in
+  plan order; wall-clock is copied whole, since partitions in a stage run at
+  once (ADR 0008).
+- A steer or a follow-up enters an unbounded channel as soon as it is sent,
+  and the server records it with the id it was sent with (`SteeringPort` in
+  `crates/trellis-cli/src/rpc.rs`). The loop's drain delivers a steer and
+  sets a follow-up aside; when the run ends, the port hands back what was
+  not delivered, and the `Chain` runs each follow-up in the order received.
 - `list_paths` answers from `git ls-files --cached --others
   --exclude-standard` (`at_file_paths`), so an ignored `.env` or build
   directory is never offered, and refuses an absolute prefix, a `..`
@@ -138,7 +141,9 @@ What the engine has to build on, on `dev` at e51f277:
   under it only while it is still waiting; whichever comes first wins and
   the other is told so. The drain skips a withdrawn steer, so the model
   never receives it.
-- A withdrawn follow-up is taken out of the chain before its run starts.
+- A withdrawn follow-up is taken out of the port's record, or out of the
+  `Chain`'s queue once the run it was sent during has ended, so its own run
+  never starts.
 - The list of what is not yet delivered in `get_state` (#801) loses the
   message, and `abort`'s `undelivered` does not name it.
 - ADR 0025 §5 is amended: one message a person names can be taken back;

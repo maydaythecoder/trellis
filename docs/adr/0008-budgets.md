@@ -70,8 +70,9 @@ during a run, with `trellis rpc`'s `set_budget`; nothing lowers one, and
 neither the engine nor the model moves one. The ceilings stay hard: the
 loop enforces whichever is current. A raise is to the run's whole ceiling
 and is dealt through `Budget::shares` like the first, so it divides across
-partitions and never multiplies, and the person's raise is recorded in the
-trail (ADR 0058 §6).
+partitions and never multiplies, and the person's raise is to be recorded in
+the trail (ADR 0058 §6). Accepted, not built: #807 builds `set_budget`, and
+the trail's record of a raise waits on #868.
 
 ## Amendment 2026-10-02: the calibration rule, and why the defaults did not move
 
