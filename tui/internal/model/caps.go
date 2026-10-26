@@ -19,6 +19,9 @@ import (
 //   - the answers still awaited are the newest UnansweredCap; an answer to
 //     a forgotten command is ignored when it comes;
 //   - a transcript line longer than LineCap bytes is cut, and says how much.
+//   - the composer's queue lists at most QueueCap items: the oldest settled
+//     one makes room for a new one, and with none settled the new one is
+//     sent but not listed (#852).
 //
 // TranscriptCap and StderrCap (model.go) and OfferedCap (complete.go) are
 // the limits that came before these.
@@ -28,6 +31,7 @@ const (
 	SteersCap     = 100
 	UnansweredCap = 256
 	LineCap       = 4096
+	QueueCap      = 100
 )
 
 // capLine is l cut to at most LineCap bytes, at a character's start, with

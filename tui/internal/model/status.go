@@ -84,6 +84,7 @@ func (m *Model) stateAnswered(data any) {
 	if s, isStr := d["root"].(string); isStr {
 		m.strip.Root = view.Plain(s)
 	}
+	m.pendingListed(d)
 }
 
 // runtimeText is what a runtime said of itself, for Where it is: the

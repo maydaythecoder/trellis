@@ -77,6 +77,11 @@ type Model struct {
 	steers []steer
 	// deliveries counts this run's steer delivered events.
 	deliveries int
+	// verb is what ⏎ does with a line while a run is in flight, queue the
+	// composer's list, and held the line a Stop and send holds (compose.go).
+	verb  view.Verb
+	queue []queued
+	held  *held
 
 	// Quitting is set once quit has been sent: the child is finishing (a
 	// run in flight rolls back) and the program ends when it exits.
@@ -252,6 +257,12 @@ func (m *Model) key(k tea.KeyMsg) {
 		m.modalKey(k)
 		return
 	}
+	// A line with text takes Tab for its verb while a run is in flight
+	// (compose.go); an empty one keeps it for the panes.
+	if (k.Type == tea.KeyTab || k.Type == tea.KeyShiftTab) && m.composeTabs() {
+		m.verb = nextVerb(m.verb, k.Type == tea.KeyShiftTab)
+		return
+	}
 	// ESC, Tab and ⏎ on an empty line move between levels (nav.go).
 	if m.navKey(k) {
 		return
@@ -330,6 +341,8 @@ func (m *Model) ctrlC() {
 	}
 	m.closeModal()
 	m.approvals = nil
+	// Nothing runs after leaving.
+	m.dropHeld("trellis is quitting")
 	if m.Running {
 		m.send("abort", nil)
 		m.strip.Stopping = true
@@ -354,14 +367,20 @@ func pasted(r []rune) string {
 }
 
 // submit hands the typed line to trellis: a task when no run is in
-// flight, one at a time, and a steer for the run when one is (steer.go).
+// flight, one at a time, and the line under the composer's verb when one
+// is (compose.go). While a Stop and send's line waits on the stop, a new
+// task would race it, so the line stays where it is.
 func (m *Model) submit() {
 	task := strings.TrimSpace(m.Input)
 	if task == "" || m.Quitting {
 		return
 	}
 	if m.Running {
-		m.steer(task)
+		m.compose(task)
+		return
+	}
+	if m.held != nil {
+		m.push(view.RoleNote, "· still stopping the last run; the held line runs once trellis answers the stop, and this one stays on the task line")
 		return
 	}
 	if m.classifying {
@@ -399,6 +418,7 @@ func (m *Model) frame(f frames.Frame) {
 			m.newRun()
 			m.clearPanes()
 		}
+		m.composeRunStarted(f.RunStartFields.ID)
 		m.runStart = m.now()
 		m.Running = true
 		m.Outcome = ""
@@ -474,6 +494,13 @@ func (m *Model) turn(t *frames.TurnFields) {
 func (m *Model) runEnd(e *frames.RunEndFields) {
 	m.Running = false
 	m.promptID = ""
+	m.verb = view.VerbSteer
+	// A Stop and send's line goes once its abort is answered too, which
+	// rpc writes after this; the run's own lines are written first.
+	if m.held != nil {
+		m.held.ended = true
+		defer m.sendHeld()
+	}
 	m.refreshState()
 	m.steersNotDelivered()
 	// A question its run no longer waits on cannot be answered.
@@ -610,8 +637,14 @@ func (m *Model) response(r *frames.ResponseFields) {
 		return
 	case "abort":
 		if ok {
-			m.abortAnswered(r.Data)
+			m.abortAnswered(r.ID, r.Data)
 			return
+		}
+		// A refused abort stops nothing, and a Stop and send's line is
+		// not sent after it; the reason is said below.
+		if m.held != nil && r.ID != nil && *r.ID == m.held.abortID {
+			m.strip.Stopping = false
+			m.dropHeld("the stop was refused")
 		}
 	}
 	if ok {
@@ -624,6 +657,7 @@ func (m *Model) response(r *frames.ResponseFields) {
 	if cmd == "prompt" && r.ID != nil && *r.ID == m.promptID {
 		m.Running = false
 		m.promptID = ""
+		m.settle(kindPrompt, *r.ID, view.FateNot, 0, view.FirstLine(why))
 	}
 	if cmd == "" {
 		cmd = "a command"
@@ -641,6 +675,7 @@ func (m *Model) exited(err error) {
 			m.push(view.RoleRefusal, "! whether the run in flight rolled back is not known here; check `git status` before rerunning")
 		}
 	}
+	m.dropHeld("trellis rpc exited before the run ended")
 	m.Running = false
 	m.closeModal()
 	m.approvals = nil

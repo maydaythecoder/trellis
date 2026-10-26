@@ -14,13 +14,14 @@ func steerDelivered(afterStep int) string {
 func last(m *Model) string { return m.Transcript[len(m.Transcript)-1].Text }
 
 // A line typed mid-run is queued as `steer {message}` for that run, shown
-// as queued, and never sent as a second prompt.
+// as queued, and never sent as a second prompt. The get_state after it is
+// the composer's queue asking what is pending (#852).
 func TestSteerMidRunLineIsASteerNotATask(t *testing.T) {
 	m := running(t)
 	typeLine(m, "use the helper")
 	enter(m)
 	out := m.TakeOutbox()
-	if len(out) != 1 || out[0].Cmd["type"] != "steer" || out[0].Cmd["message"] != "use the helper" {
+	if len(out) != 2 || out[0].Cmd["type"] != "steer" || out[0].Cmd["message"] != "use the helper" || out[1].Cmd["type"] != "get_state" {
 		t.Fatalf("sent %+v", out)
 	}
 	if last(m) != "· queued: use the helper" || m.Input != "" {

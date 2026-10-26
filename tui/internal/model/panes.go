@@ -192,6 +192,7 @@ func (m *Model) viewState() view.State {
 		Nav:        m.nav,
 		Asked:      m.waiting(),
 		Reviewing:  m.Modal != nil && m.Modal.Reviewing,
+		Compose:    m.composeState(),
 	}
 }
 
