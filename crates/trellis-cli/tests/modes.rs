@@ -1807,6 +1807,9 @@ fn rpc_vault_search_returns_what_vault_search_prints() {
         &f,
         &serde_json::json!({"type": "vault_search", "query": "retry"}),
     );
+    // The desktop's vault view reads these by name (ADR 0048 §6).
+    let gaps = answer_gaps(&contract(), "vault_search", &["always"], &[&data]);
+    assert!(gaps.is_empty(), "{gaps:?}\n{data}");
 
     // Last: what `trellis vault search retry` prints, hit by hit.
     let o = run(&f, &["vault", "search", "retry"]);
@@ -1959,6 +1962,19 @@ fn rpc_vault_graph_returns_what_vault_graph_prints() {
         &f,
         &serde_json::json!({"type": "vault_graph", "note": "child"}),
     );
+    // The desktop's vault view reads these by name (ADR 0048 §6). The child
+    // has links both ways and no children; the root has the child.
+    let root = answer(
+        &f,
+        serde_json::json!({"id": "r", "type": "vault_graph", "note": "root"}),
+    );
+    let gaps = answer_gaps(
+        &contract(),
+        "vault_graph",
+        &["always"],
+        &[&data, &root["data"]],
+    );
+    assert!(gaps.is_empty(), "{gaps:?}\n{data}\n{root}");
 
     // Last: what `trellis vault graph child` prints.
     let o = run(&f, &["vault", "graph", "child"]);
@@ -2091,6 +2107,15 @@ fn rpc_vault_check_returns_what_vault_check_prints() {
         1,
         "{data}"
     );
+    // The desktop's vault view reads these by name (ADR 0048 §6).
+    let c = contract();
+    let gaps = answer_gaps(
+        &c,
+        "vault_check",
+        &["always", "gate_refuses_only"],
+        &[&data],
+    );
+    assert!(gaps.is_empty(), "{gaps:?}\n{data}");
     assert_eq!(data["issues"].as_array().unwrap().len(), 2, "{data}");
 
     // A vault the gate accepts: its stats, as counts, and no violation.
@@ -2110,6 +2135,13 @@ fn rpc_vault_check_returns_what_vault_check_prints() {
     );
     assert_eq!(ok["data"]["gate"]["accepts"], true, "{ok}");
     assert_eq!(ok["data"]["gate"]["stats"]["notes"], 3, "{ok}");
+    let gaps = answer_gaps(
+        &c,
+        "vault_check",
+        &["always", "gate_accepts_only"],
+        &[&ok["data"]],
+    );
+    assert!(gaps.is_empty(), "{gaps:?}\n{ok}");
     assert_eq!(ok["data"]["issues"], serde_json::json!([]), "{ok}");
 
     // No vault configured: the CLI's message.
@@ -2595,6 +2627,27 @@ fn carries(record: &Value, path: &str) -> bool {
     }
 }
 
+/// Each path the contract's `lists` name for `command`'s answer data
+/// (`rpc.responses.<command>`) that `answers` do not carry, as
+/// `<command>.<path>`. A path through `[]` needs one answer whose array has
+/// entries, since an empty list is a correct answer that checks nothing;
+/// every other path needs every answer.
+fn answer_gaps(c: &Value, command: &str, lists: &[&str], answers: &[&Value]) -> Vec<String> {
+    let entry = &c["rpc"]["responses"][command];
+    lists
+        .iter()
+        .flat_map(|l| names(&entry[*l]))
+        .filter(|p| {
+            if p.contains("[]") {
+                !answers.iter().any(|a| carries(a, p))
+            } else {
+                !answers.iter().all(|a| carries(a, p))
+            }
+        })
+        .map(|p| format!("{command}.{p}"))
+        .collect()
+}
+
 /// Commits a `.trellis/config.toml` whose checks pass on Windows and Linux,
 /// as `cli.rs`'s fixtures do, so a run that calls `run_checks` converges
 /// without depending on the machine's toolchain.
@@ -2616,11 +2669,19 @@ fn rpc_stream_carries_every_field_the_desktop_reads() {
     // process, so its tests would pass and the desktop would go blank with
     // nothing failing (ADR 0048 §6). The model is the provider stub, not a
     // script: the scripted driver sends no prompt, so its turns never carry
-    // `prompt_bytes`.
+    // `prompt_bytes`. A byte budget smaller than any request makes every
+    // request after the second elide an older turn, so the run sends the
+    // `compacted` event too; the replies are canned, so the run is the same.
     let c = contract();
     let rpc_c = &c["rpc"];
+    let later = &rpc_c["not_every_client"];
     let f = fixture("rpc-contract");
     commit_passing_checks(&f);
+    let config = f.root.join(".trellis/config.toml");
+    let mut cfg = std::fs::read_to_string(&config).unwrap();
+    cfg.push_str("[model]\ncontext_bytes = 1000\n");
+    std::fs::write(&config, cfg).unwrap();
+    git(&f.root, &["commit", "-qam", "a byte budget"]);
     let (base, server) = provider_stub(vec![
         openai_call("c1", "blast_radius", serde_json::json!({"symbol": "f"})),
         openai_call(
@@ -2671,25 +2732,38 @@ fn rpc_stream_carries_every_field_the_desktop_reads() {
         gaps.push("no turn event".into());
     }
     let verdicts = names(&turn["verdict_values"]);
+    let kinds = names(&turn["check_kind_values"]);
     for t in &turns {
-        gaps.extend(missing(
-            t,
-            &turn["always"],
-            &format!("turn {} ({})", t["turn"], t["call"]),
-        ));
+        let at = format!("turn {} ({})", t["turn"], t["call"]);
+        gaps.extend(missing(t, &turn["always"], &at));
         // No turn of this run is the governance audit: each called the
         // model.
-        gaps.extend(missing(
-            t,
-            &turn["model_call_only"],
-            &format!("turn {} ({})", t["turn"], t["call"]),
-        ));
+        gaps.extend(missing(t, &turn["model_call_only"], &at));
+        gaps.extend(missing(t, &later["events"]["turn"]["model_call_only"], &at));
         if let Some(v) = t.get("verdict")
             && !v.as_str().is_some_and(|v| verdicts.contains(&v))
         {
             gaps.push(format!(
                 "turn {} verdict {v}, not one of {verdicts:?}",
                 t["turn"]
+            ));
+        }
+        if !t["check_kind"].as_str().is_some_and(|k| kinds.contains(&k)) {
+            gaps.push(format!(
+                "turn {} check_kind {}, not one of {kinds:?}",
+                t["turn"], t["check_kind"]
+            ));
+        }
+    }
+    // Every event line's level, which the TUI reads to show a warning.
+    let levels = names(&later["event_line"]["level_values"]);
+    for r in records.iter().filter(|r| r.get("fields").is_some()) {
+        let at = format!("the {} event", r["fields"]["message"]);
+        gaps.extend(missing(r, &later["event_line"]["always"], &at));
+        if !r["level"].as_str().is_some_and(|l| levels.contains(&l)) {
+            gaps.push(format!(
+                "{at}'s level {}, not one of {levels:?}",
+                r["level"]
             ));
         }
     }
@@ -2700,6 +2774,11 @@ fn rpc_stream_carries_every_field_the_desktop_reads() {
     }) {
         Some(t) => {
             gaps.extend(missing(t, &turn["blast_radius_only"], "blast_radius turn"));
+            gaps.extend(missing(
+                t,
+                &later["events"]["turn"]["blast_radius_only"],
+                "blast_radius turn",
+            ));
             // A turn the provider's reply made: the driver sent a prompt.
             gaps.extend(missing(t, &turn["prompt_driver_only"], "blast_radius turn"));
             if t["check_kind"] != "" {
@@ -2715,6 +2794,17 @@ fn rpc_stream_carries_every_field_the_desktop_reads() {
         Some(b) => gaps.extend(missing(b, &events["run budget"]["always"], "run budget")),
         None => gaps.push("no run budget event".into()),
     }
+    let compacted = of("compacted");
+    if compacted.is_empty() {
+        gaps.push("no compacted event".into());
+    }
+    for e in compacted {
+        gaps.extend(missing(
+            e,
+            &later["events"]["compacted"]["always"],
+            "compacted",
+        ));
+    }
     for ty in ["run_start", "run_end", "response"] {
         let found: Vec<&Value> = records.iter().filter(|r| r["type"] == ty).collect();
         if found.is_empty() {
@@ -2722,6 +2812,15 @@ fn rpc_stream_carries_every_field_the_desktop_reads() {
         }
         for r in found {
             gaps.extend(missing(r, &rpc_c["framing"][ty]["always"], ty));
+        }
+    }
+    let outcomes = names(&rpc_c["framing"]["run_end"]["outcome_values"]);
+    for r in records.iter().filter(|r| r["type"] == "run_end") {
+        if !r["outcome"].as_str().is_some_and(|o| outcomes.contains(&o)) {
+            gaps.push(format!(
+                "run_end outcome {}, not one of {outcomes:?}",
+                r["outcome"]
+            ));
         }
     }
     assert!(
@@ -2879,6 +2978,11 @@ fn rpc_every_turn_through_the_governance_audit_keeps_the_contract() {
         .flat_map(|t| {
             let mut g = missing(t, &turn["model_call_only"], &label(t));
             g.extend(missing(t, &turn["prompt_driver_only"], &label(t)));
+            g.extend(missing(
+                t,
+                &c["rpc"]["not_every_client"]["events"]["turn"]["model_call_only"],
+                &label(t),
+            ));
             g
         })
         .collect();
@@ -3030,8 +3134,10 @@ fn log_json_carries_every_trail_field_the_desktop_reads() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let lines = jsonl(&o);
     assert_eq!(lines.len(), 1, "{lines:?}");
+    let later = &c["log_json"]["not_every_client"];
     let gaps: Vec<&str> = names(&c["log_json"]["always"])
         .into_iter()
+        .chain(names(&later["always"]))
         .filter(|p| !carries(&lines[0], p))
         .collect();
     assert!(
@@ -3039,6 +3145,244 @@ fn log_json_carries_every_trail_field_the_desktop_reads() {
         "the log --json line lacks what tests/client_contract.json lists: {gaps:?}\n{}",
         lines[0]
     );
+    // Optional only for trails written before #622: this one has it.
+    let optional = later["optional"].as_object().unwrap();
+    assert!(optional.contains_key("trail.ended_at"));
+    assert!(carries(&lines[0], "trail.ended_at"), "{}", lines[0]);
+    // A scripted run carries no prompt size, so its context is null, never a
+    // measured zero; the contract says when.
+    assert!(later["null_when"]["trail.factual.context"].is_string());
+    assert!(
+        lines[0]["trail"]["factual"]["context"].is_null(),
+        "{}",
+        lines[0]
+    );
+}
+
+#[test]
+fn rpc_steer_abort_compact_answers_carry_what_the_contract_lists() {
+    // The risk (ADR 0048 §6): the clients read these answers by name (the
+    // TUI a steer's after_step and abort's undelivered ids; the desktop
+    // abort's undelivered text, its starters from get_commands, its model
+    // and session-token panes), and a field renamed in rpc.rs passes every
+    // other test while a pane goes blank. One session, as a client drives
+    // it: a run held on its question while a steer, a follow_up and a
+    // compact arrive; the follow_up's own run held the same way and aborted
+    // with another follow_up waiting; then the read-only answers and quit.
+    let c = contract();
+    let later = &c["rpc"]["not_every_client"];
+    let f = fixture("rpc-answers-contract");
+    // Large enough that folding its read shrinks the request after it.
+    std::fs::write(
+        f.root.join("big.py"),
+        format!("X = 1\n{}", "# pad\n".repeat(800)),
+    )
+    .unwrap();
+    // A template, so get_commands has a starter to list.
+    std::fs::create_dir_all(f.root.join(".trellis/prompts")).unwrap();
+    std::fs::write(
+        f.root.join(".trellis/prompts/review.md"),
+        "---\ndescription: Review one file\n---\nReview it.\n",
+    )
+    .unwrap();
+    git(&f.root, &["add", "-A"]);
+    git(&f.root, &["commit", "-qm", "a big file and a template"]);
+    let edit = || {
+        openai_call(
+            "e",
+            "edit",
+            serde_json::json!({"path": "a.py", "old": "return 1", "new": "return 2"}),
+        )
+    };
+    let (base, server) = provider_stub(vec![
+        openai_call("c1", "read_file", serde_json::json!({"path": "big.py"})),
+        edit(),
+        openai_call("c3", "done", serde_json::json!({"summary": "changed it"})),
+        // The follow_up's run, held on its edit until the abort.
+        edit(),
+    ]);
+    // A variable nobody sets: a loopback endpoint is then used with no key.
+    let key_env = "TRELLIS_TEST_RPC_ANSWERS_KEY";
+    std::fs::write(
+        f.user.join("config.toml"),
+        format!(
+            "[control]\nmode = \"approve\"\n\n[[providers]]\nname = \"stub\"\n\
+             protocol = \"openai\"\nbase_url = \"{base}\"\nkey_env = \"{key_env}\"\n"
+        ),
+    )
+    .unwrap();
+    let mut cmd = trellis(&f);
+    cmd.env_remove(key_env);
+    let mut rpc = Rpc::start(cmd);
+    rpc.choose("provider:stub#m");
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                           "model": "provider:stub#m"}),
+    );
+    // Held on the edit's question, one turn behind it. Read in order, so
+    // each is in before the yes that lets the run make its next request.
+    let q = rpc.next(|v| v["type"] == "approval_request");
+    rpc.send(serde_json::json!({"id": "s", "type": "steer", "message": "keep it small"}));
+    rpc.send(serde_json::json!({"id": "u", "type": "follow_up", "message": "now say why"}));
+    rpc.send(serde_json::json!({"id": "c", "type": "compact"}));
+    rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": true}));
+    rpc.next(|v| v["type"] == "run_end" && v["id"] == "p");
+    // The follow_up's run, held on its own question, with another
+    // follow_up waiting behind it for abort to hand back.
+    let q2 = rpc.next(|v| v["type"] == "approval_request");
+    rpc.send(serde_json::json!({"id": "u2", "type": "follow_up", "message": "and then stop"}));
+    rpc.send(serde_json::json!({"id": "x", "type": "abort"}));
+    rpc.next(|v| v["type"] == "response" && v["id"] == "x");
+    for (id, ty) in [
+        ("t", "get_last_assistant_text"),
+        ("st", "get_session_stats"),
+        ("m", "get_available_models"),
+        ("g", "get_commands"),
+        ("qq", "quit"),
+    ] {
+        rpc.send(serde_json::json!({"id": id, "type": ty}));
+    }
+    let records = rpc.finish();
+    assert_eq!(server.join().unwrap().len(), 4, "{records:?}");
+    let by = |id: &str| -> &Value {
+        records
+            .iter()
+            .find(|r| r["type"] == "response" && r["id"] == id)
+            .unwrap_or_else(|| panic!("no answer to {id}: {records:?}"))
+    };
+
+    let mut gaps: Vec<String> = Vec::new();
+    let no_data = c["rpc"]["framing"]["response"]["no_data"]
+        .as_object()
+        .expect("framing.response.no_data");
+    let approve_id = q["id"].as_str().expect("an approval id");
+    for (id, command) in [
+        ("s", "steer"),
+        ("c", "compact"),
+        (approve_id, "approve"),
+        ("x", "abort"),
+        ("t", "get_last_assistant_text"),
+        ("st", "get_session_stats"),
+        ("m", "get_available_models"),
+        ("g", "get_commands"),
+    ] {
+        let r = by(id);
+        assert_eq!(r["success"], true, "{r}");
+        assert!(!no_data.contains_key(command), "no_data names {command}");
+        gaps.extend(answer_gaps(&c, command, &["always"], &[&r["data"]]));
+    }
+    for (id, command) in [
+        ("p", "prompt"),
+        ("u", "follow_up"),
+        ("u2", "follow_up"),
+        ("qq", "quit"),
+    ] {
+        let r = by(id);
+        assert_eq!(r["success"], true, "{r}");
+        assert!(
+            no_data.contains_key(command),
+            "no_data does not name {command}"
+        );
+        if r.get("data").is_some() {
+            gaps.push(format!("{command} ({id}) answered with data: {r}"));
+        }
+    }
+    let kinds = names(&c["rpc"]["responses"]["abort"]["type_values"]);
+    for u in by("x")["data"]["undelivered"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if !u["type"].as_str().is_some_and(|t| kinds.contains(&t)) {
+            gaps.push(format!(
+                "abort's undelivered type {}, not one of {kinds:?}",
+                u["type"]
+            ));
+        }
+    }
+    // Both questions, with the id of the command whose run asked.
+    let asked: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["type"] == "approval_request")
+        .collect();
+    for a in &asked {
+        gaps.extend(missing(
+            a,
+            &c["rpc"]["framing"]["approval_request"]["always"],
+            "approval_request",
+        ));
+        gaps.extend(missing(
+            a,
+            &later["framing"]["approval_request"]["always"],
+            "approval_request",
+        ));
+    }
+    match records
+        .iter()
+        .find(|r| r["fields"]["message"] == "compacted on request")
+    {
+        Some(e) => gaps.extend(missing(
+            &e["fields"],
+            &later["events"]["compacted on request"]["always"],
+            "compacted on request",
+        )),
+        None => gaps.push("no compacted on request event".into()),
+    }
+    let outcomes = names(&c["rpc"]["framing"]["run_end"]["outcome_values"]);
+    for r in records.iter().filter(|r| r["type"] == "run_end") {
+        if !r["outcome"].as_str().is_some_and(|o| outcomes.contains(&o)) {
+            gaps.push(format!(
+                "run_end outcome {}, not one of {outcomes:?}",
+                r["outcome"]
+            ));
+        }
+    }
+    assert!(
+        gaps.is_empty(),
+        "the answers lack what tests/client_contract.json lists: {gaps:?}\n{records:?}"
+    );
+
+    // The session took the path it is built for, so the answers above are
+    // the ones meant: the steer reached the request after the edit, the
+    // compact folded the read, the follow_up ran and was aborted holding
+    // the second, and the first run's done summary is the last text.
+    assert_eq!(by("s")["data"]["after_step"], 2, "{records:?}");
+    assert_eq!(by("c")["data"]["turns_folded"], 1, "{records:?}");
+    assert_eq!(by(approve_id)["data"]["approved"], true);
+    assert_eq!(
+        by("x")["data"]["undelivered"],
+        serde_json::json!([{"id": "u2", "type": "follow_up", "message": "and then stop"}])
+    );
+    assert_eq!(
+        asked
+            .iter()
+            .map(|a| a["request_id"].clone())
+            .collect::<Vec<_>>(),
+        vec![Value::from("p"), Value::from("u")]
+    );
+    assert_eq!(q2["request_id"], "u");
+    assert_eq!(by("t")["data"]["text"], "changed it");
+    let ends: Vec<&Value> = records.iter().filter(|r| r["type"] == "run_end").collect();
+    assert_eq!(ends.len(), 2, "{records:?}");
+    assert_eq!(ends[1]["id"], "u");
+    assert_eq!(ends[1]["outcome"], "interrupted");
+
+    // The first run's trail keeps the steer and the follow_up (ADR 0034),
+    // which the contract lists for log --json as optional.
+    assert!(
+        c["log_json"]["not_every_client"]["optional"]
+            .as_object()
+            .unwrap()
+            .contains_key("trail.factual.steering")
+    );
+    let o = run(&f, &["--json", "log"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let lines = jsonl(&o);
+    let first = lines
+        .iter()
+        .find(|l| l["trail"]["task"] == "change f")
+        .unwrap_or_else(|| panic!("the first run's trail: {lines:?}"));
+    assert!(carries(first, "trail.factual.steering"), "{first}");
 }
 
 /// An OpenAI-protocol reply carrying `text` as the assistant's message,
@@ -3375,7 +3719,7 @@ fn rpc_get_state_classifying_is_true_while_one_is_pending_and_false_after() {
     // `prompt` was being refused.
     let c = contract();
     assert!(
-        names(&c["rpc"]["commands"]["get_state"]["data"]["always"]).contains(&"classifying"),
+        names(&c["rpc"]["responses"]["get_state"]["always"]).contains(&"classifying"),
         "the contract does not list get_state's classifying"
     );
     let stub = holding_stub();
@@ -3577,7 +3921,7 @@ fn rpc_get_state_tier_is_null_before_any_run_and_then_the_run_s_own() {
     let before = state(&mut rpc, "s0");
     let gaps = missing(
         &before,
-        &c["rpc"]["commands"]["get_state"]["data"]["always"],
+        &c["rpc"]["responses"]["get_state"]["always"],
         "get_state",
     );
     assert!(
@@ -3585,7 +3929,7 @@ fn rpc_get_state_tier_is_null_before_any_run_and_then_the_run_s_own() {
         "get_state lacks what tests/client_contract.json lists: {gaps:?}\n{before}"
     );
     assert!(
-        names(&c["rpc"]["commands"]["get_state"]["data"]["always"]).contains(&"tier"),
+        names(&c["rpc"]["responses"]["get_state"]["always"]).contains(&"tier"),
         "the contract does not list get_state's tier"
     );
     assert_eq!(before["tier"], Value::Null, "{before}");
