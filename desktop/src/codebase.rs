@@ -78,30 +78,28 @@ struct Module {
 /// is nothing to name it by. A call without a string `module` names no
 /// edge.
 fn read_modules(data: &Value) -> Vec<Module> {
-    let Some(list) = data.get("modules").and_then(Value::as_array) else {
+    let Some(list) = data.as_object().and_then(|o| json::array(o, "modules")) else {
         return Vec::new();
     };
     list.iter()
         .filter_map(Value::as_object)
         .filter_map(|o| {
-            let name = o.get("module")?.as_str()?.to_string();
+            let name = json::string(o, "module")?;
             if name.is_empty() {
                 return None;
             }
-            let callees = o
-                .get("calls")
-                .and_then(Value::as_array)
+            let callees = json::array(o, "calls")
                 .map(|calls| {
                     calls
                         .iter()
-                        .filter_map(|c| c.get("module").and_then(Value::as_str))
+                        .filter_map(Value::as_object)
+                        .filter_map(|c| json::string(c, "module"))
                         .filter(|c| *c != name)
-                        .map(str::to_string)
                         .collect()
                 })
                 .unwrap_or_default();
             Some(Module {
-                path: o.get("path").and_then(Value::as_str).map(str::to_string),
+                path: json::string(o, "path"),
                 callees,
                 calls_not_drawn: json::u64(o, "calls_not_drawn"),
                 ambiguous: json::u64(o, "ambiguous"),
@@ -217,7 +215,9 @@ pub struct Codebase {
 /// The view for a `get_codebase` answer's `data`.
 pub fn layout(data: &Value) -> Codebase {
     let modules = read_modules(data);
-    let top = |k: &str| data.get(k).and_then(Value::as_u64);
+    // `event` hands over an object; anything else has no fields to read.
+    let fields = data.as_object();
+    let top = |k: &str| fields.and_then(|o| json::u64(o, k));
     let modules_not_drawn = top("modules_not_drawn");
     let edges_in_complete =
         modules_not_drawn == Some(0) && modules.iter().all(|m| m.calls_not_drawn == Some(0));
@@ -287,11 +287,8 @@ pub fn layout(data: &Value) -> Codebase {
         regions,
         region_edges,
         packages,
-        index_saved: data.get("index_saved").and_then(Value::as_bool),
-        index_not_saved: data
-            .get("index_not_saved")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        index_saved: fields.and_then(|o| json::bool(o, "index_saved")),
+        index_not_saved: fields.and_then(|o| json::string(o, "index_not_saved")),
     }
 }
 
@@ -746,6 +743,21 @@ mod tests {
         assert!(c.edges_in_complete);
         let c = layout(&answer(vec![module("p.q", &[], 0, 0)], 4));
         assert!(!c.edges_in_complete, "four modules past the limit");
+    }
+
+    #[test]
+    fn json_codebase_counts_past_two_to_the_fifty_three_are_not_reported() {
+        // The risk (#822): the summary's counts read past json.rs, so one
+        // the page's numbers cannot hold is drawn as a different figure.
+        let mut data = answer(vec![module("p.q", &[], 0, 0)], 0);
+        data["bound_call_sites"] = json!(json::MAX_SAFE + 1);
+        data["unresolved"] = json!(json::MAX_SAFE);
+        data["modules"][0]["ambiguous"] = json!(u64::MAX);
+        let c = layout(&data);
+        assert_eq!(c.bound_call_sites, None);
+        assert_eq!(c.unresolved, Some(json::MAX_SAFE));
+        assert_eq!(c.packages[0].modules[0].ambiguous, None);
+        assert_eq!(c.modules_indexed, Some(1));
     }
 
     #[test]

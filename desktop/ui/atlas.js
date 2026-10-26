@@ -28,6 +28,10 @@
 // shown for a repository: the history, HEAD, HEAD's symbols, then each
 // earlier snapshot the core planned, newest first.
 
+import { el } from "./dom.js";
+import { isCount, plural, str } from "./fmt.js";
+import { send, start } from "./rpc.js";
+
 const ID = "desktop-atlas-";
 // get_codebase lists this many modules: all of any repository the layout
 // draws (rpc's own default is 40).
@@ -87,14 +91,8 @@ const CHURN_BINS = ["0", "1", "2", "3–4", "5–8", "9+"];
 const WINDOWS = ["d30", "d90", "d365", "commits"];
 
 // --- small helpers ---------------------------------------------------------
-
-function isCount(v) {
-  return typeof v === "number" && Number.isFinite(v);
-}
-
-function str(v) {
-  return typeof v === "string" ? v : null;
-}
+// el, isCount, plural and str are the page's shared ones (dom.js, fmt.js);
+// these are the Atlas's own.
 
 function list(v) {
   return Array.isArray(v) ? v : [];
@@ -110,17 +108,6 @@ function day(s) {
 
 function short(s) {
   return typeof s === "string" ? s.slice(0, 7) : "";
-}
-
-function plural(k, one, many) {
-  return `${k} ${k === 1 ? one : many}`;
-}
-
-function el(doc, tag, text, cls) {
-  const e = doc.createElement(tag);
-  if (text !== undefined && text !== null) e.textContent = text;
-  if (cls) e.className = cls;
-  return e;
 }
 
 function byId(A, id) {
@@ -365,15 +352,13 @@ function status(A, text) {
   byId(A, "at-status").textContent = text;
 }
 
-async function send(A, line) {
-  try {
-    await A.tauri.core.invoke("rpc_send", { line });
-    return true;
-  } catch (err) {
+// Sends one line through the core (rpc.js's send). A refusal drops the
+// question in flight and says why in the Atlas's status line.
+function forward(A, line) {
+  return send(A.tauri, line, (why) => {
     A.inflight = null;
-    status(A, `Open a repository to see its atlas. ${err}`);
-    return false;
-  }
+    status(A, `Open a repository to see its atlas. ${why}`);
+  });
 }
 
 function nextId(A, kind) {
@@ -389,7 +374,7 @@ function pump(A) {
   const v = A.view;
   if (!A.askedHistory && (v === null || v.history === null)) {
     A.askedHistory = true;
-    send(A, { id: nextId(A, "history"), type: "get_history", ...HISTORY_ASKED });
+    forward(A, { id: nextId(A, "history"), type: "get_history", ...HISTORY_ASKED });
   }
   if (A.inflight !== null) return;
   const snaps = v ? list(v.snapshots) : [];
@@ -398,7 +383,7 @@ function pump(A) {
   if (!head || head.state === "planned") {
     A.inflight = { kind: "snapshot", label: "HEAD" };
     status(A, progressText(A));
-    send(A, { id: nextId(A, "codebase"), type: "get_codebase", edges: "all", limit: MODULES_ASKED });
+    forward(A, { id: nextId(A, "codebase"), type: "get_codebase", edges: "all", limit: MODULES_ASKED });
     return;
   }
   if (head.state === "loaded" && v.symbols === null) {
@@ -406,7 +391,7 @@ function pump(A) {
     A.askedSymbols = true;
     A.inflight = { kind: "symbols" };
     status(A, progressText(A));
-    send(A, { id: nextId(A, "symbols"), type: "get_symbols" });
+    forward(A, { id: nextId(A, "symbols"), type: "get_symbols" });
     return;
   }
   if (!v.progress || v.progress.planned !== true) return;
@@ -415,7 +400,7 @@ function pump(A) {
     if (s.state === "planned" && str(s.ref) !== null) {
       A.inflight = { kind: "snapshot", label: s.label };
       status(A, progressText(A));
-      send(A, { id: nextId(A, "codebase"), type: "get_codebase", edges: "all", limit: MODULES_ASKED, ref: s.ref });
+      forward(A, { id: nextId(A, "codebase"), type: "get_codebase", edges: "all", limit: MODULES_ASKED, ref: s.ref });
       return;
     }
   }
@@ -1455,7 +1440,7 @@ function select(A, s, o = {}) {
     const r = A.view && A.view.radius;
     if (o.fly && q !== null) A.radiusFly = q;
     if (q !== null && !(r && r.symbol === q && r.state !== "refused")) {
-      send(A, { id: nextId(A, "radius"), type: "get_radius", symbol: q });
+      forward(A, { id: nextId(A, "radius"), type: "get_radius", symbol: q });
     }
   }
   A.F = focus(A);
@@ -3001,11 +2986,6 @@ export async function wireAtlas(doc, win, tauri) {
   return A;
 }
 
-function start() {
-  wireAtlas(document, window, window.__TAURI__).catch((err) => console.error("trellis desktop atlas:", err));
-}
-
 if (typeof window !== "undefined" && window.__TAURI__) {
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
-  else start();
+  start("the Atlas", () => wireAtlas(document, window, window.__TAURI__));
 }

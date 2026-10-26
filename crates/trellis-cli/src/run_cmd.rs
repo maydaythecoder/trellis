@@ -1,3 +1,16 @@
+//! `trellis run`: one task, from a clean worktree to a trail.
+//!
+//! What starts here: `cmd_run_with`, which `trellis run` (`main.rs`) and
+//! `trellis rpc`'s `prompt` (`rpc.rs`) call; `cmd_run` is it with no extras.
+//! It frames the run's output and calls `run_body`, which refuses what it
+//! can before it touches the tree (the control mode, trust, whether the
+//! model is reachable), takes the snapshot (a clean worktree is required,
+//! CLAUDE.md rule 7), builds the one writer, the orchestrator, and races the
+//! agent loop (`trellis_loop::run_seeded`) against an interrupt. An outcome
+//! that is not convergence is rolled back, and `record_trail` writes the
+//! trail, in which `action_from` makes each turn's record. The whole path,
+//! from `main.rs` to the trail: docs/ENTRY_POINTS.md.
+
 use crate::doctor_cmd::{runtime_tier_label, schema_report};
 use crate::plain;
 use crate::{
