@@ -3209,6 +3209,100 @@ fn rpc_every_turn_through_the_governance_audit_keeps_the_contract() {
     assert_eq!(end["outcome"], "converged", "{end}");
 }
 
+#[test]
+fn rpc_turn_tool_target_wrote_match_the_trail_actions() {
+    // The risk (#800): a client works out what a turn touched by splitting
+    // `call` at a space and searching the observation's tail for
+    // `applied: true`, and the trail works it out from the whole turn, so
+    // the live view and the record of the same run disagree. The script has
+    // an edit whose anchor is missing (an edit that wrote nothing), one that
+    // applied, a created file and a check, and the governance rule adds the
+    // audit's turn, the one event the loop sends without calling the model.
+    // Compared in order, not by `turn`: the audit's event carries the last
+    // call's number and its trail action the next one. With no approvals,
+    // gates, partitions, services or compaction (the scripted driver has no
+    // byte budget), every trail action is a turn's.
+    let f = fixture("rpc-turn-action");
+    std::fs::create_dir_all(f.root.join(".trellis/governance")).unwrap();
+    std::fs::write(
+        f.root.join(".trellis/governance/no-vendor.toml"),
+        "name = \"Vendored code is not ours to edit\"\nrank = \"non-negotiable\"\n\
+         description = \"Changes go upstream.\"\ndeny-write = { paths = [\"vendor/\"] }\n",
+    )
+    .unwrap();
+    commit_passing_checks(&f);
+    let config = f.root.join(".trellis/config.toml");
+    let mut cfg = std::fs::read_to_string(&config).unwrap();
+    cfg.push_str("[tools]\nenable = [\"write_file\"]\n");
+    std::fs::write(&config, cfg).unwrap();
+    git(&f.root, &["commit", "-qam", "write_file"]);
+    let script = scratch("rpc-turn-action-steps").join("s.json");
+    std::fs::write(
+        &script,
+        r#"{"steps":[
+            {"tool":"read_file","path":"a.py"},
+            {"tool":"edit","path":"a.py","old":"return 9","new":"return 2"},
+            {"tool":"edit","path":"a.py","old":"return 1","new":"return 2"},
+            {"tool":"write_file","path":"b.py","content":"X = 1\n"},
+            {"tool":"run_checks","paths":["a.py"],"kinds":["typecheck","tests"]},
+            {"tool":"done","summary":"changed it"}
+        ]}"#,
+    )
+    .unwrap();
+    let spec = format!("scripted:{}", script.display());
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.choose(&spec);
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                                "model": spec}),
+    );
+    let records = rpc.finish();
+    let end = records.iter().find(|r| r["type"] == "run_end").unwrap();
+    assert_eq!(end["outcome"], "converged", "{end}\n{records:?}");
+
+    let from_events: Vec<(Value, Value, Value)> = records
+        .iter()
+        .filter(|r| r["fields"]["message"] == "turn")
+        .map(|r| {
+            let t = &r["fields"];
+            (t["tool"].clone(), t["target"].clone(), t["wrote"].clone())
+        })
+        .collect();
+    let trails = trails(&f);
+    assert_eq!(trails.len(), 1, "{trails:?}");
+    let actions = trails[0]["factual"]["actions"].as_array().unwrap();
+    let from_trail: Vec<(Value, Value, Value)> = actions
+        .iter()
+        .map(|a| (a["tool"].clone(), a["target"].clone(), a["wrote"].clone()))
+        .collect();
+    assert_eq!(
+        from_events, from_trail,
+        "the turn events and the trail disagree about what the run did\n{records:?}"
+    );
+    // Each case the comparison is there for, so a run that never reached
+    // one cannot pass by agreeing on less.
+    let wrote = |tool: &str| -> Vec<bool> {
+        from_trail
+            .iter()
+            .filter(|(t, _, _)| t == tool)
+            .map(|(_, _, w)| w.as_bool().expect("wrote is a bool"))
+            .collect()
+    };
+    assert_eq!(wrote("edit"), [false, true], "{from_trail:?}");
+    assert_eq!(wrote("write_file"), [true], "{from_trail:?}");
+    assert_eq!(wrote("run_checks"), [false, false], "{from_trail:?}");
+
+    let audit = records
+        .iter()
+        .map(|r| &r["fields"])
+        .find(|t| t["message"] == "turn" && t["check_kind"] == "Governance")
+        .unwrap_or_else(|| panic!("no governance audit turn: {records:?}"));
+    assert!(
+        audit["duration_ms"].is_u64(),
+        "the governance audit's turn carries no duration_ms: {audit}"
+    );
+}
+
 /// Holds the `model call` contract over one stream: each carries what the
 /// contract lists and no `prompt_bytes`; each `turn` that called the model
 /// has one before it under its own number. Returns how many `model call`s

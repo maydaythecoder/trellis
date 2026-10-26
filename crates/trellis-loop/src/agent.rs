@@ -673,6 +673,104 @@ impl Transcript {
     }
 }
 
+/// What one turn did, as the trail records it and the `turn` event reports
+/// it: the tool, what it was pointed at, and whether it wrote through the
+/// orchestrator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnAction {
+    pub tool: String,
+    pub target: String,
+    pub wrote: bool,
+}
+
+/// The trail's reading of a call and its full observation (#800).
+///
+/// One function, because the run's `turn` event and the trail's action
+/// (trellis-cli's `action_from`) used to be two readings of the same turn:
+/// a client split the event's `call` label and searched its observation
+/// tail, and a trail and a live view that disagree about what a turn
+/// touched is worse than either alone. Here rather than in trellis-cli or
+/// trellis-trail because the loop emits the event and neither of those is
+/// a dependency it may take.
+///
+/// `observation` is the turn's whole observation, not the event's tail: a
+/// created file is read from its first line.
+pub fn turn_action(call: &ToolCall, observation: &str) -> TurnAction {
+    let (tool, target) = match call {
+        ToolCall::BlastRadius { symbol } => ("blast_radius", symbol.clone()),
+        ToolCall::ReadFile { path } => ("read_file", path.clone()),
+        ToolCall::Edit { path, .. } => ("edit", path.clone()),
+        ToolCall::RunChecks { paths, kinds } => {
+            let kinds: Vec<String> = kinds.iter().map(|k| format!("{k:?}")).collect();
+            // The checks requested, then what they were pointed at. An empty
+            // `paths` is the whole repository and says so, rather than
+            // rendering as a blank the reader has to interpret.
+            let where_ = if paths.is_empty() {
+                "whole repository".to_string()
+            } else {
+                paths.join(", ")
+            };
+            ("run_checks", format!("{} on {where_}", kinds.join("+")))
+        }
+        ToolCall::ReadSkill { name } => ("read_skill", name.clone()),
+        // ADR 0023's tools. A repository's own tool is recorded under its
+        // own name, with the arguments it was sent.
+        ToolCall::WriteFile { path, .. } => ("write_file", path.clone()),
+        ToolCall::Grep { pattern, path } => (
+            "grep",
+            match path {
+                Some(p) => format!("{pattern} in {p}"),
+                None => pattern.clone(),
+            },
+        ),
+        ToolCall::Find { glob } => ("find", glob.clone()),
+        ToolCall::Ls { path } => ("ls", path.clone()),
+        ToolCall::Bash { command } => ("bash", summarise(command)),
+        ToolCall::SearchNotes { query, .. } => ("search_notes", summarise(query)),
+        ToolCall::ReadNote { note } => ("read_note", note.clone()),
+        ToolCall::CallersOf { symbol } => ("callers_of", symbol.clone()),
+        ToolCall::CalleesOf { symbol } => ("callees_of", symbol.clone()),
+        ToolCall::CoverageReport { paths } => ("coverage_report", summarise(&paths.join(" "))),
+        ToolCall::Custom { name, args } => (name.as_str(), summarise(&args.to_string())),
+        // Quoted: model output, and a trail is read back into prompts.
+        ToolCall::AskHuman { question, .. } => ("ask_human", summarise(&format!("{question:?}"))),
+    };
+    TurnAction {
+        tool: tool.to_string(),
+        target,
+        // Only an applied edit or a created file changes the tree through
+        // the orchestrator. A refused one is an action that happened and
+        // wrote nothing, which is exactly what this distinguishes. What bash
+        // or a custom tool changed is recorded in the trail's `changed`
+        // instead, from what the orchestrator carried back (ADR 0023 §7),
+        // and `wrote` keeps the meaning older trails gave it.
+        wrote: match call {
+            ToolCall::Edit { .. } => observation.contains("applied: true"),
+            ToolCall::WriteFile { path, .. } => {
+                observation.starts_with(&format!("created {path} "))
+            }
+            _ => false,
+        },
+    }
+}
+
+/// An observation reduced to one line a person can read in a list.
+pub fn summarise(observation: &str) -> String {
+    const MAX: usize = 120;
+    let first = observation
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    if first.chars().count() <= MAX {
+        return first.to_string();
+    }
+    // Cut on a character boundary, and say it was cut — a silently truncated
+    // line reads as the whole outcome.
+    let head: String = first.chars().take(MAX - 1).collect();
+    format!("{head}…")
+}
+
 /// A short label for a call, for instrumentation.
 ///
 /// `{call:?}` would put a file's whole old and new text on one log line,
@@ -983,15 +1081,24 @@ pub async fn run_seeded<M: Model>(
                         // interface's checks pane, its action graph —
                         // never saw. A trail and a live view that disagree
                         // about what ran is worse than either alone.
+                        let audit_call = ToolCall::RunChecks {
+                            paths: Vec::new(),
+                            kinds: vec![CheckKind::Governance],
+                        };
+                        let action = turn_action(&audit_call, &detail.stdout);
                         tracing::info!(
                             turn = iterations,
-                            call = %turn_event_label(&ToolCall::RunChecks {
-                                paths: Vec::new(),
-                                kinds: vec![CheckKind::Governance],
-                            }),
+                            call = %turn_event_label(&audit_call),
                             verdict = ?Some(v.passed()),
                             check_kind = %format!("{:?}", detail.kind),
                             observation = %tail(&detail.stdout, 6),
+                            tool = %action.tool,
+                            target = %action.target,
+                            wrote = action.wrote,
+                            // The audit's own time, as the trail records it
+                            // (#800), so this turn is not the one a client
+                            // reading `duration_ms` finds without one.
+                            duration_ms = audit_ms,
                             // As on every turn (#799), so a field a client
                             // reads on each turn is not missing on this one.
                             elapsed_ms =
@@ -1001,10 +1108,7 @@ pub async fn run_seeded<M: Model>(
                         );
                         t.turns.push(Turn {
                             observation: detail.stdout.clone(),
-                            call: ToolCall::RunChecks {
-                                paths: Vec::new(),
-                                kinds: vec![CheckKind::Governance],
-                            },
+                            call: audit_call,
                             verdict_passed: Some(v.passed()),
                             check_kind: Some(format!("{:?}", detail.kind)),
                             radius_counts: None,
@@ -1153,12 +1257,19 @@ pub async fn run_seeded<M: Model>(
                     Some((r, c, u)) => (Some(r), Some(c), Some(u)),
                     None => (None, None, None),
                 };
+                // What the trail will record for this turn, from the same
+                // function and the whole observation (#800), so a client
+                // need not parse `call` or search `observation` for it.
+                let action = turn_action(&call, &observation);
                 tracing::info!(
                     turn = iterations,
                     call = %turn_event_label(&call),
                     verdict = ?verdict_passed,
                     check_kind = check_kind.as_deref().unwrap_or(""),
                     observation = %tail(&observation, 6),
+                    tool = %action.tool,
+                    target = %action.target,
+                    wrote = action.wrote,
                     resolved = rad_resolved,
                     candidates = rad_candidates,
                     unresolved = rad_unresolved,

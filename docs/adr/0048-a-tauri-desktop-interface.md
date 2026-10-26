@@ -239,6 +239,24 @@ tests are unchanged. Held by
 `rpc_elapsed_excludes_time_waiting_on_an_approval` and
 `rpc_run_budget_carries_every_ceiling` in `tests/modes.rs`, and on the audit
 turn by `rpc_every_turn_through_the_governance_audit_keeps_the_contract`.
+*Added 2026-10-26 (#800):* every `turn`, the governance audit's included,
+carries `tool`, `target` and `wrote`: the trail's record of the turn,
+computed by `trellis_loop::turn_action`, the function the trail's action
+(`action_from`) also uses, from the turn's whole observation. Both clients
+had worked these out by splitting `call` at a space and searching the
+observation's tail for `applied: true`, logic copied from the retired
+ratatui bridge, so the live view and the trail could disagree about what a
+turn touched. `wrote` is true only for an edit that applied or a file
+`write_file` created; what `bash` or a custom tool changed is the trail's
+`changed`, not `wrote`. The governance audit's turn now carries
+`duration_ms`, the audit's own time as the trail records it, so
+`duration_ms` is on every turn. `call` and `observation` are unchanged: the
+clients move to the new fields in their own tickets, and until then the
+fields are under `rpc.not_every_client` with empty `read_by`. Held by
+`rpc_turn_tool_target_wrote_match_the_trail_actions` in `tests/modes.rs`,
+which compares every turn event of a scripted, governed run with the
+trail's actions, and by
+`rpc_every_turn_through_the_governance_audit_keeps_the_contract`.
 
 ### 7. Auditing Tauri's tree
 

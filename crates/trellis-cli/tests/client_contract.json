@@ -84,14 +84,11 @@
       },
       "events": {
         "turn": {
-          "always": ["elapsed_ms", "completion_tokens_used"],
-          "model_call_only": ["duration_ms"],
+          "always": ["elapsed_ms", "completion_tokens_used", "duration_ms", "tool", "target", "wrote"],
+          "model_call_only": [],
           "blast_radius_only": ["summarised"],
-          "absent_when": {
-            "duration_ms": "the governance audit's turn event, which sends none (trellis-loop agent.rs)"
-          },
-          "read_by": {"elapsed_ms": [], "completion_tokens_used": [], "duration_ms": [], "summarised": []},
-          "about": "duration_ms is the tool call's time in milliseconds by the monotonic clock, with any wait on a person in approve mode taken out; summarised is how many of the radius's call sites its observation summarised by file instead of listing them, 0 when it listed every one. elapsed_ms is the run's wall-clock spend after the turn as its budget measures it (#799): milliseconds by the monotonic clock since the loop started, with every wait on a person in approve mode taken out, the figure checked against run budget's max_wall_clock_ms. completion_tokens_used is the counter run budget's max_tokens is checked against: completion (output) tokens over every reply so far, format retries included, never prompt tokens and never a sum of the two; a hosted driver counts a reply that reported none at its request's max_tokens, so the ceiling trips early rather than never; 0 for a driver that reads no reply (the scripted one)."
+          "read_by": {"elapsed_ms": [], "completion_tokens_used": [], "duration_ms": [], "summarised": [], "tool": [], "target": [], "wrote": []},
+          "about": "duration_ms is the tool call's time in milliseconds by the monotonic clock, with any wait on a person in approve mode taken out, and on the governance audit's turn the audit's own time (#800); tool, target and wrote are the trail's record of the turn, from the function the trail's action uses (#800): tool is the tool's name, target what it was pointed at, and wrote is true only for an edit that applied or a file write_file created, so a bash or custom tool's changes are not counted in it; summarised is how many of the radius's call sites its observation summarised by file instead of listing them, 0 when it listed every one. elapsed_ms is the run's wall-clock spend after the turn as its budget measures it (#799): milliseconds by the monotonic clock since the loop started, with every wait on a person in approve mode taken out, the figure checked against run budget's max_wall_clock_ms. completion_tokens_used is the counter run budget's max_tokens is checked against: completion (output) tokens over every reply so far, format retries included, never prompt tokens and never a sum of the two; a hosted driver counts a reply that reported none at its request's max_tokens, so the ceiling trips early rather than never; 0 for a driver that reads no reply (the scripted one)."
         },
         "model call": {
           "always": ["elapsed_ms"],
