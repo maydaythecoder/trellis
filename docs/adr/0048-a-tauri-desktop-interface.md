@@ -280,6 +280,18 @@ line counts here; that is its own ticket. The fields are under
 `edit_turn_carries_line_counts_and_a_unified_diff` in trellis-loop, and in
 `tests/modes.rs` by `rpc_stream_carries_every_field_the_desktop_reads` (auto
 mode) and `rpc_elapsed_excludes_time_waiting_on_an_approval` (approve mode).
+*Added 2026-10-26 (#809):* `read_file {path}` answers with one file's text
+as `{path, text, bytes, cut}`, for the whole-file view no command fed (ADR
+0058 §4). It refuses, by the rule each breaks, what `list_paths` refuses as
+a prefix, any path `list_paths` would not offer (so an ignored `.env` and
+anything in `.git` are never opened), a link that resolves outside the
+root or into `.git` (`resolve_repo_input`), anything that is not a file,
+and bytes that are not UTF-8. At most 256 KiB is read; a file past that is
+cut at the last whole character before it, with `cut` true and `bytes` the
+file's size. The answer is listed under `rpc.responses.read_file`, which
+neither client's contract test reads, and the desktop's `rpc_send` does not
+forward it yet. Held by `rpc_read_file_refuses_git_and_outside_paths` and
+`rpc_read_file_cuts_a_file_past_the_cap_and_says_so` in `tests/cli.rs`.
 
 ### 7. Auditing Tauri's tree
 

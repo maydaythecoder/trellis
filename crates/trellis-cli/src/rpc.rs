@@ -118,6 +118,11 @@ const COMMANDS: &[(&str, &str)] = &[
          shortest first; tracked or untracked, never ignored",
     ),
     (
+        "read_file",
+        "one file's text, read-only: {path}, a path `list_paths` offers; refused outside \
+         the root, into .git or not UTF-8; {path, text, bytes, cut}, cut past 256 KiB",
+    ),
+    (
         "vault_search",
         "the hits `trellis vault search` prints, as data, read-only: {query, limit?} \
          (default 12)",
@@ -244,12 +249,15 @@ pub(crate) fn at_file_paths(root: &Path) -> Result<Vec<String>> {
 /// How many paths `list_paths` answers with: the TUI's `@` list length.
 const LIST_PATHS_LIMIT: usize = 10;
 
+/// How much of a file `read_file` answers with, in bytes (ADR 0058 §4). A
+/// display limit for a client's whole-file view, not a measurement: past
+/// it the file is cut, and the answer says so.
+const READ_FILE_CAP: usize = 256 * 1024;
+
 /// `list_paths`'s `prefix`, refused unless it can only be the start of a
 /// repository-relative path. It only filters git's listing, so no prefix
 /// could read a file; it is refused anyway, by the rule it breaks, so a
 /// client learns its input was wrong rather than seeing an empty list.
-/// Both separators are checked, whatever the platform, since the client
-/// may not share it.
 fn path_prefix(cmd: &Value) -> Result<&str, String> {
     let Some(prefix) = cmd.get("prefix").and_then(Value::as_str) else {
         return Err(
@@ -258,20 +266,108 @@ fn path_prefix(cmd: &Value) -> Result<&str, String> {
                 .into(),
         );
     };
-    if prefix.chars().any(char::is_control) {
-        return Err("`prefix` holds a control character; a repository path does not".into());
-    }
-    let bytes = prefix.as_bytes();
-    let drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
-    if prefix.starts_with(['/', '\\']) || drive {
-        return Err("`prefix` is absolute; it is the start of a repository-relative path".into());
-    }
-    if prefix.split(['/', '\\']).any(|c| c == "..") {
-        return Err(
-            "`prefix` holds a `..` component; it names paths inside the repository only".into(),
-        );
-    }
+    relative_path_rule("prefix", prefix, "the start of a repository-relative path")?;
     Ok(prefix)
+}
+
+/// The rule `list_paths`'s `prefix` and `read_file`'s `path` are both held
+/// to, named by `field` in the refusal: no control character, not absolute,
+/// no `..` component. Both separators are checked, whatever the platform,
+/// since the client may not share it.
+fn relative_path_rule(field: &str, value: &str, what: &str) -> Result<(), String> {
+    if value.chars().any(char::is_control) {
+        return Err(format!(
+            "`{field}` holds a control character; a repository path does not"
+        ));
+    }
+    let bytes = value.as_bytes();
+    let drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    if value.starts_with(['/', '\\']) || drive {
+        return Err(format!("`{field}` is absolute; it is {what}"));
+    }
+    if value.split(['/', '\\']).any(|c| c == "..") {
+        return Err(format!(
+            "`{field}` holds a `..` component; it names paths inside the repository only"
+        ));
+    }
+    Ok(())
+}
+
+/// `read_file`'s `path`, refused by the rule it breaks, as `list_paths`
+/// refuses a prefix.
+fn read_file_path(cmd: &Value) -> Result<&str, String> {
+    let Some(path) = cmd.get("path").and_then(Value::as_str) else {
+        return Err("`path` is required, as a string: a repository-relative file path".into());
+    };
+    if path.is_empty() {
+        return Err("`path` is empty; it names one repository file".into());
+    }
+    relative_path_rule("path", path, "a repository-relative file path")?;
+    Ok(path)
+}
+
+/// `read_file`'s answer for `path`, or why it is refused (ADR 0058 §4).
+///
+/// The order is the point. Membership in `at_file_paths` comes first, so a
+/// path `@` completion would not offer — an ignored `.env`, anything in
+/// `.git` — is refused with one message whether or not it exists, and is
+/// never opened. Membership is byte-exact against git's `/`-spelled
+/// listing: `a\b` is refused, not normalised. Then the path is resolved
+/// through `resolve_repo_input` (ADR 0025), so a tracked link that leads
+/// outside the root or into `.git` is refused, and what was checked is what
+/// is read.
+///
+/// At most `READ_FILE_CAP` bytes are read, so a large file costs no more
+/// than the cap. A file past it is cut at the last whole character before
+/// the cap. The bytes read must be UTF-8, or the file is refused as not
+/// text; bytes past the cap are not read, so they are not checked.
+fn read_repo_file(root: &Path, path: &str) -> Result<Value, String> {
+    use std::io::Read;
+    let offered = at_file_paths(root).map_err(|e| format!("{e:#}"))?;
+    if offered.binary_search_by(|p| p.as_str().cmp(path)).is_err() {
+        return Err(format!(
+            "`path` {path:?} is not a path `list_paths` offers (tracked, or untracked and \
+             not ignored), so it is not read"
+        ));
+    }
+    let real = match trellis_core::paths::resolve_repo_input(root, &root.join(path)) {
+        Ok(Some(real)) => real,
+        Ok(None) => return Err(format!("`path` {path:?}: no file is there now")),
+        Err(e) => return Err(format!("`path` {path:?}: {e}")),
+    };
+    let file = std::fs::File::open(&real).map_err(|e| format!("`path` {path:?}: {e}"))?;
+    let meta = file
+        .metadata()
+        .map_err(|e| format!("`path` {path:?}: {e}"))?;
+    if !meta.is_file() {
+        return Err(format!(
+            "`path` {path:?} is not a file (a directory or a submodule); read_file reads one file"
+        ));
+    }
+    let bytes = meta.len();
+    let mut read = Vec::new();
+    file.take(READ_FILE_CAP as u64)
+        .read_to_end(&mut read)
+        .map_err(|e| format!("`path` {path:?}: {e}"))?;
+    // The length read, not `bytes`: the file may have grown or shrunk since
+    // its size was taken, and only a cap actually reached cuts.
+    let cut = read.len() == READ_FILE_CAP && bytes > READ_FILE_CAP as u64;
+    let text = match String::from_utf8(read) {
+        Ok(t) => t,
+        // A character the cap split in two: keep what comes before it.
+        Err(e) if cut && e.utf8_error().error_len().is_none() => {
+            let whole = e.utf8_error().valid_up_to();
+            let mut v = e.into_bytes();
+            v.truncate(whole);
+            String::from_utf8(v).map_err(|e| format!("`path` {path:?}: {e}"))?
+        }
+        Err(_) => {
+            return Err(format!(
+                "`path` {path:?} is not UTF-8 text, so it is not read"
+            ));
+        }
+    };
+    Ok(json!({"path": path, "text": text, "bytes": bytes, "cut": cut}))
 }
 
 /// The first `LIST_PATHS_LIMIT` of `paths` that start with `prefix`,
@@ -1083,6 +1179,27 @@ impl Server {
         }));
     }
 
+    /// `read_file`: one file's text for a client's whole-file view, refused
+    /// for anything `list_paths` would not offer or that resolves outside
+    /// the root or into `.git` (ADR 0058 §4, `read_repo_file`). The client's
+    /// read, not the model's: nothing it answers enters a prompt, and
+    /// nothing is written. It reads the working tree as it is when asked,
+    /// from another thread, as `list_paths` does.
+    fn read_file(&mut self, cmd: &Value, id: Option<&str>) {
+        let path = match read_file_path(cmd) {
+            Ok(p) => p.to_string(),
+            Err(e) => {
+                self.respond(id, "read_file", Err(e));
+                return;
+            }
+        };
+        let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
+        self.waiters.push(std::thread::spawn(move || {
+            let result = read_repo_file(&root, &path);
+            respond_on(&sink, id.as_deref(), "read_file", result);
+        }));
+    }
+
     /// `vault_search`: the hits `trellis vault search` prints, from the same
     /// function, as data; nothing is written. Every vault write stays a
     /// `trellis vault` command (#70). Answered from another thread, as
@@ -1463,6 +1580,7 @@ impl Server {
             "get_history" => self.get_history(cmd, id),
             "get_queue" => self.get_queue(id),
             "list_paths" => self.list_paths(cmd, id),
+            "read_file" => self.read_file(cmd, id),
             "vault_search" => self.vault_search(cmd, id),
             "vault_graph" => self.vault_graph(cmd, id),
             "vault_check" => self.vault_check(cmd, id),
