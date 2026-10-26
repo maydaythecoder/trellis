@@ -119,6 +119,8 @@ type Model struct {
 	// not hold (#850): the run's phase, the runtime, the repository, a
 	// stop on its way, and the last run's own run_end words.
 	strip view.Now
+	// nav is the level shown and the pane selected (nav.go, #851).
+	nav view.Nav
 
 	// theme is what the screen and the modal are painted with (Options).
 	theme theme.Theme
@@ -240,18 +242,11 @@ func (m *Model) key(k tea.KeyMsg) {
 		m.modalKey(k)
 		return
 	}
+	// ESC, Tab and ⏎ on an empty line move between levels (nav.go).
+	if m.navKey(k) {
+		return
+	}
 	switch k.Type {
-	case tea.KeyEsc:
-		// Esc clears the line; on an empty line it leaves as ^c does,
-		// stopping a run in flight first (#634): leaving mid-run used to
-		// be ^c's alone, and the ratatui TUI now stops on both.
-		if m.Input != "" {
-			m.Input = ""
-			// The @ offer goes with the line it was for (#904).
-			m.inputChanged()
-		} else {
-			m.ctrlC()
-		}
 	case tea.KeyEnter:
 		m.submit()
 	case tea.KeyTab:
