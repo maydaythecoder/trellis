@@ -1298,6 +1298,11 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
   }
   var STATE_WORD = { idle: 'Idle', running: 'Running', waiting: 'Needs you', paused: 'Paused', stopping: 'Stopping',
     converged: 'Ended · converged', not_converged: 'Ended · not converged', interrupted: 'Ended · interrupted', error: 'Ended · error' };
+  // run_end's `exit` for each outcome (RunExit::code and run_end in crates/trellis-cli). not_converged and
+  // interrupted are drawn with the tree restored; an unrestored tree exits 2, which the sample never shows.
+  // An error carries its message and no `restored` (client_contract.json), so nothing here says the tree
+  // was reset after one. One table, so the Now strip, the summary and the TUI cannot disagree.
+  var EXIT = { converged: 0, not_converged: 1, interrupted: 130, error: 1 };
   function isEnded(s) { return s === 'converged' || s === 'not_converged' || s === 'interrupted' || s === 'error'; }
   function inFlight(s) { return s === 'running' || s === 'waiting' || s === 'paused' || s === 'stopping'; }
 
@@ -1313,8 +1318,8 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       h(T.Keycap, { keys: props.waitKind === 'ask' ? ['1', '2'] : ['Y', 'N'], tone: 'signal' }))];
     else if (s === 'paused') activity = ['held before the next model call', h('span', { className: 'since' }, ' · turn ' + props.turn + ' finished · the wall clock is stopped')];
     else if (s === 'stopping') activity = [h('span', { className: 'cd-now-reason down' }, 'abort sent · rolling back to ' + RUN.base)];
-    else if (isEnded(s)) activity = [s === 'converged' ? 'edits left in the tree' : s === 'error' ? 'the model call failed; tree rolled back to ' + RUN.base : 'tree rolled back to ' + RUN.base,
-      h('span', { className: 'since' }, ' · exit ' + (s === 'converged' ? 0 : s === 'error' ? 2 : 1) + ' · trail ' + RUN.id)];
+    else if (isEnded(s)) activity = [s === 'converged' ? 'edits left in the tree' : s === 'error' ? 'stopped on an error, named in run_end; whether the tree was reset is not reported' : 'tree rolled back to ' + RUN.base,
+      h('span', { className: 'since' }, ' · exit ' + EXIT[s] + ' · trail ' + RUN.id)];
     else activity = ['no run in flight', h('span', { className: 'since' }, ' · last run ' + RUN.id + ' converged')];
     return h('div', { className: 'cd-now cd-src-host', role: 'status' },
       h('span', { className: cls }, h('span', { className: 'cd-now-dot', 'aria-hidden': true }), STATE_WORD[s]),
@@ -1550,7 +1555,8 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
   function fileState(f, state, waitKind) {
     if (state === 'waiting' && waitKind === 'approve' && f.path === 'src/parser.py') return ['awaiting your approval', 'warn'];
     if (state === 'converged') return ['left in the tree', 'ok'];
-    if (state === 'not_converged' || state === 'interrupted' || state === 'error' || state === 'stopping') return ['rolled back', 'down'];
+    if (state === 'error') return ['not reported', 'idle'];
+    if (state === 'not_converged' || state === 'interrupted' || state === 'stopping') return ['rolled back', 'down'];
     return ['in the worktree', 'signal'];
   }
   function FileRail(props) {
@@ -1598,7 +1604,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
   function Summary(props) {
     var s = props.state, ended = isEnded(s);
     var word = ended ? STATE_WORD[s].replace('Ended · ', '') : 'in flight';
-    var exit = s === 'converged' ? 0 : s === 'error' ? 2 : ended ? 1 : null;
+    var exit = ended ? EXIT[s] : null;
     var steers = props.queue.filter(function (q) { return q.kind === 'steer'; });
     return h('div', { className: 'cd-sum-grid' },
       h('div', { className: 'cd-rv-col' },
@@ -1608,6 +1614,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
               exit != null ? h('span', { className: 'cd-sum-exit' }, 'exit ' + exit) : h('span', { className: 'cd-sum-exit' }, 'turn ' + props.turn + ' · ' + T.fmtClock(props.elapsed))),
             h('div', { className: 'cd-plan-note', style: { marginTop: '8px' } },
               s === 'converged' ? 'The last check passed and the model stopped. Edits are left in the working tree, uncommitted. Trail ' + RUN.id + ' committed; integrity: sha256 matches.'
+              : s === 'error' ? 'run_end names the error and reports no restored flag for one, so whether the tree was reset is not reported. Trail ' + RUN.id + ' committed; integrity: sha256 matches.'
               : ended ? 'The tree was reset to ' + RUN.base + '. Trail ' + RUN.id + ' committed anyway; integrity: sha256 matches.'
               : 'Nothing is settled until run_end. What is below is what trellis has reported so far.'),
             h('div', { className: 'cd-sum-fence', style: { marginTop: '12px' } }, h('div', { className: 'cd-sum-fence-head' }, 'the model’s closing words · fenced as untrusted'), LAST_MODEL_TEXT),
@@ -1694,7 +1701,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       [h('span', { className: 'm', key: 1 }, '─ turn 6 · model 3.3 s · 198 tok · 61 kB ────────────')],
       ['○ model    Two files changed. Both checks pass. I have not touched tokens.py.'],
       [h('span', { className: 'w', key: 1 }, '? model asks you  Should I also run the benchmark in bench/ before stopping?  [1] yes [2] no')],
-      s === 'running' ? [h('span', { className: 's', key: 1 }, '▸ running checks · pytest -q · turn 7 · 2.3 s so far')] : s === 'paused' ? [h('span', { className: 'c', key: 1 }, '‖ paused — nothing runs until you resume')] : isEnded(s) ? [h('span', { className: s === 'converged' ? 'o' : 'd', key: 1 }, '■ run ended · ' + STATE_WORD[s].replace('Ended · ', '') + ' · exit ' + (s === 'converged' ? 0 : 1))] : [' ']
+      s === 'running' ? [h('span', { className: 's', key: 1 }, '▸ running checks · pytest -q · turn 7 · 2.3 s so far')] : s === 'paused' ? [h('span', { className: 'c', key: 1 }, '‖ paused — nothing runs until you resume')] : isEnded(s) ? [h('span', { className: s === 'converged' ? 'o' : 'd', key: 1 }, '■ run ended · ' + STATE_WORD[s].replace('Ended · ', '') + ' · exit ' + EXIT[s])] : [' ']
     ];
     var right = [
       [h('span', { className: 'm', key: 1 }, 'WHERE')],
