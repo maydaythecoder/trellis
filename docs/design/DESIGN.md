@@ -37,6 +37,16 @@ terminal can draw: rules, box frames, connectors between a tool call and
 its result, ASCII and Unicode glyphs for state. The desktop uses the same
 vocabulary at higher resolution, not a different one.
 
+**Figures, not sentences.** (Decided, owner, 2026-10-26.) A region shows
+its facts as the design system's components draw them: a numeral with a
+short uppercase label (Stat), a dot and its word (Status), a timeline row
+(Rail), block characters for a used figure against its ceiling (Meter).
+A sentence is shown where only words can say it (the model's own text, a
+refusal, the radius's "a floor on reach, not a boundary") or one step
+away, on hover or focus. Each client draws the components the system
+draws, rather than a look of its own: the desktop loads the system's
+stylesheet (§2.1) and the TUI draws the same marks in cells (`faces.md`).
+
 **Clean, and as playful as the person wants.** (Decided.) Clean by default:
 one type family for what the engine said, one for what a person wrote,
 square panels, few colours each with a meaning. Play is allowed in the
@@ -72,9 +82,12 @@ change that breaks one fails review. The full list with its sources is in
 1. The client computes no verdict. A check row exists only because
    `trellis-checks` produced a `Verdict`. (Held: ADR 0004;
    `TestPanesCheckRowsComeOnlyFromASomeVerdict`.)
-2. A figure trellis did not report is `unreported`, never `0`. (Held:
+2. A figure trellis did not report is `unreported`, never `0`. It is
+   drawn as `—`, with the reason one step away: the element's title and
+   its accessible text on the desktop, /help in the TUI. (Held:
    `TestBudgetLineUnreportedFiguresAreNamedNotDrawnAsZero`,
-   `session_tokens_unknown_is_null_never_zero`.)
+   `session_tokens_unknown_is_null_never_zero`,
+   `an_unreported_figure_is_a_dash_with_its_reason`.)
 3. `Verified` and `Reviewed` are two rows, never a sum. Blast radius is three
    counts, never a ratio. (Held: ADR 0003, ADR 0014.)
 4. No currency, no percent-complete, no remaining-time estimate. Elapsed
@@ -110,7 +123,7 @@ read-only `get_*`, `list_*`, `classify` and `vault_*` queries
 | Queue items are reordered, edited and cancelled with ↑ ↓ ✎ × (Queue card). | Steers are delivered in order before the next model call; no command cancels or edits a queued item. | Each item shows `queued`, `delivered after turn N` or `not delivered`. Reorder applies only among follow-ups the client still holds; cancel and edit are `not built` for anything already sent. |
 | Run states `running · waiting on you · paused · failed · done · idle` (NowStrip card). | `run_end`'s words: `converged`, `not_converged`, `interrupted`, `error`, with the exit code (rule 5). | Live states as the card names them (`paused` only once pause exists); an ended run shows its outcome word and exit code, never `done` or `failed`. |
 | A finished run gets `\(^o^)/  all 212 passed` (README, Ascii card). | Counts come only from `trellis-checks` (rule 1). | A face may mark the outcome; any count beside it is a recorded check's count, never the model's. |
-| Components ship as React on `window.Trellis` with `components/bundle.css` (README, "Components"). | The desktop is plain ES modules with no bundler and a CSP without `'unsafe-inline'`; the TUI is Go (`desktop/CLAUDE.md`, ADR 0052). | The cards and `components/bundle.css` are references. Each client builds the component in its own code. |
+| Components ship as React on `window.Trellis` with `components/bundle.css` (README, "Components"). | The desktop is plain ES modules with no bundler and a CSP without `'unsafe-inline'`; the TUI is Go (`desktop/CLAUDE.md`, ADR 0052). | The desktop loads `components/bundle.css` itself, as `desktop/ui/ds.css`, the same bytes below its header (`ds_css_is_the_design_systems_bundle`), and `desktop/ui/ds.js` builds each component's markup as the bundle's code does, with a class where the bundle sets a style (owner, 2026-10-26, #909). The TUI draws the same components in cells with Lip Gloss. |
 | Meter widths and Sparkline paths are drawn per value (Meter, Sparkline cards). | No `style` attribute and no `.style` from script on the desktop (`desktop/CLAUDE.md`). | Meters are block characters in text (`█░`), the same in both faces; anything else that varies takes a class, never an inline style. |
 | Event names `session.start`, `tool.call`, `context.update`, … (`events.md`). | A client reads only the contract's names (`run_start`, `turn`, `run budget`, `steer delivered`, …) and fields (rule 7). | `system/events.md` is intent. The mapping from the contract's names to each mark is not written yet (open); when it is, it is its own document, `docs/design/events.md`. |
 | JetBrains Mono for numerals, labels, keycaps and code, IBM Plex Sans for headings and prose, both from Google Fonts (README, "Type"). | The desktop loads nothing from a network, and its CSP (`default-src 'none'`, no `font-src`) changes only by amending ADR 0048 (`desktop/CLAUDE.md`); the TUI draws in the terminal's font. | Fonts come from the machine. The stacks in `tokens.json` (`type.families`) name the two faces first and fall back to the system's (`ui-monospace`, `system-ui`, …), so each face shows where it is installed. Nothing is bundled, and the CSP keeps its directives. |
@@ -334,6 +347,12 @@ through `design-tokens.py`.
 <!-- /tokens:terminal -->
 
 ### 3.5 The desktop face
+
+The page is the design system's Shell: `desktop/ui/ds.css` is the
+system's own component stylesheet, loaded first, and `desktop/ui/ds.js`
+draws the components a level uses (Stat, Status, Rail), so a level never
+draws its own copy of one (#909). `style.css`, loaded after it, holds the
+tokens and the page's own rules.
 
 `desktop/ui/style.css` takes its colours from the tokens above (#813). Its
 block between `/* tokens:start` and `/* tokens:end */` is generated by
