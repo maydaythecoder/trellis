@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/maydaythecoder/trellis/tui/internal/frames"
+	"github.com/maydaythecoder/trellis/tui/internal/ring"
 	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
@@ -20,12 +21,29 @@ const (
 	forRadius   = "radius"
 )
 
-// ask sends a command whose answer is read for purpose.
+// ask sends a command whose answer is read for purpose. The newest
+// UnansweredCap ids are remembered in order (caps.go): an id pushed out
+// takes its purpose with it, so a child that stops answering cannot grow
+// the map, and an answer that comes for it later is ignored. A forgotten
+// classify would leave the task line waiting for good, so it ends the wait
+// and says so.
 func (m *Model) ask(kind, purpose string, fields map[string]any) string {
 	id := m.send(kind, fields)
 	if m.purposes == nil {
 		m.purposes = map[string]string{}
+		m.asked = ring.New[string](UnansweredCap)
 	}
+	if old, full := m.asked.Oldest(); full {
+		if p, waiting := m.purposes[old]; waiting {
+			delete(m.purposes, old)
+			m.forgotten++
+			if p == forClassify && m.classifying {
+				m.classifying, m.classifyText = false, ""
+				m.push(view.RoleNote, "· trellis never said whether that was a question or a task; nothing was run")
+			}
+		}
+	}
+	m.asked.Push(id)
 	m.purposes[id] = purpose
 	return id
 }

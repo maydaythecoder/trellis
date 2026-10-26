@@ -19,22 +19,25 @@
 // Every string here is trellis-, model- or repository-supplied, so it
 // reaches the DOM through textContent only (ADR 0007, S10).
 
-import { atEnd } from "./render.js";
-
-function el(doc, tag, text) {
-  const e = doc.createElement(tag);
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
-
-function str(v) {
-  return typeof v === "string" ? v : null;
-}
+import { appendRows, el } from "./dom.js";
+import { str } from "./fmt.js";
 
 // The page errors kept for the banner: the newest few, since one fault
 // in a loop would otherwise fill it.
 const PAGE_ERRORS_KEPT = 5;
 const pageErrors = [];
+// The document the banner is drawn in, once wireDialogs has run; an error
+// kept before then is drawn when it does.
+let bannerDoc = null;
+
+// Keeps a page error for the banner and draws it. The hook rpc.js's
+// start() reports a module that failed to start through (#816), and the
+// window's error and unhandledrejection events through too.
+export function pageError(what) {
+  pageErrors.push(String(what));
+  while (pageErrors.length > PAGE_ERRORS_KEPT) pageErrors.shift();
+  if (bannerDoc !== null) drawBanner(bannerDoc);
+}
 // The view's alert as last sent; `null` while nothing has failed.
 let viewAlert = null;
 
@@ -63,20 +66,11 @@ function drawBanner(doc) {
   banner.hidden = lines.length === 0;
 }
 
-// The messages pane follows its end only while the reader is there, by the
-// actions log's rule (#643): a reader who scrolled back keeps their place.
+// The messages pane is drawn by the actions log's rule (#643), dom.js's
+// appendRows: it follows its end only while the reader is there, so a
+// reader who scrolled back keeps their place.
 function drawStderr(doc, lines) {
-  const log = doc.getElementById("messages-log");
-  const follow = atEnd(log);
-  const rows = (Array.isArray(lines) ? lines : []).map((l) => el(doc, "div", String(l)));
-  if (rows.length === 0) {
-    const e = el(doc, "div", "trellis has written nothing to stderr.");
-    e.className = "empty";
-    log.replaceChildren(e);
-  } else {
-    log.replaceChildren(...rows);
-  }
-  if (follow) log.scrollTop = log.scrollHeight;
+  appendRows(doc, doc.getElementById("messages-log"), lines, "trellis has written nothing to stderr.");
 }
 
 // Closes the dialog on the question it shows, as no answer: every dialog
@@ -156,13 +150,10 @@ export async function wireDialogs(doc, win, tauri) {
     viewAlert = null;
     drawBanner(doc);
   });
-  const keep = (what) => {
-    pageErrors.push(what);
-    while (pageErrors.length > PAGE_ERRORS_KEPT) pageErrors.shift();
-    drawBanner(doc);
-  };
-  win.addEventListener("error", (e) => keep(String(e.message || e.error || "an uncaught error")));
-  win.addEventListener("unhandledrejection", (e) => keep(`unhandled rejection: ${String(e.reason)}`));
+  bannerDoc = doc;
+  win.addEventListener("error", (e) => pageError(String(e.message || e.error || "an uncaught error")));
+  win.addEventListener("unhandledrejection", (e) => pageError(`unhandled rejection: ${String(e.reason)}`));
+  if (pageErrors.length > 0) drawBanner(doc);
   drawStderr(doc, []);
   await tauri.event.listen("child-started", () => forgetChild(doc));
 }

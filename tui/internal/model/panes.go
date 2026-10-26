@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/maydaythecoder/trellis/tui/internal/frames"
+	"github.com/maydaythecoder/trellis/tui/internal/ring"
 	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
@@ -18,13 +19,19 @@ import (
 // run's restored goes with them: a run starts from a clean tree, and the
 // last run's ending is not this one's (#636).
 func (m *Model) clearPanes() {
-	m.Actions = nil
-	m.Edits = nil
-	m.Checks = nil
+	m.emptyPanes()
 	m.Radius = nil
 	m.Budget = view.Budget{}
 	m.restored = nil
 	m.runStart = m.now()
+}
+
+// emptyPanes makes the three lists a run fills, each keeping the newest
+// PaneCap rows (caps.go).
+func (m *Model) emptyPanes() {
+	m.Actions = ring.New[view.Action](PaneCap)
+	m.Edits = ring.New[view.Edit](PaneCap)
+	m.Checks = ring.New[view.Check](PaneCap)
 }
 
 // panesTurn adds a turn to the panes.
@@ -41,14 +48,14 @@ func (m *Model) panesTurn(t *frames.TurnFields) {
 	wrote := (strings.HasPrefix(call, "edit ") && strings.Contains(obs, "applied: true")) ||
 		(strings.HasPrefix(call, "write_file ") && strings.HasPrefix(obs, "created "))
 	tool, target, _ := strings.Cut(call, " ")
-	m.Actions = append(m.Actions, view.Action{Tool: tool, Target: target, Wrote: wrote})
+	m.Actions.Push(view.Action{Tool: tool, Target: target, Wrote: wrote})
 
 	// A refused edit is not a proposal at all: listing one made the panes
 	// contradict each other ("3 edit(s) pending" for a run that changed one
 	// line).
 	if wrote {
 		if f := strings.Fields(call); len(f) > 1 {
-			m.Edits = append(m.Edits, view.Edit{Path: f[1], Status: view.Proposed})
+			m.Edits.Push(view.Edit{Path: f[1], Status: view.Proposed})
 		}
 	}
 
@@ -59,7 +66,7 @@ func (m *Model) panesTurn(t *frames.TurnFields) {
 		if t.CheckKind != nil && strings.TrimSpace(*t.CheckKind) != "" {
 			name = *t.CheckKind
 		}
-		m.Checks = append(m.Checks, view.Check{Name: name, Passed: *t.Verdict == "Some(true)"})
+		m.Checks.Push(view.Check{Name: name, Passed: *t.Verdict == "Some(true)"})
 	}
 
 	if t.Resolved != nil && t.Candidates != nil && t.Unresolved != nil {
@@ -112,12 +119,14 @@ func (m *Model) viewState() view.State {
 		Running:    m.Running,
 		Input:      m.Input,
 		Offered:    m.Offered,
-		Edits:      m.Edits,
-		Checks:     m.Checks,
-		Actions:    m.Actions,
+		Edits:      m.Edits.Slice(),
+		Checks:     m.Checks.Slice(),
+		Actions:    m.Actions.Slice(),
+		Dropped:    view.Dropped{Actions: m.Actions.Dropped(), Edits: m.Edits.Dropped(), Checks: m.Checks.Dropped()},
 		Radius:     m.Radius,
 		Budget:     m.Budget,
 		Stderr:     m.Stderr,
 		Restored:   m.restored,
+		Theme:      m.theme,
 	}
 }
