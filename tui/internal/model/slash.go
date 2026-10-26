@@ -38,7 +38,11 @@ func (m *Model) local(line string) bool {
 	}
 	args := fields[min(1, len(fields)):]
 	if name == "clear" {
+		// Following again: a scroll back kept from the cleared transcript
+		// pointed above an empty pane, and the line saying it was cleared
+		// was not in view (#855).
 		m.Transcript = nil
+		m.ScrollBack = 0
 		m.pushLine("· transcript cleared")
 		return true
 	}
