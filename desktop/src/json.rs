@@ -46,6 +46,51 @@ pub fn array<'a>(o: &'a Map<String, Value>, k: &str) -> Option<&'a Vec<Value>> {
     o.get(k).and_then(Value::as_array)
 }
 
+/// "a task" as the owner of a field: "a task's", and "it" as "its".
+fn owner(what: &str) -> String {
+    if what == "it" {
+        "its".to_string()
+    } else {
+        format!("{what}'s")
+    }
+}
+
+/// `o[k]` as text, where an answer without it is bad data: the reason
+/// names `what` holds the field, so a person reads which one was wrong
+/// ("a task has no id", "a hit's path is not text").
+pub fn text(o: &Map<String, Value>, k: &str, what: &str) -> Result<String, String> {
+    string(o, k).ok_or_else(|| match o.get(k) {
+        None | Some(Value::Null) => format!("{what} has no {k}"),
+        Some(_) => format!("{} {k} is not text", owner(what)),
+    })
+}
+
+/// `o[k]` as text or `null` (a contract's `null_when`), where anything else
+/// is bad data, as [`text`]. Absent is not null: a field the answer left out
+/// is not a claim that there is none.
+pub fn text_or_null(o: &Map<String, Value>, k: &str, what: &str) -> Result<Option<String>, String> {
+    match o.get(k) {
+        Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        None => Err(format!("{what} has no {k}")),
+        Some(_) => Err(format!("{} {k} is not text or null", owner(what))),
+    }
+}
+
+/// `o[k]` as a list of text, where anything else is bad data, as [`text`].
+pub fn texts(o: &Map<String, Value>, k: &str, what: &str) -> Result<Vec<String>, String> {
+    let whose = owner(what);
+    array(o, k)
+        .ok_or_else(|| format!("{whose} {k} is not a list"))?
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("an entry of {whose} {k} is not text"))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,6 +136,34 @@ mod tests {
         assert_eq!(i64(&o, "null"), None);
         assert_eq!(bool(&o, "null"), None);
         assert_eq!(array(&o, "null"), None);
+    }
+
+    #[test]
+    fn json_text_and_texts_say_which_field_was_wrong() {
+        // The risk: bad data reported without the field that made it so,
+        // which leaves a person nothing to look for in trellis's answer.
+        let o = obj(json!({"id": "t1", "n": 3, "null": null, "ls": ["a", 2], "ok": ["a"]}));
+        assert_eq!(text(&o, "id", "a task").as_deref(), Ok("t1"));
+        assert_eq!(text(&o, "gone", "a task"), Err("a task has no gone".into()));
+        assert_eq!(text(&o, "null", "a task"), Err("a task has no null".into()));
+        assert_eq!(
+            text(&o, "n", "a task"),
+            Err("a task's n is not text".into())
+        );
+        assert_eq!(text(&o, "n", "it"), Err("its n is not text".into()));
+        assert_eq!(text_or_null(&o, "null", "it"), Ok(None));
+        assert_eq!(text_or_null(&o, "id", "it"), Ok(Some("t1".into())));
+        assert_eq!(text_or_null(&o, "gone", "it"), Err("it has no gone".into()));
+        assert_eq!(
+            text_or_null(&o, "n", "a task"),
+            Err("a task's n is not text or null".into())
+        );
+        assert_eq!(texts(&o, "ok", "it"), Ok(vec!["a".to_string()]));
+        assert_eq!(texts(&o, "id", "it"), Err("its id is not a list".into()));
+        assert_eq!(
+            texts(&o, "ls", "a task"),
+            Err("an entry of a task's ls is not text".into())
+        );
     }
 
     #[test]
