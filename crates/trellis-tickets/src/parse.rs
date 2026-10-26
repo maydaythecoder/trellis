@@ -266,7 +266,9 @@ const DECISION_STEMS: [&str; 5] = ["design", "decid", "investigat", "explor", "c
 ///
 /// The `## Decision` section and the generated triage block are not read:
 /// they record decisions already made ("Decided 2026-09-28 by the owner"),
-/// and the rule is about decisions the work would still have to make.
+/// and the rule is about decisions the work would still have to make. A
+/// path component is not read either: `docs/design/DESIGN.md` is a file, so
+/// a ticket that lists it is not one that still has something to design.
 pub(crate) fn decision_words(title: &str, body: &str) -> Vec<String> {
     let mut text = String::from(title);
     text.push('\n');
@@ -288,16 +290,49 @@ pub(crate) fn decision_words(title: &str, body: &str) -> Vec<String> {
         }
     }
 
-    let words: Vec<String> = text
-        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
-        .filter(|w| !w.is_empty())
-        .map(str::to_lowercase)
-        .collect();
+    // Each word, flagged when it is part of a path rather than prose. The
+    // text is split on whitespace first and each token is judged once
+    // (`is_path_token`), so the cost stays linear in the body size; then
+    // the words inside a path token are flagged when they touch one of its
+    // separators (`/`, `.`, `-`). Prose joined by slashes alone
+    // ("Decide/consider", "Investigate/decide/document") is not a path, and
+    // link text in `[Investigate](docs/a/b.md)` touches only brackets, so
+    // both are still scanned and fail to a person (§1). A word followed by
+    // `.<ext>` (`DESIGN.md` on its own) is a file name wherever it sits.
+    let mut words: Vec<(String, bool)> = Vec::new();
+    for token in text.split_whitespace() {
+        let path_token = is_path_token(token);
+        let bytes = token.as_bytes();
+        let mut start: Option<usize> = None;
+        for (i, c) in token
+            .char_indices()
+            .chain(std::iter::once((token.len(), '\0')))
+        {
+            let is_word = c.is_alphanumeric() || c == '_';
+            match (start, is_word) {
+                (None, true) => start = Some(i),
+                (Some(s), false) => {
+                    let before = if s == 0 { b' ' } else { bytes[s - 1] };
+                    let after = bytes.get(i).copied().unwrap_or(b' ');
+                    let after2 = bytes.get(i + 1).copied().unwrap_or(b' ');
+                    let separator = |b: u8| matches!(b, b'/' | b'.' | b'-');
+                    let in_path = (path_token && (separator(before) || separator(after)))
+                        || (after == b'.' && after2.is_ascii_alphanumeric());
+                    words.push((token[s..i].to_lowercase(), in_path));
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+    }
     let mut found: Vec<String> = Vec::new();
-    for (i, w) in words.iter().enumerate() {
+    for (i, (w, in_path)) in words.iter().enumerate() {
+        if *in_path {
+            continue;
+        }
         let hit = if DECISION_STEMS.iter().any(|s| w.starts_with(s)) {
             Some(w.clone())
-        } else if w == "figure" && words.get(i + 1).is_some_and(|n| n == "out") {
+        } else if w == "figure" && words.get(i + 1).is_some_and(|(n, _)| n == "out") {
             Some("figure out".to_string())
         } else {
             None
@@ -310,6 +345,23 @@ pub(crate) fn decision_words(title: &str, body: &str) -> Vec<String> {
     }
     found.sort();
     found
+}
+
+/// Whether a whitespace-delimited token is a path: it has a `/` and either
+/// ends with one (`docs/design/`) or carries a file extension, a `.`
+/// followed by a letter or digit (`docs/DESIGN.md`). Slashes alone are not
+/// enough, because prose joins words with them too ("Decide/consider") and
+/// a decision word there still has to be found. Only `/` counts: ticket
+/// Files lines use it, and a `\` path is scanned, which is the safe
+/// direction.
+fn is_path_token(token: &str) -> bool {
+    let has_extension = token
+        .match_indices('.')
+        .any(|(i, _)| token[i + 1..].starts_with(|c: char| c.is_ascii_alphanumeric()));
+    // Closing punctuation (`docs/design/`, `(docs/design/)`) is not the end
+    // of the path, so it is trimmed before the trailing `/` is looked for.
+    let path_end = token.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '/');
+    token.contains('/') && (path_end.ends_with('/') || has_extension)
 }
 
 #[cfg(test)]
