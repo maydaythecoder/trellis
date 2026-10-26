@@ -46,7 +46,7 @@ func TestApproveYesAndNoSendTheirAnswer(t *testing.T) {
 		if m.Modal != nil {
 			t.Fatal("the modal stayed up after its answer")
 		}
-		if last := m.Transcript[len(m.Transcript)-1]; last != "· edit a.py "+c.say {
+		if last := texts(m)[len(m.Transcript)-1]; last != "· edit a.py "+c.say {
 			t.Fatalf("last line %q", last)
 		}
 	}

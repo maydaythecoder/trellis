@@ -1,18 +1,21 @@
 // Package view draws the Go TUI. It holds no state and changes none: each
 // function takes what it draws and returns the text, so a test reads the
-// screen as a string. It imports nothing of the TUI's own, so the model can
-// use it without a cycle.
+// screen as a string. It imports nothing of the TUI's own but the theme it
+// paints with, so the model can use it without a cycle.
 //
 // A frame starts at Render, below, which the model's View calls with the
 // State that model/panes.go builds; while an approval question is up, View
 // draws Modal (modal.go) instead. Both draw their regions with Box
 // (frame.go), from text that the helpers in text.go make plain, cut, pad
-// and wrap, measuring every width in terminal cells.
+// and wrap, measuring every width in terminal cells, and paint each row by
+// its role last (paint.go).
 package view
 
 import (
 	"fmt"
 	"strings"
+
+	"github.com/maydaythecoder/trellis/tui/internal/theme"
 )
 
 // Below this the six-region layout has no room to be legible; the ratatui
@@ -97,20 +100,32 @@ type Budget struct {
 	QueueWaitMs      *uint64
 }
 
+// Dropped is how many of a run pane's oldest rows the model no longer
+// holds: it keeps the newest of each, and the pane says how many went
+// (#848).
+type Dropped struct {
+	Actions, Edits, Checks int
+}
+
 // State is everything the screen draws. Every string in it is served text
 // and is made plain again here before it is drawn.
 type State struct {
 	Model, Tier string
-	Transcript  []string
-	ScrollBack  int
-	Outcome     string
-	Running     bool
-	Input       string
+	// Transcript is the transcript's rows, oldest first, each with the
+	// role its writer gave it (model/rows.go).
+	Transcript []Row
+	ScrollBack int
+	Outcome    string
+	Running    bool
+	Input      string
 	// Offered are the @ completions to draw under the input line.
 	Offered []string
 	Edits   []Edit
 	Checks  []Check
 	Actions []Action
+	// Dropped counts the rows of Edits, Checks and Actions the model no
+	// longer holds.
+	Dropped Dropped
 	Radius  *Radius
 	Budget  Budget
 	// Stderr is trellis's stderr, the newest last, for the capped messages
@@ -119,6 +134,9 @@ type State struct {
 	// Restored is the last run's run_end restored, nil when it did not say
 	// or no run has ended since the current one started.
 	Restored *bool
+	// Theme is the colours each row is painted in, built once from the
+	// terminal (cmd/trellis-tui). The zero Theme paints nothing.
+	Theme theme.Theme
 }
 
 // radiusH is the radius pane's height: its three counts, the line that
@@ -153,11 +171,11 @@ func Render(s State, w, h int) string {
 	right = append(right, radius(s, rightW, radiusH)...)
 
 	var out []string
-	out = append(out, Pad(status(s, w), w))
+	out = append(out, fill(s.Theme, RoleLabel, status(s, w), w))
 	for i := 0; i < bodyH; i++ {
 		out = append(out, left[i]+right[i])
 	}
-	out = append(out, Box("budget", "", []string{budgetLabel(s, w-2)}, w, 3)...)
+	out = append(out, Box(s.Theme, "budget", "", rowsOf(RoleText, budgetLabel(s, w-2)), w, 3)...)
 	out = append(out, entry...)
 	return strings.Join(out, "\n")
 }
@@ -193,8 +211,8 @@ func TranscriptRows(s State, w int) int {
 	}
 	left, _ := columns(s, w)
 	n := 0
-	for _, l := range s.Transcript {
-		n += len(WrapWords(Plain(l), left-2))
+	for _, r := range s.Transcript {
+		n += len(WrapWords(Plain(r.Text), left-2))
 	}
 	return n
 }
@@ -238,10 +256,12 @@ func status(s State, w int) string {
 // write trellis reported, so a run in flight counts writes and a finished
 // one counts the files they touched. A run that rolled back has left
 // nothing, and one that did not say so (a converged run, or an ending that
-// did not report it) has left its files for the person to review.
+// did not report it) has left its files for the person to review. Once
+// the oldest writes are no longer held (#848), their files cannot be
+// counted, and the bar says "or more".
 func WorktreeState(s State) string {
 	if s.Running {
-		if n := len(s.Edits); n > 0 {
+		if n := len(s.Edits) + s.Dropped.Edits; n > 0 {
 			return fmt.Sprintf("%d edit(s) pending", n)
 		}
 		return "clean"
@@ -253,20 +273,37 @@ func WorktreeState(s State) string {
 	for _, e := range s.Edits {
 		files[e.Path] = true
 	}
-	if len(files) > 0 {
+	switch {
+	case s.Dropped.Edits > 0:
+		return fmt.Sprintf("%d or more file(s) left for review", len(files))
+	case len(files) > 0:
 		return fmt.Sprintf("%d file(s) left for review", len(files))
 	}
 	return "clean"
 }
 
+// notKept is the row a pane draws first when the model no longer holds
+// its n oldest rows, or nothing when it holds them all.
+func notKept(n int, what string) []Row {
+	if n == 0 {
+		return nil
+	}
+	return []Row{{Text: fmt.Sprintf("… %d earlier %s not kept", n, what), Role: RoleLabel}}
+}
+
 // transcript draws the transcript, following its end unless scrolled
 // back, with the last run's outcome on the bottom border, which does not
 // scroll: a run that ended is visible however long its transcript is.
+//
+// Each row is painted in the role its writer gave it (model/rows.go, #849),
+// and every row it wraps to takes the same role. The view never reads a
+// role from a row's words: the model's words could then pass for the
+// person's or for a verdict.
 func transcript(s State, w, h int) []string {
 	inner := w - 2
-	var rows []string
-	for _, l := range s.Transcript {
-		rows = append(rows, WrapWords(Plain(l), inner)...)
+	var rows []Row
+	for _, r := range s.Transcript {
+		rows = append(rows, rowsOf(r.Role, WrapWords(Plain(r.Text), inner)...)...)
 	}
 	// A pane too short for an inside shows no rows: h-2 below zero made
 	// start pass end and the slice panicked (#842).
@@ -286,37 +323,40 @@ func transcript(s State, w, h int) []string {
 	if s.Outcome != "" {
 		bottom = "last run: " + Plain(s.Outcome)
 	}
-	return Box(title, bottom, rows[start:end], w, h)
+	return Box(s.Theme, title, bottom, rows[start:end], w, h)
 }
 
 func edits(s State, w, h int) []string {
-	var lines []string
+	rows := notKept(s.Dropped.Edits, "edits")
 	for _, e := range s.Edits {
-		lines = append(lines, "~ "+Plain(e.Path))
+		rows = append(rows, Row{Text: "~ " + Plain(e.Path)})
 	}
-	return Box("edits", "", lines, w, h)
+	return Box(s.Theme, "edits", "", rows, w, h)
 }
 
+// checks draws a row per check trellis reported, in ok or down from its
+// verdict: Check.Passed is set only from one (model/panes.go), and a row is
+// never coloured from what its words say.
 func checks(s State, w, h int) []string {
-	var lines []string
+	rows := notKept(s.Dropped.Checks, "checks")
 	for _, c := range s.Checks {
-		word := "failed"
+		r := Row{Text: Plain(c.Name) + " failed", Role: RoleFailed}
 		if c.Passed {
-			word = "passed"
+			r = Row{Text: Plain(c.Name) + " passed", Role: RolePassed}
 		}
-		lines = append(lines, Plain(c.Name)+" "+word)
+		rows = append(rows, r)
 	}
-	return Box("checks", "", lines, w, h)
+	return Box(s.Theme, "checks", "", rows, w, h)
 }
 
 // radius draws the three counts as three rows meeting at one focus, never
 // as a ratio, a percentage or a total, and says what they are a floor on.
 func radius(s State, w, h int) []string {
 	if w-2 < 24 {
-		return Box("radius", "", nil, w, h)
+		return Box(s.Theme, "radius", "", nil, w, h)
 	}
 	if s.Radius == nil {
-		return Box("radius", "", []string{"  no blast_radius call yet"}, w, h)
+		return Box(s.Theme, "radius", "", rowsOf(RoleLabel, "  no blast_radius call yet"), w, h)
 	}
 	r := s.Radius
 	rows := []struct {
@@ -329,16 +369,16 @@ func radius(s State, w, h int) []string {
 		{"candidates", r.Candidates, "◐", "┤"},
 		{"unresolved", r.Unresolved, "○", "┘"},
 	}
-	var lines []string
+	var lines []Row
 	for i, row := range rows {
 		l := fmt.Sprintf("  %-11s%5d %s─%s", row.label, row.n, row.glyph, row.join)
 		if i == 1 {
 			l += "──◆ reach"
 		}
-		lines = append(lines, l)
+		lines = append(lines, Row{Text: l})
 	}
-	lines = append(lines, "  a floor on reach, not a boundary")
-	return Box("radius", "", lines, w, h)
+	lines = append(lines, Row{Text: "  a floor on reach, not a boundary", Role: RoleLabel})
+	return Box(s.Theme, "radius", "", lines, w, h)
 }
 
 // node is one node of the action graph: a tool and its count as its row
@@ -427,7 +467,7 @@ func besideLabel(s State, countW int) int {
 func actions(s State, w, h int) []string {
 	inner := w - 2
 	if inner < 24 {
-		return Box("actions", "", nil, w, h)
+		return Box(s.Theme, "actions", "", nil, w, h)
 	}
 	ns := nodes(s)
 	labelW, countW := widths(ns)
@@ -436,7 +476,7 @@ func actions(s State, w, h int) []string {
 	// (#875).
 	labelW = min(labelW, max(1, inner-besideLabel(s, countW)))
 	mid := len(ns) / 2
-	var lines []string
+	var lines []Row
 	for i, n := range ns {
 		join := "┤"
 		if i == 0 {
@@ -452,7 +492,7 @@ func actions(s State, w, h int) []string {
 		if i == mid {
 			l += focus(s)
 		}
-		lines = append(lines, Cut(l, inner))
+		lines = append(lines, Row{Text: Cut(l, inner), Role: RoleTool})
 	}
 	wroteN := 0
 	for _, a := range s.Actions {
@@ -462,11 +502,16 @@ func actions(s State, w, h int) []string {
 	}
 	switch {
 	case len(s.Actions) == 0:
-		lines = append(lines, "  nothing yet")
+		lines = append(lines, Row{Text: "  nothing yet", Role: RoleLabel})
 	case wroteN == 0:
-		lines = append(lines, "  nothing written to the tree")
+		lines = append(lines, Row{Text: "  nothing written to the tree", Role: RoleLabel})
 	default:
-		lines = append(lines, fmt.Sprintf("  %d wrote to the tree", wroteN))
+		lines = append(lines, Row{Text: fmt.Sprintf("  %d wrote to the tree", wroteN), Role: RoleLabel})
+	}
+	// The graph counts the actions held; the ones before them are said,
+	// not counted, so every figure in the pane is of the same actions.
+	if n := s.Dropped.Actions; n > 0 {
+		lines = append(lines, Row{Text: fmt.Sprintf("  %d earlier actions not kept", n), Role: RoleLabel})
 	}
 	room := h - 2 - len(lines)
 	if room > 0 && len(s.Actions) > 0 {
@@ -479,10 +524,10 @@ func actions(s State, w, h int) []string {
 			if a.Wrote {
 				mark = "*"
 			}
-			lines = append(lines, Cut("  "+mark+" "+Plain(a.Tool)+" "+Plain(a.Target), inner))
+			lines = append(lines, Row{Text: Cut("  "+mark+" "+Plain(a.Tool)+" "+Plain(a.Target), inner), Role: RoleTool})
 		}
 	}
-	return Box("actions", "", lines, w, h)
+	return Box(s.Theme, "actions", "", lines, w, h)
 }
 
 // budgetSegments are the budget line's figures, in order: the iteration
@@ -598,7 +643,7 @@ func turnRate(b Budget) (rate, queued *string) {
 // row says how many are not shown, so a short list is never read as all
 // there is.
 func entryLines(s State, w, room int) []string {
-	lines := []string{CutLeft(Plain(s.Input)+"█", w-2)}
+	lines := []Row{{Text: CutLeft(Plain(s.Input)+"█", w-2), Role: RoleYou}}
 	title := "task  ·  enter to run  ·  /help  ·  esc to clear, esc again to quit"
 	if s.Running {
 		title = "running — enter queues a steer for its next turn  ·  ^c stops it"
@@ -615,13 +660,13 @@ func entryLines(s State, w, room int) []string {
 			if i == 0 {
 				mark = "tab "
 			}
-			lines = append(lines, mark+Plain(p))
+			lines = append(lines, Row{Text: mark + Plain(p), Role: RoleLabel})
 		}
 		if hidden > 0 && room > 0 {
-			lines = append(lines, fmt.Sprintf("    … %d more", hidden))
+			lines = append(lines, Row{Text: fmt.Sprintf("    … %d more", hidden), Role: RoleLabel})
 		}
 	}
-	return Box(title, "", lines, w, 2+len(lines))
+	return Box(s.Theme, title, "", lines, w, 2+len(lines))
 }
 
 func contains(xs []string, x string) bool {
