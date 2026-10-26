@@ -73,51 +73,62 @@ func level(s State) int {
 // trail is the top row: where the person is, each level after the first
 // one more segment, and on the right the depth against the gauge, the key
 // that goes back out, and the program's name.
-func trail(s State, w int) string {
+func trail(s State, w int) []Span {
 	left := " Run"
 	if s.Nav.Open != "" {
 		left += " ⟩ " + string(s.Nav.Open)
 	}
 	right := fmt.Sprintf("L%d / %d", level(s), Levels)
 	if s.Nav.Open != "" {
-		right += "  ESC out"
+		right += "  " + keyRow(key{"ESC", "out"})
 	}
 	right += "  TRELLIS "
-	return spread(left, right, w)
+	return spread([]Span{{Text: left, Role: RoleLabel}}, []Span{{Text: right, Role: RoleLabel}}, w)
 }
 
-// keycaps are the keys that act at the level shown, for the status bar.
-// ^C is always one: it is the only key that stops a run.
+// keycaps are the keys that act at the level shown, for the status bar:
+// TAB and ⏎ at the top level, ESC inside a pane, and ^C always.
 func keycaps(s State) string {
 	if s.Nav.Open != "" {
-		return "ESC out  ^C stop"
+		return keyRow(key{"ESC", "out"}, stopKey(s))
 	}
-	return "TAB select  ⏎ in  ^C stop"
+	return keyRow(key{"TAB", "select"}, key{"⏎", "in"}, stopKey(s))
+}
+
+// stopKey is ^C, the only key that stops a run (owner decision,
+// 2026-10-25): with a run in flight it stops it and then leaves, and with
+// none it leaves.
+func stopKey(s State) key {
+	if s.Running {
+		return key{"^C", "stop"}
+	}
+	return key{"^C", "leave"}
 }
 
 // statusBar is the last row: the live keys on the left, and on the right
-// the worktree, the model and the tier. When the row runs short the model
-// is cut first (context), then the keys give way to ^C alone, then to
-// nothing: what the worktree holds matters more than a key the Trail and
-// the strip already imply.
-func statusBar(s State, w int) string {
-	for _, keys := range []string{" " + keycaps(s), " ^C stop", ""} {
-		ctx := context(s, max(w-Width(keys)-2, 1))
-		if Width(keys)+Width(ctx)+2 <= w {
-			return spread(keys, ctx+" ", w)
+// the worktree as a Status, the model and the tier (barRight). When the
+// row runs short the model is cut first, then the keys give way to ^C
+// alone, then to nothing: what the worktree holds matters more than a key
+// the Trail and the strip already imply.
+func statusBar(s State, w int) []Span {
+	// Two spaces at least between the keys and the Status, so the last key
+	// and the worktree's word never read as one phrase.
+	const gap = 2
+	for _, keys := range []string{" " + keycaps(s), " " + keyRow(stopKey(s)), ""} {
+		right := append(barRight(s, max(w-Width(keys)-gap-1, 1)), Span{Text: " "})
+		if Width(keys)+gap+spansWidth(right) <= w {
+			return spread([]Span{{Text: keys, Role: RoleLabel}}, right, w)
 		}
 	}
-	return Cut(" "+context(s, w-1), w)
+	return append([]Span{{Text: " "}}, barRight(s, w-1)...)
 }
 
 // spread is left and right on one row of w cells, with the room between
-// them; when both do not fit, the right is cut first.
-func spread(left, right string, w int) string {
-	gap := w - Width(left) - Width(right)
-	if gap < 1 {
-		return Cut(left+" "+right, w)
-	}
-	return left + strings.Repeat(" ", gap) + right
+// them; when both do not fit, line cuts the right first.
+func spread(left, right []Span, w int) []Span {
+	gap := max(w-spansWidth(left)-spansWidth(right), 1)
+	out := append(append([]Span{}, left...), Span{Text: strings.Repeat(" ", gap)})
+	return append(out, right...)
 }
 
 // stage is the rows between the Now strip and the messages row, h rows of
@@ -184,9 +195,9 @@ func foldedRow(s State, w int) string {
 	}
 	row := " " + strings.Join(parts, " · ")
 	if s.Nav.Selected != "" {
-		row += "   ⏎ goes in"
+		row += "   " + keyRow(key{"⏎", "in"})
 	} else {
-		row += "   TAB selects"
+		row += "   " + keyRow(key{"TAB", "select"})
 	}
 	role := RoleLabel
 	if s.Nav.Selected != "" {
