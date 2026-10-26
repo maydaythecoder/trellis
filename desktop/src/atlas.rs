@@ -63,6 +63,7 @@
 //! (ADR 0007, S10).
 
 use crate::frames::Response;
+use crate::json;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -98,14 +99,6 @@ pub const PASSES: usize = 6;
 /// Whether `id` is one the Atlas asked with.
 pub fn is_atlas_id(id: Option<&str>) -> bool {
     id.is_some_and(|i| i.starts_with(ID_PREFIX))
-}
-
-fn count(o: &Map<String, Value>, k: &str) -> Option<u64> {
-    o.get(k).and_then(Value::as_u64)
-}
-
-fn text(o: &Map<String, Value>, k: &str) -> Option<String> {
-    o.get(k).and_then(Value::as_str).map(str::to_string)
 }
 
 /// A path as trellis gives one: relative to the root, `/`-separated, with
@@ -160,10 +153,7 @@ struct Codebase {
 
 fn read_codebase(data: &Value) -> Result<Codebase, String> {
     let o = data.as_object().ok_or("it is not an object")?;
-    let list = o
-        .get("modules")
-        .and_then(Value::as_array)
-        .ok_or("it has no list of modules")?;
+    let list = json::array(o, "modules").ok_or("it has no list of modules")?;
     let mut rows: Vec<Row> = Vec::new();
     let mut calls: Vec<Vec<(String, u64)>> = Vec::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -173,7 +163,8 @@ fn read_codebase(data: &Value) -> Result<Codebase, String> {
             rows_skipped += 1;
             continue;
         };
-        let (Some(module), Some(path)) = (text(mo, "module"), text(mo, "path")) else {
+        let (Some(module), Some(path)) = (json::string(mo, "module"), json::string(mo, "path"))
+        else {
             rows_skipped += 1;
             continue;
         };
@@ -182,23 +173,22 @@ fn read_codebase(data: &Value) -> Result<Codebase, String> {
             continue;
         }
         calls.push(
-            mo.get("calls")
-                .and_then(Value::as_array)
+            json::array(mo, "calls")
                 .map(|cs| {
                     cs.iter()
                         .filter_map(|c| {
                             let co = c.as_object()?;
-                            Some((text(co, "module")?, count(co, "call_sites")?))
+                            Some((json::string(co, "module")?, json::u64(co, "call_sites")?))
                         })
                         .collect()
                 })
                 .unwrap_or_default(),
         );
         rows.push(Row {
-            defines: count(mo, "defines"),
-            ambiguous: count(mo, "ambiguous"),
-            unresolved: count(mo, "unresolved"),
-            calls_not_drawn: count(mo, "calls_not_drawn"),
+            defines: json::u64(mo, "defines"),
+            ambiguous: json::u64(mo, "ambiguous"),
+            unresolved: json::u64(mo, "unresolved"),
+            calls_not_drawn: json::u64(mo, "calls_not_drawn"),
             module,
             path,
         });
@@ -227,13 +217,13 @@ fn read_codebase(data: &Value) -> Result<Codebase, String> {
     Ok(Codebase {
         rows,
         edges,
-        modules_indexed: count(o, "modules_indexed"),
-        bound_call_sites: count(o, "bound_call_sites"),
-        ambiguous: count(o, "ambiguous"),
-        unresolved: count(o, "unresolved"),
-        modules_not_drawn: count(o, "modules_not_drawn"),
-        commit: text(o, "commit").filter(|c| is_commit(c)),
-        date: text(o, "date"),
+        modules_indexed: json::u64(o, "modules_indexed"),
+        bound_call_sites: json::u64(o, "bound_call_sites"),
+        ambiguous: json::u64(o, "ambiguous"),
+        unresolved: json::u64(o, "unresolved"),
+        modules_not_drawn: json::u64(o, "modules_not_drawn"),
+        commit: json::string(o, "commit").filter(|c| is_commit(c)),
+        date: json::string(o, "date"),
         rows_skipped,
     })
 }
@@ -279,18 +269,14 @@ struct History {
 
 fn read_history(data: &Value) -> Result<History, String> {
     let o = data.as_object().ok_or("it is not an object")?;
-    let list = |k: &str| {
-        o.get(k)
-            .and_then(Value::as_array)
-            .ok_or_else(|| format!("its {k} is not a list"))
-    };
+    let list = |k: &str| json::array(o, k).ok_or_else(|| format!("its {k} is not a list"));
     let head = match o.get("head") {
         Some(Value::Null) => None,
         Some(Value::Object(h)) => {
-            let commit = text(h, "commit")
+            let commit = json::string(h, "commit")
                 .filter(|c| is_commit(c))
                 .ok_or("its head has no commit id")?;
-            Some((commit, text(h, "date")))
+            Some((commit, json::string(h, "date")))
         }
         _ => return Err("it has no head".into()),
     };
@@ -305,15 +291,15 @@ fn read_history(data: &Value) -> Result<History, String> {
         .iter()
         .filter_map(Value::as_object)
         .filter_map(|c| {
-            let path = text(c, "path").filter(|p| repository_path(p))?;
+            let path = json::string(c, "path").filter(|p| repository_path(p))?;
             Some(Churn {
                 path,
-                d30: count(c, "d30"),
-                d90: count(c, "d90"),
-                d365: count(c, "d365"),
-                commits: count(c, "commits"),
-                last_commit: text(c, "last_commit").filter(|s| is_commit(s)),
-                last_date: text(c, "last_date"),
+                d30: json::u64(c, "d30"),
+                d90: json::u64(c, "d90"),
+                d365: json::u64(c, "d365"),
+                commits: json::u64(c, "commits"),
+                last_commit: json::string(c, "last_commit").filter(|s| is_commit(s)),
+                last_date: json::string(c, "last_date"),
             })
         })
         .collect();
@@ -322,12 +308,10 @@ fn read_history(data: &Value) -> Result<History, String> {
         .filter_map(Value::as_object)
         .filter_map(|c| {
             Some(Commit {
-                commit: text(c, "commit").filter(|s| is_commit(s))?,
-                date: text(c, "date"),
-                subject: text(c, "subject"),
-                paths: c
-                    .get("paths")
-                    .and_then(Value::as_array)
+                commit: json::string(c, "commit").filter(|s| is_commit(s))?,
+                date: json::string(c, "date"),
+                subject: json::string(c, "subject"),
+                paths: json::array(c, "paths")
                     .map(|ps| {
                         ps.iter()
                             .filter_map(Value::as_str)
@@ -344,9 +328,9 @@ fn read_history(data: &Value) -> Result<History, String> {
         .filter_map(Value::as_object)
         .filter_map(|t| {
             Some(Tag {
-                name: text(t, "name").filter(|n| !n.is_empty())?,
-                commit: text(t, "commit").filter(|s| is_commit(s))?,
-                date: text(t, "date"),
+                name: json::string(t, "name").filter(|n| !n.is_empty())?,
+                commit: json::string(t, "commit").filter(|s| is_commit(s))?,
+                date: json::string(t, "date"),
             })
         })
         .collect();
@@ -389,28 +373,25 @@ struct Symbols {
 
 fn read_symbols(data: &Value) -> Result<Symbols, String> {
     let o = data.as_object().ok_or("it is not an object")?;
-    let list = o
-        .get("symbols")
-        .and_then(Value::as_array)
-        .ok_or("it has no list of symbols")?;
+    let list = json::array(o, "symbols").ok_or("it has no list of symbols")?;
     let mut skipped = 0;
     let symbols = list
         .iter()
         .filter_map(|s| {
             let read = || {
                 let so = s.as_object()?;
-                let kind = text(so, "kind").filter(|k| KINDS.contains(&k.as_str()))?;
-                let line = count(so, "line").filter(|&l| l > 0)?;
+                let kind = json::string(so, "kind").filter(|k| KINDS.contains(&k.as_str()))?;
+                let line = json::u64(so, "line").filter(|&l| l > 0)?;
                 Some(Symbol {
-                    module: text(so, "module")?,
-                    path: text(so, "path").filter(|p| repository_path(p))?,
-                    name: text(so, "name").filter(|n| !n.is_empty())?,
+                    module: json::string(so, "module")?,
+                    path: json::string(so, "path").filter(|p| repository_path(p))?,
+                    name: json::string(so, "name").filter(|n| !n.is_empty())?,
                     kind,
                     line,
-                    end_line: count(so, "end_line").filter(|&e| e >= line)?,
-                    calls_in: count(so, "calls_in"),
-                    calls_in_ambiguous: count(so, "calls_in_ambiguous"),
-                    calls_out: count(so, "calls_out"),
+                    end_line: json::u64(so, "end_line").filter(|&e| e >= line)?,
+                    calls_in: json::u64(so, "calls_in"),
+                    calls_in_ambiguous: json::u64(so, "calls_in_ambiguous"),
+                    calls_out: json::u64(so, "calls_out"),
                 })
             };
             let r = read();
@@ -421,7 +402,7 @@ fn read_symbols(data: &Value) -> Result<Symbols, String> {
         })
         .collect();
     Ok(Symbols {
-        modules_indexed: count(o, "modules_indexed"),
+        modules_indexed: json::u64(o, "modules_indexed"),
         listed: list.len(),
         list: symbols,
         skipped,
@@ -481,55 +462,54 @@ fn read_radius(data: &Value) -> Result<RadiusAnswer, String> {
     let reach = o.get("reach").and_then(Value::as_object).unwrap_or(&empty);
     let doubt = o.get("doubt").and_then(Value::as_object).unwrap_or(&empty);
     let objects = |m: &Map<String, Value>, k: &str| -> Vec<Map<String, Value>> {
-        m.get(k)
-            .and_then(Value::as_array)
+        json::array(m, k)
             .map(|a| a.iter().filter_map(Value::as_object).cloned().collect())
             .unwrap_or_default()
     };
     Ok(RadiusAnswer {
-        symbol: text(o, "symbol"),
-        file: text(o, "file"),
-        resolved: count(reach, "resolved"),
-        ambiguous: count(reach, "ambiguous"),
-        symbols_reached: count(reach, "symbols_reached"),
-        unbound_in_touched_files: count(doubt, "unbound_in_touched_files"),
-        touched_files: count(doubt, "touched_files"),
+        symbol: json::string(o, "symbol"),
+        file: json::string(o, "file"),
+        resolved: json::u64(reach, "resolved"),
+        ambiguous: json::u64(reach, "ambiguous"),
+        symbols_reached: json::u64(reach, "symbols_reached"),
+        unbound_in_touched_files: json::u64(doubt, "unbound_in_touched_files"),
+        touched_files: json::u64(doubt, "touched_files"),
         reasons: objects(doubt, "reasons")
             .iter()
             .filter_map(|r| {
                 Some((
-                    text(r, "reason")?,
-                    text(r, "explain"),
-                    count(r, "call_sites"),
+                    json::string(r, "reason")?,
+                    json::string(r, "explain"),
+                    json::u64(r, "call_sites"),
                 ))
             })
             .collect(),
         files: objects(doubt, "files")
             .iter()
-            .filter_map(|f| Some((text(f, "path")?, count(f, "call_sites"))))
+            .filter_map(|f| Some((json::string(f, "path")?, json::u64(f, "call_sites"))))
             .collect(),
         reached: objects(o, "reached")
             .iter()
             .map(|r| Reached {
-                symbol: text(r, "symbol"),
-                module: text(r, "module"),
-                path: text(r, "path"),
-                kind: text(r, "kind"),
-                line: count(r, "line"),
+                symbol: json::string(r, "symbol"),
+                module: json::string(r, "module"),
+                path: json::string(r, "path"),
+                kind: json::string(r, "kind"),
+                line: json::u64(r, "line"),
             })
             .collect(),
-        reached_not_listed: count(o, "reached_not_listed"),
+        reached_not_listed: json::u64(o, "reached_not_listed"),
         sites: objects(o, "sites")
             .iter()
             .filter_map(|s| {
                 Some(Site {
-                    path: text(s, "path")?,
-                    line: count(s, "line"),
+                    path: json::string(s, "path")?,
+                    line: json::u64(s, "line"),
                     certain: s.get("certain").and_then(Value::as_bool),
                 })
             })
             .collect(),
-        sites_not_listed: count(o, "sites_not_listed"),
+        sites_not_listed: json::u64(o, "sites_not_listed"),
     })
 }
 

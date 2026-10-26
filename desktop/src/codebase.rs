@@ -26,7 +26,8 @@
 
 use crate::frames::Response;
 use crate::graph::{self, CHAR_W, LABEL_ASCENT, LABEL_H, Rect, Text, round};
-use serde_json::{Map, Value, json};
+use crate::json;
+use serde_json::{Value, json};
 
 /// The overview's coordinate space: regions on a grid of cells, as many
 /// rows as they need. The page scales it to its pane.
@@ -72,10 +73,6 @@ struct Module {
     unresolved: Option<u64>,
 }
 
-fn count(o: &Map<String, Value>, k: &str) -> Option<u64> {
-    o.get(k).and_then(Value::as_u64)
-}
-
 /// The answer's modules. One without a string `module` is left out: there
 /// is nothing to name it by. A call without a string `module` names no
 /// edge.
@@ -105,9 +102,9 @@ fn read_modules(data: &Value) -> Vec<Module> {
             Some(Module {
                 path: o.get("path").and_then(Value::as_str).map(str::to_string),
                 callees,
-                calls_not_drawn: count(o, "calls_not_drawn"),
-                ambiguous: count(o, "ambiguous"),
-                unresolved: count(o, "unresolved"),
+                calls_not_drawn: json::u64(o, "calls_not_drawn"),
+                ambiguous: json::u64(o, "ambiguous"),
+                unresolved: json::u64(o, "unresolved"),
                 name,
             })
         })
