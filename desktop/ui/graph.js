@@ -15,17 +15,9 @@
 //
 // Nothing here moves.
 
-const SVG = "http://www.w3.org/2000/svg";
-
-function isNumber(v) {
-  return typeof v === "number" && Number.isFinite(v);
-}
-
-function make(doc, tag, attrs) {
-  const e = doc.createElementNS(SVG, tag);
-  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v));
-  return e;
-}
+// make(doc, tag, attrs) is dom.js's svg: an SVG element with its attributes.
+import { svg as make } from "./dom.js";
+import { isCount } from "./fmt.js";
 
 // One string of the layout at its point, or nothing when the layout sent
 // no text or no position for it.
@@ -33,7 +25,7 @@ function text(doc, t, cls) {
   if (t === null || typeof t !== "object" || typeof t.text !== "string" || t.text === "") {
     return null;
   }
-  if (!isNumber(t.x) || !isNumber(t.y)) return null;
+  if (!isCount(t.x) || !isCount(t.y)) return null;
   const anchor = t.anchor === "end" ? "end" : "start";
   const e = make(doc, "text", { x: t.x, y: t.y, "text-anchor": anchor, class: cls });
   e.textContent = t.text;
@@ -41,7 +33,7 @@ function text(doc, t, cls) {
 }
 
 function point(p) {
-  return Array.isArray(p) && p.length === 2 && isNumber(p[0]) && isNumber(p[1]);
+  return Array.isArray(p) && p.length === 2 && isCount(p[0]) && isCount(p[1]);
 }
 
 // The layout, drawn whole into the run section's graph container. A view
@@ -51,8 +43,8 @@ export function drawGraph(doc, pane, g) {
   if (
     g === null ||
     typeof g !== "object" ||
-    !isNumber(g.width) ||
-    !isNumber(g.height) ||
+    !isCount(g.width) ||
+    !isCount(g.height) ||
     !Array.isArray(g.nodes)
   ) {
     const p = doc.createElement("p");
@@ -80,8 +72,8 @@ export function drawGraph(doc, pane, g) {
   }
 
   for (const n of g.nodes) {
-    if (!n || !isNumber(n.x) || !isNumber(n.y)) continue;
-    const r = isNumber(n.r) ? n.r : 5;
+    if (!n || !isCount(n.x) || !isCount(n.y)) continue;
+    const r = isCount(n.r) ? n.r : 5;
     // A tool that changed the tree is the one node whose colour carries a
     // fact rather than a status, as in the TUI.
     let cls = "graph-node graph-ring";
@@ -102,8 +94,8 @@ export function drawGraph(doc, pane, g) {
   }
 
   const f = g.focus;
-  if (f && isNumber(f.x) && isNumber(f.y)) {
-    svg.append(make(doc, "circle", { cx: f.x, cy: f.y, r: isNumber(f.r) ? f.r : 7, class: "graph-focus" }));
+  if (f && isCount(f.x) && isCount(f.y)) {
+    svg.append(make(doc, "circle", { cx: f.x, cy: f.y, r: isCount(f.r) ? f.r : 7, class: "graph-focus" }));
   }
   for (const [t, c] of [
     [g.focus_label, "graph-focus-label"],
