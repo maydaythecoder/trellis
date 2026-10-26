@@ -65,6 +65,15 @@ real usage after v0.2, per configuration, per `COST_MODEL.md`.
 share and clamped it to one, is removed; `Budget::shares` (ADR 0037 decision 5) is the
 only way a budget is divided, and the rule above names it.
 
+**Amended 2026-10-26 (#798, ADR 0058 §2):** a person may raise a ceiling
+during a run, with `trellis rpc`'s `set_budget`; nothing lowers one, and
+neither the engine nor the model moves one. The ceilings stay hard: the
+loop enforces whichever is current. A raise is to the run's whole ceiling
+and is dealt through `Budget::shares` like the first, so it divides across
+partitions and never multiplies, and the person's raise is to be recorded in
+the trail (ADR 0058 §6). Accepted, not built: #807 builds `set_budget`, and
+the trail's record of a raise waits on #868.
+
 ## Amendment 2026-10-02: the calibration rule, and why the defaults did not move
 
 The rule (decided by the owner on #148, 2026-09-28): the default for each
