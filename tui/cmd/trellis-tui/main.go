@@ -11,6 +11,13 @@
 // Before the child starts it reads the terminal's colour depth and
 // background once, for the theme (internal/theme). --theme dark or light
 // replaces the terminal's answer, since Windows always answers dark.
+//
+// The flow: run parses the flags, starts the child (internal/rpc) and hands
+// it to the Bubble Tea program (internal/model's App, which feeds the
+// child's lines and the keys to the Model and draws with internal/view).
+// However the program ends, finish then sends the child quit and waits for
+// it unless it has exited, so a run in flight rolls back and writes its
+// trail, and says what ended the program.
 package main
 
 import (
@@ -22,6 +29,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -148,27 +156,86 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "trellis-tui:", err)
 		return 1
 	}
-	m := model.New(model.Options{Task: a.task, ModelSpec: a.model})
+	m := model.New(model.Options{Task: a.task, ModelSpec: a.model, Theme: th})
 	app := model.NewApp(m, c)
-	// Nothing paints with the theme yet: #841 hands it to the model and
-	// the view, and paints every row with it.
-	_ = th
-	if _, err := tea.NewProgram(app, tea.WithAltScreen()).Run(); err != nil {
-		fmt.Fprintln(stderr, "trellis-tui:", err)
-		// The screen failed, not trellis: still quit and wait, so a run in
-		// flight rolls back rather than being left to a killed process.
-		if serr := c.Shutdown(); serr != nil {
-			fmt.Fprintln(stderr, "trellis-tui:", serr)
+	_, err = tea.NewProgram(app, tea.WithAltScreen()).Run()
+	// The program has ended, on whatever path: what it left waiting on the
+	// child's lines and the clock ends with it (#847).
+	app.Close()
+	return finish(c, m.Quitting, err, stderr, shutdownWithin)
+}
+
+// child is what finish needs of the `trellis rpc` child: *rpc.Client, or a
+// test's stand-in.
+type child interface {
+	Exited() <-chan struct{}
+	Shutdown() error
+	Stderr() ([]string, int)
+}
+
+// shutdownWithin is how long finish waits for the child after quit. A run
+// in flight aborts, rolls back and writes its trail first, which takes
+// seconds; past this the program exits and leaves the child to finish on
+// its own, since nothing here kills it (ADR 0052).
+const shutdownWithin = 30 * time.Second
+
+// finish is every way out of the program once the child has started, and
+// the exit code. Run returns on four paths: the person quit and the child
+// exited (0); the child exited without being asked; the screen failed; or a
+// signal ended the program, which Bubble Tea turns into a quit with no
+// error (SIGTERM) or ErrInterrupted (SIGINT). Unless the child has exited,
+// it is sent quit and waited for, within `within`, so a run in flight rolls
+// back and writes its trail; and the message names what happened, rather
+// than blaming the child for a signal (#845).
+func finish(c child, quitting bool, runErr error, stderr io.Writer, within time.Duration) int {
+	select {
+	case <-c.Exited():
+		switch {
+		case runErr != nil:
+			fmt.Fprintln(stderr, "trellis-tui:", runErr)
+			return 1
+		case quitting:
+			return 0
 		}
-		return 1
-	}
-	if !m.Quitting {
-		// The child exited without being asked; say why on the way out.
-		lines, _ := c.Stderr()
+		fmt.Fprintln(stderr, "trellis-tui: trellis rpc exited without being asked to quit; its last messages:")
+		lines, dropped := c.Stderr()
+		if dropped > 0 {
+			fmt.Fprintf(stderr, "(%d earlier lines not kept)\n", dropped)
+		}
 		for _, l := range lines {
 			fmt.Fprintln(stderr, view.Plain(l))
 		}
 		return 1
+	default:
 	}
-	return 0
+	switch {
+	case runErr != nil:
+		// The screen failed, or SIGINT interrupted the program
+		// (tea.ErrInterrupted, "program was interrupted"): not trellis.
+		fmt.Fprintln(stderr, "trellis-tui:", runErr)
+	case quitting:
+		fmt.Fprintln(stderr, "trellis-tui: stopped before trellis rpc finished quitting")
+	default:
+		fmt.Fprintln(stderr, "trellis-tui: stopped by a signal")
+	}
+	fmt.Fprintln(stderr, "trellis-tui: asking trellis rpc to quit; a run in flight rolls back first")
+	done := make(chan error, 1)
+	go func() { done <- c.Shutdown() }()
+	timer := time.NewTimer(within)
+	defer timer.Stop()
+	select {
+	case serr := <-done:
+		if serr != nil {
+			fmt.Fprintln(stderr, "trellis-tui:", serr)
+			return 1
+		}
+	case <-timer.C:
+		fmt.Fprintf(stderr, "trellis-tui: trellis rpc had not exited %s after quit; it is left to finish, not killed\n", within)
+		return 1
+	}
+	// The person had asked to quit, and the child has now exited cleanly.
+	if quitting && runErr == nil {
+		return 0
+	}
+	return 1
 }

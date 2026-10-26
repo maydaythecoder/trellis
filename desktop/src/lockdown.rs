@@ -435,6 +435,45 @@ mod tests {
     }
 
     #[test]
+    fn page_levels_read_what_they_show_when_entered() {
+        // The risk (#826): a section that read what it shows when its rail
+        // button was pressed, left looking for the rail the levels replaced,
+        // so entering it shows a stale or empty view and nothing fails. Each
+        // section that reads on show does so through rpc.js's onShown, which
+        // watches the section's hidden attribute whatever shows it, and no
+        // module looks for the rail.
+        for (module, section) in [
+            ("atlas.js", "atlas"),
+            ("codebase.js", "codebase"),
+            ("trails.js", "trails"),
+            ("queue.js", "board"),
+        ] {
+            assert!(
+                code_of(module).contains(&format!("onShown(doc, \"{section}\", ")),
+                "{module} does not read when {section} is entered"
+            );
+        }
+        for (module, code) in ui_code() {
+            assert!(
+                !code.contains("nav.rail"),
+                "{module} looks for the rail the levels replaced"
+            );
+        }
+        // onShown follows the hidden attribute, which keys.js sets on every
+        // section when a level is shown.
+        let rpc = code_of("rpc.js");
+        let on_shown = function_body(&rpc, "onShown");
+        assert!(
+            on_shown.contains(r#"attributeFilter: ["hidden"]"#),
+            "{on_shown}"
+        );
+        assert!(
+            function_body(&code_of("keys.js"), "show").contains("s.hidden = s.id !== here;"),
+            "keys.js shows a level some other way"
+        );
+    }
+
+    #[test]
     fn page_has_one_log_region() {
         // The risk: two live log regions, so a screen reader announces the
         // run twice or the wrong one, or a log outside the run section.
@@ -2469,13 +2508,14 @@ mod tests {
         // carries PR and CI state, is the core's own command.
         assert_eq!(invoked, ["get_overview"], "{invoked:?}");
         assert!(
-            js.contains(r#"import { send, start } from "./rpc.js";"#),
+            js.contains(r#"import { onShown, runEnded, send, start } from "./rpc.js";"#),
             "queue.js reaches the core some other way"
         );
-        // When it asks: on opening, on Refresh, and after each run_end.
-        assert!(js.contains(r#"aria-controls="board""#), "{js}");
+        // When it asks: on entering the Board's level, on Refresh, and after
+        // each run_end.
+        assert!(js.contains(r#"onShown(doc, "board", refresh);"#), "{js}");
         assert!(js.contains(r#"getElementById("qb-refresh").addEventListener("click""#));
-        assert!(js.contains(r#"f.type === "run_end") askQueue"#));
+        assert!(js.contains("if (runEnded(event.payload)) askQueue(doc, tauri);"));
     }
 
     #[test]
@@ -2984,7 +3024,8 @@ mod tests {
         // It reaches the core only through rpc.js's send (#819), which
         // calls only rpc_send (model_gate_model_js_parses_no_html).
         assert!(
-            !js.contains("invoke(") && js.contains(r#"import { send, start } from "./rpc.js";"#),
+            !js.contains("invoke(")
+                && js.contains(r#"import { onShown, send, start } from "./rpc.js";"#),
             "atlas.js reaches the core some other way"
         );
         // Every question carries an Atlas id, so the core keeps its
@@ -3120,14 +3161,14 @@ mod tests {
         // Showing the Atlas folds it; the user can open it again, and every
         // other section leaves it to model.js, as before.
         let js = code_of("atlas.js");
-        let rail = js
-            .split(r#"button[aria-controls="atlas"]"#)
+        let shown = js
+            .split(r#"onShown(doc, "atlas", () => {"#)
             .nth(1)
-            .and_then(|r| r.split("\n  }\n").next())
-            .expect("atlas.js listens to its rail button");
+            .and_then(|r| r.split("\n  });\n").next())
+            .expect("atlas.js acts when its section is shown");
         assert!(
-            rail.contains(r#"getElementById("model-pane")"#) && rail.contains(".open = false"),
-            "showing the Atlas leaves the model pane open: {rail}"
+            shown.contains(r#"getElementById("model-pane")"#) && shown.contains(".open = false"),
+            "showing the Atlas leaves the model pane open: {shown}"
         );
         for (name, code) in ui_code() {
             if name != "model.js" && name != "atlas.js" {
@@ -3309,7 +3350,12 @@ mod tests {
                 if let Some(v) = value.strip_prefix('=') {
                     let v = v.trim_start();
                     let v = v.strip_prefix("async").map_or(v, str::trim_start);
-                    if v.starts_with("function") || v.starts_with('(') {
+                    // An arrow's one parameter may go without parentheses
+                    // (`v => ...`), and is a definition all the same.
+                    let param = ident(v);
+                    let bare_arrow =
+                        !param.is_empty() && v[param.len()..].trim_start().starts_with("=>");
+                    if v.starts_with("function") || v.starts_with('(') || bare_arrow {
                         out.insert(name);
                     }
                 }
@@ -3345,6 +3391,14 @@ mod tests {
                     "{module} defines {name}, whose one home is {home}: import it from there"
                 );
             }
+        }
+        // A run's end is known one way, rpc.js's runEnded (#816): no other
+        // module tests a frame for run_end itself.
+        for (module, code) in &ui {
+            assert!(
+                module == "rpc.js" || !code.contains(r#""run_end""#),
+                "{module} tests for run_end itself: use rpc.js's runEnded"
+            );
         }
     }
 
@@ -3568,6 +3622,10 @@ mod tests {
         // passes unseen, or counts a nested one, so a local helper of the
         // same name fails a module for nothing.
         let code = "function el(doc) {}\nexport async function send(t) {}\nconst str = (v) => v;\nlet plural = async (k) => k;\nconst fill = function (p) {};\nconst SIZE = 3;\n  function start() {}\nexport function atEnd(p) {}\n";
+        // An arrow whose one parameter has no parentheses is read too, and
+        // a value that only names another binding is not a definition.
+        let bare = top_level_definitions("const isCount = v => v;\nconst muted = el;\n");
+        assert_eq!(bare.into_iter().collect::<Vec<_>>(), ["isCount"]);
         let got: Vec<String> = top_level_definitions(code).into_iter().collect();
         assert_eq!(got, ["atEnd", "el", "fill", "plural", "send", "str"]);
     }
@@ -4464,10 +4522,16 @@ mod tests {
         for want in [
             r#"type: "get_session_stats""#,
             r#"listen("rpc-frame""#,
-            r#"f.type === "run_end") askSessionTokens(tauri)"#,
+            "if (runEnded(event.payload)) askSessionTokens(tauri);",
         ] {
             assert!(main.contains(want), "main.js lacks {want}");
         }
+        // rpc.js's runEnded is the one way the page knows a run ended
+        // (#816): the child's run_end frame.
+        assert!(
+            function_body(&code_of("rpc.js"), "runEnded").contains(r#"frame.type === "run_end""#),
+            "runEnded reads something other than the run_end frame"
+        );
         let started = main
             .split(r#"listen("child-started""#)
             .nth(1)

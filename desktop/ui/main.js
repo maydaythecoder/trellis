@@ -28,7 +28,7 @@
 
 import { wireKeys } from "./keys.js";
 import { drawView, wireLog } from "./render.js";
-import { send, start } from "./rpc.js";
+import { runEnded, send, start } from "./rpc.js";
 import { drawOpenRefusal, drawOverview, drawOverviewChild } from "./overview.js";
 import { askStarters, composerStopped, drawComposer, wireComposer } from "./composer.js";
 import { drawDialogs, wireDialogs } from "./dialogs.js";
@@ -147,8 +147,7 @@ async function main() {
   // type is read: the frame is the child's, and the figures come from
   // trellis's own answer.
   await tauri.event.listen("rpc-frame", (event) => {
-    const f = event.payload;
-    if (f !== null && typeof f === "object" && f.type === "run_end") askSessionTokens(tauri);
+    if (runEnded(event.payload)) askSessionTokens(tauri);
   });
   // A Codebase answer that saved .trellis/index.bin (#654) changes what the
   // overview's codebase pane reads, which is only that cache, so the
