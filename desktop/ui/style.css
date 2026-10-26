@@ -514,6 +514,13 @@ article.past-run section > * + * {
   gap: var(--space-1);
 }
 
+/* A Stat's meta (the Atlas's source tag) stays one word: the label wraps
+   beside it, never through it. */
+.cd-stat-label > .cd-stat-unit {
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
 /* A long name on one line, ending in an ellipsis; the element's title
    carries it whole. */
 .cut {

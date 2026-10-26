@@ -2066,7 +2066,7 @@ function changesView(A) {
     b.type = "button";
     b.addEventListener("click", () => setLens(A, "diff"));
     p.append(b, ".");
-    out.push(p);
+    out.push(titled("Changes"), p);
   }
   if (A.D.history === null) {
     out.push(note(A, "The history was not read, so no commits are listed."));
