@@ -28,6 +28,11 @@
 // shown for a repository: the history, HEAD, HEAD's symbols, then each
 // earlier snapshot the core planned, newest first.
 
+import { el } from "./dom.js";
+import { isCount, plural, str } from "./fmt.js";
+import { onEscape, typing } from "./keys.js";
+import { onShown, send, start } from "./rpc.js";
+
 const ID = "desktop-atlas-";
 // get_codebase lists this many modules: all of any repository the layout
 // draws (rpc's own default is 40).
@@ -64,9 +69,9 @@ const DOUBT = 16;
 const COMMIT = 32;
 
 const TOKENS = [
-  "bg", "fg", "muted", "border", "pane-bg", "rail-bg", "accent", "region", "region-test",
+  "ground", "ink", "ink-muted", "line", "panel", "panel-inset", "signal", "region", "region-test",
   "region-head", "region-head-test", "cell", "cell-test", "cell-line", "edge", "caller", "callee",
-  "reach", "doubt", "added", "removed", "churn-1", "churn-2", "churn-3", "churn-4", "churn-5",
+  "reach", "doubt", "diff-add", "diff-del", "churn-1", "churn-2", "churn-3", "churn-4", "churn-5",
 ];
 
 const FONT = {
@@ -87,14 +92,8 @@ const CHURN_BINS = ["0", "1", "2", "3–4", "5–8", "9+"];
 const WINDOWS = ["d30", "d90", "d365", "commits"];
 
 // --- small helpers ---------------------------------------------------------
-
-function isCount(v) {
-  return typeof v === "number" && Number.isFinite(v);
-}
-
-function str(v) {
-  return typeof v === "string" ? v : null;
-}
+// el, isCount, plural and str are the page's shared ones (dom.js, fmt.js);
+// these are the Atlas's own.
 
 function list(v) {
   return Array.isArray(v) ? v : [];
@@ -110,17 +109,6 @@ function day(s) {
 
 function short(s) {
   return typeof s === "string" ? s.slice(0, 7) : "";
-}
-
-function plural(k, one, many) {
-  return `${k} ${k === 1 ? one : many}`;
-}
-
-function el(doc, tag, text, cls) {
-  const e = doc.createElement(tag);
-  if (text !== undefined && text !== null) e.textContent = text;
-  if (cls) e.className = cls;
-  return e;
 }
 
 function byId(A, id) {
@@ -165,7 +153,7 @@ function inkOn(A, fill) {
   if (v) return v;
   const lf = lum(fill);
   const contrast = (a, b) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
-  v = contrast(lf, lum(A.P.fg)) >= contrast(lf, lum(A.P.bg)) ? A.P.fg : A.P.bg;
+  v = contrast(lf, lum(A.P.ink)) >= contrast(lf, lum(A.P.ground)) ? A.P.ink : A.P.ground;
   A.inks.set(fill, v);
   return v;
 }
@@ -365,15 +353,13 @@ function status(A, text) {
   byId(A, "at-status").textContent = text;
 }
 
-async function send(A, line) {
-  try {
-    await A.tauri.core.invoke("rpc_send", { line });
-    return true;
-  } catch (err) {
+// Sends one line through the core (rpc.js's send). A refusal drops the
+// question in flight and says why in the Atlas's status line.
+function forward(A, line) {
+  return send(A.tauri, line, (why) => {
     A.inflight = null;
-    status(A, `Open a repository to see its atlas. ${err}`);
-    return false;
-  }
+    status(A, `Open a repository to see its atlas. ${why}`);
+  });
 }
 
 function nextId(A, kind) {
@@ -389,7 +375,7 @@ function pump(A) {
   const v = A.view;
   if (!A.askedHistory && (v === null || v.history === null)) {
     A.askedHistory = true;
-    send(A, { id: nextId(A, "history"), type: "get_history", ...HISTORY_ASKED });
+    forward(A, { id: nextId(A, "history"), type: "get_history", ...HISTORY_ASKED });
   }
   if (A.inflight !== null) return;
   const snaps = v ? list(v.snapshots) : [];
@@ -398,7 +384,7 @@ function pump(A) {
   if (!head || head.state === "planned") {
     A.inflight = { kind: "snapshot", label: "HEAD" };
     status(A, progressText(A));
-    send(A, { id: nextId(A, "codebase"), type: "get_codebase", edges: "all", limit: MODULES_ASKED });
+    forward(A, { id: nextId(A, "codebase"), type: "get_codebase", edges: "all", limit: MODULES_ASKED });
     return;
   }
   if (head.state === "loaded" && v.symbols === null) {
@@ -406,7 +392,7 @@ function pump(A) {
     A.askedSymbols = true;
     A.inflight = { kind: "symbols" };
     status(A, progressText(A));
-    send(A, { id: nextId(A, "symbols"), type: "get_symbols" });
+    forward(A, { id: nextId(A, "symbols"), type: "get_symbols" });
     return;
   }
   if (!v.progress || v.progress.planned !== true) return;
@@ -415,7 +401,7 @@ function pump(A) {
     if (s.state === "planned" && str(s.ref) !== null) {
       A.inflight = { kind: "snapshot", label: s.label };
       status(A, progressText(A));
-      send(A, { id: nextId(A, "codebase"), type: "get_codebase", edges: "all", limit: MODULES_ASKED, ref: s.ref });
+      forward(A, { id: nextId(A, "codebase"), type: "get_codebase", edges: "all", limit: MODULES_ASKED, ref: s.ref });
       return;
     }
   }
@@ -720,8 +706,8 @@ function placeLabels(A) {
     ctx.globalAlpha = L.alpha === undefined ? 1 : L.alpha;
     ctx.font = L.font;
     if (L.pill) {
-      ctx.fillStyle = A.P["pane-bg"];
-      ctx.strokeStyle = L.border || A.P.border;
+      ctx.fillStyle = A.P.panel;
+      ctx.strokeStyle = L.border || A.P.line;
       ctx.lineWidth = 1.25;
       ctx.beginPath();
       ctx.rect(box[0], box[1], box[2] - box[0], box[3] - box[1]);
@@ -754,7 +740,7 @@ function draw(A) {
   const ctx = A.ctx;
   if (!ctx || A.vw <= 1 || A.vh <= 1) return;
   ctx.setTransform(A.dpr, 0, 0, A.dpr, 0, 0);
-  ctx.fillStyle = A.P.bg;
+  ctx.fillStyle = A.P.ground;
   ctx.fillRect(0, 0, A.vw, A.vh);
   A.labels = [];
   if (A.D === null) {
@@ -810,17 +796,17 @@ function drawRegions(A, F) {
       ctx.fillRect(r[0], r[1], w, hh);
     }
     if (w > 5 && h > 5) {
-      ctx.strokeStyle = P.border;
+      ctx.strokeStyle = P.line;
       ctx.lineWidth = 1;
       ctx.strokeRect(r[0] + 0.5, r[1] + 0.5, w - 1, h - 1);
     }
     if (F && F.region === g.idx) {
-      ctx.strokeStyle = P.fg;
+      ctx.strokeStyle = P.ink;
       ctx.lineWidth = 2.5;
       ctx.strokeRect(r[0] + 1, r[1] + 1, w - 2, h - 2);
     }
     if (A.hover && A.hover.t === "region" && A.hover.r === g.idx) {
-      ctx.strokeStyle = P.fg;
+      ctx.strokeStyle = P.ink;
       ctx.lineWidth = 1.5;
       ctx.strokeRect(r[0] + 0.75, r[1] + 0.75, w - 1.5, hh);
     }
@@ -832,7 +818,7 @@ function drawRegions(A, F) {
         text: regionLabel(A, g),
         font: FONT.top,
         size: 13,
-        color: P.fg,
+        color: P.ink,
         maxW: w - 12,
         rx: r[2],
         ry: r[3],
@@ -847,7 +833,7 @@ function drawRegions(A, F) {
         text: g.label,
         font: big ? FONT.dir : FONT.dirS,
         size: big ? 12 : 11,
-        color: P.fg,
+        color: P.ink,
         maxW: w - 8,
         rx: r[2],
       });
@@ -913,16 +899,16 @@ function drawModule(A, m, r, w, h, F, D, glyphs) {
     const gone = D !== null && D.removed.has(m.idx);
     ctx.globalAlpha = dim ? 0.25 : gone ? 1 : 0.6;
     ctx.setLineDash(gone ? [4, 2] : [3, 3]);
-    ctx.strokeStyle = gone ? P.removed : P.muted;
+    ctx.strokeStyle = gone ? P["diff-del"] : P["ink-muted"];
     ctx.lineWidth = gone ? 1.5 : 1;
     ctx.strokeRect(r[0] + 0.75, r[1] + 0.75, w - 1.5, h - 1.5);
     ctx.setLineDash([]);
   }
   ctx.globalAlpha = 1;
   if (D !== null && D.added.has(m.idx) && pr) {
-    ctx.fillStyle = rgba(P.added, 0.3);
+    ctx.fillStyle = rgba(P["diff-add"], 0.3);
     ctx.fillRect(r[0], r[1], w, h);
-    ring(A, r, w, h, P.added, 1.5, 0.75);
+    ring(A, r, w, h, P["diff-add"], 1.5, 0.75);
   }
   const open = pr && isHead(A) && w >= OPEN_W && h >= OPEN_H;
   if (role & REACH) {
@@ -934,7 +920,7 @@ function drawModule(A, m, r, w, h, F, D, glyphs) {
     ctx.fillRect(r[0], r[1], w, h);
   }
   if (role & COMMIT) {
-    ctx.fillStyle = rgba(P.accent, 0.22);
+    ctx.fillStyle = rgba(P.signal, 0.22);
     ctx.fillRect(r[0], r[1], w, h);
   }
   if (role & CALLER && A.lens === "structure") {
@@ -957,12 +943,12 @@ function drawModule(A, m, r, w, h, F, D, glyphs) {
   }
   if (role & CALLER) ring(A, r, w, h, P.caller, 2.25, 1.1);
   if (role & CALLEE) ring(A, r, w, h, P.callee, 2.25, role & CALLER ? 3.4 : 1.1);
-  if (role & COMMIT) ring(A, r, w, h, P.accent, 2.5, 1.25);
-  if (role & SEL) ring(A, r, w, h, P.fg, 2.75, 1.4);
-  if (A.hover && A.hover.t === "module" && A.hover.m === m.idx) ring(A, r, w, h, P.fg, 1.5, 0.75);
+  if (role & COMMIT) ring(A, r, w, h, P.signal, 2.5, 1.25);
+  if (role & SEL) ring(A, r, w, h, P.ink, 2.75, 1.4);
+  if (A.hover && A.hover.t === "module" && A.hover.m === m.idx) ring(A, r, w, h, P.ink, 1.5, 0.75);
   if (A.pins.has(m.path) && w >= 8 && h >= 8) {
     const s = Math.min(9, w * 0.3, h * 0.3);
-    ctx.fillStyle = P.accent;
+    ctx.fillStyle = P.signal;
     ctx.beginPath();
     ctx.moveTo(r[2] - s, r[1]);
     ctx.lineTo(r[2], r[1]);
@@ -980,7 +966,7 @@ function drawModule(A, m, r, w, h, F, D, glyphs) {
         text: mark,
         font: FONT.badge,
         size: 11,
-        color: mark === "+" ? P.added : P.removed,
+        color: mark === "+" ? P["diff-add"] : P["diff-del"],
       });
     }
   }
@@ -989,7 +975,7 @@ function drawModule(A, m, r, w, h, F, D, glyphs) {
     if ((isCount(row[2]) && row[2] > 0) || (isCount(row[3]) && row[3] > 0)) glyphs.push([r, row, dim]);
   }
   const a = dim ? 0.4 : 1;
-  const ink = pr ? inkOn(A, fill) : P.muted;
+  const ink = pr ? inkOn(A, fill) : P["ink-muted"];
   if (open) {
     const syms = A.D.symsOf.get(m.idx) || [];
     const hh = Math.min(m.y1 - m.y0, m.x1 - m.x0) * 0.1 * A.t.k;
@@ -1000,7 +986,7 @@ function drawModule(A, m, r, w, h, F, D, glyphs) {
       text: m.module,
       font: FONT.modB,
       size: 12,
-      color: P.fg,
+      color: P.ink,
       halo: fill,
       maxW: w - 10,
       alpha: a,
@@ -1010,7 +996,7 @@ function drawModule(A, m, r, w, h, F, D, glyphs) {
     A.labels.push(name);
     if (syms.length === 0) {
       const why = A.view && A.view.symbols === null ? "symbols not read yet" : "no definitions";
-      A.labels.push({ needs: name, pri: 6, x: r[0] + 5, y: r[1] + hh + 10, text: why, font: FONT.sub, size: 11, color: P.muted, maxW: w - 10 });
+      A.labels.push({ needs: name, pri: 6, x: r[0] + 5, y: r[1] + hh + 10, text: why, font: FONT.sub, size: 11, color: P["ink-muted"], maxW: w - 10 });
     }
     return;
   }
@@ -1084,11 +1070,11 @@ function drawSymbols(A, m, F) {
       ctx.fillRect(r[0], r[1], w, s.holds ? s.hdr * k : h);
       ring(A, r, w, h, P.reach, 1.5, 0.75);
     }
-    if (F && F.sym === i) ring(A, r, w, h, P.fg, 2.5, 1.25);
-    if (A.hover && A.hover.t === "symbol" && A.hover.i === i) ring(A, r, w, h, P.fg, 1.5, 0.75);
+    if (F && F.sym === i) ring(A, r, w, h, P.ink, 2.5, 1.25);
+    if (A.hover && A.hover.t === "symbol" && A.hover.i === i) ring(A, r, w, h, P.ink, 1.5, 0.75);
     const hasRadius = rq !== null && rq === radiusQuery(A, i);
     if (hasRadius && w >= 14 && h >= 10) {
-      ctx.fillStyle = P.accent;
+      ctx.fillStyle = P.signal;
       ctx.beginPath();
       ctx.arc(r[2] - 5, r[1] + 5, 2.6, 0, Math.PI * 2);
       ctx.fill();
@@ -1106,7 +1092,7 @@ function drawSymbols(A, m, F) {
         text: s.kind === "class" ? `class ${s.name}` : `${s.name}()`,
         font: s.holds || (F && F.sym === i) ? FONT.symB : FONT.sym,
         size: 11,
-        color: P.fg,
+        color: P.ink,
         halo: fill,
         maxW: w - (hasRadius ? 14 : 6),
       };
@@ -1120,7 +1106,7 @@ function drawSymbols(A, m, F) {
           text: `in ${n(s.cin)} · amb ${n(s.camb)} · out ${n(s.cout)}`,
           font: FONT.sub,
           size: 11,
-          color: P.muted,
+          color: P["ink-muted"],
           halo: fill,
           maxW: w - 6,
         });
@@ -1147,7 +1133,7 @@ function drawGlyphs(A, r, row, dim) {
   let x = r[2] - pad;
   const yb = r[3] - pad;
   if (su) {
-    ctx.fillStyle = A.P["pane-bg"];
+    ctx.fillStyle = A.P.panel;
     ctx.fillRect(x - su, yb - su, su, su);
     ctx.fillStyle = hatch(A, A.P.doubt);
     ctx.fillRect(x - su, yb - su, su, su);
@@ -1276,7 +1262,7 @@ function drawEdges(A, F, D) {
           text: w.toLocaleString("en-US"),
           font: FONT.badge,
           size: 12,
-          color: P.fg,
+          color: P.ink,
           pill: true,
           border: col,
           align: "center",
@@ -1288,8 +1274,8 @@ function drawEdges(A, F, D) {
     return;
   }
   if (D !== null) {
-    for (const [ra, rb, w] of aggregate(A, D.removedE)) edge(A, scr(A, ra), scr(A, rb), ewidth(w, 5), P.removed, 0.8, [5, 3]);
-    for (const [ra, rb, w] of aggregate(A, D.addedE)) edge(A, scr(A, ra), scr(A, rb), ewidth(w, 5), P.added, 0.8, null);
+    for (const [ra, rb, w] of aggregate(A, D.removedE)) edge(A, scr(A, ra), scr(A, rb), ewidth(w, 5), P["diff-del"], 0.8, [5, 3]);
+    for (const [ra, rb, w] of aggregate(A, D.addedE)) edge(A, scr(A, ra), scr(A, rb), ewidth(w, 5), P["diff-add"], 0.8, null);
     A.edgeNote = `${D.addedE.length} module edges added and ${D.removedE.length} removed, ${label(A, D.b)} to ${label(A, D.t)}, merged into the packages open at this zoom.`;
     return;
   }
@@ -1347,15 +1333,15 @@ function drawTip(A) {
   let [x, y] = [A.tipAt[0] + 14, A.tipAt[1] + 14];
   if (x + w > A.vw - 4) x = Math.max(4, A.tipAt[0] - w - 14);
   if (y + h > A.vh - 4) y = Math.max(4, A.tipAt[1] - h - 14);
-  ctx.fillStyle = A.P["pane-bg"];
-  ctx.strokeStyle = A.P.border;
+  ctx.fillStyle = A.P.panel;
+  ctx.strokeStyle = A.P.line;
   ctx.lineWidth = 1;
   ctx.fillRect(x, y, w, h);
   ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
   ctx.textBaseline = "middle";
   lines.forEach(([t, b], i) => {
     ctx.font = b ? FONT.tipB : FONT.tip;
-    ctx.fillStyle = b ? A.P.fg : A.P.muted;
+    ctx.fillStyle = b ? A.P.ink : A.P["ink-muted"];
     ctx.fillText(t, x + 8, y + 13 + i * 16);
   });
 }
@@ -1378,7 +1364,7 @@ function drawMinimap(A) {
   const ox = (W - A.D.ww * K) / 2;
   const oy = (H - WORLD_H * K) / 2;
   c.setTransform(d, 0, 0, d, 0, 0);
-  c.fillStyle = A.P["pane-bg"];
+  c.fillStyle = A.P.panel;
   c.fillRect(0, 0, W, H);
   for (const g of A.D.regions) {
     if (g.depth === 0 || g.depth > 2) continue;
@@ -1389,14 +1375,14 @@ function drawMinimap(A) {
     for (const [m, f] of A.F.role) {
       const l = A.D.modules[m];
       if (!l) continue;
-      c.fillStyle = f & SEL ? A.P.fg : f & CALLER ? A.P.caller : f & CALLEE ? A.P.callee : f & REACH ? A.P.reach : f & DOUBT ? A.P.doubt : A.P.accent;
+      c.fillStyle = f & SEL ? A.P.ink : f & CALLER ? A.P.caller : f & CALLEE ? A.P.callee : f & REACH ? A.P.reach : f & DOUBT ? A.P.doubt : A.P.signal;
       c.fillRect(ox + l.x0 * K, oy + l.y0 * K, Math.max(1.5, (l.x1 - l.x0) * K), Math.max(1.5, (l.y1 - l.y0) * K));
     }
   }
   const t = A.t;
   const a = [-t.x / t.k, -t.y / t.k];
   const b = [(A.vw - t.x) / t.k, (A.vh - t.y) / t.k];
-  c.strokeStyle = A.P.fg;
+  c.strokeStyle = A.P.ink;
   c.lineWidth = 1.5;
   c.strokeRect(ox + a[0] * K, oy + a[1] * K, (b[0] - a[0]) * K, (b[1] - a[1]) * K);
 }
@@ -1455,7 +1441,7 @@ function select(A, s, o = {}) {
     const r = A.view && A.view.radius;
     if (o.fly && q !== null) A.radiusFly = q;
     if (q !== null && !(r && r.symbol === q && r.state !== "refused")) {
-      send(A, { id: nextId(A, "radius"), type: "get_radius", symbol: q });
+      forward(A, { id: nextId(A, "radius"), type: "get_radius", symbol: q });
     }
   }
   A.F = focus(A);
@@ -2821,10 +2807,6 @@ function hint(A) {
   }, 2500);
 }
 
-function typing(t) {
-  return t && ["INPUT", "SELECT", "TEXTAREA"].includes(t.tagName);
-}
-
 function wireControls(A) {
   byId(A, "at-zin").addEventListener("click", () => zoomAbout(A, 1.6, A.vw / 2, A.vh / 2));
   byId(A, "at-zout").addEventListener("click", () => zoomAbout(A, 1 / 1.6, A.vw / 2, A.vh / 2));
@@ -2876,10 +2858,23 @@ function wireControls(A) {
     if (ev.key === "/" && !busy) {
       ev.preventDefault();
       openSearch(A);
-    } else if (ev.key === "Escape" && !byId(A, "at-search").hidden) closeSearch(A);
-    else if (ev.key === "Escape" && !busy && A.sel) select(A, null);
-    else if (ev.key === "[" && !busy) histGo(A, -1);
+    } else if (ev.key === "[" && !busy) histGo(A, -1);
     else if (ev.key === "]" && !busy) histGo(A, 1);
+  });
+  // ESC is keys.js's for the whole page (#826): the Atlas is asked first,
+  // and closes its search, then clears its selection, before ESC goes out
+  // a level.
+  onEscape((ev) => {
+    if (!shown(A)) return false;
+    if (!byId(A, "at-search").hidden) {
+      closeSearch(A);
+      return true;
+    }
+    if (!typing(ev.target) && A.sel) {
+      select(A, null);
+      return true;
+    }
+    return false;
   });
   A.doc.addEventListener("pointerdown", (ev) => {
     const s = byId(A, "at-search");
@@ -2979,33 +2974,24 @@ export async function wireAtlas(doc, win, tauri) {
     A.childUp = false;
     if (A.view === null) status(A, "No repository is open: open a repository to see its atlas.");
   });
-  const button = doc.querySelector('nav.rail button[aria-controls="atlas"]');
-  if (button) {
-    button.addEventListener("click", () => {
-      // The model pane, open above every section until a model is chosen,
-      // would push the map below the fold; showing the Atlas folds it, and
-      // its summary opens it again.
-      const pane = doc.getElementById("model-pane");
-      if (pane && pane.open) pane.open = false;
-      // After every click listener, the rail's among them, has run, so the
-      // section is shown when it is measured. A page loaded after its child
-      // started saw no child-started; asking is what tells whether one is
-      // there.
-      Promise.resolve().then(() => {
-        A.childUp = true;
-        resize(A);
-        pump(A);
-      });
-    });
-  }
+  // Entering the Atlas's level shows its section (keys.js), and the Atlas
+  // measures and asks then (#826).
+  onShown(doc, "atlas", () => {
+    // The model pane, open above every section until a model is chosen,
+    // would push the map below the fold; showing the Atlas folds it, and
+    // its summary opens it again.
+    const pane = doc.getElementById("model-pane");
+    if (pane && pane.open) pane.open = false;
+    // The section is shown by now, so it can be measured. A page loaded
+    // after its child started saw no child-started; asking is what tells
+    // whether one is there.
+    A.childUp = true;
+    resize(A);
+    pump(A);
+  });
   return A;
 }
 
-function start() {
-  wireAtlas(document, window, window.__TAURI__).catch((err) => console.error("trellis desktop atlas:", err));
-}
-
 if (typeof window !== "undefined" && window.__TAURI__) {
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
-  else start();
+  start("the Atlas", () => wireAtlas(document, window, window.__TAURI__));
 }

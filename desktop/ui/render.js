@@ -18,69 +18,26 @@
 // The actions log follows its end only while the reader is there (#643):
 // a reader who scrolled back is not pulled down at each turn, and a button
 // offers the end instead. main.js wires that button through `wireLog`.
+//
+// The DOM helpers and the value readers are the page's shared ones (dom.js
+// and fmt.js, #817); what is drawn here is this module's own.
 
+import { appendRows, atEnd, el, fill, muted } from "./dom.js";
+import { isCount, notReported, str } from "./fmt.js";
 import { drawGraph } from "./graph.js";
-
-function el(doc, tag, text) {
-  const e = doc.createElement(tag);
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
-
-function isCount(v) {
-  return typeof v === "number" && Number.isFinite(v);
-}
-
-function str(v) {
-  return typeof v === "string" ? v : null;
-}
-
-// `pane` replaced by `children`, or by one muted line saying it is empty.
-function fill(doc, pane, children, empty, emptyTag = "li") {
-  if (children.length === 0) {
-    const e = el(doc, emptyTag, empty);
-    e.className = "empty";
-    pane.replaceChildren(e);
-  } else {
-    pane.replaceChildren(...children);
-  }
-}
-
-// How far from a log's end still counts as at it, in px: a fractional
-// scroll position or a zoom level can leave the end a pixel short. A pane
-// that is not laid out (its section hidden) measures 0 and 0, and is at it.
-const AT_END_SLACK = 2;
-
-// Whether `pane` is scrolled to its end, read before it is redrawn so a
-// reader who scrolled back keeps their place (#643). dialogs.js uses it for
-// the messages pane, so the two logs follow by one rule.
-export function atEnd(pane) {
-  return pane.scrollHeight - pane.clientHeight - pane.scrollTop <= AT_END_SLACK;
-}
 
 // The actions log: the transcript, as the TUI's, one line per element. It
 // follows its end only while the reader is there (#643, as the TUI has
 // since #244); otherwise their place is kept and the jump button under the
 // log says new lines arrived. The view carries the whole transcript each
-// turn, but only the lines beyond those drawn are appended: replacing every
-// child of a role="log" region may have a screen reader read the whole log
-// again. A list that does not extend the drawn one (the cap dropped its
-// oldest lines, or the transcript was cleared) is drawn afresh.
+// turn; dom.js's appendRows appends only the lines beyond those drawn, since
+// replacing every child of a role="log" region may have a screen reader
+// read the whole log again.
 function transcript(doc, pane, lines) {
-  const list = (Array.isArray(lines) ? lines : []).map(String);
-  const follow = atEnd(pane);
-  const drawn = [...pane.children].filter((c) => c.className !== "empty");
-  const grows = list.length >= drawn.length && drawn.every((c, i) => c.textContent === list[i]);
-  const rows = (grows ? list.slice(drawn.length) : list).map((l) => el(doc, "div", l));
-  if (grows && drawn.length > 0) pane.append(...rows);
-  else fill(doc, pane, rows, "Nothing has run yet.", "div");
+  const { followed, drawn } = appendRows(doc, pane, lines, "Nothing has run yet.");
   const jump = doc.getElementById("log-jump");
-  if (follow) {
-    pane.scrollTop = pane.scrollHeight;
-    jump.hidden = true;
-  } else if (rows.length > 0) {
-    jump.hidden = false;
-  }
+  if (followed) jump.hidden = true;
+  else if (drawn > 0) jump.hidden = false;
 }
 
 // Wires the actions log once: the jump button takes the reader to the end,
@@ -159,11 +116,9 @@ function radius(doc, pane, r) {
     ["candidates", "candidates"],
     ["unresolved", "unresolved"],
   ]) {
-    dl.append(el(doc, "dt", label), el(doc, "dd", isCount(r[key]) ? String(r[key]) : "not reported"));
+    dl.append(el(doc, "dt", label), el(doc, "dd", notReported(r[key])));
   }
-  const note = el(doc, "p", "a floor on reach, not a boundary");
-  note.className = "muted";
-  pane.replaceChildren(dl, note);
+  pane.replaceChildren(dl, muted(doc, "p", "a floor on reach, not a boundary"));
 }
 
 // The budget line: `iteration n/max · <bytes> B prompt · ...`. The view
@@ -194,12 +149,6 @@ export function budgetLine(b) {
   return parts.join(" · ");
 }
 
-// A figure of `get_session_stats`, or `unknown` for one a run of that
-// model did not report: null is never drawn as 0 (#313).
-function tokens(v) {
-  return isCount(v) ? String(v) : "unknown";
-}
-
 // The session's prompt and completion tokens per model, as trellis's
 // `get_session_stats` answered them (#313, PI-10): one row per model, the
 // model name and two figures, never added together. The rows cover the
@@ -221,8 +170,8 @@ function sessionTokens(doc, pane, t) {
     const li = el(doc, "li");
     li.append(
       el(doc, "code", model),
-      el(doc, "span", ` · prompt ${tokens(m.prompt_tokens)}`),
-      el(doc, "span", ` · completion ${tokens(m.completion_tokens)}`),
+      el(doc, "span", ` · prompt ${notReported(m.prompt_tokens)}`),
+      el(doc, "span", ` · completion ${notReported(m.completion_tokens)}`),
     );
     return [li];
   });
@@ -250,14 +199,13 @@ function runtime(doc, pane, r) {
     return;
   }
   const dl = el(doc, "dl");
-  const count = (v) => (isCount(v) ? String(v) : "not reported");
   for (const [label, value] of [
     ["runtime", str(r.runtime) ?? "not reported"],
     ["served", str(r.served) ?? "not reported"],
-    ["KV slots", count(r.kv_slots)],
-    ["experts in VRAM", count(r.tiers_vram)],
-    ["experts in RAM", count(r.tiers_ram)],
-    ["experts on disk", count(r.tiers_disk)],
+    ["KV slots", notReported(r.kv_slots)],
+    ["experts in VRAM", notReported(r.tiers_vram)],
+    ["experts in RAM", notReported(r.tiers_ram)],
+    ["experts on disk", notReported(r.tiers_disk)],
   ]) {
     dl.append(el(doc, "dt", label), el(doc, "dd", value));
   }
@@ -296,10 +244,11 @@ function outcome(doc, pane, o) {
 // drawn by the modules that read them from the same event: `approvals`,
 // `alert` and `stderr` by dialogs.js; `running`, `model`, `starters` and
 // `undelivered` by composer.js; `model`, `models` and `available` by
-// model.js; `available` by settings.js; `model` and `running` by status.js;
-// `vault` by vault.js; `queue` by queue.js. The view_renders_ tests in
-// src/lockdown.rs fail when a key the reducer sends is read by none of
-// them, or when a pane in the run section is one this table never names.
+// model.js; `available` by settings.js; `model`, `running` and `phase` by
+// status.js; `vault` by vault.js; `queue` by queue.js; `atlas` by atlas.js.
+// The view_renders_ tests in src/lockdown.rs fail when a key the reducer
+// sends is read by none of them, or when a pane in the run section is one
+// this table never names.
 const PANES = {
   transcript: ["pane-transcript", transcript],
   actions: ["pane-actions", actions],
