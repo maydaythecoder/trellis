@@ -9,10 +9,17 @@
 // past run's record, and turns no trail string into a link. Nothing here
 // resumes or replays a run: resume is a CLI command, not an rpc one.
 //
+// The level draws with the design system's components (ds.js, #910): the
+// runs are a Rail, their count is the Runs panel's meta, integrity is a
+// Status, and the verified and reviewed counts are two Stats. A trail's own
+// words never take a tone: its outcome is a Status in the idle tone, and only
+// integrity, which trellis computed from the digest, may be drawn down.
+//
 // index.html loads this as a module of its own.
 
-import { el } from "./dom.js";
-import { isCount } from "./fmt.js";
+import { el, fill, muted } from "./dom.js";
+import { dsStatus, figure, panelMeta, rail, railRows, stats } from "./ds.js";
+import { plural } from "./fmt.js";
 import { onShown, start } from "./rpc.js";
 
 // How many runs the view asks for: the core's own cap.
@@ -31,6 +38,19 @@ function recorded(doc, tag, v, missing) {
   return e;
 }
 
+// Integrity is the one bare string in a row: trellis computed it from the
+// digest, so "altered" may take the down tone, which no untrusted text gets.
+function integrity(doc, r) {
+  const word = typeof r.integrity === "string" ? r.integrity : "integrity unknown";
+  return dsStatus(doc, r.integrity === "altered" ? "down" : "idle", word);
+}
+
+// The outcome is the trail's own word, mapped to run_end's by the core and
+// still untrusted (#653): a Status in the idle tone, never a verdict's.
+function outcome(doc, r) {
+  return dsStatus(doc, "idle", recorded(doc, "span", r.outcome, "outcome not recorded"));
+}
+
 function status(doc, s) {
   doc.getElementById("tr-status").textContent = s;
 }
@@ -47,55 +67,37 @@ function matches(row, q) {
   return fields.some((t) => t !== null && t.toLowerCase().includes(q));
 }
 
+// The runs as a Rail: time runs down, so the oldest is first and the newest
+// last (the design system's Rail), where trellis log lists the newest first.
+// Each row is a button that shows the run's record; its start time is the
+// row's meta.
 function drawList(doc) {
   const list = doc.getElementById("tr-list");
   const q = doc.getElementById("tr-filter").value.trim().toLowerCase();
-  const shown = state.rows.map((r, i) => [r, i]).filter(([r]) => matches(r, q));
-  const items = shown.map(([r, i]) => {
-    const li = el(doc, "li");
-    li.className = "past-run";
-    const b = el(doc, "button");
+  const shown = state.rows
+    .map((r, i) => [r, i])
+    .filter(([r]) => matches(r, q))
+    .reverse();
+  const rows = shown.map(([r, i]) => {
+    const b = el(doc, "button", null, "tr-run");
     b.type = "button";
     if (state.selected === i) b.setAttribute("aria-current", "true");
-    if (r.bad_line !== undefined) {
-      b.append(
-        el(
-          doc,
-          "span",
-          r.truncated === true
-            ? "A line trellis log printed, too long to read, shown truncated"
-            : "A line trellis log printed that is not a run",
-        ),
-      );
-    } else {
-      b.append(recorded(doc, "span", r.task, "task not recorded"));
-      const meta = el(doc, "span");
-      meta.className = "muted";
-      meta.append(" · ", recorded(doc, "span", r.started_at, "start not recorded"));
-      meta.append(" · ", recorded(doc, "span", r.outcome, "outcome not recorded"));
-      // Integrity is the one bare string in a row: trellis computed it from
-      // the digest, so "altered" may carry the failed colour, which no
-      // untrusted text gets.
-      const integrity = el(doc, "span", typeof r.integrity === "string" ? r.integrity : "integrity unknown");
-      if (r.integrity === "altered") integrity.className = "failed";
-      meta.append(" · ", integrity);
-      if (text(r.label) !== null) meta.append(" · ", recorded(doc, "span", r.label, ""));
-      b.append(meta);
-    }
     b.addEventListener("click", () => {
       state.selected = i;
       drawList(doc);
       drawDetail(doc);
     });
-    li.append(b);
-    return li;
+    if (r.bad_line !== undefined) {
+      b.append(r.truncated === true ? "A line trellis log printed, too long to read, shown truncated" : "A line trellis log printed that is not a run");
+      return { label: b, current: state.selected === i };
+    }
+    const facts = el(doc, "span", null, "tr-facts");
+    facts.append(outcome(doc, r), integrity(doc, r));
+    if (text(r.label) !== null) facts.append(recorded(doc, "span", r.label, ""));
+    b.append(recorded(doc, "span", r.task, "task not recorded"), facts);
+    return { label: b, meta: recorded(doc, "span", r.started_at, "start not recorded"), current: state.selected === i };
   });
-  if (items.length === 0) {
-    const li = el(doc, "li", state.rows.length === 0 ? "This repository has no trails yet." : "No run matches.");
-    li.className = "empty";
-    items.push(li);
-  }
-  list.replaceChildren(...items);
+  fill(doc, list, railRows(doc, rows), state.rows.length === 0 ? "This repository has no trails yet." : "No run matches.");
 }
 
 function row(doc, dl, label, value) {
@@ -106,9 +108,8 @@ function drawDetail(doc) {
   const pane = doc.getElementById("tr-detail");
   const r = state.selected === null ? null : state.rows[state.selected];
   if (!r) {
-    const p = el(doc, "p", "Select a run to see its record.");
-    p.className = "empty";
-    pane.replaceChildren(p);
+    panelMeta(doc, "tr-detail-meta");
+    fill(doc, pane, [], "Select a run to see its record.", "p");
     return;
   }
   const record = el(doc, "article");
@@ -118,6 +119,7 @@ function drawDetail(doc) {
   if (r.bad_line !== undefined) {
     // A line past the core's cap arrives cut; `why` says so, and the mark
     // keeps the cut text from reading as the whole line.
+    panelMeta(doc, "tr-detail-meta");
     const fallback =
       r.truncated === true ? "This line was truncated, and is not read as a run." : "This line could not be read as a run.";
     const why = el(doc, "p", typeof r.why === "string" ? r.why : fallback);
@@ -126,46 +128,44 @@ function drawDetail(doc) {
     pane.replaceChildren(record);
     return;
   }
+  panelMeta(doc, "tr-detail-meta", integrity(doc, r));
 
   // The factual section: what the trail records happened.
   const factual = el(doc, "section");
-  factual.append(el(doc, "h4", "What the trail records"));
   const dl = el(doc, "dl");
   row(doc, dl, "task", recorded(doc, "dd", r.task, "not recorded"));
   if (text(r.label) !== null) row(doc, dl, "label", recorded(doc, "dd", r.label, ""));
   row(doc, dl, "run", recorded(doc, "dd", r.run_id, "not recorded"));
   row(doc, dl, "started", recorded(doc, "dd", r.started_at, "not recorded"));
-  row(doc, dl, "outcome", recorded(doc, "dd", r.outcome, "not recorded"));
-  const integrity = typeof r.integrity === "string" ? r.integrity : "unknown";
-  row(doc, dl, "integrity", el(doc, "dd", integrity));
+  factual.append(dl, outcome(doc, r));
+  // Two counts, never one number (CLAUDE.md rule 4).
   const m = r.mode_counts && typeof r.mode_counts === "object" ? r.mode_counts : {};
-  row(doc, dl, "verified", el(doc, "dd", isCount(m.verified) ? String(m.verified) : "not recorded"));
-  row(doc, dl, "reviewed only", el(doc, "dd", isCount(m.reviewed) ? String(m.reviewed) : "not recorded"));
-  factual.append(dl);
-  if (integrity === "altered") {
-    const warn = el(doc, "p", "The factual section was edited after the run wrote it: its digest does not match.");
-    warn.className = "alert";
-    factual.append(warn);
+  const why = "the trail does not record it";
+  factual.append(
+    stats(doc, [
+      { label: "verified", value: figure(doc, m.verified, why) },
+      { label: "reviewed only", value: figure(doc, m.reviewed, why) },
+    ]),
+  );
+  if (r.integrity === "altered") {
+    factual.append(el(doc, "p", "The factual section was edited after the run wrote it: its digest does not match.", "alert"));
   }
   // null: the trail has no list of checks at all, which is not the same
-  // claim as an empty one.
+  // claim as an empty one. A recorded check is what the file claims, so its
+  // row takes no tone.
   const checks = Array.isArray(r.checks) ? r.checks : null;
   factual.append(el(doc, "h5", "checks the trail records"));
-  const ul = el(doc, "ul");
-  ul.className = "rows";
-  for (const c of checks ?? []) {
-    const li = el(doc, "li");
-    li.append(recorded(doc, "span", c && c.kind, "check"), " ", recorded(doc, "span", c && c.recorded, ""));
-    ul.append(li);
-  }
   if (checks === null || checks.length === 0) {
-    const li = el(doc, "li", checks === null ? "This trail has no list of checks: not recorded." : "No check is recorded.");
-    li.className = "empty";
-    ul.append(li);
+    factual.append(muted(doc, "p", checks === null ? "This trail has no list of checks: not recorded." : "No check is recorded."));
+  } else {
+    factual.append(
+      rail(
+        doc,
+        checks.map((c) => ({ label: recorded(doc, "span", c && c.kind, "check"), meta: recorded(doc, "span", c && c.recorded, "") })),
+      ),
+    );
   }
-  const note = el(doc, "p", "What a file claims, not a check this desktop ran.");
-  note.className = "muted";
-  factual.append(ul, note);
+  factual.append(muted(doc, "p", "What a file claims, not a check this desktop ran."));
 
   // The judgment section, apart from the facts.
   const judgment = el(doc, "section");
@@ -181,19 +181,27 @@ function drawDetail(doc) {
   pane.replaceChildren(record);
 }
 
+// The Runs panel's meta: how many runs, how many lines that are not one,
+// and that the list is the newest lines when it reached the cap.
+function drawCount(doc, read) {
+  if (!read) {
+    panelMeta(doc, "tr-list-meta");
+    return;
+  }
+  const runs = state.rows.filter((r) => r && r.bad_line === undefined).length;
+  const bad = state.rows.length - runs;
+  panelMeta(
+    doc,
+    "tr-list-meta",
+    plural(runs, "run", "runs"),
+    bad > 0 ? `${bad} not a run` : null,
+    state.rows.length === LIMIT ? `the newest ${LIMIT}` : null,
+  );
+}
+
 // Each read gets a number, and only the newest read's answer is drawn, so
 // a slow answer for an earlier repository cannot replace a newer list.
 let reads = 0;
-
-function summary(rows) {
-  const runs = rows.filter((r) => r && r.bad_line === undefined).length;
-  const bad = rows.length - runs;
-  let s = `${runs} run${runs === 1 ? "" : "s"}`;
-  if (bad > 0) s += ` and ${bad} line${bad === 1 ? "" : "s"} trellis log printed that ${bad === 1 ? "is" : "are"} not a run`;
-  s += ", newest first";
-  if (rows.length === LIMIT) s += ` (the newest ${LIMIT} lines)`;
-  return `${s}.`;
-}
 
 // Reads the trails once. Says whether the read was drawn and succeeded, so
 // a failed read (no repository yet) is tried again next time.
@@ -206,7 +214,7 @@ async function load(doc, tauri) {
     const rows = await tauri.core.invoke("get_trails", { limit: LIMIT });
     if (mine !== reads) return false;
     state.rows = Array.isArray(rows) ? rows : [];
-    status(doc, summary(state.rows));
+    status(doc, "");
   } catch (err) {
     if (mine !== reads) return false;
     state.rows = [];
@@ -214,8 +222,12 @@ async function load(doc, tauri) {
     status(doc, `The trails could not be read: ${err}`);
   }
   state.selected = null;
+  drawCount(doc, ok);
   drawList(doc);
   drawDetail(doc);
+  // The newest run is the Rail's last row: the list opens on it.
+  const list = doc.getElementById("tr-list");
+  list.scrollTop = list.scrollHeight;
   return ok;
 }
 
