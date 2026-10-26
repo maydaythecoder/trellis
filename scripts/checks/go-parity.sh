@@ -84,10 +84,19 @@ check() {
 			continue
 		fi
 		for name in $names; do
-			if ! printf '%s\n' "$defined" | grep -qx "$name"; then
+			# A pattern match in the shell, not printf piped into grep -qx:
+			# grep exits at its match, and when printf had not yet written
+			# the whole list its SIGPIPE, under pipefail, read as "not
+			# defined". That happens once the list is larger than the pipe,
+			# and a pipe is one 4 KiB page for a user past the kernel's
+			# pipe-user-pages-soft, as on a host shared by many processes.
+			case $'\n'"$defined"$'\n' in
+			*$'\n'"$name"$'\n'*) ;;
+			*)
 				echo "FAIL: tui/PARITY.md:$n: $test names $name, which no tui/**/*_test.go defines"
 				bad=1
-			fi
+				;;
+			esac
 		done
 	done <<<"$rows"
 

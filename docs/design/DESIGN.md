@@ -126,6 +126,13 @@ read-only `get_*`, `list_*`, `classify` and `vault_*` queries
 | Components ship as React on `window.Trellis` with `components/bundle.css` (README, "Components"). | The desktop is plain ES modules with no bundler and a CSP without `'unsafe-inline'`; the TUI is Go (`desktop/CLAUDE.md`, ADR 0052). | The desktop loads `components/bundle.css` itself, as `desktop/ui/ds.css`, the same bytes below its header (`ds_css_is_the_design_systems_bundle`), and `desktop/ui/ds.js` builds each component's markup as the bundle's code does, with a class where the bundle sets a style (owner, 2026-10-26, #909). The TUI draws the same components in cells with Lip Gloss. |
 | Meter widths and Sparkline paths are drawn per value (Meter, Sparkline cards). | No `style` attribute and no `.style` from script on the desktop (`desktop/CLAUDE.md`). | Meters are block characters in text (`█░`), the same in both faces; anything else that varies takes a class, never an inline style. |
 | Event names `session.start`, `tool.call`, `context.update`, … (`events.md`). | A client reads only the contract's names (`run_start`, `turn`, `run budget`, `steer delivered`, …) and fields (rule 7). | `system/events.md` is intent. The mapping from the contract's names to each mark is not written yet (open); when it is, it is its own document, `docs/design/events.md`. |
+| JetBrains Mono for numerals, labels, keycaps and code, IBM Plex Sans for headings and prose, both from Google Fonts (README, "Type"). | The desktop loads nothing from a network, and its CSP (`default-src 'none'`, no `font-src`) changes only by amending ADR 0048 (`desktop/CLAUDE.md`); the TUI draws in the terminal's font. | Fonts come from the machine. The stacks in `tokens.json` (`type.families`) name the two faces first and fall back to the system's (`ui-monospace`, `system-ui`, …), so each face shows where it is installed. Nothing is bundled, and the CSP keeps its directives. |
+| Focus is a 1px `signal-ring` outline, offset 1px; on a panel the whole frame turns `signal` (README, "States and motion"). | The desktop draws one 2px `--focus` outline on every button, field and summary, so WebView2 and WebKitGTK show the same ring (`field_contrast_focus_ring_covers_every_field_and_summary` in `desktop/src/lockdown.rs`). | The desktop's focus ring stays 2px wide, a deliberate difference from the brand book: WCAG 2.2's focus-appearance criterion (2.4.13) asks for at least the area of a 2px perimeter, which a 1px ring does not give. |
+| The composer's third verb, `Stop and send` (§3.3, from the run-view wireframe): stop this run, then run the message. | `trellis rpc` refuses a `prompt` while a run is in flight ("one at a time"), answers `abort` only once the run has ended and rolled back, and an abort also drops the follow-ups queued behind the run (`crates/trellis-cli/src/rpc.rs`). | The client sends `abort`, holds the message, and sends it as a `prompt` once that run's `run_end` arrives. Where the client keeps its state sequences it (the desktop's core, the TUI's model), on the event and never on a timer. |
+
+The fonts, focus-ring and stop-and-send rows were taken on 2026-10-25 by the
+session under the owner's instruction to work unattended (#795); each is
+reversible.
 
 ## 3. The system
 
@@ -288,8 +295,26 @@ the named row's for `Same as`; a row the check cannot read fails it.
 raised row with no fill at the terminal's depth is drawn in reverse video.
 `trellis-tui` reads the terminal's colour depth and background once, before
 its program starts, and `--theme dark|light` replaces the background the
-terminal answers (Windows always answers dark). Nothing is painted with the
-theme yet (#841).
+terminal answers (Windows always answers dark). The view paints each row by
+its role, after every cut and pad is made on the plain text
+(`tui/internal/view/paint.go`, #841): what the person typed in `signal`,
+the model's words in `ink`, tool calls in `cool`, a check in `ok` or `down`
+from its verdict only, notes in `warn`, titles and captions in
+`ink-secondary`, and frames in `line`. Each transcript row carries the role
+its writer gave it (`tui/internal/model/rows.go`, #849): what a tool
+returned is `ink-secondary` under its call and an error or a refusal is
+`down`; no role is read from a row's words.
+
+The design system's components are drawn in one place,
+`tui/internal/view/components.go` (#911), and every region draws them from
+there. A Meter is a fixed number of cells, `█` filled and `░` empty, then
+its two figures (`████░░░░ 3/40`): its cells are `cool`, `signal` past 70%
+of the ceiling and `down` past 90% (§2.1), its empty cells `line-strong`,
+and it never says a percentage. A Status is a dot and its word in one tone
+(`● 1 pending`), and a keycap is the key in brackets (`[TAB] select`). A
+figure trellis did not report is drawn `—`, which `/help` names as
+unreported (rule 2), and the clock this view keeps for itself is marked
+`*` until trellis reports its own (#906).
 
 The table gives 256- and 16-colour values for dark terminals. A light
 terminal (owner decision, 2026-10-25) takes the light hex values of §3.1 at

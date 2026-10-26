@@ -30,7 +30,7 @@
 // make(doc, tag, attrs) is dom.js's svg: an SVG element with its attributes.
 import { el, svg as make } from "./dom.js";
 import { isCount, notReported, str } from "./fmt.js";
-import { send, start } from "./rpc.js";
+import { onShown, send, start } from "./rpc.js";
 
 const REQUEST_ID = "desktop-codebase";
 // The modules asked for. With no `limit` rpc lists 40 (ADR 0025 section 5),
@@ -661,12 +661,11 @@ export async function wireCodebase(doc, tauri) {
       if (shown(doc)) ask(doc, tauri, ctx);
     }
   });
-  const button = doc.querySelector('nav.rail button[aria-controls="codebase"]');
-  if (button) {
-    button.addEventListener("click", () => {
-      if (ctx.stale) ask(doc, tauri, ctx);
-    });
-  }
+  // Entering the Codebase level shows the section (keys.js): a stale graph
+  // is read then (#826).
+  onShown(doc, "codebase", () => {
+    if (ctx.stale) ask(doc, tauri, ctx);
+  });
 }
 
 if (typeof window !== "undefined" && window.__TAURI__) {

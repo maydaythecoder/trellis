@@ -420,8 +420,11 @@ on stderr.
     model was sent. The aborted run's transcript is dropped with its
     future, so the server keeps its own record of what it sent, and the
     run reports the steers each request carries as it makes it.
-  - No `clear_queue`, by the owner's decision. The steering record in the
-    trail is #117's.
+  - No `clear_queue`, by the owner's decision. *Amended 2026-10-26 (#798,
+    ADR 0058 §3):* `withdraw {id}` takes back one steer or follow-up the
+    person names while it is still waiting, and is refused once it has been
+    delivered; `clear_queue` stays excluded. Accepted, not built (#808).
+    The steering record in the trail is #117's.
   - Evidence: `rpc_steer_reaches_the_next_model_request_and_cannot_converge_the_run`,
     `rpc_steer_and_follow_up_are_refused_with_no_run_in_flight` and
     `rpc_steer_follow_ups_start_as_new_prompts_after_run_end_in_order` in
@@ -703,7 +706,7 @@ on stderr.
     | `steer` | built | #114 |
     | `follow_up` | built | #114 |
     | `abort` | built | the Ctrl-C path: rollback, then a trail |
-    | `clear_queue` | not built | excluded by the owner; `abort` hands back everything queued |
+    | `clear_queue` | not built | excluded by the owner; `abort` hands back everything queued, and `withdraw` (ADR 0058 §3, 2026-10-26; not built, #808) is to take back one item |
     | `new_session` | not built | deferred with the session-tree commands (ADR 0021 8.1–8.4); each prompt is a fresh run |
     | `get_state` | built | |
     | `get_messages` | built | the current or last run's turns |
@@ -1223,9 +1226,11 @@ Each item is tested unless it says otherwise.
   It never begins with the word `tier`, which the bar writes before it;
   hosted labels began `tier 1` (the bar read `tier tier 1, …`) and a
   runtime whose probe could not run was `?`. `client_contract.json`'s
-  `commands.get_state.data.tier_label` lists the heads and the separator;
+  `responses.get_state.tier_label` (moved from `commands.get_state.data`
+  on 2026-10-26, #796) lists the heads and the separator;
   evidence: the `tier_label_vocabulary_` tests in
-  `crates/trellis-cli/src/tui_run.rs`.*
+  `crates/trellis-cli/src/hosted.rs` (they were in `tui_run.rs`, which no
+  longer exists).*
 - **Key order in a record is not part of the format.** `serde_json` writes
   keys in insertion order in one build and alphabetically in another,
   depending on which features cargo unifies (a test build differs from a
