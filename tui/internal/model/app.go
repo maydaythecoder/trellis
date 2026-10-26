@@ -1,6 +1,7 @@
 package model
 
 import (
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -26,6 +27,13 @@ type App struct {
 	C Client
 	// stderrSeen counts the stderr lines already given to the model.
 	stderrSeen int
+	// done is closed by Close once the program has ended. Bubble Tea
+	// cannot cancel a command's goroutine ("we'll have to leak the
+	// goroutine until Cmd returns"), so the two commands that wait (for
+	// the child's next line, and for the clock) each also wait on done,
+	// and end with the program rather than outliving it (#847).
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 type (
@@ -33,20 +41,38 @@ type (
 	linesEndedMsg struct{}
 )
 
-// NewApp joins a model to a running child.
-func NewApp(m *Model, c Client) *App { return &App{M: m, C: c} }
+// NewApp joins a model to a running child. Close it once the program
+// that runs it has returned.
+func NewApp(m *Model, c Client) *App { return &App{M: m, C: c, done: make(chan struct{})} }
+
+// Close ends the commands the program left waiting: the read of the
+// child's next line and the clock. Run returns without them when the
+// program quits on a key or a signal, so main calls Close after Run, on
+// every path. A second Close does nothing.
+func (a *App) Close() { a.closeOnce.Do(func() { close(a.done) }) }
 
 // Init sends what New queued, starts reading the child and starts the
 // clock.
 func (a *App) Init() tea.Cmd {
 	a.flush()
-	return tea.Batch(a.waitLine(), tick())
+	return tea.Batch(a.waitLine(), a.tick())
 }
 
 // tick is the program's clock: a TickMsg each second, for as long as the
-// program runs.
-func tick() tea.Cmd {
-	return tea.Tick(time.Second, func(time.Time) tea.Msg { return TickMsg{} })
+// program runs. tea.Tick's timer outlived Run by up to a second; this one
+// also ends on Close.
+func (a *App) tick() tea.Cmd {
+	done := a.done
+	return func() tea.Msg {
+		t := time.NewTimer(time.Second)
+		defer t.Stop()
+		select {
+		case <-t.C:
+			return TickMsg{}
+		case <-done:
+			return nil
+		}
+	}
 }
 
 // Update applies one message to the model, then sends what it queued.
@@ -61,7 +87,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		next = a.waitExit()
 	case TickMsg:
 		a.M.Update(msg)
-		next = tick()
+		next = a.tick()
 	default:
 		a.M.Update(msg)
 	}
@@ -76,14 +102,21 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // View draws the model.
 func (a *App) View() string { return a.M.View() }
 
+// waitLine waits for the child's next line, or for Close: it was the
+// goroutine every program that quit on a key or a signal left behind,
+// blocked on a channel the child had not closed yet (#847).
 func (a *App) waitLine() tea.Cmd {
-	lines := a.C.Lines()
+	lines, done := a.C.Lines(), a.done
 	return func() tea.Msg {
-		l, ok := <-lines
-		if !ok {
-			return linesEndedMsg{}
+		select {
+		case l, ok := <-lines:
+			if !ok {
+				return linesEndedMsg{}
+			}
+			return lineMsg{l}
+		case <-done:
+			return nil
 		}
-		return lineMsg{l}
 	}
 }
 
