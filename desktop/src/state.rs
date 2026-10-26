@@ -1895,7 +1895,7 @@ mod tests {
         let mut s = DesktopState::default();
         feed(&mut s, &run_start("p1"));
         feed(&mut s, &event("model call", json!({"turn": 3})));
-        assert_eq!(all(&s)["phase"], json!({"phase": "model", "turn": 3}));
+        assert_eq!(all(&mut s)["phase"], json!({"phase": "model", "turn": 3}));
         let c = s.child_exited();
         assert!(c.has(Pane::Phase), "{c:?}");
         assert_eq!(s.view(c)["phase"], Value::Null);
