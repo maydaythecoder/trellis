@@ -15,30 +15,16 @@
 //
 // index.html loads this as a module of its own.
 
+import { el } from "./dom.js";
+import { isCount, notReported, str } from "./fmt.js";
+import { send, start } from "./rpc.js";
+
 let asked = 0;
 // The id of the question asked last, kept after its answer comes: rpc
 // answers each get_radius on its own thread, so an earlier question's
 // answer can arrive after it, and only the last one's is shown. `null`
 // until one is asked, when nothing is shown.
 let waiting = null;
-
-function el(doc, tag, text) {
-  const e = doc.createElement(tag);
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
-
-function isCount(v) {
-  return typeof v === "number" && Number.isFinite(v);
-}
-
-function n(v) {
-  return isCount(v) ? String(v) : "not reported";
-}
-
-function str(v) {
-  return typeof v === "string" ? v : null;
-}
 
 function status(doc, text) {
   doc.getElementById("rd-status").textContent = text;
@@ -62,7 +48,7 @@ function counted(doc, list, rest, further, withExplain) {
   for (const c of Array.isArray(list) ? list : []) {
     if (!c || str(c.name) === null) continue;
     const li = el(doc, "li");
-    li.append(el(doc, "code", c.name), ` ${n(c.call_sites)} call sites`);
+    li.append(el(doc, "code", c.name), ` ${notReported(c.call_sites)} call sites`);
     if (withExplain && str(c.explain) !== null) {
       const x = el(doc, "span", ` · ${c.explain}`);
       x.className = "muted";
@@ -71,7 +57,7 @@ function counted(doc, list, rest, further, withExplain) {
     ul.append(li);
   }
   if (rest && isCount(rest.rows)) {
-    const li = el(doc, "li", `(other) ${n(rest.call_sites)} call sites across ${rest.rows} further ${further}`);
+    const li = el(doc, "li", `(other) ${notReported(rest.call_sites)} call sites across ${rest.rows} further ${further}`);
     li.className = "muted";
     ul.append(li);
   }
@@ -101,13 +87,13 @@ export function drawRadius(doc, payload) {
   status(doc, `${str(payload.symbol) ?? "symbol not reported"} (${str(payload.file) ?? "file not reported"})`);
 
   const reach = block(doc, "reach — call sites that reach this symbol", [
-    ["resolved", n(r.resolved)],
-    ["ambiguous", n(r.ambiguous)],
-    ["symbols reached", n(r.symbols_reached)],
+    ["resolved", notReported(r.resolved)],
+    ["ambiguous", notReported(r.ambiguous)],
+    ["symbols reached", notReported(r.symbols_reached)],
   ]);
   const doubt = block(doc, "doubt — a different population, not a fraction of the reach", [
-    ["unbound sites in touched files", n(d.unbound_in_touched_files)],
-    ["touched files", n(d.touched_files)],
+    ["unbound sites in touched files", notReported(d.unbound_in_touched_files)],
+    ["touched files", notReported(d.touched_files)],
   ]);
   if (Array.isArray(d.reasons) && d.reasons.length > 0) {
     doubt.append(el(doc, "h5", "top reasons"), counted(doc, d.reasons, d.reasons_not_shown, "reasons", true));
@@ -138,14 +124,12 @@ async function ask(doc, tauri) {
   submitting(doc, true);
   status(doc, `Reading the radius of ${symbol}: trellis indexes the repository for it.`);
   doc.getElementById("rd-result").replaceChildren();
-  try {
-    await tauri.core.invoke("rpc_send", { line: { id, type: "get_radius", symbol } });
-  } catch (err) {
+  await send(tauri, { id, type: "get_radius", symbol }, (why) => {
     // Still the last question: an earlier one answered now is not shown
     // in place of this refusal.
     submitting(doc, false);
-    status(doc, `Open a repository to see a radius. ${err}`);
-  }
+    status(doc, `Open a repository to see a radius. ${why}`);
+  });
 }
 
 export async function wireRadius(doc, tauri) {
@@ -159,11 +143,6 @@ export async function wireRadius(doc, tauri) {
   await tauri.event.listen("rpc-exited", () => submitting(doc, false));
 }
 
-function start() {
-  wireRadius(document, window.__TAURI__).catch((err) => console.error("trellis desktop radius:", err));
-}
-
 if (typeof window !== "undefined" && window.__TAURI__) {
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
-  else start();
+  start("the radius view", () => wireRadius(document, window.__TAURI__));
 }

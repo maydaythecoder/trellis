@@ -38,17 +38,10 @@
 // trail) cannot be undone, so it is drawn apart in the danger colour and a
 // native dialog confirms it before any abort is sent (#637).
 
+import { el } from "./dom.js";
+import { str } from "./fmt.js";
+import { lineId, send } from "./rpc.js";
 import { exitText } from "./status.js";
-
-function el(doc, tag, text) {
-  const e = doc.createElement(tag);
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
-
-function str(v) {
-  return typeof v === "string" ? v : null;
-}
 
 // Whether a run is in flight, as the last view that carried it said. No
 // view yet is no run: the core refuses a prompt during one regardless.
@@ -61,12 +54,6 @@ let modelChosen = false;
 let stopped = null;
 // The starter chosen for the next task, `{ name, description }`, or null.
 let template = null;
-let nextId = 0;
-
-function lineId(kind) {
-  nextId += 1;
-  return `desktop-composer-${kind}-${nextId}`;
-}
 
 // The composer's elements, looked up once.
 function parts(doc) {
@@ -96,16 +83,14 @@ function control(p) {
   return p.control.value === "auto" ? "auto" : "approve";
 }
 
-// Sends one line through the core, and says why when it is refused.
-async function send(tauri, p, line) {
-  try {
-    await tauri.core.invoke("rpc_send", { line });
-    p.note.textContent = "";
-    return true;
-  } catch (err) {
-    p.note.textContent = String(err);
-    return false;
-  }
+// Sends one line through the core (rpc.js's send): the note says why when
+// it is refused, and is cleared when it is not.
+async function forward(tauri, p, line) {
+  const sent = await send(tauri, line, (why) => {
+    p.note.textContent = why;
+  });
+  if (sent) p.note.textContent = "";
+  return sent;
 }
 
 // What the composer looks like for whether a run is in flight and whether a
@@ -207,7 +192,7 @@ export function drawComposer(doc, view) {
 // starters: on each child-started, and from main.js when the page loaded
 // after its child started and so saw none.
 export function askStarters(doc, tauri) {
-  send(tauri, parts(doc), { id: "desktop-commands", type: "get_commands" });
+  forward(tauri, parts(doc), { id: "desktop-commands", type: "get_commands" });
 }
 
 // No trellis rpc child is running, for `why`: from `no-child`, from
@@ -262,7 +247,7 @@ export async function wireComposer(doc, tauri) {
         p.note.textContent = "Type the text to steer the run with.";
         return;
       }
-      if (await send(tauri, p, { id: lineId("steer"), type: "steer", message: text })) p.text.value = "";
+      if (await forward(tauri, p, { id: lineId("composer", "steer"), type: "steer", message: text })) p.text.value = "";
       return;
     }
     if (text.trim() === "" && template === null) {
@@ -271,10 +256,10 @@ export async function wireComposer(doc, tauri) {
     }
     // A template with no text is a whole task; with text, rpc runs the
     // template with the text after it.
-    const line = { id: lineId("prompt"), type: "prompt", control: control(p) };
+    const line = { id: lineId("composer", "prompt"), type: "prompt", control: control(p) };
     if (text.trim() !== "") line.task = text;
     if (template !== null) line.prompt = template.name;
-    if (await send(tauri, p, line)) {
+    if (await forward(tauri, p, line)) {
       p.text.value = "";
       template = null;
       drawTemplate(doc);
@@ -304,7 +289,7 @@ export async function wireComposer(doc, tauri) {
   });
   p.stopConfirm.addEventListener("close", () => {
     if (p.stopConfirm.returnValue !== "stop") return;
-    send(tauri, p, { id: lineId("abort"), type: "abort" });
+    forward(tauri, p, { id: lineId("composer", "abort"), type: "abort" });
   });
   drawRunning(doc);
 }

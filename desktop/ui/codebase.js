@@ -27,7 +27,11 @@
 // graph through `rpc_send` when the view is shown and what it holds is
 // stale: no graph yet, a new child, or a run that has ended since.
 
-const SVG = "http://www.w3.org/2000/svg";
+// make(doc, tag, attrs) is dom.js's svg: an SVG element with its attributes.
+import { el, svg as make } from "./dom.js";
+import { isCount, notReported, str } from "./fmt.js";
+import { send, start } from "./rpc.js";
+
 const REQUEST_ID = "desktop-codebase";
 // The modules asked for. With no `limit` rpc lists 40 (ADR 0025 section 5),
 // and past that whole packages went undrawn. rpc takes any count, so the
@@ -47,30 +51,6 @@ const PAN = 0.1;
 // A pointer that moves less than this many pixels between down and up is a
 // click, not a drag.
 const DRAG_PX = 3;
-
-function isCount(v) {
-  return typeof v === "number" && Number.isFinite(v);
-}
-
-function figure(v) {
-  return isCount(v) ? String(v) : "not reported";
-}
-
-function str(v) {
-  return typeof v === "string" ? v : null;
-}
-
-function el(doc, tag, text) {
-  const e = doc.createElement(tag);
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
-
-function make(doc, tag, attrs) {
-  const e = doc.createElementNS(SVG, tag);
-  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v));
-  return e;
-}
 
 // One string of the layout at its point, or nothing when the layout sent
 // no text or no position for it.
@@ -107,14 +87,13 @@ function status(doc, text) {
 // What the whole answer says, as trellis counted it: modules, then call
 // sites as three counts that are never divided (ADR 0014).
 function summary(d) {
-  const n = (v) => (isCount(v) ? String(v) : "not reported");
-  const parts = [`${n(d.modules_indexed)} modules indexed, ${n(d.modules_listed)} listed`];
+  const parts = [`${notReported(d.modules_indexed)} modules indexed, ${notReported(d.modules_listed)} listed`];
   if (isCount(d.modules_not_drawn) && d.modules_not_drawn > 0) {
     parts[0] += ` (${d.modules_not_drawn} past the limit, not drawn)`;
   }
   parts.push(
-    `${n(d.bound_call_sites)} call sites bound across modules, ${n(d.ambiguous)} ambiguous, ` +
-      `${n(d.unresolved)} unresolved: three counts, not a ratio`,
+    `${notReported(d.bound_call_sites)} call sites bound across modules, ${notReported(d.ambiguous)} ambiguous, ` +
+      `${notReported(d.unresolved)} unresolved: three counts, not a ratio`,
   );
   // Whether trellis saved this index where the overview reads it (#654).
   // Said only as trellis said it; an answer that said nothing says nothing.
@@ -340,8 +319,8 @@ function drawList(doc, ctx) {
   } else {
     rows = (Array.isArray(p.modules) ? p.modules : []).map((m, k) => {
       const said =
-        `edges in ${edgesIn(ctx, m)} · edges out ${figure(m && m.edges_out)} · ` +
-        `doubt ${figure(m && m.doubt)}`;
+        `edges in ${edgesIn(ctx, m)} · edges out ${notReported(m && m.edges_out)} · ` +
+        `doubt ${notReported(m && m.doubt)}`;
       const [li, b] = row(str(m && m.module) ?? "module", () => select(doc, ctx, ctx.pkg, k), said);
       ctx.items[k] = b;
       return li;
@@ -401,8 +380,8 @@ function drawDetails(doc, ctx) {
   const row = (name, value) => dl.append(el(doc, "dt", name), el(doc, "dd", value));
   const complete = ctx.data.edges_in_complete === true;
   row("edges in", edgesIn(ctx, m));
-  row("edges out", figure(m.edges_out));
-  row("doubt", figure(m.doubt));
+  row("edges out", notReported(m.edges_out));
+  row("doubt", notReported(m.doubt));
   const note = el(
     doc,
     "p",
@@ -616,15 +595,11 @@ async function ask(doc, tauri, ctx) {
   ctx.pending = true;
   ctx.stale = false;
   status(doc, "Reading the module graph: trellis indexes the repository for it.");
-  try {
-    await tauri.core.invoke("rpc_send", {
-      line: { id: REQUEST_ID, type: "get_codebase", limit: MODULES_ASKED },
-    });
-  } catch (err) {
+  await send(tauri, { id: REQUEST_ID, type: "get_codebase", limit: MODULES_ASKED }, (why) => {
     ctx.pending = false;
     ctx.stale = true;
-    status(doc, `Open a repository to see its graph. ${err}`);
-  }
+    status(doc, `Open a repository to see its graph. ${why}`);
+  });
 }
 
 function shown(doc) {
@@ -684,11 +659,6 @@ export async function wireCodebase(doc, tauri) {
   }
 }
 
-function start() {
-  wireCodebase(document, window.__TAURI__).catch((err) => console.error("trellis desktop codebase:", err));
-}
-
 if (typeof window !== "undefined" && window.__TAURI__) {
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
-  else start();
+  start("the codebase view", () => wireCodebase(document, window.__TAURI__));
 }
