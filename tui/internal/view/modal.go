@@ -17,7 +17,7 @@ func modalBox(width, height int) (boxW, boxH, inner int) {
 // modalPage is the diff's lines, the rows the body shows, whether the diff
 // scrolls (a row then says which lines are in view), and lastFrom: the
 // furthest down a view can start and still fill the box, so the last page
-// is a full one.
+// is a full one. A last line taller than the box is its own last page.
 func modalPage(diff string, width, height int) (lines []string, bodyH int, scrolls bool, lastFrom int) {
 	_, boxH, inner := modalBox(width, height)
 	innerH := boxH - 2
@@ -37,6 +37,11 @@ func modalPage(diff string, width, height int) (lines []string, bodyH int, scrol
 		used += rows(lines[lastFrom-1])
 		lastFrom--
 	}
+	// When the last line alone wraps past the box, nothing fits from the
+	// end and the loop stops at len(lines), a start past every line: one
+	// Down on a long bash command emptied the box and read "lines 2–2 of
+	// 1". The view starts at that line instead and shows what fits of it.
+	lastFrom = min(lastFrom, len(lines)-1)
 	return lines, bodyH, scrolls, lastFrom
 }
 

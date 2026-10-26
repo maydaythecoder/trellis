@@ -215,6 +215,36 @@ func TestApproveModalUpMovesAtOnceAfterTheEnd(t *testing.T) {
 	}
 }
 
+// A last line that wraps to more rows than the box shows is its own last
+// page: the offset stops at that line and the box shows what fits of it.
+// The limit ran one past the last line, and one Down on a long bash
+// command emptied the box and read "lines 2–2 of 1", leaving nothing of
+// the call being answered on screen.
+func TestApproveModalALineTallerThanTheBoxIsItsOwnLastPage(t *testing.T) {
+	for _, c := range []struct {
+		diff, shows string
+		last        int
+	}{
+		{strings.Repeat("x", 900), "xxxxxxxx", 0},
+		{"echo start\n" + strings.Repeat("y", 900), "yyyyyyyy", 1},
+	} {
+		m := running(t)
+		m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+		feed(m, approval("a1", "bash", c.diff))
+		for i := 0; i < 5; i++ {
+			press(m, tea.KeyPgDown)
+			press(m, tea.KeyDown)
+		}
+		if m.Modal.Scroll != c.last {
+			t.Fatalf("scroll %d, want %d: the last line is as far as it goes", m.Modal.Scroll, c.last)
+		}
+		n := c.last + 1
+		if v := m.View(); !strings.Contains(v, c.shows) || !strings.Contains(v, fmt.Sprintf("lines %d–%d of %d", n, n, n)) {
+			t.Fatalf("the box does not show the last line from its start:\n%s", v)
+		}
+	}
+}
+
 // A gated call that is not an edit is named a call, and a diff that fits
 // says no position.
 func TestApproveModalNamesACallThatIsNotAnEdit(t *testing.T) {
