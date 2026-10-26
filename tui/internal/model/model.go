@@ -9,14 +9,13 @@
 //
 // Everything a frame carries is untrusted (model or server text), so every
 // string that reaches the transcript has its control characters removed
-// first (Plain).
+// first (view.Plain).
 package model
 
 import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -93,7 +92,8 @@ type Model struct {
 	ScrollBack int
 	// ModelName and Tier are what the status bar says (status.go).
 	ModelName, Tier string
-	// Offered are the @ completions on offer (complete.go).
+	// Offered are the @ completions on offer and, when trellis sent more
+	// than OfferedCap, a last line saying how many more (complete.go).
 	Offered []string
 
 	// restored is the last run_end's restored, for the bar's worktree
@@ -190,12 +190,18 @@ func (m *Model) Update(msg tea.Msg) {
 		m.key(msg)
 	case tea.WindowSizeMsg:
 		m.Width, m.Height = msg.Width, msg.Height
+		// A taller pane has a lower top, and the modal a different last
+		// page: an offset past either would spend presses again (#843).
+		m.ScrollBack = min(m.ScrollBack, m.transcriptTop())
+		if m.Modal != nil {
+			m.scrollModal(0)
+		}
 	case FrameMsg:
 		m.frame(msg.Frame)
 	case ExitedMsg:
 		m.exited(msg.Err)
 	case SendFailedMsg:
-		m.pushLine("! could not write to trellis rpc: " + Plain(msg.Err.Error()))
+		m.pushLine("! could not write to trellis rpc: " + view.Plain(msg.Err.Error()))
 	case TickMsg:
 		m.tick()
 	}
@@ -243,7 +249,9 @@ func (m *Model) key(k tea.KeyMsg) {
 		}
 		m.inputChanged()
 	case tea.KeyUp:
-		m.ScrollBack++
+		// Held at the top, as PgUp is: Up had no top, and every press past
+		// it was one Down spent before the view moved again (#843).
+		m.ScrollBack = min(m.ScrollBack+1, m.transcriptTop())
 	case tea.KeyDown:
 		// Saturating: Down at the end stays at the end, following.
 		if m.ScrollBack > 0 {
@@ -262,10 +270,22 @@ func (m *Model) key(k tea.KeyMsg) {
 	}
 }
 
+// size is the screen the view is drawn at: the terminal's, or the minimum
+// before the first size arrives. The scroll limits are taken at the same
+// size, so they are the limits of what is drawn.
+func (m *Model) size() (w, h int) {
+	if m.Width <= 0 || m.Height <= 0 {
+		return view.MinWidth, view.MinHeight
+	}
+	return m.Width, m.Height
+}
+
 // transcriptTop is the scroll back that shows the transcript's first row
-// at the current width.
+// in the layout at the current size: the view's own limit, so a key never
+// moves the offset somewhere the view cannot show (#843).
 func (m *Model) transcriptTop() int {
-	return view.TranscriptRows(m.viewState(), m.Width)
+	w, h := m.size()
+	return view.TranscriptTop(m.viewState(), w, h)
 }
 
 // ctrlC aborts a run in flight first, so it rolls back through trellis,
@@ -293,12 +313,12 @@ func (m *Model) ctrlC() {
 // paste as one key carrying every rune, its line breaks among them; each
 // break, CR, LF or CRLF, becomes one space, so a paste never submits
 // anything (a break is not an Enter) and a multi-line task is one line
-// until Enter sends it. Any other control character is dropped, as Plain
-// drops it from served text.
+// until Enter sends it. Any other control character is dropped, as
+// view.Plain drops it from served text.
 func pasted(r []rune) string {
 	s := strings.ReplaceAll(string(r), "\r\n", " ")
 	s = strings.NewReplacer("\r", " ", "\n", " ").Replace(s)
-	return Plain(s)
+	return view.Plain(s)
 }
 
 // submit hands the typed line to trellis: a task when no run is in
@@ -363,7 +383,7 @@ func (m *Model) frame(f frames.Frame) {
 	case frames.Warning, frames.Unparsed:
 		m.pushText(f.Text)
 	case frames.Human:
-		m.Stderr = append(m.Stderr, Plain(f.Text))
+		m.Stderr = append(m.Stderr, view.Plain(f.Text))
 		if over := len(m.Stderr) - StderrCap; over > 0 {
 			m.Stderr = append([]string(nil), m.Stderr[over:]...)
 		}
@@ -373,7 +393,7 @@ func (m *Model) frame(f frames.Frame) {
 // turn adds the turn's line: what was called and, when a check ran, what
 // trellis said it returned. The verdict is shown, never computed (ADR 0004).
 func (m *Model) turn(t *frames.TurnFields) {
-	line := "· " + Plain(t.Call)
+	line := "· " + view.Plain(t.Call)
 	if t.Verdict != nil {
 		switch *t.Verdict {
 		case "Some(true)":
@@ -393,7 +413,7 @@ func (m *Model) turn(t *frames.TurnFields) {
 			if strings.TrimSpace(l) == "" && n == 0 {
 				continue
 			}
-			m.pushLine("    " + Plain(l))
+			m.pushLine("    " + view.Plain(l))
 			n++
 		}
 	}
@@ -432,7 +452,7 @@ func (m *Model) errorLines(e *string) {
 			if strings.TrimSpace(l) == "" {
 				continue
 			}
-			m.pushLine("! " + Plain(l))
+			m.pushLine("! " + view.Plain(l))
 			said = true
 		}
 	}
@@ -463,16 +483,13 @@ func OutcomeLine(e *frames.RunEndFields) string {
 	case "error":
 		first := "no reason given"
 		if e.Error != nil {
-			for _, l := range strings.Split(*e.Error, "\n") {
-				if strings.TrimSpace(l) != "" {
-					first = l
-					break
-				}
+			if l := view.FirstLine(*e.Error); l != "" {
+				first = l
 			}
 		}
-		return "failed: " + Plain(first)
+		return "failed: " + view.Plain(first)
 	}
-	return Plain(*e.Outcome)
+	return view.Plain(*e.Outcome)
 }
 
 // response handles an answer to a command this model sent. A refused
@@ -542,7 +559,7 @@ func (m *Model) response(r *frames.ResponseFields) {
 	if cmd == "" {
 		cmd = "a command"
 	}
-	m.pushLine("! " + Plain(cmd) + ": " + Plain(firstLine(why)))
+	m.pushLine("! " + view.Plain(cmd) + ": " + view.Plain(view.FirstLine(why)))
 }
 
 // exited ends the program. A child that exits without having been asked to
@@ -565,16 +582,7 @@ func exitReason(err error) string {
 	if err == nil {
 		return ""
 	}
-	return ": " + Plain(err.Error())
-}
-
-func firstLine(s string) string {
-	for _, l := range strings.Split(s, "\n") {
-		if strings.TrimSpace(l) != "" {
-			return l
-		}
-	}
-	return s
+	return ": " + view.Plain(err.Error())
 }
 
 // pushText adds served text as lines, skipping blank ones: spacing lines
@@ -584,7 +592,7 @@ func (m *Model) pushText(s string) {
 		if strings.TrimSpace(l) == "" {
 			continue
 		}
-		m.pushLine(Plain(l))
+		m.pushLine(view.Plain(l))
 	}
 }
 
@@ -596,27 +604,9 @@ func (m *Model) pushLine(l string) {
 	}
 }
 
-// Plain removes control characters (C0, DEL and C1, ESC among them) and
-// line breaks, so served text can never move the cursor, recolour the
-// screen or start an escape sequence in the terminal.
-func Plain(s string) string {
-	if strings.IndexFunc(s, unicode.IsControl) < 0 {
-		return s
-	}
-	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return -1
-		}
-		return r
-	}, s)
-}
-
 // View draws the screen: the six regions, or the approval modal over them.
 func (m *Model) View() string {
-	w, h := m.Width, m.Height
-	if w <= 0 || h <= 0 {
-		w, h = view.MinWidth, view.MinHeight
-	}
+	w, h := m.size()
 	if m.Modal != nil {
 		return view.Modal(m.Modal.Question, m.Modal.Diff, m.Modal.Scroll, w, h)
 	}
