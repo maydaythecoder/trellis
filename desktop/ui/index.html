@@ -12,8 +12,8 @@
   render.js, overview.js and main.js through textContent or createElement,
   never parsed as HTML (ADR 0007, S10). The run section's action graph is
   SVG that graph.js builds with createElementNS from the layout the core
-  computes (#303); render.js imports it, and the page loads it as a module
-  of its own, which the browser evaluates once either way. The codebase
+  computes (#303); render.js imports it, so it has no script tag of its
+  own (#833). The codebase
   section is drawn by codebase.js from the layout the core computes from a
   get_codebase answer (#307), and its symbol radius pane by radius.js from
   a get_radius answer the core types into reach and doubt (#308). The
@@ -29,12 +29,14 @@
   map's layout included (atlas.rs); the owner asked for it on 2026-10-11,
   beside the other sections. It only reads.
 
-  The rail's buttons each name, with aria-controls, the one section they
-  show; the others carry the hidden attribute. Pressing one moves focus to
-  the shown section's heading, which takes focus (tabindex -1) without
-  joining the tab order, so a keyboard user lands on what they chose; the
-  page's one h1 is drawn for screen readers only (#646). The overview section is the
-  landing section: its four panes (recent repositories, last run, codebase,
+  The overview's panels (button[data-enter]) are the ways into the other
+  sections, one level each (#826): keys.js shows the level's section and
+  hides the others with the hidden attribute, and a section's module reads
+  what it shows when its section is shown (rpc.js's onShown). Entering
+  moves focus to the shown section's heading, which takes focus (tabindex
+  -1) without joining the tab order, so a keyboard user lands on what they
+  chose; the page's one h1 is drawn for screen readers only (#646). The
+  overview section is the landing level: its four panes (recent repositories, last run, codebase,
   board) are drawn by overview.js from trellis's overview object (#562).
   A pane added to the run or overview section that nothing writes to fails
   view_renders_every_run_section or view_renders_every_overview_pane in
@@ -82,7 +84,6 @@
     <link rel="stylesheet" href="style.css">
     <script type="module" src="web.js"></script>
     <script type="module" src="main.js"></script>
-    <script type="module" src="graph.js"></script>
     <script type="module" src="codebase.js"></script>
     <script type="module" src="radius.js"></script>
     <script type="module" src="trails.js"></script>
@@ -128,26 +129,27 @@
       <symbol id="icon-vault" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="2.5" width="11" height="11"></rect><circle cx="8" cy="8" r="2"></circle><path d="M8 3.5v2M8 10.5v2M3.5 8h2M10.5 8h2"></path></g></symbol>
       <symbol id="icon-warning" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2l6.5 11.5h-13z"></path><path d="M8 6.5v3.5"></path><circle cx="8" cy="12" r=".6" fill="currentColor" stroke="none"></circle></g></symbol>
     </svg>
-    <nav class="rail" aria-label="Views">
-      <button type="button" aria-controls="overview" aria-current="page">Overview</button>
-      <button type="button" aria-controls="run">Run</button>
-      <button type="button" aria-controls="trails">Trails</button>
-      <button type="button" aria-controls="codebase">Codebase</button>
-      <button type="button" aria-controls="atlas">Atlas</button>
-      <button type="button" aria-controls="board">Board</button>
-      <button type="button" aria-controls="vault">Vault</button>
-    </nav>
-    <main>
+    <!-- The shell (#826; ADR 0048 section 5 as amended 2026-10-26): the
+    Trail across the top, the sibling rail on the left, the stage, and the
+    status bar along the bottom. keys.js draws the Trail and the rail for
+    the level shown and owns the keys that move between levels. -->
+    <header class="shell-top">
+      <nav id="trail" class="trail" aria-label="Trail">
+        <ol id="trail-path" class="trail-path">
+          <li><span class="trail-current" aria-current="location">Overview</span></li>
+        </ol>
+        <p class="trail-depth">
+          <span id="trail-ticks" class="trail-ticks" aria-hidden="true"><span class="trail-tick on"></span><span class="trail-tick"></span><span class="trail-tick"></span><span class="trail-tick"></span></span>
+          <span id="trail-level">L1 / 4</span>
+          <kbd>ESC</kbd> out
+        </p>
+      </nav>
+    </header>
+    <div class="shell-middle">
+      <nav id="siblings" class="siblings" aria-label="Siblings" hidden></nav>
+    <main id="stage">
       <h1 class="visually-hidden">trellis</h1>
       <p id="status" class="status"></p>
-      <dl id="status-bar" class="status-bar" aria-label="Status">
-        <dt>trellis</dt><dd id="status-trellis">not started yet</dd>
-        <dt>root</dt><dd id="status-root">none open</dd>
-        <dt>model</dt><dd id="status-model">none chosen yet</dd>
-        <dt>run</dt><dd id="status-run">no run in flight</dd>
-        <dt>phase</dt><dd id="status-phase">none</dd>
-        <dt>child</dt><dd id="status-child">not started yet</dd>
-      </dl>
       <div id="alert" class="alert" role="alert" hidden>
         <p id="alert-text"></p>
         <button type="button" id="alert-dismiss">Dismiss</button>
@@ -183,6 +185,14 @@
       <section id="overview" aria-labelledby="overview-title">
         <h2 id="overview-title" tabindex="-1">Overview</h2>
         <p id="ov-root" class="muted">Reading the overview.</p>
+        <ul class="levels" aria-label="Ways in">
+          <li><button type="button" class="level-tile" data-enter="run"><span class="level-name">Run</span><span class="level-note">The run in flight: its log, actions, edits and checks.</span><span class="drill" aria-hidden="true">⤢</span></button></li>
+          <li><button type="button" class="level-tile" data-enter="trails"><span class="level-name">Trails</span><span class="level-note">Each past run's committed record.</span><span class="drill" aria-hidden="true">⤢</span></button></li>
+          <li><button type="button" class="level-tile" data-enter="codebase"><span class="level-name">Codebase</span><span class="level-note">The module graph trellis indexed, and a symbol's radius.</span><span class="drill" aria-hidden="true">⤢</span></button></li>
+          <li><button type="button" class="level-tile" data-enter="atlas"><span class="level-name">Atlas</span><span class="level-note">The map of the repository over its history.</span><span class="drill" aria-hidden="true">⤢</span></button></li>
+          <li><button type="button" class="level-tile" data-enter="board"><span class="level-name">Board</span><span class="level-note">The task queue, and PR and CI state.</span><span class="drill" aria-hidden="true">⤢</span></button></li>
+          <li><button type="button" class="level-tile" data-enter="vault"><span class="level-name">Vault</span><span class="level-note">The note vault: search a note, read its relations.</span><span class="drill" aria-hidden="true">⤢</span></button></li>
+        </ul>
         <div class="overview-grid">
           <div class="pane" role="region" aria-labelledby="ov-recent-title">
             <h3 id="ov-recent-title">Recent repositories</h3>
@@ -511,5 +521,17 @@
         </form>
       </dialog>
     </main>
+    </div>
+    <footer class="shell-bar">
+      <p class="keys" aria-label="Keys"><span class="key"><kbd>⏎</kbd> in</span> <span class="key"><kbd>ESC</kbd> out</span> <span class="key"><kbd>Tab</kbd> next</span></p>
+      <dl id="status-bar" class="status-bar" aria-label="Status">
+        <dt>trellis</dt><dd id="status-trellis">not started yet</dd>
+        <dt>root</dt><dd id="status-root">none open</dd>
+        <dt>model</dt><dd id="status-model">none chosen yet</dd>
+        <dt>run</dt><dd id="status-run">no run in flight</dd>
+        <dt>phase</dt><dd id="status-phase">none</dd>
+        <dt>child</dt><dd id="status-child">not started yet</dd>
+      </dl>
+    </footer>
   </body>
 </html>
