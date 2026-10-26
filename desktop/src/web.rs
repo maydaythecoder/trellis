@@ -59,7 +59,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 /// The page's files, by name, as `ui/` holds them. A file added to `ui/`
-/// is added here, or `page_is_every_file_under_ui_and_nothing_else`
+/// is added here, or `web_serves_the_files_under_ui_and_nothing_else`
 /// fails.
 pub const PAGE: &[(&str, &[u8])] = &[
     ("index.html", include_bytes!("../ui/index.html")),
@@ -80,6 +80,9 @@ pub const PAGE: &[(&str, &[u8])] = &[
     ("vault.js", include_bytes!("../ui/vault.js")),
     ("queue.js", include_bytes!("../ui/queue.js")),
     ("atlas.js", include_bytes!("../ui/atlas.js")),
+    ("dom.js", include_bytes!("../ui/dom.js")),
+    ("fmt.js", include_bytes!("../ui/fmt.js")),
+    ("rpc.js", include_bytes!("../ui/rpc.js")),
 ];
 
 /// The page's commands (`commands.rs`), the same four `build.rs` lists.
