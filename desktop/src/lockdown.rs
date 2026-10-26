@@ -1978,7 +1978,7 @@ mod tests {
         }));
         let overview_pane = overview["last_run"]["outcome"].clone();
 
-        assert_eq!(run_pane, json!("not converged"), "the Run pane's word");
+        assert_eq!(run_pane, json!("not_converged"), "the Run pane's word");
         assert_eq!(
             trails_pane, run_pane,
             "the Trails list's word differs from the Run pane's"
@@ -1989,7 +1989,7 @@ mod tests {
         );
         // The trail's word stays the trail's text: mapping it does not
         // promote it out of the untrusted wrapper (ADR 0007).
-        assert_eq!(trail_row["outcome"], json!({"untrusted": "not converged"}));
+        assert_eq!(trail_row["outcome"], json!({"untrusted": "not_converged"}));
     }
 
     #[test]
@@ -2000,7 +2000,7 @@ mod tests {
         // arms; the trail's are query.rs's Entry::outcome arms.
         let rpc = ["converged", "not_converged", "interrupted", "error"];
         let trail = ["converged", "not converged", "no check ran"];
-        let shown = ["converged", "not converged", "interrupted", "error"];
+        let shown = ["converged", "not_converged", "interrupted", "error"];
         for w in rpc.iter().chain(trail.iter()) {
             let out = crate::state::outcome_words(w);
             assert!(

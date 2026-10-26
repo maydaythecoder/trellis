@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -15,6 +17,7 @@ import (
 	"github.com/maydaythecoder/trellis/tui/internal/rpc"
 	"github.com/maydaythecoder/trellis/tui/internal/theme"
 	"github.com/maydaythecoder/trellis/tui/internal/theme/themetest"
+	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
 // fresh is a model past its start-up commands, with its outbox empty.
@@ -135,7 +138,7 @@ func TestModelTurnsFillTheTranscript(t *testing.T) {
 		"> change f",
 		"· read_file a.py",
 		"· run_check tests  ✓ check passed",
-		"· run_check types  ✗ check FAILED",
+		"· run_check types  ✗ check failed",
 		"· edit a.py",
 	}
 	if strings.Join(texts(m), "\n") != strings.Join(want, "\n") {
@@ -167,11 +170,11 @@ func TestModelRunEndSetsTheOutcome(t *testing.T) {
 	if m.Running {
 		t.Fatal("still running after run_end")
 	}
-	if m.Outcome != "did not converge; worktree restored: true" {
+	if m.Outcome != "not_converged · exit 2; worktree restored: true" {
 		t.Fatalf("outcome %q", m.Outcome)
 	}
 	m.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
-	if !strings.Contains(m.View(), "last run: did not converge; worktree restored: true") {
+	if !strings.Contains(m.View(), "last run: not_converged · exit 2; worktree restored: true") {
 		t.Fatalf("view does not show the outcome:\n%s", m.View())
 	}
 	if last := texts(m)[len(m.Transcript)-1]; last != "· run finished, exit 2" {
@@ -190,17 +193,17 @@ func TestModelRunEndSetsTheOutcome(t *testing.T) {
 	}
 }
 
-// Every way a run ends hands input back, and each outcome is worded as
-// tui_run.rs words it.
+// Every way a run ends hands input back, and each outcome is run_end's own
+// word with its exit code (DESIGN.md section 2 rule 5, #803).
 func TestModelEveryEndingHandsInputBack(t *testing.T) {
 	for _, c := range []struct {
 		fields map[string]any
 		want   string
 	}{
-		{map[string]any{"outcome": "converged", "exit": 0}, "converged"},
-		{map[string]any{"outcome": "not_converged", "exit": 2, "restored": false}, "did not converge; worktree restored: false"},
-		{map[string]any{"outcome": "interrupted", "exit": 130, "restored": true}, "interrupted; worktree restored: true"},
-		{map[string]any{"outcome": "error", "exit": 1, "error": "cannot reach the runtime\ncaused by: refused"}, "failed: cannot reach the runtime"},
+		{map[string]any{"outcome": "converged", "exit": 0}, "converged · exit 0"},
+		{map[string]any{"outcome": "not_converged", "exit": 2, "restored": false}, "not_converged · exit 2; worktree restored: false"},
+		{map[string]any{"outcome": "interrupted", "exit": 130, "restored": true}, "interrupted · exit 130; worktree restored: true"},
+		{map[string]any{"outcome": "error", "exit": 1, "error": "cannot reach the runtime\ncaused by: refused"}, "error · exit 1: cannot reach the runtime"},
 		{map[string]any{}, "ended; trellis reported no outcome"},
 	} {
 		m := fresh(t)
@@ -546,5 +549,151 @@ func TestSummaryClosingWordsAskedOnlyAfterAConvergedRun(t *testing.T) {
 	feed(m, jsonLine(map[string]any{"type": "response", "command": "get_last_assistant_text", "id": id, "success": false, "error": "busy"}))
 	if c := m.closingState(); c.Words != nil || c.Why != "get_last_assistant_text refused: busy" {
 		t.Fatalf("refused: %+v", c)
+	}
+}
+
+// clientFixtures is crates/trellis-cli/tests/client_fixtures.json, the
+// cases the desktop's client_fixtures_ tests walk too (#803).
+type clientFixtures struct {
+	OutcomeWords struct {
+		Cases []struct {
+			Name   string         `json:"name"`
+			RunEnd map[string]any `json:"run_end"`
+			Word   string         `json:"word"`
+			Exit   int            `json:"exit"`
+		} `json:"cases"`
+	} `json:"outcome_words"`
+	ToolSentences struct {
+		Cases []struct {
+			Name     string         `json:"name"`
+			Turn     map[string]any `json:"turn"`
+			Sentence string         `json:"sentence"`
+			Check    *string        `json:"check"`
+		} `json:"cases"`
+	} `json:"tool_sentences"`
+	HostileText struct {
+		MustNotContain []string `json:"must_not_contain"`
+		Cases          []struct {
+			Name   string `json:"name"`
+			Text   string `json:"text"`
+			Repeat int    `json:"repeat"`
+			TUI    string `json:"tui"`
+		} `json:"cases"`
+	} `json:"hostile_text"`
+}
+
+func readClientFixtures(t *testing.T) clientFixtures {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "crates", "trellis-cli", "tests", "client_fixtures.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f clientFixtures
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatalf("client_fixtures.json: %v", err)
+	}
+	return f
+}
+
+// The risk (#803): the two faces word one run's end two ways ("did not
+// converge" here, "not converged" on the desktop, "failed" for an error),
+// so one run reads as two. Every run_end trellis emits is shown as its own
+// word and its exit code, the wording DESIGN.md's rule 5 gives.
+func TestClientFixturesOutcomeWords(t *testing.T) {
+	f := readClientFixtures(t)
+	if len(f.OutcomeWords.Cases) == 0 {
+		t.Fatal("no outcome cases")
+	}
+	for _, c := range f.OutcomeWords.Cases {
+		m := running(t)
+		feed(m, runEnd(c.RunEnd))
+		want := fmt.Sprintf("%s · exit %d", c.Word, c.Exit)
+		if !strings.HasPrefix(m.Outcome, want) {
+			t.Errorf("%s: outcome %q, want it to start %q", c.Name, m.Outcome, want)
+		}
+		if s := stripOf(t, m); !strings.Contains(s, "ENDED · "+want) {
+			t.Errorf("%s: the Now strip does not say %q:\n%s", c.Name, "ENDED · "+want, s)
+		}
+	}
+}
+
+// The risk (#803): a tool call read one way here and another on the
+// desktop, or worded from the call's own text, which the model writes.
+// Each turn is the one sentence both faces show, from the engine's tool
+// and target, and a check row's words are the kind and its verdict's word.
+func TestClientFixturesToolSentences(t *testing.T) {
+	f := readClientFixtures(t)
+	if len(f.ToolSentences.Cases) == 0 {
+		t.Fatal("no tool cases")
+	}
+	for _, c := range f.ToolSentences.Cases {
+		m := running(t)
+		fields := map[string]any{"message": "turn"}
+		for k, v := range c.Turn {
+			fields[k] = v
+		}
+		feed(m, jsonLine(map[string]any{"level": "INFO", "fields": fields}))
+		var row string
+		for _, l := range texts(m) {
+			if strings.HasPrefix(l, "· ") && !strings.HasPrefix(l, "· queued") {
+				row = l
+			}
+		}
+		want := "· " + c.Sentence
+		if c.Check != nil {
+			mark := "✓"
+			if strings.HasSuffix(*c.Check, " failed") {
+				mark = "✗"
+			}
+			want += "  " + mark + " " + *c.Check
+		}
+		if row != want {
+			t.Errorf("%s: row %q, want %q", c.Name, row, want)
+		}
+	}
+}
+
+// The risk (#803): text from the model or the repository that starts an
+// escape sequence, reorders what is drawn with a bidirectional override
+// (a filename or a line that reads as something else), carries a NUL, or
+// is one line of megabytes. Plain drops each listed character, and a turn
+// made of the text writes no row that holds one or runs past LineCap.
+func TestClientFixturesHostileText(t *testing.T) {
+	f := readClientFixtures(t)
+	if len(f.HostileText.Cases) == 0 || len(f.HostileText.MustNotContain) == 0 {
+		t.Fatal("no hostile cases")
+	}
+	for _, c := range f.HostileText.Cases {
+		text := c.Text
+		if c.Repeat > 0 {
+			text = strings.Repeat(c.Text, c.Repeat)
+		} else if got := view.Plain(text); got != c.TUI {
+			t.Errorf("%s: Plain gave %q, want %q", c.Name, got, c.TUI)
+		}
+		m := running(t)
+		feed(m, turn(1, text, map[string]any{"tool": "bash", "target": text, "wrote": false, "verdict": "None", "check_kind": "", "observation": text}))
+		feed(m, runEnd(map[string]any{"outcome": "error", "exit": 1, "error": text}))
+		rows := texts(m)
+		longest := LineCap + len(fmt.Sprintf("… [%d more bytes cut]", len(text)))
+		for _, l := range rows {
+			for _, bad := range f.HostileText.MustNotContain {
+				if strings.Contains(l, bad) {
+					t.Errorf("%s: a row holds %q: %q", c.Name, bad, l)
+				}
+			}
+			if len(l) > longest {
+				t.Errorf("%s: a row of %d bytes, past LineCap", c.Name, len(l))
+			}
+		}
+		m.Update(windowSize(120, 40))
+		screen := m.View()
+		for _, bad := range f.HostileText.MustNotContain {
+			if strings.Contains(m.Outcome, bad) || strings.Contains(screen, bad) {
+				t.Errorf("%s: the outcome or the screen holds %q", c.Name, bad)
+			}
+		}
+		if c.Repeat > 0 && !strings.Contains(strings.Join(rows, "\n"), "more bytes cut]") {
+			t.Errorf("%s: a long line was not cut, or not said to be", c.Name)
+		}
 	}
 }

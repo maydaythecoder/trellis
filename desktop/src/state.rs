@@ -605,7 +605,10 @@ struct Entry {
     /// The turn it belongs to; `None` for a task, a steer, a refusal or a
     /// note that came between turns.
     turn: Option<u64>,
+    /// What the row says; for a tool, [`tool_sentence`]'s sentence.
     text: String,
+    /// A tool's raw call, shown on demand under its sentence.
+    call: Option<String>,
     /// A tool's observation, its first [`OBSERVATION_LINES`] lines.
     detail: Option<String>,
     /// A check row's verdict, from trellis-checks' `Verdict` and nothing
@@ -620,7 +623,8 @@ impl Entry {
         Self {
             kind,
             turn,
-            text,
+            text: visible(text),
+            call: None,
             detail: None,
             passed: None,
             steer: None,
@@ -628,28 +632,72 @@ impl Entry {
     }
 }
 
+/// `text` with each control character but a line break or a tab, and each
+/// bidirectional embedding, override and isolate (U+202A-U+202E,
+/// U+2066-U+2069), written as its escape (`\u{1b}`). The page writes text,
+/// so none of these is markup, but a bidirectional override still draws a
+/// filename or a line of code in an order other than the one it is stored
+/// in, and a control character is drawn as nothing at all; escaped, both
+/// are seen for what they are, and nothing is dropped (ADR 0048 section 5,
+/// client_fixtures.json's hostile_text, #803).
+fn visible(text: String) -> String {
+    let escaped = |c: char| {
+        (c.is_control() && c != '\n' && c != '\t')
+            || ('\u{202a}'..='\u{202e}').contains(&c)
+            || ('\u{2066}'..='\u{2069}').contains(&c)
+    };
+    if !text.contains(escaped) {
+        return text;
+    }
+    let mut out = String::with_capacity(text.len() + 16);
+    for c in text.chars() {
+        if escaped(c) {
+            out.extend(c.escape_unicode());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 impl Item for Entry {
     fn bytes(&self) -> usize {
-        self.text.len() + self.detail.as_ref().map_or(0, String::len)
+        self.text.len()
+            + self.call.as_ref().map_or(0, String::len)
+            + self.detail.as_ref().map_or(0, String::len)
     }
 
-    /// The text keeps half the room and the detail the rest, each cut with
-    /// the store's marker, so a long observation never pushes out the call
-    /// it belongs to.
+    /// The text keeps half the room and the call and the detail the rest,
+    /// the call half of that where both are long, each cut with the store's
+    /// marker, so a long observation never pushes out the call it belongs
+    /// to, nor a long call the sentence that says what it was.
     fn fit(self, max: usize) -> Self {
         if self.bytes() <= max {
             return self;
         }
         let half = max / 2;
-        let text_room = match &self.detail {
-            Some(d) if d.len() < half => max - d.len(),
-            Some(_) => half,
-            None => max,
+        let rest =
+            self.call.as_ref().map_or(0, String::len) + self.detail.as_ref().map_or(0, String::len);
+        let text_room = if rest == 0 {
+            max
+        } else if rest < half {
+            max - rest
+        } else {
+            half
         };
         let text = self.text.fit(text_room);
-        let detail = self.detail.map(|d| d.fit(max - text.len()));
+        let room = max.saturating_sub(text.len());
+        let call_room = match &self.detail {
+            Some(d) if d.len() < room / 2 => room - d.len(),
+            Some(_) => room / 2,
+            None => room,
+        };
+        let call = self.call.map(|c| c.fit(call_room));
+        let used = text.len() + call.as_ref().map_or(0, String::len);
+        let detail = self.detail.map(|d| d.fit(max.saturating_sub(used)));
         Self {
             text,
+            call,
             detail,
             ..self
         }
@@ -662,6 +710,7 @@ impl Row for Entry {
         m.insert("kind".into(), json!(self.kind.word()));
         m.insert("turn".into(), json!(self.turn));
         m.insert("text".into(), json!(self.text));
+        m.insert("call".into(), json!(self.call));
         m.insert("detail".into(), json!(self.detail));
         m.insert("passed".into(), json!(self.passed));
         let delivery = self.steer.as_ref().map(|(_, d)| match d {
@@ -1468,6 +1517,34 @@ struct SessionTokens {
     runs_not_counted: Option<u64>,
 }
 
+/// A turn's call as the one sentence both clients show for it
+/// (client_fixtures.json's tool_sentences, #803), made from the tool and
+/// target the engine reported (#800) and never from splitting the call,
+/// which the model wrote. A turn whose event carried no tool shows its call
+/// as it came. [`Entry::new`] escapes what the sentence quotes.
+fn tool_sentence(t: &Turn) -> String {
+    let Some(tool) = t.tool.as_deref().filter(|s| !s.is_empty()) else {
+        return t.call.clone();
+    };
+    let target = t.target.as_deref().unwrap_or_default();
+    let wrote = t.wrote == Some(true);
+    match tool {
+        "read_file" => format!("Read {target}"),
+        "edit" if !wrote => format!("Edit to {target} not applied"),
+        "edit" => match (t.lines_added, t.lines_removed) {
+            (Some(a), Some(r)) => format!("Edited {target} (+{a} \u{2212}{r})"),
+            _ => format!("Edited {target}"),
+        },
+        "write_file" if !wrote => format!("Write to {target} not applied"),
+        "write_file" => format!("Wrote {target}"),
+        "grep" => format!("Searched for {target}"),
+        "bash" => format!("Ran {target}"),
+        "run_checks" => format!("Ran the checks: {target}"),
+        "blast_radius" => format!("Measured the blast radius of {target}"),
+        other => format!("{other} {target}").trim().to_string(),
+    }
+}
+
 /// How a run ended, in one vocabulary for every pane (#653).
 ///
 /// trellis words the same run two ways: rpc's `run_end` says `converged`,
@@ -1476,12 +1553,14 @@ struct SessionTokens {
 /// check ran` (`trellis_trail::query::Entry::outcome`, which counts a run
 /// that never ran a check as not converged). Drawn side by side those read
 /// as two runs, so the Run, Trails and Overview panes all pass the word
-/// through here. A word this does not know is trellis's and stays as is:
+/// through here, and it comes out as run_end's own (`not_converged`), the
+/// one vocabulary DESIGN.md section 2 rule 5 gives and the TUI shows
+/// (#803). A word this does not know is trellis's and stays as is:
 /// nothing here guesses a new one, and the trail's word is still untrusted
 /// text after it is mapped (`trails.rs` wraps it).
 pub(crate) fn outcome_words(word: &str) -> &str {
     match word {
-        "not_converged" | "no check ran" => "not converged",
+        "not converged" | "no check ran" => "not_converged",
         other => other,
     }
 }
@@ -3253,9 +3332,11 @@ impl DesktopState {
             _ => None,
         };
 
-        // The call as a tool row, its observation shown on demand; then,
-        // only for a verdict trellis-checks produced, a check row.
-        let mut tool = Entry::new(Kind::Tool, Some(t.turn), t.call.clone());
+        // The call as a tool row, its sentence first and the raw call and
+        // observation shown on demand; then, only for a verdict
+        // trellis-checks produced, a check row.
+        let mut tool = Entry::new(Kind::Tool, Some(t.turn), tool_sentence(&t));
+        tool.call = Some(visible(t.call.clone()));
         tool.detail = t.observation.as_deref().map(|obs| {
             let mut lines = obs.lines();
             let kept: Vec<&str> = lines.by_ref().take(OBSERVATION_LINES).collect();
@@ -3264,7 +3345,7 @@ impl DesktopState {
             if more > 0 {
                 d.push_str(&format!("\n… {more} more line(s) not kept"));
             }
-            d
+            visible(d)
         });
         self.transcript.push(tool);
 
@@ -3778,8 +3859,8 @@ mod tests {
         assert_eq!(
             rows(&v["transcript"]),
             [
-                json!({"seq": 0, "kind": "tool", "turn": 1, "text": "read_file app/core.py",
-                    "detail": "def f():\n    return 1", "passed": null, "delivery": null})
+                json!({"seq": 0, "kind": "tool", "turn": 1, "text": "Read app/core.py",
+                    "call": "read_file app/core.py", "detail": "def f():\n    return 1", "passed": null, "delivery": null})
             ]
         );
         assert_eq!(v["checks"], json!([]), "verdict None ran no check");
@@ -4323,7 +4404,7 @@ mod tests {
             &json!({"type": "run_end", "outcome": "not_converged", "exit": 1, "id": "p2"})
                 .to_string(),
         );
-        assert_eq!(now(&mut s)["word"], "ended · not converged");
+        assert_eq!(now(&mut s)["word"], "ended · not_converged");
         // A child that exits mid-run leaves no run, and nothing stopping.
         feed(&mut s, &run_start("p3"));
         s.abort_sent();
@@ -4424,6 +4505,7 @@ mod tests {
             "error",
             "interrupted",
             "not converged",
+            "not_converged",
             "done",
         ]
         .map(String::from)
@@ -5339,7 +5421,7 @@ mod tests {
         assert_eq!(v["running"], false);
         assert_eq!(
             v["outcome"],
-            json!({"outcome": "not converged", "exit": 2, "run_id": "20261006-abc",
+            json!({"outcome": "not_converged", "exit": 2, "run_id": "20261006-abc",
                    "restored": true, "error": null, "id": "p1"})
         );
 
@@ -7328,7 +7410,7 @@ mod tests {
         );
         let sm = all(&mut s)["recap"].clone();
         assert_eq!(sm["stage"], "final");
-        assert_eq!(sm["outcome"]["outcome"], "not converged");
+        assert_eq!(sm["outcome"]["outcome"], "not_converged");
         assert_eq!(sm["outcome"]["exit"], 1);
         assert_eq!(sm["files"][0]["word"], "rolled back");
         // A run that did not converge is never given trellis's last closing
@@ -7571,5 +7653,157 @@ mod tests {
         feed(&mut s, &run_start("p2"));
         feed(&mut s, &answer(SUMMARY_ID));
         assert_eq!(all(&mut s)["recap"]["closing"]["words"], Value::Null);
+    }
+
+    const FIXTURES: &str = include_str!("../../crates/trellis-cli/tests/client_fixtures.json");
+
+    /// A section of client_fixtures.json's cases, the ones the TUI's
+    /// TestClientFixtures tests walk too (#803).
+    fn fixture_cases(section: &str) -> Vec<Value> {
+        let f: Value = serde_json::from_str(FIXTURES).expect("client_fixtures.json is JSON");
+        let cases = f[section]["cases"].as_array().cloned().unwrap_or_default();
+        assert!(
+            !cases.is_empty(),
+            "client_fixtures.json has no {section} cases"
+        );
+        cases
+    }
+
+    #[test]
+    fn client_fixtures_outcome_words() {
+        // The risk (#803): the two faces word one run's end two ways (this
+        // face said "not converged", the TUI "did not converge" and
+        // "failed"), so one run reads as two. Every run_end trellis emits
+        // is shown as its own word and its exit code (DESIGN.md rule 5).
+        for c in fixture_cases("outcome_words") {
+            let mut s = DesktopState::default();
+            feed(&mut s, &run_start("p1"));
+            let mut end = c["run_end"].clone();
+            end["type"] = json!("run_end");
+            end["id"] = json!("p1");
+            feed(&mut s, &end.to_string());
+            let v = all(&mut s);
+            let name = &c["name"];
+            assert_eq!(v["outcome"]["outcome"], c["word"], "{name}: the word");
+            assert_eq!(v["outcome"]["exit"], c["exit"], "{name}: the exit code");
+            let word = c["word"].as_str().unwrap();
+            assert_eq!(
+                v["now"]["word"],
+                format!("ended · {word}"),
+                "{name}: the Now strip"
+            );
+            assert_eq!(v["now"]["exit"], c["exit"], "{name}: the Now strip");
+        }
+    }
+
+    #[test]
+    fn client_fixtures_token_rate() {
+        // The risk (#803, #257): each face working the last turn's output
+        // rate out its own way, so the two show different figures for one
+        // turn, or this one draws a 0 or a guess where trellis reported too
+        // little. Each case is the rate, or null where it is unreported.
+        for c in fixture_cases("token_rate") {
+            let mut usage = json!({});
+            for k in ["completion_tokens", "model_ms", "queue_wait_ms"] {
+                if !c[k].is_null() {
+                    usage[k] = c[k].clone();
+                }
+            }
+            let b = budget_after(usage);
+            let want = match c["rate"].as_str() {
+                Some("unreported") => Value::Null,
+                Some(r) => json!(r),
+                None => panic!("{}: a case with no rate", c["name"]),
+            };
+            assert_eq!(b["tokens_per_second"], want, "{}: {b}", c["name"]);
+        }
+    }
+
+    #[test]
+    fn client_fixtures_tool_sentences() {
+        // The risk (#803): a tool call read one way here and another in the
+        // TUI, or worded from the call's own text, which the model writes.
+        // Each turn is the one sentence both faces show, from the engine's
+        // tool and target, its raw call kept one step away; a check row's
+        // words are the kind and its verdict's word.
+        for c in fixture_cases("tool_sentences") {
+            let mut s = DesktopState::default();
+            feed(&mut s, &turn(c["turn"].clone()));
+            let rows = rows(&all(&mut s)["transcript"]);
+            let name = &c["name"];
+            let tool: Vec<&Value> = rows.iter().filter(|r| r["kind"] == "tool").collect();
+            assert_eq!(tool.len(), 1, "{name}: {rows:?}");
+            assert_eq!(tool[0]["text"], c["sentence"], "{name}");
+            assert_eq!(tool[0]["call"], c["turn"]["call"], "{name}: the raw call");
+            let checks: Vec<&Value> = rows.iter().filter(|r| r["kind"] == "check").collect();
+            match c["check"].as_str() {
+                Some(words) => {
+                    assert_eq!(checks.len(), 1, "{name}: {rows:?}");
+                    assert_eq!(checks[0]["text"], words, "{name}");
+                }
+                None => assert!(checks.is_empty(), "{name}: {rows:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn client_fixtures_hostile_text() {
+        // The risk (#803): text from the model or the repository that
+        // reorders what the page draws with a bidirectional override (a
+        // filename or a line of code that reads as something else), or
+        // carries an escape sequence or a NUL the page draws as nothing,
+        // or is one line of megabytes. A transcript row escapes each listed
+        // character, so it is seen and not dropped, and holds no more than
+        // the transcript's byte cap, saying it cut.
+        let f: Value = serde_json::from_str(FIXTURES).expect("client_fixtures.json is JSON");
+        let banned: Vec<&str> = f["hostile_text"]["must_not_contain"]
+            .as_array()
+            .expect("must_not_contain")
+            .iter()
+            .map(|b| b.as_str().expect("a string"))
+            .collect();
+        assert!(!banned.is_empty());
+        for c in fixture_cases("hostile_text") {
+            let name = &c["name"];
+            let piece = c["text"].as_str().expect("a case's text");
+            let text = match c["repeat"].as_u64() {
+                Some(n) => piece.repeat(usize::try_from(n).unwrap()),
+                None => piece.to_string(),
+            };
+            let mut s = DesktopState::default();
+            feed(
+                &mut s,
+                &turn(
+                    json!({"turn": 1, "call": text, "tool": "bash", "target": text,
+                             "wrote": false, "verdict": "None", "check_kind": "",
+                             "observation": text}),
+                ),
+            );
+            let rows = rows(&all(&mut s)["transcript"]);
+            assert_eq!(rows.len(), 1, "{name}");
+            let row = &rows[0];
+            let fields = ["text", "call", "detail"].map(|k| row[k].as_str().unwrap_or_default());
+            for (field, bad) in fields
+                .iter()
+                .flat_map(|f| banned.iter().map(move |b| (f, b)))
+            {
+                assert!(!field.contains(bad), "{name}: a row holds {bad:?}");
+            }
+            match c["desktop"].as_str() {
+                Some(shown) => {
+                    assert_eq!(row["text"], format!("Ran {shown}"), "{name}");
+                    assert_eq!(row["call"], shown, "{name}");
+                    assert_eq!(row["detail"], shown, "{name}");
+                }
+                None => {
+                    let held: usize = fields.iter().map(|f| f.len()).sum();
+                    assert!(held <= TRANSCRIPT_BYTES, "{name}: a row of {held} bytes");
+                    assert!(
+                        fields.iter().all(|f| f.contains("[trellis-desktop:")),
+                        "{name}: a cut part does not say it was cut"
+                    );
+                }
+            }
+        }
     }
 }

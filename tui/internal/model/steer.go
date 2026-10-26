@@ -67,7 +67,9 @@ func (m *Model) delivered(nth, turn int) {
 	s := &m.steers[nth]
 	s.turn = turn
 	s.told = true
-	m.push(view.RoleNote, fmt.Sprintf("· delivered at turn %d: %s", turn, view.Plain(oneLine(s.text))))
+	// Said by the turn it followed, as the queue and the desktop say it
+	// (#803): one steer reads the same in both faces.
+	m.push(view.RoleNote, fmt.Sprintf("· delivered after turn %d: %s", turn-1, view.Plain(oneLine(s.text))))
 	// The queue says it as "after" the turn the request followed.
 	m.settle(kindSteer, s.id, view.FateAfter, turn-1, "")
 }

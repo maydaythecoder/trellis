@@ -1,7 +1,10 @@
 package view
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode"
@@ -152,12 +155,12 @@ func TestViewTranscriptFollowsScrollsBackAndKeepsTheOutcome(t *testing.T) {
 		t.Fatalf("scrolled back:\n%s", out)
 	}
 	s.Running = false
-	s.Outcome = "did not converge; worktree restored: true"
+	s.Outcome = "not_converged · exit 1; worktree restored: true"
 	s.Budget = Budget{Iteration: 3, MaxIterations: u(6), PromptBytes: u(2435), ElapsedSecs: u(42)}
 	out = Render(s, 120, 30)
 	// The Now strip says the run ended (#850); the budget row keeps the
 	// turns it used against its ceiling.
-	if !strings.Contains(out, "last run: did not converge; worktree restored: true") ||
+	if !strings.Contains(out, "last run: not_converged · exit 1; worktree restored: true") ||
 		!strings.Contains(out, "TURNS ████████░░░░░░░░ 3/6") {
 		t.Fatalf("outcome:\n%s", out)
 	}
@@ -760,5 +763,43 @@ func TestSummaryClosingWordsAreFencedAndPlain(t *testing.T) {
 	s.Summary.Closing = Closing{Why: "this run did not converge"}
 	if out := summaryText(s, 80-railW); rowWith(out, Dash, "this run did not converge") == "" {
 		t.Fatalf("no words and no reason:\n%s", out)
+	}
+}
+
+// The risk (#803, #257): each face working out the last turn's output rate
+// its own way, so the two show different figures for one turn, or one of
+// them draws a 0 or a guess where trellis reported too little. Every case
+// in crates/trellis-cli/tests/client_fixtures.json, which the desktop's
+// client_fixtures_token_rate walks too, gives the rate or unreported.
+func TestClientFixturesTokenRate(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "crates", "trellis-cli", "tests", "client_fixtures.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f struct {
+		TokenRate struct {
+			Cases []struct {
+				Name             string  `json:"name"`
+				CompletionTokens *uint64 `json:"completion_tokens"`
+				ModelMs          *uint64 `json:"model_ms"`
+				QueueWaitMs      *uint64 `json:"queue_wait_ms"`
+				Rate             string  `json:"rate"`
+			} `json:"cases"`
+		} `json:"token_rate"`
+	}
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatalf("client_fixtures.json: %v", err)
+	}
+	if len(f.TokenRate.Cases) == 0 {
+		t.Fatal("no token rate cases")
+	}
+	for _, c := range f.TokenRate.Cases {
+		rate, _ := turnRate(Budget{CompletionTokens: c.CompletionTokens, ModelMs: c.ModelMs, QueueWaitMs: c.QueueWaitMs})
+		switch {
+		case c.Rate == "unreported" && rate != nil:
+			t.Errorf("%s: drew %q where trellis reported too little for a rate", c.Name, *rate)
+		case c.Rate != "unreported" && (rate == nil || !strings.HasSuffix(*rate, ", "+c.Rate+" tok/s")):
+			t.Errorf("%s: rate %v, want %s tok/s", c.Name, rate, c.Rate)
+		}
 	}
 }
