@@ -28,7 +28,7 @@ type Approval struct {
 	Diff string
 	// Scroll is the first line of Diff in view, held between the first line
 	// and the start of the last full page at the current size, the view's
-	// own limit (view.ModalLastFrom, #843).
+	// own limit (view.AskingLastFrom, #843).
 	Scroll int
 }
 
@@ -52,7 +52,7 @@ func (m *Model) approvalRequested(a frames.ApprovalFields) {
 	}
 	ap := Approval{ID: a.ID, Question: view.Plain(q), Diff: plainLines(strings.TrimRight(d, " \t\r\n"))}
 	if m.Modal == nil {
-		m.Modal = &ap
+		m.showModal(&ap)
 		return
 	}
 	if len(m.approvals) >= ApprovalsCap {
@@ -97,7 +97,7 @@ func (m *Model) modalKey(k tea.KeyMsg) {
 // (#843).
 func (m *Model) scrollModal(d int) {
 	w, h := m.size()
-	m.Modal.Scroll = max(min(m.Modal.Scroll+d, view.ModalLastFrom(m.Modal.Diff, w, h)), 0)
+	m.Modal.Scroll = max(min(m.Modal.Scroll+d, view.AskingLastFrom(m.Modal.Diff, w, h)), 0)
 }
 
 // answer sends approve {id, yes} for the question on screen, says which,
@@ -112,11 +112,11 @@ func (m *Model) answer(yes bool) {
 		word = "approved"
 	}
 	m.push(view.RoleNote, "· "+a.Question+" "+word)
-	m.Modal = nil
+	m.closeModal()
 	if len(m.approvals) > 0 {
 		next := m.approvals[0]
 		m.approvals = m.approvals[1:]
-		m.Modal = &next
+		m.showModal(&next)
 	}
 }
 
