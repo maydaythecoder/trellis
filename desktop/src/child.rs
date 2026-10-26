@@ -27,9 +27,10 @@
 //! a windowed program with no console, and without the flag Windows gives the
 //! console program it starts a console window of its own (#289).
 
+use crate::capped;
 use serde_json::Value;
 use std::ffi::OsStr;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -38,6 +39,13 @@ use std::sync::{Arc, Mutex, PoisonError};
 /// safe `CommandExt::creation_flags`.
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// The longest line read from the rpc child, in bytes before its newline
+/// (#814). stdout's longest line is an answer: the Atlas's `get_symbols` is
+/// the whole index on one line, which measured 192 bytes a definition on a
+/// generated repository of 10,000, so this holds some 170,000 definitions.
+/// stderr shares the reader, and its pane keeps far less of a line.
+pub const LINE_READ_CAP: usize = 32 * 1024 * 1024;
 
 /// The trellis binary the desktop runs, and how it is run.
 #[derive(Clone, Debug)]
@@ -67,7 +75,8 @@ pub struct Output {
     pub stderr: Lines<ChildStderr>,
 }
 
-/// A child stream, read one line at a time.
+/// A child stream, read one line at a time, at most [`LINE_READ_CAP`]
+/// bytes of each.
 pub struct Lines<R>(BufReader<R>);
 
 impl Trellis {
@@ -276,13 +285,31 @@ impl<R: io::Read> Lines<R> {
     /// here: a stdout line that is not JSON is still the child's output, and
     /// `frames.rs` keeps it as text rather than failing on it. Bytes that are
     /// not UTF-8 are replaced, not an error that ends the reader.
+    ///
+    /// A line past [`LINE_READ_CAP`] comes back cut, saying how much was cut
+    /// (#814). The rest of it is read and thrown away rather than held, so a
+    /// child that prints without a newline cannot hold the window's memory,
+    /// and the next read starts at the next line.
     pub fn next_line(&mut self) -> io::Result<Option<String>> {
         let mut line = Vec::new();
-        if self.0.read_until(b'\n', &mut line)? == 0 {
+        // One byte past the cap, so a line of exactly the cap is read whole
+        // and a longer one is seen.
+        let limit = LINE_READ_CAP as u64 + 1;
+        if (&mut self.0).take(limit).read_until(b'\n', &mut line)? == 0 {
             return Ok(None);
         }
-        let line = String::from_utf8_lossy(&line);
-        Ok(Some(line.trim_end_matches(['\r', '\n']).to_string()))
+        let ended = line.last() == Some(&b'\n');
+        if ended {
+            line.pop();
+        }
+        let mut total = line.len();
+        if !ended && total > LINE_READ_CAP {
+            total += skip_rest_of_line(&mut self.0)?;
+        }
+        let text = String::from_utf8_lossy(&line)
+            .trim_end_matches(['\r', '\n'])
+            .to_string();
+        Ok(Some(capped::cut(text, total, LINE_READ_CAP)))
     }
 
     /// Reads lines until the `response` carrying `id`, handing every line,
@@ -303,6 +330,34 @@ impl<R: io::Read> Lines<R> {
         Err(io::Error::other(format!(
             "trellis rpc ended before answering {id}"
         )))
+    }
+}
+
+/// Reads the rest of a line through its newline and throws it away, one
+/// buffer at a time, so none of it is held; returns how many bytes came
+/// before the newline, for the cut to say.
+fn skip_rest_of_line(reader: &mut impl BufRead) -> io::Result<usize> {
+    let mut skipped = 0;
+    loop {
+        let buf = match reader.fill_buf() {
+            Ok(buf) => buf,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if buf.is_empty() {
+            return Ok(skipped);
+        }
+        match buf.iter().position(|&b| b == b'\n') {
+            Some(newline) => {
+                reader.consume(newline + 1);
+                return Ok(skipped + newline);
+            }
+            None => {
+                let n = buf.len();
+                reader.consume(n);
+                skipped += n;
+            }
+        }
     }
 }
 
@@ -395,6 +450,42 @@ mod tests {
         assert_eq!(lists[0].0.get_current_dir(), Some(repo));
         assert_eq!(lists[3].0.get_current_dir(), Some(cwd));
         assert_eq!(lists[4].0.get_current_dir(), Some(repo));
+    }
+
+    #[test]
+    fn a_line_past_the_read_cap_is_cut_as_it_is_read() {
+        // The risk (#814): a child line was read whole however long it ran,
+        // so trellis printing one without a newline held the window's memory
+        // without bound; or the rest of a cut line was read as the next
+        // line. Past the cap a line comes back cut, saying how much was cut
+        // of all it held, and the next read starts at the next line.
+        let over = LINE_READ_CAP + 10;
+        let input = format!(
+            "{}\n{{\"type\":\"response\"}}\r\n{}\n",
+            "x".repeat(over),
+            "y".repeat(LINE_READ_CAP)
+        );
+        let mut lines = Lines(BufReader::new(input.as_bytes()));
+        let cut = lines.next_line().unwrap().unwrap();
+        assert!(cut.len() <= LINE_READ_CAP, "{} bytes kept", cut.len());
+        let at = cut.find(" [trellis-desktop:").expect("the cut is not said");
+        assert!(
+            input.starts_with(&cut[..at]),
+            "the line's start, as it came"
+        );
+        assert!(
+            cut.ends_with(&format!("the last {} of {over} bytes were cut]", over - at)),
+            "{}",
+            &cut[at..]
+        );
+        assert_eq!(
+            lines.next_line().unwrap().as_deref(),
+            Some(r#"{"type":"response"}"#),
+            "the next line, from its start"
+        );
+        let exact = lines.next_line().unwrap().unwrap();
+        assert_eq!(exact.len(), LINE_READ_CAP, "a line of the cap is whole");
+        assert_eq!(lines.next_line().unwrap(), None);
     }
 
     #[test]
