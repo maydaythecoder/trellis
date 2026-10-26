@@ -219,6 +219,31 @@ path of `log_json`'s `always` and `optional`. Held by
 `log_json_carries_every_trail_field_the_desktop_reads` and
 `rpc_steer_abort_compact_answers_carry_what_the_contract_lists` in
 `tests/modes.rs`, with the `rpc_vault_` tests there for the vault answers.
+*Added 2026-10-26 (#799), owner-directed (the owner's decision of
+2026-10-25, about 22:50 New York time, recorded on story #790: build
+additive rpc fields, each with its amendment here):* the run's budget is
+reported, so no client keeps a clock or a ceiling of its own. `model call`,
+`turn` and `run_end` carry `elapsed_ms`, the run budget's wall clock: the
+loop's monotonic time with every wait on a person in approve mode taken out,
+the figure the wall-clock ceiling is checked against. `run budget` carries,
+beside `max_iterations`, `max_wall_clock_ms`, `max_completion_tokens` (the
+budget counts completion tokens only, `Model::tokens_used`) and
+`max_context_bytes` (the byte budget each request is held to; absent for a
+scripted run, which sends no prompt). Each `turn` carries
+`completion_tokens_used`, the count `max_completion_tokens` is checked
+against (absent for a scripted run, which has no count); prompt and
+completion tokens are never summed into it. `run_end` carries `elapsed_ms`
+only when the run's loop returned: a run refused before its loop, an
+interrupted run (a wait still open then was never measured) and a
+multi-agent run (each partition keeps its own clock against its share, and
+sends its own `run budget`) carry none, never a 0. Nothing emitted before
+changes. No client reads these yet; each is under `rpc.not_every_client`
+with `read_by` empty until the clients' own tickets switch to it. Held by
+`rpc_run_budget_carries_every_ceiling` and
+`rpc_elapsed_excludes_time_waiting_on_an_approval` in `tests/modes.rs`,
+the contract tests there that read `not_every_client`, and
+`a_multi_agent_run_end_carries_no_elapsed_and_each_partition_sends_its_share`
+in `tests/partitions.rs`.
 
 ### 7. Auditing Tauri's tree
 

@@ -63,6 +63,7 @@ use std::time::{Duration, Instant};
 /// fails.
 pub const PAGE: &[(&str, &[u8])] = &[
     ("index.html", include_bytes!("../ui/index.html")),
+    ("ds.css", include_bytes!("../ui/ds.css")),
     ("style.css", include_bytes!("../ui/style.css")),
     ("web.js", include_bytes!("../ui/web.js")),
     ("main.js", include_bytes!("../ui/main.js")),
@@ -83,6 +84,7 @@ pub const PAGE: &[(&str, &[u8])] = &[
     ("dom.js", include_bytes!("../ui/dom.js")),
     ("fmt.js", include_bytes!("../ui/fmt.js")),
     ("rpc.js", include_bytes!("../ui/rpc.js")),
+    ("ds.js", include_bytes!("../ui/ds.js")),
     ("favicon.svg", include_bytes!("../ui/favicon.svg")),
     ("keys.js", include_bytes!("../ui/keys.js")),
 ];

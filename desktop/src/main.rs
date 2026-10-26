@@ -46,6 +46,7 @@ mod capped;
 mod child;
 mod codebase;
 mod commands;
+mod feed;
 mod frames;
 mod graph;
 mod json;
