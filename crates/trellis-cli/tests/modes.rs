@@ -2891,6 +2891,18 @@ fn rpc_stream_carries_every_field_the_desktop_reads() {
         }
         None => gaps.push("no blast_radius turn".into()),
     }
+    // The applied edit's lines and diff (#802), in this auto-mode run.
+    match turns
+        .iter()
+        .find(|t| t["tool"] == "edit" && t["wrote"] == true)
+    {
+        Some(t) => gaps.extend(missing(
+            t,
+            &later["events"]["turn"]["edit_applied_only"],
+            "edit turn",
+        )),
+        None => gaps.push("no applied edit turn".into()),
+    }
     match of("run budget").first() {
         Some(b) => gaps.extend(missing(b, &events["run budget"]["always"], "run budget")),
         None => gaps.push("no run budget event".into()),
@@ -3062,6 +3074,11 @@ fn rpc_elapsed_excludes_time_waiting_on_an_approval() {
         let what = format!("{} {}", e["message"].as_str().unwrap(), e["turn"]);
         let spec = &later["events"][e["message"].as_str().unwrap()];
         gaps.extend(missing(e, &spec["always"], &what));
+        // An approve-mode edit carries its lines and diff as an auto-mode
+        // one does (#802): they come from the write, not the question.
+        if e["tool"] == "edit" && e["wrote"] == true {
+            gaps.extend(missing(e, &spec["edit_applied_only"], &what));
+        }
     }
     gaps.extend(
         later["framing"]["run_end"]["optional"]

@@ -3401,17 +3401,8 @@ pub(crate) fn audit_modes(root: &Path, touched: &[String]) -> trellis_trail::Mod
     counts
 }
 
-/// The 1-based line a byte offset falls on: the newlines before it, plus one.
-///
-/// Not `lines().count()`, which gives the line above when the offset starts
-/// a line and 0 at offset 0.
-pub(crate) fn line_of(src: &str, offset: usize) -> usize {
-    src.as_bytes()[..offset.min(src.len())]
-        .iter()
-        .filter(|&&b| b == b'\n')
-        .count()
-        + 1
-}
+/// In trellis-loop since #802, whose edit diffs number their lines with it.
+pub(crate) use trellis_loop::line_of;
 
 /// One turn, as a line in the action log.
 ///

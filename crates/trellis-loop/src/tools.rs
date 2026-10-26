@@ -58,6 +58,11 @@ pub struct EditOutcome {
     pub applied: bool,
     /// Byte range replaced, for the trail.
     pub span: (usize, usize),
+    /// The lines it changed, for the run's `turn` event (#802). Not
+    /// serialized: a `post_tool` hook is sent this result as JSON, and its
+    /// input is unchanged by a field only the event reads.
+    #[serde(skip)]
+    pub change: crate::gate::EditDiff,
 }
 
 #[cfg(test)]
@@ -72,6 +77,12 @@ mod tests {
                 path: "a.py".into(),
                 applied: true,
                 span: (0, 10),
+                change: crate::gate::EditDiff {
+                    lines_added: 1,
+                    lines_removed: 1,
+                    start_line: 1,
+                    diff: String::new(),
+                },
             })
             .is_passing_check(),
             "a successful edit is not evidence the edit was correct"

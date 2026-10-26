@@ -1420,6 +1420,9 @@ impl Orchestrator {
         }
         let at = src.find(old.as_str()).expect("occurrence counted");
         let updated = format!("{}{}{}", &src[..at], new, &src[at + old.len()..]);
+        // From the two texts this function matched and wrote, never from a
+        // second read of the file: what the turn reports is this write.
+        let change = crate::gate::edit_diff(path, src, &updated, at, old.len(), new.len());
         // Written back in the file's own convention, not the model's.
         let updated = if crlf {
             updated.replace('\n', "\r\n")
@@ -1467,6 +1470,7 @@ impl Orchestrator {
             path: path.to_string(),
             applied: true,
             span,
+            change,
         })
     }
 
