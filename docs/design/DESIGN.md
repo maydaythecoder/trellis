@@ -280,9 +280,10 @@ its role, after every cut and pad is made on the plain text
 (`tui/internal/view/paint.go`, #841): what the person typed in `signal`,
 the model's words in `ink`, tool calls in `cool`, a check in `ok` or `down`
 from its verdict only, notes in `warn`, titles and captions in
-`ink-secondary`, and frames in `line`. The transcript's rows are drawn as
-text until each carries its role (#849); the view does not guess one from a
-row's words.
+`ink-secondary`, and frames in `line`. Each transcript row carries the role
+its writer gave it (`tui/internal/model/rows.go`, #849): what a tool
+returned is `ink-secondary` under its call and an error or a refusal is
+`down`; no role is read from a row's words.
 
 The table gives 256- and 16-colour values for dark terminals. A light
 terminal (owner decision, 2026-10-25) takes the light hex values of §3.1 at

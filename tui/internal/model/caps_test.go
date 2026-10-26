@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
 // #848: a run's actions, edits and checks keep the newest PaneCap each, and
@@ -105,8 +107,8 @@ func TestCapsUnansweredCommandsHold(t *testing.T) {
 	if want := 2 + 3*UnansweredCap - UnansweredCap; m.forgotten != want {
 		t.Fatalf("%d forgotten, want %d", m.forgotten, want)
 	}
-	if m.classifying || !strings.Contains(strings.Join(m.Transcript, "\n"), "never said whether that was a question or a task") {
-		t.Fatalf("a forgotten classify left the task line waiting: classifying %v\n%s", m.classifying, strings.Join(m.Transcript, "\n"))
+	if m.classifying || !strings.Contains(strings.Join(texts(m), "\n"), "never said whether that was a question or a task") {
+		t.Fatalf("a forgotten classify left the task line waiting: classifying %v\n%s", m.classifying, strings.Join(texts(m), "\n"))
 	}
 	m.TakeOutbox()
 	respond(m, classify, "classify", map[string]any{"intent": "task"})
@@ -121,7 +123,7 @@ func TestCapsUnansweredCommandsHold(t *testing.T) {
 func TestCapsLongTranscriptLineIsCutAndSaysSo(t *testing.T) {
 	m := fresh(t)
 	long := strings.Repeat("é", LineCap) // two bytes each
-	m.pushLine(long)
+	m.push(view.RoleText, long)
 	got := last(m)
 	if !utf8.ValidString(got) {
 		t.Fatalf("the cut split a character: %q", got[len(got)-40:])
@@ -131,7 +133,7 @@ func TestCapsLongTranscriptLineIsCutAndSaysSo(t *testing.T) {
 		t.Fatalf("kept %d bytes, then %q", len(kept), said)
 	}
 	short := strings.Repeat("x", LineCap)
-	m.pushLine(short)
+	m.push(view.RoleText, short)
 	if last(m) != short {
 		t.Fatal("a line of exactly LineCap bytes was cut")
 	}

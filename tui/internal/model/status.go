@@ -39,7 +39,7 @@ func (m *Model) ask(kind, purpose string, fields map[string]any) string {
 			m.forgotten++
 			if p == forClassify && m.classifying {
 				m.classifying, m.classifyText = false, ""
-				m.pushLine("· trellis never said whether that was a question or a task; nothing was run")
+				m.push(view.RoleNote, "· trellis never said whether that was a question or a task; nothing was run")
 			}
 		}
 	}

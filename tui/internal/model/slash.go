@@ -24,8 +24,8 @@ func (m *Model) local(line string) bool {
 		if f := strings.Fields(rest); len(f) > 0 {
 			sub = f[0]
 		}
-		m.pushLine("· `" + view.Plain(line) + "` is a shell command, and this is not a shell.")
-		m.pushLine("  Leave with esc and run it, or use /" + view.Plain(sub) + " if this view has one — /help lists what it does.")
+		m.push(view.RoleNote, "· `"+view.Plain(line)+"` is a shell command, and this is not a shell.")
+		m.push(view.RoleNote, "  Leave with esc and run it, or use /"+view.Plain(sub)+" if this view has one — /help lists what it does.")
 		return true
 	}
 	if !strings.HasPrefix(line, "/") {
@@ -43,14 +43,14 @@ func (m *Model) local(line string) bool {
 		// was not in view (#855).
 		m.Transcript = nil
 		m.ScrollBack = 0
-		m.pushLine("· transcript cleared")
+		m.push(view.RoleNote, "· transcript cleared")
 		return true
 	}
-	m.pushLine("> " + view.Plain(line))
+	m.push(view.RoleYou, "> "+view.Plain(line))
 	switch name {
 	case "help", "?":
 		for _, l := range helpLines {
-			m.pushLine(l)
+			m.push(view.RoleText, l)
 		}
 	case "model":
 		m.ask("get_state", forModel, nil)
@@ -63,7 +63,7 @@ func (m *Model) local(line string) bool {
 	case "codebase":
 		m.ask("get_codebase", forCodebase, nil)
 	default:
-		m.pushLine("· `/" + view.Plain(name) + "` is not a command here. /help lists them.")
+		m.push(view.RoleNote, "· `/"+view.Plain(name)+"` is not a command here. /help lists them.")
 	}
 	return true
 }
@@ -94,11 +94,11 @@ var helpLines = []string{
 // radiusLines is /graph: the radius pane's three counts, in words.
 func (m *Model) radiusLines() {
 	if m.Radius == nil {
-		m.pushLine("· reach: nothing yet — a task that calls blast_radius fills it.")
+		m.push(view.RoleText, "· reach: nothing yet — a task that calls blast_radius fills it.")
 	} else {
 		r := m.Radius
-		m.pushLine(fmt.Sprintf("· reach: %d resolved · %d candidates · %d unresolved", r.Resolved, r.Candidates, r.Unresolved))
-		m.pushLine("  drawn in the radius pane on the right, as converging edges.")
+		m.push(view.RoleText, fmt.Sprintf("· reach: %d resolved · %d candidates · %d unresolved", r.Resolved, r.Candidates, r.Unresolved))
+		m.push(view.RoleText, "  drawn in the radius pane on the right, as converging edges.")
 	}
 	m.neverARatio()
 }
@@ -107,8 +107,8 @@ func (m *Model) radiusLines() {
 // and dividing them printed "3.7% resolved" for a resolver audited at 72%
 // (ADR 0014).
 func (m *Model) neverARatio() {
-	m.pushLine("  separate counts, never a ratio: they come from different populations.")
-	m.pushLine("  resolved is a floor on reach, not a boundary (Constraint 1).")
+	m.push(view.RoleText, "  separate counts, never a ratio: they come from different populations.")
+	m.push(view.RoleText, "  resolved is a floor on reach, not a boundary (Constraint 1).")
 }
 
 // modelAnswered is /model, from get_state.
@@ -121,9 +121,9 @@ func (m *Model) modelAnswered(data any) {
 	if tier == "" {
 		tier = "probing…"
 	}
-	m.pushLine("· model  " + model)
-	m.pushLine("  tier   " + tier)
-	m.pushLine("  `trellis model` outside this view lists the weights you can fetch.")
+	m.push(view.RoleText, "· model  "+model)
+	m.push(view.RoleText, "  tier   "+tier)
+	m.push(view.RoleText, "  `trellis model` outside this view lists the weights you can fetch.")
 }
 
 // radiusAnswered is /radius <symbol>, from get_radius: reach and doubt as
@@ -133,9 +133,9 @@ func (m *Model) radiusAnswered(data any) {
 	reach, _ := d["reach"].(map[string]any)
 	doubt, _ := d["doubt"].(map[string]any)
 	sym, _ := d["symbol"].(string)
-	m.pushLine(fmt.Sprintf("· %s: reach %s resolved · %s ambiguous · %s symbols reached",
+	m.push(view.RoleText, fmt.Sprintf("· %s: reach %s resolved · %s ambiguous · %s symbols reached",
 		view.Plain(sym), count(reach["resolved"]), count(reach["ambiguous"]), count(reach["symbols_reached"])))
-	m.pushLine(fmt.Sprintf("  doubt: %s unbound call sites in %s touched files",
+	m.push(view.RoleText, fmt.Sprintf("  doubt: %s unbound call sites in %s touched files",
 		count(doubt["unbound_in_touched_files"]), count(doubt["touched_files"])))
 	m.neverARatio()
 }
@@ -145,8 +145,8 @@ func (m *Model) radiusAnswered(data any) {
 // counts.
 func (m *Model) codebaseAnswered(data any) {
 	d, _ := data.(map[string]any)
-	m.pushLine(fmt.Sprintf("· codebase graph — %s module(s)", count(d["modules_indexed"])))
-	m.pushLine(fmt.Sprintf("  %s bound call sites · %s ambiguous · %s unresolved",
+	m.push(view.RoleText, fmt.Sprintf("· codebase graph — %s module(s)", count(d["modules_indexed"])))
+	m.push(view.RoleText, fmt.Sprintf("  %s bound call sites · %s ambiguous · %s unresolved",
 		count(d["bound_call_sites"]), count(d["ambiguous"]), count(d["unresolved"])))
 	mods, _ := d["modules"].([]any)
 	for _, mv := range mods {
@@ -164,10 +164,10 @@ func (m *Model) codebaseAnswered(data any) {
 		if len(calls) > 0 {
 			line += " · calls " + strings.Join(calls, ", ")
 		}
-		m.pushLine(line)
+		m.push(view.RoleText, line)
 	}
 	if n := count(d["modules_not_drawn"]); n != "0" && n != "?" {
-		m.pushLine("  " + n + " more module(s) not listed")
+		m.push(view.RoleText, "  "+n+" more module(s) not listed")
 	}
 }
 

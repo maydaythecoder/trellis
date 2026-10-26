@@ -38,16 +38,24 @@ const (
 	RoleLabel
 	// RoleFrame is the box-drawing of frames and rules: line.
 	RoleFrame
+	// RoleOutput is what a tool returned, under its call: ink-secondary.
+	RoleOutput
+	// RoleRefusal is an error or a refusal, trellis's or this view's: down.
+	// Unlike RoleFailed it says nothing about a check.
+	RoleRefusal
 
 	// roles is how many roles there are; every one below it has a colour.
 	roles
 )
 
-// Row is one row of a box's inside: its plain text and the role it is
-// painted in.
+// Row is one row of a box's inside, or of the transcript: its plain text
+// and the role it is painted in.
 type Row struct {
 	Text string
 	Role Role
+	// Turn is the turn a transcript row came from, for the rows a turn
+	// wrote (its call and what the call returned); 0 for every other row.
+	Turn int
 }
 
 // rowsOf is lines as rows of one role.
@@ -76,6 +84,10 @@ func style(th theme.Theme, r Role) lipgloss.Style {
 		return th.InkSecondary
 	case RoleFrame:
 		return th.Line
+	case RoleOutput:
+		return th.InkSecondary
+	case RoleRefusal:
+		return th.Down
 	default:
 		return th.Ink
 	}

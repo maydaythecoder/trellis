@@ -111,11 +111,13 @@ type Dropped struct {
 // and is made plain again here before it is drawn.
 type State struct {
 	Model, Tier string
-	Transcript  []string
-	ScrollBack  int
-	Outcome     string
-	Running     bool
-	Input       string
+	// Transcript is the transcript's rows, oldest first, each with the
+	// role its writer gave it (model/rows.go).
+	Transcript []Row
+	ScrollBack int
+	Outcome    string
+	Running    bool
+	Input      string
 	// Offered are the @ completions to draw under the input line.
 	Offered []string
 	Edits   []Edit
@@ -209,8 +211,8 @@ func TranscriptRows(s State, w int) int {
 	}
 	left, _ := columns(s, w)
 	n := 0
-	for _, l := range s.Transcript {
-		n += len(WrapWords(Plain(l), left-2))
+	for _, r := range s.Transcript {
+		n += len(WrapWords(Plain(r.Text), left-2))
 	}
 	return n
 }
@@ -293,14 +295,15 @@ func notKept(n int, what string) []Row {
 // back, with the last run's outcome on the bottom border, which does not
 // scroll: a run that ended is visible however long its transcript is.
 //
-// Every row is drawn as text until the rows carry their roles (#849): the
-// view does not guess a role from a row's words, since the model's words
-// could then pass for the person's or for a verdict.
+// Each row is painted in the role its writer gave it (model/rows.go, #849),
+// and every row it wraps to takes the same role. The view never reads a
+// role from a row's words: the model's words could then pass for the
+// person's or for a verdict.
 func transcript(s State, w, h int) []string {
 	inner := w - 2
 	var rows []Row
-	for _, l := range s.Transcript {
-		rows = append(rows, rowsOf(RoleText, WrapWords(Plain(l), inner)...)...)
+	for _, r := range s.Transcript {
+		rows = append(rows, rowsOf(r.Role, WrapWords(Plain(r.Text), inner)...)...)
 	}
 	// A pane too short for an inside shows no rows: h-2 below zero made
 	// start pass end and the slice panicked (#842).
