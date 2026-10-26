@@ -32,14 +32,16 @@ func unpainted(th theme.Theme, out string) string {
 func TestPaintEachRoleTakesItsToken(t *testing.T) {
 	th := theme.New(themetest.Renderer(t, "TrueColor", true))
 	want := map[Role]lipgloss.Style{
-		RoleText:   th.Ink,
-		RoleYou:    th.Signal,
-		RoleTool:   th.Cool,
-		RolePassed: th.OK,
-		RoleFailed: th.Down,
-		RoleNote:   th.Warn,
-		RoleLabel:  th.InkSecondary,
-		RoleFrame:  th.Line,
+		RoleText:    th.Ink,
+		RoleYou:     th.Signal,
+		RoleTool:    th.Cool,
+		RolePassed:  th.OK,
+		RoleFailed:  th.Down,
+		RoleNote:    th.Warn,
+		RoleLabel:   th.InkSecondary,
+		RoleFrame:   th.Line,
+		RoleOutput:  th.InkSecondary,
+		RoleRefusal: th.Down,
 	}
 	if len(want) != int(roles) {
 		t.Fatalf("%d roles and %d named here: a new role needs its token named", roles, len(want))
@@ -66,7 +68,7 @@ func TestViewCheckRowsTakeOkAndDownRoles(t *testing.T) {
 			s := populated()
 			s.Theme = th
 			s.Checks = []Check{{Name: "typecheck", Passed: true}, {Name: "tests", Passed: false}}
-			s.Transcript = []string{"typecheck passed", "tests failed"}
+			s.Transcript = rowsOf(RoleText, "typecheck passed", "tests failed")
 			out := Render(s, 120, 40)
 			for _, c := range []struct {
 				row         string
