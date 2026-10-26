@@ -24,6 +24,10 @@ func (m *Model) clearPanes() {
 	m.Budget = view.Budget{}
 	m.restored = nil
 	m.runStart = m.now()
+	m.waited = 0
+	m.strip.Phase = view.Phase{}
+	m.strip.Stopping = false
+	m.strip.Outcome, m.strip.Exit = "", nil
 }
 
 // emptyPanes makes the three lists a run fills, each keeping the newest
@@ -49,6 +53,7 @@ func (m *Model) panesTurn(t *frames.TurnFields) {
 		(strings.HasPrefix(call, "write_file ") && strings.HasPrefix(obs, "created "))
 	tool, target, _ := strings.Cut(call, " ")
 	m.Actions.Push(view.Action{Tool: tool, Target: target, Wrote: wrote})
+	m.strip.Phase = view.Phase{Kind: "tool", Turn: t.Turn, Tool: tool, Target: target}
 
 	// A refused edit is not a proposal at all: listing one made the panes
 	// contradict each other ("3 edit(s) pending" for a run that changed one
@@ -73,10 +78,7 @@ func (m *Model) panesTurn(t *frames.TurnFields) {
 		m.Radius = &view.Radius{Resolved: *t.Resolved, Candidates: *t.Candidates, Unresolved: *t.Unresolved}
 	}
 
-	elapsed := uint64(0)
-	if d := m.now().Sub(m.runStart); d > 0 {
-		elapsed = uint64(d.Seconds())
-	}
+	elapsed := uint64(m.ownElapsed() / time.Second)
 	m.Budget = view.Budget{
 		Iteration:        t.Turn,
 		MaxIterations:    m.Budget.MaxIterations,
@@ -96,16 +98,45 @@ func (m *Model) runBudget(max *uint64) {
 
 // tick keeps the budget's elapsed time current between turns (#641): the
 // screen moved only when a turn arrived, and a long model call read as a
-// hang. The figure is measured from the run's start; a tick with no run in
+// hang. The figure is this view's clock (ownElapsed); a tick with no run in
 // flight changes nothing, so a run that has ended keeps the time it took.
 func (m *Model) tick() {
 	if !m.Running || m.runStart.IsZero() {
 		return
 	}
-	if d := m.now().Sub(m.runStart); d >= time.Second {
+	if d := m.ownElapsed(); d >= time.Second {
 		secs := uint64(d / time.Second)
 		m.Budget.ElapsedSecs = &secs
 	}
+}
+
+// ownElapsed is the run's time by this view's clock: from its start, less
+// every stretch a question waited on the person, the one on screen
+// included. trellis's budget leaves that time out as well (the loop's
+// waited_on_human), so a diff read slowly does not read as a slow run
+// (#850). It is this view's figure, and the Now strip says so.
+func (m *Model) ownElapsed() time.Duration {
+	now := m.now()
+	d := now.Sub(m.runStart) - m.waited
+	if m.Modal != nil && !m.askedAt.IsZero() {
+		d -= now.Sub(m.askedAt)
+	}
+	return max(d, 0)
+}
+
+// closeModal takes the question off the screen, and counts the time it
+// waited on the person into waited.
+func (m *Model) closeModal() {
+	if m.Modal != nil && !m.askedAt.IsZero() {
+		m.waited += m.now().Sub(m.askedAt)
+	}
+	m.Modal, m.askedAt = nil, time.Time{}
+}
+
+// showModal puts a question on the screen and starts the time it waits on
+// the person.
+func (m *Model) showModal(a *Approval) {
+	m.Modal, m.askedAt = a, m.now()
 }
 
 // viewState is what the screen draws.
@@ -128,5 +159,14 @@ func (m *Model) viewState() view.State {
 		Stderr:     m.Stderr,
 		Restored:   m.restored,
 		Theme:      m.theme,
+		Now:        m.nowState(),
 	}
+}
+
+// nowState is the Now strip's and Where it is's state: what the model
+// tracks, and whether a question waits on the person now.
+func (m *Model) nowState() view.Now {
+	n := m.strip
+	n.Waiting = m.Modal != nil
+	return n
 }
