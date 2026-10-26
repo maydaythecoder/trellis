@@ -190,6 +190,12 @@ func (m *Model) Update(msg tea.Msg) {
 		m.key(msg)
 	case tea.WindowSizeMsg:
 		m.Width, m.Height = msg.Width, msg.Height
+		// A taller pane has a lower top, and the modal a different last
+		// page: an offset past either would spend presses again (#843).
+		m.ScrollBack = min(m.ScrollBack, m.transcriptTop())
+		if m.Modal != nil {
+			m.scrollModal(0)
+		}
 	case FrameMsg:
 		m.frame(msg.Frame)
 	case ExitedMsg:
@@ -243,7 +249,9 @@ func (m *Model) key(k tea.KeyMsg) {
 		}
 		m.inputChanged()
 	case tea.KeyUp:
-		m.ScrollBack++
+		// Held at the top, as PgUp is: Up had no top, and every press past
+		// it was one Down spent before the view moved again (#843).
+		m.ScrollBack = min(m.ScrollBack+1, m.transcriptTop())
 	case tea.KeyDown:
 		// Saturating: Down at the end stays at the end, following.
 		if m.ScrollBack > 0 {
@@ -262,10 +270,22 @@ func (m *Model) key(k tea.KeyMsg) {
 	}
 }
 
+// size is the screen the view is drawn at: the terminal's, or the minimum
+// before the first size arrives. The scroll limits are taken at the same
+// size, so they are the limits of what is drawn.
+func (m *Model) size() (w, h int) {
+	if m.Width <= 0 || m.Height <= 0 {
+		return view.MinWidth, view.MinHeight
+	}
+	return m.Width, m.Height
+}
+
 // transcriptTop is the scroll back that shows the transcript's first row
-// at the current width.
+// in the layout at the current size: the view's own limit, so a key never
+// moves the offset somewhere the view cannot show (#843).
 func (m *Model) transcriptTop() int {
-	return view.TranscriptRows(m.viewState(), m.Width)
+	w, h := m.size()
+	return view.TranscriptTop(m.viewState(), w, h)
 }
 
 // ctrlC aborts a run in flight first, so it rolls back through trellis,
@@ -586,10 +606,7 @@ func (m *Model) pushLine(l string) {
 
 // View draws the screen: the six regions, or the approval modal over them.
 func (m *Model) View() string {
-	w, h := m.Width, m.Height
-	if w <= 0 || h <= 0 {
-		w, h = view.MinWidth, view.MinHeight
-	}
+	w, h := m.size()
 	if m.Modal != nil {
 		return view.Modal(m.Modal.Question, m.Modal.Diff, m.Modal.Scroll, w, h)
 	}

@@ -148,11 +148,7 @@ func TestRPCNonJSONLineIsDeliveredAsText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := filepath.Join(t.TempDir(), "fake-nonjson")
-	if err := os.Mkdir(root, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	c, err := Start(self, root)
+	c, err := Start(self, fakeRoot(t))
 	if err != nil {
 		t.Fatal(err)
 	}

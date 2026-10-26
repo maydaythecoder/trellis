@@ -28,19 +28,32 @@
 mod vault;
 
 use crate::atlas;
+use crate::capped::Capped;
 use crate::frames::{ApprovalRequest, Frame, RunEnd, RuntimeIdentified, Turn};
 use crate::graph;
 use crate::queue;
 use serde_json::{Map, Value, json};
-use std::collections::VecDeque;
 
 /// The transcript keeps this many lines, as the TUI's does: a run streams
 /// for as long as it lasts, and an uncapped log grows with it.
 pub const TRANSCRIPT_CAP: usize = 2000;
 
+/// And this many bytes, since one line can be of any length (#814): room
+/// for every line at about 500 bytes each. The whole transcript goes out in
+/// every view that changes it, so this also bounds those views.
+pub const TRANSCRIPT_BYTES: usize = 1024 * 1024;
+
 /// The trellis messages pane keeps this many stderr lines (#302): the cap
 /// ADR 0052's amendment to ADR 0048 section 2 puts on showing stderr.
 pub const STDERR_CAP: usize = 500;
+
+/// And this many bytes (#814), the same room per line as the transcript.
+pub const STDERR_BYTES: usize = 256 * 1024;
+
+/// The alert is one line in a banner the page announces (`role="alert"`),
+/// so it is held short (#814); what failed is also in the transcript or the
+/// run's outcome, which keep far more of it.
+pub const ALERT_BYTES: usize = 4 * 1024;
 
 /// One pane of the view, named as the view's key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -178,18 +191,34 @@ impl Pane {
         }
     }
 
-    /// One bit per pane; `u32`, since seventeen panes are past a `u16`.
-    fn bit(self) -> u32 {
-        1 << (self as u32)
+    /// The pane's bit in [`Changed`], at its place in this enum.
+    fn bit(self) -> u64 {
+        Changed::bit_at(self as u32)
     }
 }
 
 /// Which panes an update changed: what the core sends the page as one
 /// `view` event, so a frame that changes nothing sends nothing.
+///
+/// One bit per pane, in a `u64` (#815). The `u32` it replaced had room for
+/// 32 panes, and a 33rd would have shifted past it: a panic in a debug
+/// build, and in a release one the transcript's bit, so that pane's changes
+/// went out as the transcript's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Changed(u32);
+pub struct Changed(u64);
+
+// A 65th pane fails the build here, before any shift can wrap.
+const _: () = assert!(
+    PANES.len() <= u64::BITS as usize,
+    "Changed holds one bit per pane, 64 in all"
+);
 
 impl Changed {
+    /// The bit for the pane at `place`.
+    fn bit_at(place: u32) -> u64 {
+        1 << place
+    }
+
     fn with(self, p: Pane) -> Self {
         Self(self.0 | p.bit())
     }
@@ -627,7 +656,8 @@ impl SessionTokens {
 /// The desktop's run panes.
 #[derive(Debug, Default)]
 pub struct DesktopState {
-    transcript: VecDeque<String>,
+    /// The run's lines, oldest first.
+    transcript: Capped<TRANSCRIPT_CAP, TRANSCRIPT_BYTES>,
     actions: Vec<Action>,
     edits: Vec<String>,
     checks: Vec<Check>,
@@ -636,6 +666,10 @@ pub struct DesktopState {
     approvals: Vec<ApprovalRequest>,
     /// Whether a run is in flight: from `run_start` to `run_end`.
     running: bool,
+    /// Prompts the core forwarded that the child has neither started (the
+    /// run's `run_start`) nor refused (#815). From the moment one is
+    /// written the child may be starting its run, before `running` says so.
+    prompts_in_flight: u32,
     /// The last run's `run_end`, as trellis sent it.
     outcome: Option<RunEnd>,
     /// `get_state`'s `tier`, as trellis labels it; `None` while it is null
@@ -654,12 +688,14 @@ pub struct DesktopState {
     /// What the last `abort` answer said was never delivered.
     undelivered: Vec<Undelivered>,
     /// The last failure, as text: a refused command, a run that ended in
-    /// error, or a stdout line that is not a JSON object. `None` until one,
-    /// and from each run's start.
-    alert: Option<String>,
+    /// error, a stdout line that is not a JSON object, or a close held
+    /// while the child shuts down. Empty until one, and from each run's
+    /// start; a new one replaces it.
+    alert: Capped<1, ALERT_BYTES>,
     /// trellis's stderr lines, shown as human text and never read as data
-    /// (ADR 0048 section 2, amended by ADR 0052), capped at [`STDERR_CAP`].
-    stderr: VecDeque<String>,
+    /// (ADR 0048 section 2, amended by ADR 0052), capped at [`STDERR_CAP`]
+    /// lines and [`STDERR_BYTES`] bytes.
+    stderr: Capped<STDERR_CAP, STDERR_BYTES>,
     /// The session's model; `None` until this child has taken one, which
     /// is what keeps prompt input shut (#564).
     model: Option<Chosen>,
@@ -714,6 +750,9 @@ impl DesktopState {
             Frame::RunStart(s) => {
                 self.reset_run();
                 self.running = true;
+                // A forwarded prompt's run has started, and `running` says
+                // so from here on.
+                self.prompts_in_flight = self.prompts_in_flight.saturating_sub(1);
                 let mut c = Changed::of(&RUN_PANES);
                 if let Some(task) = s.task {
                     self.push_line(format!("▸ {task}"));
@@ -730,7 +769,7 @@ impl DesktopState {
                 let mut c =
                     Changed::of(&[Pane::Running, Pane::Approvals, Pane::Outcome, Pane::Phase]);
                 if let Some(error) = &e.error {
-                    self.alert = Some(format!("The run ended in error: {error}"));
+                    self.alert.push(format!("The run ended in error: {error}"));
                     c = c.with(Pane::Alert);
                 }
                 self.outcome = Some(e);
@@ -837,6 +876,11 @@ impl DesktopState {
                             c = c.with(Pane::Approvals);
                         }
                     }
+                    // A refused prompt starts no run (#815); its reason
+                    // reaches the transcript and the alert below.
+                    (Some("prompt"), Some(false)) => {
+                        self.prompts_in_flight = self.prompts_in_flight.saturating_sub(1);
+                    }
                     _ => {}
                 }
                 // A refused command is said in the transcript, unless a view
@@ -861,7 +905,7 @@ impl DesktopState {
                         None => format!("{command} refused"),
                     };
                     self.push_line(format!("· {said}"));
-                    self.alert = Some(said);
+                    self.alert.push(said);
                     c.with(Pane::Transcript).with(Pane::Alert)
                 } else {
                     c
@@ -880,7 +924,7 @@ impl DesktopState {
             // came in the transcript, and said in the alert, since a reader
             // that cannot parse the stream may be missing a frame.
             Frame::Unparsed(line) => {
-                self.alert = Some(format!(
+                self.alert.push(format!(
                     "trellis rpc printed a line that is not a JSON object: {line}"
                 ));
                 self.push_line(line);
@@ -889,19 +933,21 @@ impl DesktopState {
             // trellis's human text: its own capped pane, apart from the
             // run's transcript, and never read for anything (#302).
             Frame::Human(line) => {
-                self.stderr.push_back(line);
-                while self.stderr.len() > STDERR_CAP {
-                    self.stderr.pop_front();
-                }
+                self.stderr.push(line);
                 Changed::of(&[Pane::Stderr])
             }
         }
     }
 
-    /// The child has exited: no run is in flight any more, and nobody is
-    /// left to answer a question it asked.
+    /// The child has exited: no run is in flight any more, or about to
+    /// start, nothing is on, and nobody is left to answer a question it
+    /// asked.
     pub fn child_exited(&mut self) -> Changed {
         self.running = false;
+        self.prompts_in_flight = 0;
+        // Left set, the page read `calling the model, turn N` beside
+        // `exited` (#815), a hang that is not one.
+        self.phase = None;
         self.approvals.clear();
         self.configured = None;
         self.catalog.clear();
@@ -913,6 +959,7 @@ impl DesktopState {
         self.session_tokens = None;
         Changed::of(&[
             Pane::Running,
+            Pane::Phase,
             Pane::Approvals,
             Pane::Model,
             Pane::Models,
@@ -925,6 +972,31 @@ impl DesktopState {
     /// child's exit.
     pub fn running(&self) -> bool {
         self.running
+    }
+
+    /// The core forwarded a `prompt`: until its run starts or the child
+    /// refuses it, a run may be starting that `running` does not show yet.
+    pub fn prompt_forwarded(&mut self) {
+        self.prompts_in_flight = self.prompts_in_flight.saturating_add(1);
+    }
+
+    /// Whether a forwarded prompt has neither started its run nor been
+    /// refused (#815): `open_repository` waits it out as it waits out a
+    /// run, since the child it quits would take that run with it.
+    pub fn prompt_in_flight(&self) -> bool {
+        self.prompts_in_flight > 0
+    }
+
+    /// A close came while an earlier one waits for the child to exit
+    /// (#815): it is held, and the page is told why the window stays, in
+    /// the alert it announces.
+    pub fn close_held(&mut self) -> Changed {
+        self.alert.push(
+            "The window closes once trellis rpc has exited. It was sent quit, so a run in \
+             flight rolls back and writes its trail first."
+                .to_string(),
+        );
+        Changed::of(&[Pane::Alert])
     }
 
     /// Whether `id` is an approval question the child asked and nobody has
@@ -976,18 +1048,20 @@ impl DesktopState {
     }
 
     /// Clears the whole view, transcript included: colibri's New chat and
-    /// Clear. Whether a run is in flight, which specs the child reported,
-    /// and the model its session has and offered, are the child's facts,
-    /// not the view's, so they are kept. Returns every pane, so the view
-    /// event that follows carries all of them.
+    /// Clear. Whether a run is in flight or a prompt is, which specs the
+    /// child reported, and the model its session has and offered, are the
+    /// child's facts, not the view's, so they are kept. Returns every pane,
+    /// so the view event that follows carries all of them.
     pub fn clear(&mut self) -> Changed {
         let running = self.running;
+        let prompts_in_flight = self.prompts_in_flight;
         let configured = self.configured.take();
         let catalog = std::mem::take(&mut self.catalog);
         let model = self.model.take();
         let models = self.models.take();
         *self = Self {
             running,
+            prompts_in_flight,
             configured,
             catalog,
             model,
@@ -1008,7 +1082,7 @@ impl DesktopState {
 
     fn pane(&self, p: Pane) -> Value {
         match p {
-            Pane::Transcript => json!(self.transcript),
+            Pane::Transcript => Value::from_iter(self.transcript.iter()),
             Pane::Actions => Value::Array(
                 self.actions
                     .iter()
@@ -1092,8 +1166,8 @@ impl DesktopState {
                     .map(|u| json!({"type": u.kind, "message": u.message}))
                     .collect(),
             ),
-            Pane::Alert => json!(self.alert),
-            Pane::Stderr => json!(self.stderr),
+            Pane::Alert => json!(self.alert.back()),
+            Pane::Stderr => Value::from_iter(self.stderr.iter()),
             Pane::Model => match &self.model {
                 Some(m) => json!({"spec": m.spec, "configured": m.configured,
                                   "saved_to": m.saved_to, "source": self.source(m)}),
@@ -1277,7 +1351,7 @@ impl DesktopState {
         c
     }
 
-    /// Empties the panes a run owns; the transcript is left to its cap.
+    /// Empties the panes a run owns; the transcript is left to its caps.
     fn reset_run(&mut self) {
         self.actions.clear();
         self.edits.clear();
@@ -1287,16 +1361,13 @@ impl DesktopState {
         self.approvals.clear();
         self.outcome = None;
         self.undelivered.clear();
-        self.alert = None;
+        self.alert.clear();
         self.phase = None;
         self.runtime = None;
     }
 
     fn push_line(&mut self, line: String) {
-        self.transcript.push_back(line);
-        while self.transcript.len() > TRANSCRIPT_CAP {
-            self.transcript.pop_front();
-        }
+        self.transcript.push(line);
     }
 }
 
@@ -1564,6 +1635,60 @@ mod tests {
         let c = feed(&mut s, &run_start("p2"));
         assert!(c.has(Pane::Phase), "{c:?}");
         assert_eq!(all(&s)["phase"], Value::Null);
+    }
+
+    #[test]
+    fn child_exit_clears_the_phase() {
+        // The risk (#815): the child exited mid-call and the page went on
+        // reading `calling the model, turn 3` beside `exited`, a hang that
+        // is not one; or the phase cleared and not sent, so the page kept
+        // drawing it. The exit clears it, as run_end does, and sends it.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p1"));
+        feed(&mut s, &event("model call", json!({"turn": 3})));
+        assert_eq!(all(&s)["phase"], json!({"phase": "model", "turn": 3}));
+        let c = s.child_exited();
+        assert!(c.has(Pane::Phase), "{c:?}");
+        assert_eq!(s.view(c)["phase"], Value::Null);
+        assert_eq!(s.view(c)["running"], false);
+    }
+
+    #[test]
+    fn a_prompt_is_in_flight_until_its_run_starts_or_it_is_refused() {
+        // The risk (#815): `running` comes only with the run's `run_start`,
+        // so a prompt the child had and not yet answered counted as nothing
+        // in flight, and `open_repository` quit the run it was starting.
+        // Each forwarded prompt counts until its run starts, the child
+        // refuses it, or the child exits; a second prompt's refusal does
+        // not end the first's count; and Clear keeps it, as it keeps
+        // `running`.
+        let run_end = |id: &str| {
+            json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": id}).to_string()
+        };
+        let mut s = DesktopState::default();
+        assert!(!s.prompt_in_flight());
+        s.prompt_forwarded();
+        assert!(s.prompt_in_flight());
+        s.clear();
+        assert!(s.prompt_in_flight(), "Clear ended a prompt in flight");
+        feed(&mut s, &run_start("p1"));
+        assert!(!s.prompt_in_flight() && s.running(), "the run says it now");
+        feed(&mut s, &run_end("p1"));
+        // Two sent before either is answered: the second is refused, and
+        // the first is still starting.
+        s.prompt_forwarded();
+        s.prompt_forwarded();
+        feed(&mut s, &response("prompt", false, json!("one at a time")));
+        assert!(s.prompt_in_flight(), "the refusal was the second prompt's");
+        feed(&mut s, &run_start("p2"));
+        assert!(!s.prompt_in_flight());
+        feed(&mut s, &run_end("p2"));
+        // A successful answer is no run yet; the child's exit takes it.
+        s.prompt_forwarded();
+        feed(&mut s, &response("prompt", true, Value::Null));
+        assert!(s.prompt_in_flight());
+        s.child_exited();
+        assert!(!s.prompt_in_flight());
     }
 
     #[test]
@@ -1892,6 +2017,33 @@ mod tests {
             v["running"], true,
             "clearing the view does not end the run in flight"
         );
+    }
+
+    #[test]
+    fn pane_bits_hold_more_than_thirty_two_panes() {
+        // The risk (#815): `Changed` was a u32, so a 33rd pane shifted past
+        // it: a panic in a debug build, and in a release one the
+        // transcript's bit, so that pane's changes went out as the
+        // transcript's and its own never did. Every place up to 64 is a bit
+        // of its own (a debug build, as this one, panics on a shift past
+        // the width), so a pane at the 33rd place is carried as itself.
+        let mut taken = 0u64;
+        for place in 0..64 {
+            let bit = Changed::bit_at(place);
+            assert_eq!(bit.count_ones(), 1, "place {place}");
+            assert_eq!(taken & bit, 0, "place {place} is an earlier place's bit");
+            taken |= bit;
+        }
+        let past = Changed(Changed::bit_at(32));
+        assert!(
+            PANES.iter().all(|&p| !past.has(p)),
+            "a 33rd pane reads as one of these: {past:?}"
+        );
+        // And the panes there are now are each their own.
+        for (i, &p) in PANES.iter().enumerate() {
+            let one = Changed::of(&[p]);
+            assert!(PANES[..i].iter().all(|&q| !one.has(q)), "{p:?}");
+        }
     }
 
     #[test]
@@ -2705,6 +2857,57 @@ mod tests {
         let t = all(&s)["transcript"].as_array().unwrap().clone();
         assert_eq!(t.len(), TRANSCRIPT_CAP);
         assert_eq!(t[0], "line 5", "the oldest go first");
+    }
+
+    #[test]
+    fn a_stored_line_past_the_cap_is_cut_and_said_so() {
+        // The risk (#814): a stdout line that is not JSON, or a stderr line,
+        // of any length was stored whole in the transcript, the trellis
+        // messages pane and the alert, and sent whole with every view that
+        // changed them; or a cut one, with nothing saying so, read as the
+        // whole line. Each copy is held to its own store's byte cap, keeps
+        // the line's start on a character boundary, and ends saying how
+        // many of its bytes were cut.
+        let line = "é".repeat(TRANSCRIPT_BYTES);
+        let alert = format!("trellis rpc printed a line that is not a JSON object: {line}");
+        let mut s = DesktopState::default();
+        feed(&mut s, &line);
+        s.update(Frame::Human(line.clone()));
+        let v = all(&s);
+        for (pane, kept, whole, cap) in [
+            ("transcript", &v["transcript"][0], &line, TRANSCRIPT_BYTES),
+            ("stderr", &v["stderr"][0], &line, STDERR_BYTES),
+            ("alert", &v["alert"], &alert, ALERT_BYTES),
+        ] {
+            let kept = kept.as_str().unwrap_or_else(|| panic!("{pane}: {kept}"));
+            assert!(kept.len() <= cap, "{pane}: {} bytes kept", kept.len());
+            assert!(kept.len() >= cap - 3, "{pane}: cut short of its cap");
+            let at = kept
+                .rfind(" [trellis-desktop:")
+                .unwrap_or_else(|| panic!("{pane}: the cut is not said"));
+            assert!(
+                whole.starts_with(&kept[..at]),
+                "{pane}: the start, as it came"
+            );
+            assert_eq!(
+                &kept[at..],
+                format!(
+                    " [trellis-desktop: the last {} of {} bytes were cut]",
+                    whole.len() - at,
+                    whole.len()
+                ),
+                "{pane}"
+            );
+        }
+        // The cut line fills the transcript's bytes, so the next line,
+        // however short, pushes it out; a line within the caps is whole.
+        feed(&mut s, "<b>short</b>");
+        let v = all(&s);
+        assert_eq!(v["transcript"], json!(["<b>short</b>"]));
+        assert_eq!(
+            v["alert"],
+            "trellis rpc printed a line that is not a JSON object: <b>short</b>"
+        );
     }
 
     /// A value of the shape `field` has on the wire, distinct from every
