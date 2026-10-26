@@ -50,22 +50,71 @@ export function atEnd(pane) {
   return pane.scrollHeight - pane.clientHeight - pane.scrollTop <= AT_END_SLACK;
 }
 
-// Draws `lines` into the log `pane`, one div each, and keeps it at its end
-// only if the reader was there. When `lines` extends what is drawn, only
-// the new lines are appended: replacing every child of a role="log" region
-// may have a screen reader read the whole log again. A list that does not
-// extend it (a cap dropped its oldest lines, or it was cleared) is drawn
-// afresh, with `empty` when it has no line. Answers whether the pane
-// followed its end and how many rows were drawn, so a caller can offer a
-// jump to the end when the reader is elsewhere and lines arrived.
-export function appendRows(doc, pane, lines, empty) {
-  const list = (Array.isArray(lines) ? lines : []).map(String);
+// Draws a feed the core sends (#827; desktop/src/feed.rs) into the log
+// `pane`: `feed.rows`, each with its `seq`, each drawn by `draw(row)` into
+// an element this marks with its seq and turn. With `feed.whole` the rows
+// replace what the pane holds; otherwise a row whose seq the pane holds
+// replaces that row in place (it changed, as a steer does once delivered)
+// and the rest are appended, so a capped log appends instead of redrawing
+// every row: replacing every child of a role="log" region may have a screen
+// reader read the whole log again. `divider(row, before)`, when given, may
+// answer an element to set ahead of an appended row, `before` being the
+// last row drawn. The pane keeps `feed.keep` rows, dropping its oldest, and
+// says `empty` while it has none. It keeps to its end only if the reader
+// was there. Answers whether it followed, how many rows it appended, and
+// whether rows are missing: a new row numbered past the one the pane
+// expected next, which a page that fell behind its event stream sees, and
+// which the caller mends by asking for the whole run again.
+export function drawFeed(doc, pane, feed, { draw, divider, empty }) {
+  const rows = feed && Array.isArray(feed.rows) ? feed.rows : [];
   const follow = atEnd(pane);
-  const drawn = [...pane.children].filter((c) => c.className !== "empty");
-  const grows = list.length >= drawn.length && drawn.every((c, i) => c.textContent === list[i]);
-  const rows = (grows ? list.slice(drawn.length) : list).map((l) => el(doc, "div", l));
-  if (grows && drawn.length > 0) pane.append(...rows);
-  else fill(doc, pane, rows, empty, "div");
+  const mark = (row) => {
+    const e = draw(row);
+    e.dataset.seq = String(row.seq);
+    if (Number.isFinite(row.turn)) e.dataset.turn = String(row.turn);
+    return e;
+  };
+  let drawn = [...pane.children].filter((c) => c.dataset.seq !== undefined);
+  let last = drawn.length > 0 ? drawn[drawn.length - 1] : null;
+  let appended = 0;
+  let missing = false;
+  if (feed && feed.whole === true) {
+    pane.replaceChildren();
+    drawn = [];
+    last = null;
+  }
+  for (const row of rows) {
+    if (!Number.isFinite(row.seq)) continue;
+    // A row at or before the last drawn changed since it was sent: it is
+    // replaced where it stands, or skipped if the cap has dropped it.
+    if (last !== null && row.seq <= Number(last.dataset.seq)) {
+      const at = drawn.findIndex((c) => Number(c.dataset.seq) === row.seq);
+      if (at >= 0) {
+        const e = mark(row);
+        drawn[at].replaceWith(e);
+        drawn[at] = e;
+        last = drawn[drawn.length - 1];
+      }
+      continue;
+    }
+    if (last !== null && row.seq !== Number(last.dataset.seq) + 1) missing = true;
+    const before = divider ? divider(row, last) : null;
+    if (before) pane.append(before);
+    const e = mark(row);
+    pane.append(e);
+    drawn.push(e);
+    last = e;
+    appended += 1;
+  }
+  // The cap, oldest first, with whatever stood ahead of the oldest row.
+  const keep = Number.isFinite(feed && feed.keep) ? feed.keep : Infinity;
+  while (drawn.length > keep) {
+    const first = pane.firstElementChild;
+    first.remove();
+    if (first === drawn[0]) drawn.shift();
+  }
+  for (const e of [...pane.children]) if (e.className === "empty") e.remove();
+  if (drawn.length === 0) pane.replaceChildren(el(doc, "div", empty, "empty"));
   if (follow) pane.scrollTop = pane.scrollHeight;
-  return { followed: follow, drawn: rows.length };
+  return { followed: follow, drawn: appended, missing };
 }

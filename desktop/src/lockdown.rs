@@ -1270,7 +1270,10 @@ mod tests {
         assert_eq!(view["outcome"]["outcome"], "converged", "{view}");
         assert_eq!(view["tier"], "scripted", "{view}");
         assert!(view["alert"].is_string(), "{view}");
-        assert_eq!(view["stderr"], json!(["trellis: indexed 12 modules"]));
+        assert_eq!(
+            view["stderr"]["rows"][0]["text"], "trellis: indexed 12 modules",
+            "{view}"
+        );
         let keys: BTreeSet<String> = view
             .as_object()
             .expect("the view is an object")
@@ -3307,7 +3310,7 @@ mod tests {
         ("svg", "dom.js"),
         ("fill", "dom.js"),
         ("atEnd", "dom.js"),
-        ("appendRows", "dom.js"),
+        ("drawFeed", "dom.js"),
         ("str", "fmt.js"),
         ("isCount", "fmt.js"),
         ("notReported", "fmt.js"),
@@ -3326,6 +3329,8 @@ mod tests {
         ("stat", "ds.js"),
         ("stats", "ds.js"),
         ("railRows", "ds.js"),
+        ("txEntry", "ds.js"),
+        ("txTurn", "ds.js"),
     ];
 
     /// The names a module defines at its top level, at the start of a
@@ -3614,6 +3619,63 @@ mod tests {
         ] {
             assert!(form.contains(want), "the popover lacks {want}: {form}");
         }
+    }
+
+    #[test]
+    fn transcript_rows_are_the_design_systems_transcript() {
+        // The risk (#827): the log drawn as untyped text again, so the
+        // person's words, a tool call, a check and a refusal read alike; a
+        // check row drawn without the verdict trellis-checks gave; a tool
+        // row that adds listeners of its own, so a long run grows the page's
+        // listener count (the smoke run judges it); or a page that fell
+        // behind its event stream left with a gap in its log.
+        let ds = code_of("ds.js");
+        let entry = function_body(&ds, "txEntry");
+        for want in [
+            r#"kind === "task" ? "you · task" : "you · steer""#,
+            r#"`cd-tx-${kind}`"#,
+            r#""cd-tx-e cd-tx-tool""#,
+            r#"if (kind === "check" && typeof row.passed === "boolean") {"#,
+            r#"passed ? "cd-tx-check-ok" : "cd-tx-check-down""#,
+            r#"kind === "refusal" ? "cd-tx-refusal" : "cd-tx-system""#,
+            "raw.hidden = true;",
+        ] {
+            assert!(entry.contains(want), "txEntry lacks {want}");
+        }
+        assert!(
+            !entry.contains("addEventListener"),
+            "a row adds a listener of its own"
+        );
+        let render = code_of("render.js");
+        let wire = function_body(&render, "wireLog");
+        for want in [
+            r#"pane.addEventListener("click", toggle);"#,
+            r#"pane.addEventListener("keydown", (e) => {"#,
+            r#"e.target.closest(".cd-tx-tool")"#,
+        ] {
+            assert!(wire.contains(want), "wireLog lacks {want}");
+        }
+        assert!(
+            function_body(&render, "drawView").contains("onMissing();"),
+            "drawView does not say when rows are missing"
+        );
+        let main = code_of("main.js");
+        for want in [
+            "drawView(document, event.payload, missing);",
+            "drawDialogs(document, event.payload, missing);",
+            "askState(tauri);",
+        ] {
+            assert!(
+                listener(&main, "view").contains(want),
+                "a page with missing rows does not ask for the run again: {want}"
+            );
+        }
+        let page = page();
+        assert_eq!(
+            page[index_of(&page, "pane-transcript")].attr("class"),
+            Some("log cd-tx"),
+            "the log is not the system's Transcript"
+        );
     }
 
     #[test]
@@ -4131,7 +4193,7 @@ mod tests {
         // turn. The end is followed only when the pane was already there,
         // measured before it is redrawn; the one other scroll to the end in
         // render.js is the jump button's own click.
-        // The transcript is drawn by dom.js's appendRows (#817), where the
+        // The transcript is drawn by dom.js's drawFeed (#827), where the
         // end is measured and followed.
         let dom = code_of("dom.js");
         let at_end = function_body(&dom, "atEnd");
@@ -4140,11 +4202,11 @@ mod tests {
                 .contains("pane.scrollHeight - pane.clientHeight - pane.scrollTop <= AT_END_SLACK"),
             "atEnd measures something else: {at_end}"
         );
-        let rows = function_body(&dom, "appendRows");
+        let rows = function_body(&dom, "drawFeed");
         let measured = rows
             .find("const follow = atEnd(pane);")
-            .expect("appendRows reads the end before drawing");
-        let drawn = rows.find("pane.append(").expect("appendRows appends");
+            .expect("drawFeed reads the end before drawing");
+        let drawn = rows.find("pane.append(").expect("drawFeed appends");
         assert!(
             measured < drawn,
             "the end is read after the redraw moved it"
@@ -4152,7 +4214,7 @@ mod tests {
         assert_eq!(
             rows.matches("pane.scrollTop = pane.scrollHeight;").count(),
             1,
-            "appendRows scrolls to the end in more than one place"
+            "drawFeed scrolls to the end in more than one place"
         );
         assert!(
             rows.contains("if (follow) pane.scrollTop = pane.scrollHeight;"),
@@ -4160,8 +4222,7 @@ mod tests {
         );
         let js = code_of("render.js");
         assert!(
-            function_body(&js, "transcript")
-                .contains(r#"appendRows(doc, pane, lines, "Nothing has run yet.")"#),
+            function_body(&js, "transcript").contains("drawFeed(doc, pane, feed, {"),
             "render.js draws the transcript some other way"
         );
         let scrolls: Vec<&str> = js
@@ -4183,25 +4244,29 @@ mod tests {
 
     #[test]
     fn log_scroll_transcript_appends_new_lines_rather_than_replacing() {
-        // The risk (#643): the view resends the whole transcript each turn,
-        // and replacing every child of a role="log" region may have a screen
-        // reader read the whole log again. Lines beyond those drawn are
-        // appended; only a list that does not extend the drawn one (the cap
-        // dropped lines, or the transcript was cleared) is drawn afresh.
+        // The risk (#643, #827): replacing every child of a role="log"
+        // region may have a screen reader read the whole log again, and once
+        // the cap was full every new row redrew two thousand. The core sends
+        // each row once (feed.rs, a_feed_sends_each_row_once_and_a_changed_row_again);
+        // drawFeed appends a new row, replaces a changed one where it
+        // stands, holds the pane to the feed's cap by dropping its oldest,
+        // and replaces everything only for a whole feed.
         let dom = code_of("dom.js");
-        let rows = function_body(&dom, "appendRows");
+        let rows = function_body(&dom, "drawFeed");
         for want in [
-            "drawn.every((c, i) => c.textContent === list[i])",
-            "list.slice(drawn.length)",
-            "if (grows && drawn.length > 0) pane.append(...rows);",
-            "else fill(doc, pane, rows, empty, \"div\");",
+            "if (feed && feed.whole === true) {",
+            "drawn[at].replaceWith(e);",
+            "pane.append(e);",
+            "while (drawn.length > keep) {",
+            "if (last !== null && row.seq !== Number(last.dataset.seq) + 1) missing = true;",
         ] {
-            assert!(rows.contains(want), "appendRows lacks {want}: {rows}");
+            assert!(rows.contains(want), "drawFeed lacks {want}: {rows}");
         }
         let render = code_of("render.js");
         let transcript = function_body(&render, "transcript");
         assert!(
-            transcript.contains(r#"appendRows(doc, pane, lines, "Nothing has run yet.")"#),
+            transcript.contains("draw: (row) => txEntry(doc, row),")
+                && transcript.contains(r#"empty: "Nothing has run yet.","#),
             "render.js draws the transcript some other way: {transcript}"
         );
         let page = page();
@@ -4282,16 +4347,15 @@ mod tests {
         // reader of trellis's stderr is pulled to the end at each view while
         // the actions log is not; or a second, differently measured notion
         // of "at the end". dialogs.js draws the pane with dom.js's
-        // appendRows, the actions log's own (#817), and scrolls nowhere
-        // else.
+        // drawFeed, the actions log's own (#827), and scrolls nowhere else.
         let js = code_of("dialogs.js");
         assert!(
-            js.contains(r#"import { appendRows, el } from "./dom.js";"#),
+            js.contains(r#"import { drawFeed, el } from "./dom.js";"#),
             "dialogs.js measures the end its own way"
         );
         let stderr = function_body(&js, "drawStderr");
         assert!(
-            stderr.contains(r#"appendRows(doc, doc.getElementById("messages-log"), lines,"#),
+            stderr.contains(r#"return drawFeed(doc, doc.getElementById("messages-log"), feed, {"#),
             "drawStderr draws the pane some other way: {stderr}"
         );
         assert!(
