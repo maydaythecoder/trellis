@@ -142,9 +142,18 @@ func TestShellGoldenRenders(t *testing.T) {
 		{"run-120x40", 120, 40, ""},
 		{"actions-80x24", 80, 24, PanelActions},
 		{"actions-120x40", 120, 40, PanelActions},
+		// The code level and a file's diff (#853), from codeState.
+		{"edits-80x24", 80, 24, PanelEdits},
+		{"edits-120x40", 120, 40, PanelEdits},
+		{"diff-80x24", 80, 24, PanelEdits},
+		{"diff-120x40", 120, 40, PanelEdits},
 	} {
 		s := shellState()
 		s.Nav = Nav{Open: c.open, Selected: c.open}
+		if c.open == PanelEdits {
+			s = codeState()
+			s.Nav = Nav{Open: c.open, Selected: c.open, Diff: strings.HasPrefix(c.name, "diff")}
+		}
 		got := Render(s, c.w, c.h) + "\n"
 		path := filepath.Join("testdata", "shell-"+c.name+".golden")
 		if *update {

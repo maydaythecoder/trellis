@@ -36,6 +36,13 @@ type Nav struct {
 	// Selected is the pane Tab last selected at the top level, which ⏎
 	// goes into; "" when none is.
 	Selected Panel
+	// File is the code level's cursor, the path of the file ⏎ shows the
+	// diff of (#853); "" is the first file.
+	File string
+	// Diff is set at the diff level, one below the edits pane, which
+	// shows File's diff from row Scroll down.
+	Diff   bool
+	Scroll int
 }
 
 // Levels is the depth the Trail's gauge counts to, as the desktop's does:
@@ -62,9 +69,13 @@ const railW = 3
 // folded is whether the right column folds on a w by h screen.
 func folded(w, h int) bool { return w < FoldWidth || h < FoldHeight }
 
-// level is the Trail's depth: 1 at the top, 2 inside a pane.
+// level is the Trail's depth: 1 at the top, 2 inside a pane, 3 at a
+// file's diff.
 func level(s State) int {
-	if s.Nav.Open != "" {
+	switch {
+	case s.Nav.Open == PanelEdits && s.Nav.Diff:
+		return 3
+	case s.Nav.Open != "":
 		return 2
 	}
 	return 1
@@ -78,6 +89,9 @@ func trail(s State, w int) []Span {
 	if s.Nav.Open != "" {
 		left += " ⟩ " + string(s.Nav.Open)
 	}
+	if level(s) == 3 {
+		left += " ⟩ " + Plain(diffPath(s))
+	}
 	right := fmt.Sprintf("L%d / %d", level(s), Levels)
 	if s.Nav.Open != "" {
 		right += "  " + keyRow(key{"ESC", "out"})
@@ -87,12 +101,63 @@ func trail(s State, w int) []Span {
 }
 
 // keycaps are the keys that act at the level shown, for the status bar:
-// TAB and ⏎ at the top level, ESC inside a pane, and ^C always.
+// TAB and ⏎ at the top level, ESC inside a pane, the cursor and ⏎ at the
+// code level, the scroll at a diff, and ^C always. While a question is on
+// screen its keys are the ones that act: y and n, and c where it asks to
+// write a file, whose diff then answers it in place (#853).
 func keycaps(s State) string {
-	if s.Nav.Open != "" {
+	if q, ok := onScreen(s); ok {
+		if s.Reviewing {
+			return keyRow(key{"y", "accept"}, key{"n", "reject"}, key{"ESC", "to the question"}, stopKey(s))
+		}
+		if _, _, file := ApprovalFile(q.Question, q.Detail); file {
+			return keyRow(key{"y", "accept"}, key{"n", "reject"}, key{"c", "review in code"}, stopKey(s))
+		}
+		return keyRow(key{"y", "accept"}, key{"n", "reject"}, stopKey(s))
+	}
+	switch level(s) {
+	case 3:
+		return keyRow(key{"ESC", "out"}, key{"↑↓", "scroll"}, stopKey(s))
+	case 2:
+		if s.Nav.Open == PanelEdits {
+			return keyRow(key{"ESC", "out"}, key{"↑↓", "file"}, key{"⏎", "diff"}, stopKey(s))
+		}
 		return keyRow(key{"ESC", "out"}, stopKey(s))
 	}
 	return keyRow(key{"TAB", "select"}, key{"⏎", "in"}, stopKey(s))
+}
+
+// onlyHere is the key the status bar alone shows, kept when the row runs
+// short: c under a question that asks to write a file, since the box's
+// border has room for y and n only, and at 80 columns c was cut with the
+// rest and the code level could not be reached while a question waited
+// (#853).
+func onlyHere(s State) (key, bool) {
+	q, ok := onScreen(s)
+	if !ok || s.Reviewing {
+		return key{}, false
+	}
+	_, _, file := ApprovalFile(q.Question, q.Detail)
+	return key{"c", "review in code"}, file
+}
+
+// onScreen is the question the approval box shows, if one is up.
+func onScreen(s State) (Asked, bool) {
+	for _, a := range s.Asked {
+		if a.OnScreen {
+			return a, true
+		}
+	}
+	return Asked{}, false
+}
+
+// diffPath is the path the diff level shows: the cursor's file.
+func diffPath(s State) string {
+	files := codeFiles(s)
+	if at, ok := chosen(s, files); ok && (s.Nav.File == "" || files[at].path == s.Nav.File) {
+		return files[at].path
+	}
+	return s.Nav.File
 }
 
 // stopKey is ^C, the only key that stops a run (owner decision,
@@ -107,14 +172,19 @@ func stopKey(s State) key {
 
 // statusBar is the last row: the live keys on the left, and on the right
 // the worktree as a Status, the model and the tier (barRight). When the
-// row runs short the model is cut first, then the keys give way to ^C
+// row runs short the model is cut first, then the keys give way to the
+// one key nothing else on screen shows, if there is one, then to ^C
 // alone, then to nothing: what the worktree holds matters more than a key
 // the Trail and the strip already imply.
 func statusBar(s State, w int) []Span {
 	// Two spaces at least between the keys and the Status, so the last key
 	// and the worktree's word never read as one phrase.
 	const gap = 2
-	for _, keys := range []string{" " + keycaps(s), " " + keyRow(stopKey(s)), ""} {
+	tries := []string{" " + keycaps(s)}
+	if k, ok := onlyHere(s); ok {
+		tries = append(tries, " "+keyRow(k))
+	}
+	for _, keys := range append(tries, " "+keyRow(stopKey(s)), "") {
 		right := append(barRight(s, max(w-Width(keys)-gap-1, 1)), Span{Text: " "})
 		if Width(keys)+gap+spansWidth(right) <= w {
 			return spread([]Span{{Text: keys, Role: RoleLabel}}, right, w)
@@ -211,6 +281,9 @@ func foldedRow(s State, w int) string {
 func inside(s State, w, h int) []string {
 	r := rail(s, h)
 	body := pane(s, s.Nav.Open, w-railW, h)
+	if level(s) == 3 {
+		body = codeLevel(s, w-railW, h)
+	}
 	out := make([]string, h)
 	for i := range out {
 		out[i] = r[i] + body[i]

@@ -227,6 +227,9 @@ func (m *Model) Update(msg tea.Msg) {
 		if m.Modal != nil {
 			m.scrollModal(0)
 		}
+		if m.nav.Diff {
+			m.scrollCode(0)
+		}
 	case FrameMsg:
 		m.frame(msg.Frame)
 	case ExitedMsg:
@@ -654,7 +657,9 @@ func exitReason(err error) string {
 // View draws the screen: the six regions, or the approval modal over them.
 func (m *Model) View() string {
 	w, h := m.size()
-	if m.Modal != nil {
+	// A question set aside for its file's diff (#853) is answered there,
+	// in the run view, until ESC puts it back in its box.
+	if m.Modal != nil && !m.Modal.Reviewing {
 		return view.Asking(m.viewState(), m.Modal.Question, m.Modal.Diff, m.Modal.Scroll, w, h)
 	}
 	return view.Render(m.viewState(), w, h)

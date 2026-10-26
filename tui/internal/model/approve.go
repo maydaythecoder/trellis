@@ -30,6 +30,10 @@ type Approval struct {
 	// and the start of the last full page at the current size, the view's
 	// own limit (view.AskingLastFrom, #843).
 	Scroll int
+	// Reviewing is set while the question is set aside for its file's diff
+	// at the code level, where y and n answer it in place (#853). The
+	// question stays the one on screen, waiting, and goes with it.
+	Reviewing bool
 }
 
 // approvalRequested shows the question, or queues it behind the one on
@@ -65,9 +69,57 @@ func (m *Model) approvalRequested(a frames.ApprovalFields) {
 
 // modalKey is a key while the modal is up. y and n answer it; the arrows
 // and PgUp and PgDn scroll its diff, so a long one is read whole before it
-// is answered (#640). Every other key, a paste among them, is ignored: the
-// keys on screen are the modal's.
+// is answered (#640); c sets it aside for its file's diff at the code
+// level, where it is answered in place (#853). Every other key, a paste
+// among them, is ignored: the keys on screen are the modal's.
 func (m *Model) modalKey(k tea.KeyMsg) {
+	if m.Modal.Reviewing {
+		m.reviewKey(k)
+		return
+	}
+	switch k.Type {
+	case tea.KeyRunes:
+		if k.Paste || len(k.Runes) != 1 {
+			return
+		}
+		switch k.Runes[0] {
+		case 'y':
+			m.answer(true)
+		case 'n':
+			m.answer(false)
+		case 'c':
+			m.review()
+		}
+	case tea.KeyUp:
+		m.scrollModal(-1)
+	case tea.KeyDown:
+		m.scrollModal(1)
+	case tea.KeyPgUp:
+		m.scrollModal(-ModalPage)
+	case tea.KeyPgDown:
+		m.scrollModal(ModalPage)
+	}
+}
+
+// review sets the question on screen aside for the diff of the file it
+// asks to write, the desktop's Review in Code (#831): the edits pane gone
+// into, at that file's diff. A question that names no file, a bash command
+// or ask_human, has no diff level and stays in the box.
+func (m *Model) review() {
+	path, _, ok := view.ApprovalFile(m.Modal.Question, m.Modal.Diff)
+	if !ok {
+		return
+	}
+	m.Modal.Reviewing = true
+	m.nav = view.Nav{Open: view.PanelEdits, Selected: view.PanelEdits, File: path, Diff: true}
+}
+
+// reviewKey is a key while the question is set aside at its file's diff.
+// y and n answer it through answer, the one path an answer takes; ESC puts
+// it back in its box unanswered; the arrows and PgUp and PgDn scroll the
+// diff. Every other key is ignored, as the box ignores it: the question is
+// still waiting, and nothing else is answered or sent until it is.
+func (m *Model) reviewKey(k tea.KeyMsg) {
 	switch k.Type {
 	case tea.KeyRunes:
 		if k.Paste || len(k.Runes) != 1 {
@@ -79,14 +131,10 @@ func (m *Model) modalKey(k tea.KeyMsg) {
 		case 'n':
 			m.answer(false)
 		}
-	case tea.KeyUp:
-		m.scrollModal(-1)
-	case tea.KeyDown:
-		m.scrollModal(1)
-	case tea.KeyPgUp:
-		m.scrollModal(-ModalPage)
-	case tea.KeyPgDown:
-		m.scrollModal(ModalPage)
+	case tea.KeyEsc:
+		m.Modal.Reviewing = false
+	default:
+		m.scrollCodeKey(k.Type)
 	}
 }
 

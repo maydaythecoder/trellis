@@ -6,6 +6,8 @@ import (
 	"testing"
 	"unicode"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/maydaythecoder/trellis/tui/internal/theme"
 	"github.com/maydaythecoder/trellis/tui/internal/theme/themetest"
 )
@@ -373,6 +375,192 @@ func TestViewNoEscapeSequenceReachesTheScreen(t *testing.T) {
 			}
 			if !strings.Contains(unpainted(th, screens["render"]), "checking") {
 				t.Fatalf("%s, dark %v: the line's text was lost with its control characters:\n%s", depth, dark, screens["render"])
+			}
+		}
+	}
+}
+
+// codeState is a run in flight that has written src/parser.py twice, each
+// edit with its counts and diff, and created tests/test_parser.py with
+// write_file, which sends neither; and that asks to edit src/lexer.py, a
+// question waiting behind the one on screen.
+func codeState() State {
+	s := shellState()
+	first := "--- src/parser.py\n+++ src/parser.py\n@@ -11,3 +11,3 @@\n def parse_expr(tokens):\n-    return tokens[:-1]\n+    return tokens\n \n"
+	second := "--- src/parser.py\n+++ src/parser.py\n@@ -20,1 +20,3 @@\n # the end\n+def parse_comment(tokens):\n+    return []\n"
+	s.Edits = []Edit{
+		{Path: "src/parser.py", Turn: 3, Added: u(1), Removed: u(1), Diff: &first},
+		{Path: "tests/test_parser.py", Turn: 4},
+		{Path: "src/parser.py", Turn: 5, Added: u(2), Removed: u(0), Diff: &second},
+	}
+	s.Asked = []Asked{{ID: "a1", Question: "edit src/lexer.py (+1 -1)",
+		Detail: "--- src/lexer.py\n+++ src/lexer.py\n  def lex(src):\n-     return src.split()\n+     return src.split(' ')"}}
+	return s
+}
+
+// rowWith is the first row of out that holds every one of parts, or "".
+func rowWith(out string, parts ...string) string {
+	for _, r := range strings.Split(out, "\n") {
+		all := true
+		for _, p := range parts {
+			all = all && strings.Contains(r, p)
+		}
+		if all {
+			return r
+		}
+	}
+	return ""
+}
+
+// #853: the code level, one burrow in from the run, is one row per file in
+// the order it was first touched, with its two line counts summed over its
+// writes and never one figure, and the state word the desktop's Code level
+// gives it (#831). The risks: a file written twice listed twice, or with
+// only its last edit's counts; a file write_file created, which trellis
+// sends no counts for, drawn as +0 −0 rather than as unreported; a file a
+// question waits on left out until the run writes it; and an ended run's
+// files called anything trellis did not say. Folded at 80 columns the
+// level is the same rows.
+func TestCodeLevelListsFilesWithLineCounts(t *testing.T) {
+	for _, size := range [][2]int{{120, 40}, {80, 24}} {
+		s := codeState()
+		s.Nav = Nav{Open: PanelEdits, Selected: PanelEdits}
+		out := Render(s, size[0], size[1])
+		for _, want := range [][]string{
+			{"› src/parser.py", "+3 −1", "● in the worktree"},
+			{"tests/test_parser.py", Dash, "● in the worktree"},
+			{"src/lexer.py", "+1 −1", "● awaiting your approval"},
+		} {
+			if rowWith(out, want...) == "" {
+				t.Fatalf("%v: no row holds %q:\n%s", size, want, out)
+			}
+		}
+		n := 0
+		for _, r := range strings.Split(out, "\n") {
+			if strings.Contains(r, "src/parser.py") && strings.Contains(r, "│") {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Fatalf("%v: src/parser.py is listed %d times, want once:\n%s", size, n, out)
+		}
+		if strings.Contains(out, "+0 −0") || strings.Contains(out, "+0") {
+			t.Fatalf("%v: a count trellis did not send is drawn as 0:\n%s", size, out)
+		}
+		// At 80 columns the status bar keeps the worktree over the keys
+		// (statusBar), so the keys are asked of the wider screen only.
+		if !strings.HasPrefix(out, " Run ⟩ edits") || !strings.Contains(out, "L2 / 4") || (size[0] > 80 && !strings.Contains(out, "[⏎] diff")) {
+			t.Fatalf("%v: the Trail or the keys do not say where the code level is:\n%s", size, out)
+		}
+		if strings.Index(out, "src/parser.py") > strings.Index(out, "tests/test_parser.py") ||
+			strings.Index(out, "tests/test_parser.py") > strings.Index(out, "src/lexer.py") {
+			t.Fatalf("%v: the files are not in the order first touched:\n%s", size, out)
+		}
+	}
+
+	// Ended: what run_end said became of the writes, and nothing else.
+	for _, c := range []struct {
+		outcome, line string
+		restored      *bool
+		word          string
+	}{
+		{"converged", "converged", nil, "left in the tree"},
+		{"interrupted", "interrupted; worktree restored", ptr(true), "rolled back"},
+		{"not_converged", "not converged; worktree left", ptr(false), "left in the tree"},
+		{"error", "error; restored not reported", nil, "not reported"},
+		{"", "", nil, "not reported"},
+	} {
+		s := codeState()
+		s.Running, s.Asked = false, nil
+		s.Now = Now{Outcome: c.outcome}
+		s.Outcome, s.Restored = c.line, c.restored
+		s.Nav = Nav{Open: PanelEdits, Selected: PanelEdits}
+		out := Render(s, 120, 40)
+		if rowWith(out, "src/parser.py", "● "+c.word) == "" || strings.Contains(out, "src/lexer.py") {
+			t.Fatalf("%q restored %v: want %q and no file for a question its run no longer waits on:\n%s", c.outcome, c.restored, c.word, out)
+		}
+		if c.word == "not reported" {
+			s.Nav.Diff = true
+			if d := Render(s, 120, 40); !strings.Contains(d, "did not say") && !strings.Contains(d, "before a run_end") {
+				t.Fatalf("%q: the diff level does not say why the state is not reported:\n%s", c.outcome, d)
+			}
+		}
+	}
+}
+
+func ptr(b bool) *bool { return &b }
+
+// #853: a file's diff, one level below the code level, has + and - in the
+// sign column and the colour on the text only (the Diff card): added text
+// in diff-add, removed in diff-del, each @@ header in diff-hunk, context
+// as text, and a question's waiting hunk coloured the same way. The risks:
+// the colour on the sign alone or on the whole row, a line coloured by
+// what its words say, and the diff, which is repository text and model
+// output (rule 10), moving the cursor or retitling the terminal through
+// an escape sequence in a line.
+func TestDiffColoursLinesByRole(t *testing.T) {
+	for _, depth := range themetest.Depths {
+		for _, dark := range []bool{true, false} {
+			th := theme.New(themetest.Renderer(t, depth, dark))
+			s := codeState()
+			s.Theme = th
+			planted := "--- src/parser.py\n+++ src/parser.py\n@@ -1,1 +1,1 @@\n-old\x1b]0;pwned\x07 line\n+new\x1b[2J line \u009b2J\n"
+			s.Edits = append(s.Edits, Edit{Path: "src/parser.py", Turn: 6, Added: u(1), Removed: u(1), Diff: &planted})
+			s.Nav = Nav{Open: PanelEdits, Selected: PanelEdits, File: "src/parser.py", Diff: true}
+			out := Render(s, 120, 40)
+			for _, r := range unpainted(th, out) {
+				if r != '\n' && unicode.IsControl(r) {
+					t.Fatalf("%s, dark %v: control character %U from the diff reached the screen:\n%q", depth, dark, r, out)
+				}
+			}
+			if !strings.Contains(unpainted(th, out), "new[2J line 2J") {
+				t.Fatalf("%s, dark %v: the line's text was lost with its control characters:\n%s", depth, dark, unpainted(th, out))
+			}
+			if depth != "TrueColor" {
+				continue
+			}
+			for _, c := range []struct {
+				sign, text string
+				style      lipgloss.Style
+			}{
+				{"+", "    return tokens", th.DiffAdd},
+				{"-", "    return tokens[:-1]", th.DiffDel},
+				{"+", "def parse_comment(tokens):", th.DiffAdd},
+				{" ", "def parse_expr(tokens):", th.Ink},
+			} {
+				want := th.Ink.Render(" "+c.sign+" ") + c.style.Render(c.text)
+				if c.sign == " " {
+					// A context line is text from its sign to its end.
+					want = th.Ink.Render("   " + c.text)
+				}
+				if !strings.Contains(out, want) {
+					t.Fatalf("dark %v: %q %q is not drawn with the sign as text and the text in its role:\n%q", dark, c.sign, c.text, out)
+				}
+			}
+			for _, h := range []string{"@@ -11,3 +11,3 @@ · turn 3", "@@ -20,1 +20,3 @@ · turn 5"} {
+				if !strings.Contains(out, th.DiffHunk.Render(" "+h)) {
+					t.Fatalf("dark %v: %q is not in diff-hunk:\n%q", dark, h, out)
+				}
+			}
+			if strings.Contains(out, "test_parser") || strings.Contains(out, "lexer") {
+				t.Fatalf("dark %v: another file's write is in this file's diff:\n%q", dark, out)
+			}
+
+			// The question on src/lexer.py, on screen and set aside at its
+			// diff: its lines coloured the same way, and its keys in the
+			// pane.
+			s.Nav.File, s.Reviewing, s.Asked[0].OnScreen = "src/lexer.py", true, true
+			out = Render(s, 120, 40)
+			for _, want := range []string{
+				th.Ink.Render(" + ") + th.DiffAdd.Render("    return src.split(' ')"),
+				th.Ink.Render(" - ") + th.DiffDel.Render("    return src.split()"),
+			} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("dark %v: the waiting hunk's line %q is not coloured by its role:\n%q", dark, want, out)
+				}
+			}
+			if rest := unpainted(th, out); !strings.Contains(rest, "[y] accept this change  [n] reject") || !strings.Contains(rest, "awaiting your approval") {
+				t.Fatalf("dark %v: the question set aside here does not say how to answer it:\n%s", dark, rest)
 			}
 		}
 	}

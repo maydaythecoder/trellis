@@ -103,6 +103,15 @@ type TurnFields struct {
 	// ElapsedMs is the run's wall-clock spend after the turn as its budget
 	// measures it, waits on a person and pauses left out (#799).
 	ElapsedMs *uint64
+	// Present only on an edit that applied (#802): the whole lines it added
+	// and removed, the line of the file before it where the hunk starts,
+	// and the hunk as a unified diff, cut past 8192 bytes with a last line
+	// saying so. The diff is repository text and model output, shown as
+	// text and never interpreted (CLAUDE.md rule 10).
+	LinesAdded   *uint64
+	LinesRemoved *uint64
+	StartLine    *uint64
+	Diff         *string
 }
 
 // RuntimeFields is the "runtime identified" event (client_contract.json).
@@ -240,6 +249,10 @@ func Parse(l rpc.Line) Frame {
 			CompletionTokens: u(f, "completion_tokens"),
 			QueueWaitMs:      u(f, "queue_wait_ms"),
 			ElapsedMs:        u(f, "elapsed_ms"),
+			LinesAdded:       u(f, "lines_added"),
+			LinesRemoved:     u(f, "lines_removed"),
+			StartLine:        u(f, "start_line"),
+			Diff:             s(f, "diff"),
 		}}
 	case msg != nil && *msg == "model call":
 		// Without its turn it names nothing.
