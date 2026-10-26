@@ -469,12 +469,14 @@ const QUEUE_WAITS = {
 
 // A queued item's state (the reducer's `pending` rows) as a Status: queued
 // waits, a delivered steer names the turn whose next request carried it, a
-// delivered follow-up or prompt is a run of its own, and one not delivered
-// says why in its title. Delivered is cool, the engine's activity, not ok,
-// which is a passed check's (DESIGN.md §3.1).
+// delivered follow-up or prompt is a run of its own, one not delivered
+// says why in its title, and one trellis took back says so (#838).
+// Delivered is cool, the engine's activity, not ok, which is a passed
+// check's (DESIGN.md §3.1).
 function queueState(doc, q) {
   const kind = str(q.kind);
   const state = str(q.state);
+  if (state === "withdrawn") return dsStatus(doc, "idle", "taken back · its text is in the composer");
   if (state === "delivered") {
     return dsStatus(doc, "cool", isCount(q.after_turn) ? `delivered after turn ${q.after_turn}` : "delivered · its own run");
   }
@@ -486,8 +488,12 @@ function queueState(doc, q) {
 
 // Queue (the design system's, #830): the items waiting on the run in
 // flight, numbered by the card's own counter, each its kind, its text as
-// sent (the person's words, as text) and its state. No ↑ ↓ ✎ ×: take
-// back is not built (#838), and the page marks that beside the list.
+// sent (the person's words, as text) and its state. The card's × is Take
+// back (#838), on an item the reducer offers it for (`take_back`
+// "offer"); it carries the item's id for the caller's one listener, which
+// sends the withdraw, and nothing here sends. While the withdraw waits on
+// trellis (`asked`) it says so and takes no second click. No ↑ ↓ ✎: the
+// page marks edit and reorder not built beside the list.
 export function queueItems(doc, items) {
   return items.map((q) => {
     const li = el(doc, "li", null, "cd-q-item");
@@ -497,6 +503,101 @@ export function queueItems(doc, items) {
     when.append(queueState(doc, q));
     body.append(el(doc, "span", word, cx("cd-q-kind", cls)), el(doc, "span", str(q.text) ?? ""), when);
     li.append(body);
+    const take = str(q.take_back);
+    const id = str(q.id);
+    if ((take === "offer" || take === "asked") && id !== null) {
+      const ctl = el(doc, "span", null, "cd-q-ctl");
+      const b = el(doc, "button", take === "offer" ? "× take back" : "taking back…", "x");
+      b.type = "button";
+      b.dataset.takeBack = id;
+      b.disabled = take === "asked";
+      b.title =
+        take === "offer"
+          ? "Sends withdraw. Once trellis takes it back, its text returns to the composer; trellis refuses one already delivered."
+          : "Waiting on trellis's answer to the withdraw";
+      ctl.append(b);
+      li.append(ctl);
+    }
     return li;
   });
+}
+
+// The glyph and the word each plan step's state is drawn with, as the Plan
+// card draws them: done struck through, current on signal-soft.
+const PLAN_STATES = { done: ["✓", "cd-plan-done"], current: ["●", "cd-plan-current"], todo: ["○", null] };
+
+// Plan (the design system's, #838): the model's latest plan, one step a
+// row, its glyph and its text. The text and the state are the model's
+// words (CLAUDE.md rule 10), shown as text and never counted; the glyph is
+// hidden from a screen reader, which reads the state as a word instead.
+export function planSteps(doc, steps) {
+  const root = el(doc, "div", null, "cd-plan");
+  const list = el(doc, "ol", null, "cd-plan-list");
+  for (const step of steps) {
+    const state = str(step && step.state);
+    const [g, cls] = PLAN_STATES[state] ?? ["?", null];
+    const li = el(doc, "li", null, cx("cd-plan-step", cls));
+    const mark = el(doc, "span", g, "cd-plan-g");
+    mark.setAttribute("aria-hidden", "true");
+    const text = el(doc, "span", null, "cd-plan-text");
+    text.append(el(doc, "span", `${state ?? "no state"}: `, "visually-hidden"), str(step && step.text) ?? "");
+    li.append(mark, text, el(doc, "span"));
+    list.append(li);
+  }
+  root.append(list);
+  return root;
+}
+
+// The plan's edit box (#838), the card's reasoning editor: `draft` in a
+// textarea, what the lines mean, and Send and Cancel, which carry
+// `data-plan` for the caller's one listener; nothing here sends.
+export function planEditor(doc, draft) {
+  const form = el(doc, "form", null, "cd-plan-reason");
+  form.dataset.plan = "edit";
+  const head = el(doc, "label", "your plan, sent as a steer", "cd-plan-reason-head");
+  head.htmlFor = "plan-edit-text";
+  const box = el(doc, "textarea", null, "cd-plan-reason-edit");
+  box.id = "plan-edit-text";
+  box.rows = 6;
+  box.spellcheck = false;
+  box.dataset.plan = "draft";
+  box.value = draft;
+  const help = el(doc, "p", "One step a line: [x] done, [>] current, [ ] to do. The model reads your version before its next model call; its plan changes only if it calls plan again.", "cd-plan-note");
+  help.id = "plan-edit-help";
+  box.setAttribute("aria-describedby", "plan-edit-help");
+  const submit = dsButton(doc, "Send as a steer", { variant: "signal" });
+  submit.type = "submit";
+  const cancel = dsButton(doc, "Cancel", { variant: "ghost" });
+  cancel.dataset.plan = "cancel";
+  const row = el(doc, "div", null, "composer-row");
+  row.append(submit, cancel);
+  form.append(head, box, help, row);
+  return form;
+}
+
+// A note under the plan, in the card's muted note style.
+export function planNote(doc, text) {
+  return el(doc, "p", text, "cd-plan-note");
+}
+
+// A file's whole text (#838), drawn as the Diff card draws its lines: the
+// file and `meta` in the head, then one row per line, numbered from 1 in
+// the new-side gutter, with no sign, since nothing here is a change. The
+// text is repository text (CLAUDE.md rule 10), each line a text node.
+export function wholeFile(doc, { file, meta, text }) {
+  const root = el(doc, "div", null, "cd-diff");
+  const head = el(doc, "div", null, "cd-diff-file");
+  head.append(el(doc, "span", file), part(doc, meta));
+  root.append(head);
+  const lines = text.split("\n");
+  // A file that ends in a newline has no line after it.
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+  const block = el(doc, "div");
+  lines.forEach((line, i) => {
+    const row = el(doc, "div", null, "cd-diff-line");
+    row.append(el(doc, "span", "", "cd-diff-ln"), el(doc, "span", String(i + 1), "cd-diff-ln"), el(doc, "span", "", "cd-diff-sign"), el(doc, "span", line, "cd-diff-text"));
+    block.append(row);
+  });
+  root.append(block);
+  return root;
 }

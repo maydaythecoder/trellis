@@ -76,8 +76,14 @@ The wireframe's regions, in the order a person reads them:
   `completion_tokens`, `prompt_bytes`. Filters and a quiet mode.
 - **Compose**: three verbs stated on the button: `Steer` (next model call),
   `Queue` (after this run; `follow_up`), `Stop and send` (abort, then prompt).
-  The queue lists each item with its state; take-back and cancel; reorder only
-  among follow-ups.
+  The queue lists each item with its state; take-back and cancel (rpc
+  `withdraw`, #808; in the desktop, #838, the text back in the composer only
+  once trellis answers that it withdrew the message; not yet in the TUI);
+  reorder only among follow-ups.
+- **Plan**: the model's latest plan, its steps as the model's words with
+  their states, never counted; a person's edit goes back as a `steer` (rpc
+  `plan` event, #810, sent only where the repository enables the tool; in the
+  desktop, #838; not yet in the TUI).
 - **Where it is**: phase, tool and target, turn, last call, prompt bytes
   against the context budget, compactions, model, tier, runtime, control, root.
 - **Budget**: two numbers per row (used / ceiling); wall clock excludes time
@@ -87,7 +93,8 @@ The wireframe's regions, in the order a person reads them:
   from the input or the answer; not yet in the TUI).
 - **Code**: files touched with two line counts and a state (`in the worktree`,
   `awaiting your approval`, `left in the tree`, `rolled back`); `diff` and
-  `whole file` line by line; approve/reject only while the run waits on that
+  `whole file` line by line (rpc `read_file`, #809; in the desktop, #838, read
+  when asked; not yet in the TUI); approve/reject only while the run waits on that
   edit; a line comment becomes a steer naming `file:line`.
 - **Summary** (reachable mid-run as "so far"): outcome and exit code, checks
   by kind with duration, the facts above, budget consumed, steers, the path by

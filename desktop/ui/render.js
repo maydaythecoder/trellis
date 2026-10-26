@@ -30,6 +30,7 @@ import { budgetRows, dsStatus, figure, railRows, stats, txEntry, txTurn, unrepor
 import { isCount, str } from "./fmt.js";
 import { drawGraph } from "./graph.js";
 import { drawNow, drawWhere } from "./now.js";
+import { drawPlan } from "./plan.js";
 import { lineId, send } from "./rpc.js";
 
 // The actions log: the transcript as the design system's Transcript
@@ -375,6 +376,8 @@ const PANES = {
   graph: ["graph", drawGraph],
   now: ["pane-now", drawNow],
   where: ["pane-where", drawWhere],
+  // The model's latest plan and its Edit (#838).
+  plan: ["pane-plan", drawPlan],
 };
 
 // Draws every pane the event carries; a key this page does not know is

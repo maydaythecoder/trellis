@@ -87,11 +87,13 @@ const PENDING_ID: &str = "desktop-pending";
 /// `vault_graph` (#309), `get_queue` (#311), and the Atlas's `get_symbols`
 /// and `get_history` (the owner's request of 2026-10-11), and the run
 /// controls the Now strip and the budget send (#837, ADR 0058 sections 1
-/// and 2): `pause`, `resume` and `set_budget`. No vault or queue
+/// and 2): `pause`, `resume` and `set_budget`; and the queue's Take back
+/// and the Code level's whole-file view (#838, ADR 0058 sections 3 and 4):
+/// `withdraw` and the read-only `read_file`. No vault or queue
 /// write is among them: rpc has none, every vault write stays a `trellis
 /// vault` command the person runs (#70), and the queue's writes are
 /// `trellis queue` and `trellis work` (ADR 0020 section 5).
-pub const FORWARDED: [&str; 25] = [
+pub const FORWARDED: [&str; 27] = [
     "prompt",
     "abort",
     "get_state",
@@ -117,6 +119,8 @@ pub const FORWARDED: [&str; 25] = [
     "pause",
     "resume",
     "set_budget",
+    "withdraw",
+    "read_file",
 ];
 
 /// The ceilings `set_budget` raises, as `run budget` names them (ADR 0058
@@ -340,6 +344,11 @@ impl Core {
             }
         }
         self.feed(&mut s, frame);
+        // A message trellis has confirmed taken back (#838): its text goes
+        // to the composer now, on trellis's answer, never on the click.
+        if let Some(t) = s.view.taken_back() {
+            self.sink.emit("taken-back", t);
+        }
         // The summary's two reads once a run_end is fed (#832). The trail it
         // named comes from `trellis log`, on a thread of its own so this
         // reader goes on draining the child; the model's closing words from
@@ -517,6 +526,10 @@ impl Core {
             .flatten();
         let abort = line.get("type").and_then(Value::as_str) == Some("abort");
         let pause = line.get("type").and_then(Value::as_str) == Some("pause");
+        // A withdraw's and a read_file's item, found again by the line's id
+        // if the line never reaches the child (#838).
+        let ty = line.get("type").and_then(Value::as_str);
+        let line_id = line.get("id").and_then(Value::as_str).unwrap_or_default();
         let writer = {
             let mut s = self.lock();
             check_model(line, s.view.configured())?;
@@ -528,8 +541,10 @@ impl Core {
             };
             check_run_state(line, s.view.running())?;
             check_raise(line)?;
+            check_read_file(line)?;
             check_model_chosen(line, &s.view)?;
             check_approve(line, &s.view)?;
+            check_withdraw(line, &s.view)?;
             // The held prompt meets the prompt's rules now, so a stop is
             // never sent for a prompt that would then be refused; `send`
             // checks it again when it goes.
@@ -577,6 +592,17 @@ impl Core {
                     let c = s.view.pause_sent();
                     self.sink.emit("view", s.view.view(c));
                 }
+                // Take back waits on trellis's answer (#838): the item
+                // offers no second one, and its text stays in the queue.
+                Some("withdraw") => {
+                    let c = s.view.withdraw_sent(line_id);
+                    self.sink.emit("view", s.view.view(c));
+                }
+                Some("read_file") => {
+                    let path = line.get("path").and_then(Value::as_str).unwrap_or_default();
+                    let c = s.view.read_file_asked(line_id, path);
+                    self.sink.emit("view", s.view.view(c));
+                }
                 Some("abort") => {
                     let mut c = s.view.abort_sent();
                     if let Some(then) = then {
@@ -615,6 +641,19 @@ impl Core {
             let mut s = self.lock();
             let c = s.view.pause_unsent();
             self.sink.emit("view", s.view.view(c));
+        }
+        // Nor will a withdraw or a read_file that never reached it be
+        // answered: the item is offered again, and the view says why.
+        if let Err(why) = &sent {
+            let mut s = self.lock();
+            let c = match ty {
+                Some("withdraw") => s.view.withdraw_unsent(line_id),
+                Some("read_file") => s.view.read_file_unsent(line_id, why),
+                _ => Changed::default(),
+            };
+            if !c.is_empty() {
+                self.sink.emit("view", s.view.view(c));
+            }
         }
         // What waits on the run is trellis's to list (#830): a steer or
         // follow_up taken is asked for again, by the core's own get_state.
@@ -940,8 +979,8 @@ fn check_raise(line: &Value) -> Result<(), String> {
 
 /// The composer's rule (#301), from the view's own record of whether a run
 /// is in flight (`run_start` to `run_end`, or the child's exit): a `prompt`
-/// only while none is, and a `steer`, a `follow_up` (#825) or an `abort`
-/// only while one is. `rpc.rs` refuses the same lines itself; the page
+/// only while none is, and a `steer`, a `follow_up` (#825), an `abort` or a
+/// `withdraw` (#838) only while one is. `rpc.rs` refuses the same lines itself; the page
 /// draws the composer from the same view, and this holds the rule when the
 /// page is wrong.
 fn check_run_state(line: &Value, running: bool) -> Result<(), String> {
@@ -951,7 +990,7 @@ fn check_run_state(line: &Value, running: bool) -> Result<(), String> {
              or Stop it"
                 .into(),
         ),
-        (Some(ty @ ("steer" | "abort" | "pause" | "resume")), false) => Err(format!(
+        (Some(ty @ ("steer" | "abort" | "pause" | "resume" | "withdraw")), false) => Err(format!(
             "rpc_send: no run is in flight, so there is nothing to {ty}; send a prompt to start one"
         )),
         (Some("set_budget"), false) => Err(
@@ -982,6 +1021,64 @@ fn check_model_chosen(line: &Value, view: &DesktopState) -> Result<(), String> {
              window, so no prompt is sent; pick one in the Model pane"
                 .into(),
         );
+    }
+    Ok(())
+}
+
+/// The take-back rule (#838): a `withdraw` names, by its own id as rpc
+/// reads it, a steer or follow-up the view's queue holds still queued with
+/// no withdraw for it waiting, so a page bug cannot take back a message
+/// this window never sent, the prompt a Stop and send holds (the core's,
+/// not trellis's), or one already delivered as far as the view knows.
+/// Whether trellis still holds it is rpc's to say: it refuses one already
+/// delivered.
+fn check_withdraw(line: &Value, view: &DesktopState) -> Result<(), String> {
+    if line.get("type").and_then(Value::as_str) != Some("withdraw") {
+        return Ok(());
+    }
+    match line.get("id").and_then(Value::as_str) {
+        Some(id) if view.withdrawable(id) => Ok(()),
+        Some(id) => Err(format!(
+            "rpc_send: nothing queued and not yet delivered has the id {id:?}, so there is              nothing to take back"
+        )),
+        None => Err(
+            "rpc_send: a withdraw names the steer or follow-up it takes back by its string id;              this one has none"
+                .into(),
+        ),
+    }
+}
+
+/// The whole-file view's read (#838): `read_file` carries a string id,
+/// which its answer is read by, and a `path` that is a non-empty string,
+/// and nothing else. Which paths may be read is rpc's rule (ADR 0058
+/// section 4: no absolute path, no `..`, nothing git ignores, nothing in
+/// `.git` or outside the root), not mirrored here, so the two cannot drift.
+fn check_read_file(line: &Value) -> Result<(), String> {
+    if line.get("type").and_then(Value::as_str) != Some("read_file") {
+        return Ok(());
+    }
+    let Some(o) = line.as_object() else {
+        return Ok(());
+    };
+    if o.get("id")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return Err("rpc_send: a read_file needs a string id, which its answer is read by".into());
+    }
+    if o.get("path")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return Err(
+            "rpc_send: a read_file names the file it reads as a non-empty string path".into(),
+        );
+    }
+    if let Some(other) = o
+        .keys()
+        .find(|k| !matches!(k.as_str(), "id" | "type" | "path"))
+    {
+        return Err(format!("rpc_send: read_file takes a path; not {other:?}"));
     }
     Ok(())
 }
@@ -1927,6 +2024,427 @@ mod tests {
         }
     }
 
+    /// A loop event line as `trellis rpc` writes it, its fields beside
+    /// `message`.
+    fn loop_line(message: &str, fields: Value) -> String {
+        let mut f = fields.as_object().cloned().unwrap_or_default();
+        f.insert("message".into(), json!(message));
+        line(
+            json!({"timestamp": "2026-10-26T00:00:00.000000Z", "level": "INFO",
+                    "fields": f, "target": "trellis_loop::agent"}),
+        )
+    }
+
+    /// The view events whose `key` is not null, in order.
+    fn views_with(rec: &Recorder, key: &str) -> Vec<Value> {
+        rec.named("view")
+            .into_iter()
+            .filter_map(|v| v.get(key).filter(|k| !k.is_null()).cloned())
+            .collect()
+    }
+
+    #[test]
+    fn take_back_withdraws_and_returns_the_text() {
+        // The risk (#838, ADR 0058 section 3): Take back puts the text back
+        // in the composer on the click, before trellis has answered, so a
+        // steer a model request already carried is typed and sent twice; or
+        // on a refusal (`already delivered`, no run); or it returns the
+        // queue's 4 KiB copy of a longer steer as if it were the whole; or a
+        // withdraw leaves the core for a message the queue does not hold, or
+        // with no run. The text comes back, whole, only on trellis's answer
+        // that it withdrew the message, as the `taken-back` event, and the
+        // withdrawn steer's own refused answer does not undo that.
+        let (core, rec, dirs) = with_child("take-back");
+        let g = generation(&core);
+        let err = core
+            .send(&json!({"id": "composer-steer-1", "type": "withdraw"}))
+            .unwrap_err();
+        assert!(err.contains("nothing to withdraw"), "{err}");
+        run_started(&core);
+        // trellis lists what waits: a steer longer than the queue's copy.
+        let long = format!("keep the lexer's tokens {}", "x".repeat(5000));
+        core.stdout_line(
+            g,
+            &line(
+                json!({"type": "response", "command": "get_state", "success": true,
+                         "id": PENDING_ID,
+                         "data": {"running": true, "pending": [
+                             {"id": "composer-steer-1", "type": "steer", "message": long},
+                             {"id": "composer-steer-2", "type": "steer", "message": "and g"},
+                             {"id": "composer-follow_up-1", "type": "follow_up",
+                              "message": "then rename it"}]}}),
+            ),
+        );
+        let pending = |rec: &Recorder| views_with(rec, "pending").last().cloned().unwrap();
+        let q = pending(&rec);
+        for i in 0..3 {
+            assert_eq!(q[i]["take_back"], "offer", "{q}");
+        }
+        assert!(q[0]["text"].as_str().unwrap().len() < long.len(), "{q}");
+
+        for (bad, want) in [
+            (
+                json!({"id": "composer-steer-9", "type": "withdraw"}),
+                "nothing to take back",
+            ),
+            (json!({"type": "withdraw"}), "has none"),
+            (json!({"id": 7, "type": "withdraw"}), "has none"),
+        ] {
+            let err = core.send(&bad).unwrap_err();
+            assert!(err.contains(want), "{bad}: {err}");
+        }
+
+        // The click: the withdraw is forwarded, the item waits on it and
+        // offers no second one, and no text comes back yet.
+        rec.take();
+        let withdraw = json!({"id": "composer-steer-1", "type": "withdraw"});
+        assert_eq!(core.send(&withdraw), Ok(()));
+        assert_eq!(pending(&rec)[0]["take_back"], "asked");
+        assert_eq!(pending(&rec)[0]["state"], "queued");
+        let err = core.send(&withdraw).unwrap_err();
+        assert!(err.contains("nothing to take back"), "asked twice: {err}");
+        // This child runs no run, so it refuses: nothing comes back, and
+        // Take back is offered again.
+        let refused = rec.wait_for("rpc-frame", |f| {
+            f["id"] == "composer-steer-1" && f["command"] == "withdraw"
+        });
+        assert_eq!(refused["success"], false, "{refused}");
+        let q =
+            rec.wait_for("view", |v| v["pending"][0]["take_back"] == "offer")["pending"].clone();
+        assert_eq!(q[0]["state"], "queued", "{q}");
+        assert!(rec.named("taken-back").is_empty(), "text back on a refusal");
+
+        // trellis's answer that it withdrew the steer is what returns the
+        // text: whole, not the queue's shortened copy.
+        core.stdout_line(
+            g,
+            &line(
+                json!({"type": "response", "command": "withdraw", "success": true,
+                         "id": "composer-steer-1",
+                         "data": {"id": "composer-steer-1", "type": "steer"}}),
+            ),
+        );
+        let back = rec.named("taken-back");
+        assert_eq!(
+            back,
+            [json!({"id": "composer-steer-1", "kind": "steer", "text": long})]
+        );
+        let q = pending(&rec);
+        assert_eq!(q[0]["state"], "withdrawn", "{q}");
+        assert_eq!(q[0]["take_back"], Value::Null, "{q}");
+        // The withdrawn steer's own answer, refused, changes neither, and
+        // the text is handed over once.
+        core.stdout_line(
+            g,
+            &line(
+                json!({"type": "response", "command": "steer", "success": false,
+                         "id": "composer-steer-1", "error": "withdrawn before delivery"}),
+            ),
+        );
+        let q = core.lock().view.view(Changed::everything())["pending"].clone();
+        assert_eq!(q[0]["state"], "withdrawn", "{q}");
+        assert_eq!(rec.named("taken-back").len(), 1);
+        // Read the other way round, the steer's refusal first, it is still
+        // trellis's withdraw answer that settles it and returns the text.
+        core.stdout_line(
+            g,
+            &line(
+                json!({"type": "response", "command": "steer", "success": false,
+                         "id": "composer-steer-2", "error": "withdrawn before delivery"}),
+            ),
+        );
+        assert_eq!(pending(&rec)[1]["state"], "not_delivered");
+        core.stdout_line(
+            g,
+            &line(
+                json!({"type": "response", "command": "withdraw", "success": true,
+                         "id": "composer-steer-2",
+                         "data": {"id": "composer-steer-2", "type": "steer"}}),
+            ),
+        );
+        assert_eq!(pending(&rec)[1]["state"], "withdrawn");
+        // A follow-up comes back with its kind, so Send's verb is Queue.
+        core.stdout_line(
+            g,
+            &line(
+                json!({"type": "response", "command": "withdraw", "success": true,
+                         "id": "composer-follow_up-1",
+                         "data": {"id": "composer-follow_up-1", "type": "follow_up"}}),
+            ),
+        );
+        assert_eq!(
+            rec.named("taken-back")[1..],
+            [
+                json!({"id": "composer-steer-2", "kind": "steer", "text": "and g"}),
+                json!({"id": "composer-follow_up-1", "kind": "follow_up",
+                       "text": "then rename it"})
+            ]
+        );
+        // With the run over nothing is offered.
+        run_ended(&core);
+        assert!(
+            pending(&rec)
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|q| q["take_back"].is_null())
+        );
+        finish(&core);
+        for d in &dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn whole_file_view_reads_through_read_file() {
+        // The risk (#838, ADR 0058 section 4): the whole-file view reads the
+        // worktree itself, past trellis's rule, so a file git ignores (a
+        // `.env`) or one in `.git` reaches the page; a read_file of the
+        // wrong shape leaves the core; or an answer to an earlier read, or
+        // one of a shape the contract does not give, is drawn as the file
+        // asked for last. The file comes from trellis's own answer, and a
+        // refusal is trellis's reason.
+        let (core, rec, dirs) = with_child("whole-file");
+        let repo = &dirs[0];
+        // A repository as git reads one, with no commit: what list_paths
+        // offers is the untracked files no ignore rule covers.
+        for d in [".git/objects", ".git/refs/heads"] {
+            std::fs::create_dir_all(repo.join(d)).unwrap();
+        }
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(repo.join(".gitignore"), "*.env\n").unwrap();
+        let text = "def f():\n    return \"<b>1</b>\"\n";
+        std::fs::write(repo.join("app.py"), text).unwrap();
+        let canary = format!("canary-{}", std::process::id());
+        std::fs::write(repo.join("local.env"), &canary).unwrap();
+        let g = generation(&core);
+
+        for (bad, want) in [
+            (
+                json!({"id": "r", "type": "read_file"}),
+                "non-empty string path",
+            ),
+            (
+                json!({"id": "r", "type": "read_file", "path": ""}),
+                "non-empty string path",
+            ),
+            (
+                json!({"id": "r", "type": "read_file", "path": 3}),
+                "non-empty string path",
+            ),
+            (
+                json!({"type": "read_file", "path": "app.py"}),
+                "needs a string id",
+            ),
+            (
+                json!({"id": "r", "type": "read_file", "path": "app.py", "limit": 9}),
+                "not \"limit\"",
+            ),
+        ] {
+            let err = core.send(&bad).unwrap_err();
+            assert!(err.contains(want), "{bad}: {err}");
+        }
+        assert!(views_with(&rec, "whole_file").is_empty());
+
+        // No run is needed: it reads the worktree as it is.
+        let first = json!({"id": "desktop-code-read_file-1", "type": "read_file",
+                           "path": "app.py"});
+        assert_eq!(core.send(&first), Ok(()));
+        assert_eq!(views_with(&rec, "whole_file")[0]["state"], "reading");
+        let w = rec.wait_for("view", |v| v["whole_file"]["state"] == "read")["whole_file"].clone();
+        assert_eq!(
+            w,
+            json!({"path": "app.py", "state": "read", "text": text,
+                   "bytes": text.len(), "cut": false, "why": null})
+        );
+
+        // An ignored file is trellis's to refuse, and its bytes reach no event.
+        let second = json!({"id": "desktop-code-read_file-2", "type": "read_file",
+                            "path": "local.env"});
+        assert_eq!(core.send(&second), Ok(()));
+        let w =
+            rec.wait_for("view", |v| v["whole_file"]["state"] == "refused")["whole_file"].clone();
+        assert_eq!(w["path"], "local.env", "{w}");
+        assert!(
+            w["why"]
+                .as_str()
+                .unwrap()
+                .contains("not a path `list_paths` offers"),
+            "{w}"
+        );
+        assert!(
+            !format!("{:?}", rec.take()).contains(&canary),
+            "an ignored file's text reached the page"
+        );
+
+        // A late answer to the first read is not the file asked for last.
+        core.stdout_line(
+            g,
+            &line(
+                json!({"type": "response", "command": "read_file", "success": true,
+                         "id": "desktop-code-read_file-1",
+                         "data": {"path": "app.py", "text": "late", "bytes": 4, "cut": false}}),
+            ),
+        );
+        assert!(views_with(&rec, "whole_file").is_empty());
+
+        // An answer in a shape the contract does not give, or for another
+        // path, is said to be unreadable; one past the cap is cut again.
+        for (data, want) in [
+            (
+                json!({"path": "app.py", "text": "x", "bytes": "1", "cut": false}),
+                "a shape this desktop does not read",
+            ),
+            (
+                json!({"path": "other.py", "text": "x", "bytes": 1, "cut": false}),
+                "another path",
+            ),
+        ] {
+            let mut s = DesktopState::default();
+            s.read_file_asked("q", "app.py");
+            s.update(frames::parse_stdout(&line(
+                json!({"type": "response", "command": "read_file", "success": true,
+                       "id": "q", "data": data}),
+            )));
+            let w = s.view(Changed::everything())["whole_file"].clone();
+            assert_eq!(w["state"], "refused", "{w}");
+            assert!(w["why"].as_str().unwrap().contains(want), "{w}");
+        }
+        let mut s = DesktopState::default();
+        s.read_file_asked("q", "big.py");
+        let big = "é".repeat(200_000);
+        s.update(frames::parse_stdout(&line(
+            json!({"type": "response", "command": "read_file", "success": true, "id": "q",
+                   "data": {"path": "big.py", "text": big, "bytes": big.len(), "cut": false}}),
+        )));
+        let w = s.view(Changed::everything())["whole_file"].clone();
+        assert_eq!(
+            w["cut"], true,
+            "trellis sent past its cap; the view says cut"
+        );
+        assert!(w["text"].as_str().unwrap().len() <= 256 * 1024);
+        finish(&core);
+        for d in &dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn a_plan_edit_is_sent_as_a_steer() {
+        // The risk (#838, ADR 0058 section 5): the plan's steps, model
+        // output, crash the reader or are drawn in part when they are not
+        // what the contract says; the panel offers an edit when no steer can
+        // reach the run; or the edit is sent as something other than an
+        // ordinary steer, through some path that is not the composer's, so
+        // the trail does not keep it as the person's or the core's rules do
+        // not apply; or the edit changes the plan drawn, which only the
+        // model's next plan call may do.
+        let (core, rec, dirs) = with_child("plan-edit");
+        let g = generation(&core);
+        run_started(&core);
+        let steps = json!([
+            {"text": "read <b>tokens.py</b>", "state": "done"},
+            {"text": "rename f to g", "state": "current"},
+            {"text": "run the tests", "state": "todo"}
+        ])
+        .to_string();
+        core.stdout_line(
+            g,
+            &loop_line(
+                "plan",
+                json!({"turn": 2, "steps": steps, "steps_cut": 1, "texts_cut": 0}),
+            ),
+        );
+        let plan = views_with(&rec, "plan").last().cloned().unwrap();
+        assert_eq!(
+            plan,
+            json!({"turn": 2, "why": null, "steps_cut": 1, "texts_cut": 0, "can_steer": true,
+                   "steps": [{"text": "read <b>tokens.py</b>", "state": "done"},
+                             {"text": "rename f to g", "state": "current"},
+                             {"text": "run the tests", "state": "todo"}]})
+        );
+
+        // Steps that are not the contract's are unreadable, with why, and
+        // none of them is drawn; a later plan replaces the earlier whole.
+        let nine = json!(vec![json!({"text": "s", "state": "todo"}); 9]).to_string();
+        let long = json!([{"text": "y".repeat(201), "state": "todo"}]).to_string();
+        for (fields, want) in [
+            (json!({"turn": 3, "steps": "[{\"text\": \"a\""}), "not JSON"),
+            (json!({"turn": 3, "steps": "{}"}), "not a JSON array"),
+            (json!({"turn": 3, "steps": nine}), "at most 8"),
+            (json!({"turn": 3, "steps": long}), "200 characters"),
+            (
+                json!({"turn": 3, "steps": "[{\"text\": \"a\", \"state\": \"skipped\"}]"}),
+                "not todo, current or done",
+            ),
+            (
+                json!({"turn": 3, "steps": "[{\"state\": \"todo\"}]"}),
+                "has no text",
+            ),
+            (json!({"turn": 3, "steps": 5}), "no steps string"),
+            (
+                json!({"turn": 3, "steps": format!("[{}]", " ".repeat(20_000))}),
+                "past the",
+            ),
+        ] {
+            core.stdout_line(g, &loop_line("plan", fields.clone()));
+            let p = views_with(&rec, "plan").last().cloned().unwrap();
+            assert_eq!(p["steps"], Value::Null, "{fields}: {p}");
+            assert!(p["why"].as_str().unwrap().contains(want), "{fields}: {p}");
+        }
+        core.stdout_line(
+            g,
+            &loop_line(
+                "plan",
+                json!({"turn": 4, "steps": steps, "steps_cut": 0, "texts_cut": 0}),
+            ),
+        );
+
+        // The edit is an ordinary steer: the core's steer path takes it,
+        // draws its row as the person's, asks trellis what is pending, and
+        // forwards it to the child as sent.
+        rec.take();
+        let message = "I edited your plan from turn 4. Work from this plan now, one step a line \
+                       ([x] done, [>] current, [ ] to do):\n[x] read tokens.py\n[>] rename f to h";
+        let edit = json!({"id": "desktop-plan-steer-1", "type": "steer", "message": message});
+        assert_eq!(core.send(&edit), Ok(()));
+        let row = rec
+            .named("view")
+            .iter()
+            .flat_map(|v| {
+                v["transcript"]["rows"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .find(|r| r["kind"] == "steer")
+            .expect("the edit's steer row");
+        assert_eq!(row["text"], message, "{row}");
+        let answer = rec.wait_for("rpc-frame", |f| f["id"] == "desktop-plan-steer-1");
+        assert_eq!(answer["command"], "steer", "{answer}");
+        rec.wait_for("rpc-frame", |f| f["id"] == PENDING_ID);
+        // The plan drawn is still the model's.
+        let v = core.lock().view.view(Changed::everything());
+        assert_eq!(
+            v["plan"]["steps"][2]["text"], "run the tests",
+            "{}",
+            v["plan"]
+        );
+        assert_eq!(v["plan"]["turn"], 4);
+
+        // Stopping, ended, or with no child, no edit is offered.
+        let c = core.lock().view.abort_sent();
+        assert!(c.has(crate::state::Pane::Plan), "{c:?}");
+        assert_eq!(core.lock().view.view(c)["plan"]["can_steer"], false);
+        core.lock().view.abort_unsent();
+        run_ended(&core);
+        assert_eq!(views_with(&rec, "plan").last().unwrap()["can_steer"], false);
+        finish(&core);
+        for d in &dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
     #[test]
     fn rpc_send_refuses_steer_and_abort_with_no_run_in_flight() {
         // The risk (#301): Stop or a steer sent while nothing runs, which
@@ -2527,6 +3045,7 @@ mod tests {
                 "outcome",
                 "pending",
                 "phase",
+                "plan",
                 "queue",
                 "radius",
                 "recap",
@@ -2539,7 +3058,8 @@ mod tests {
                 "transcript",
                 "undelivered",
                 "vault",
-                "where"
+                "where",
+                "whole_file"
             ]
         );
         assert_eq!(

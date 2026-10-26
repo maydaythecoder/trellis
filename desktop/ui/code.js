@@ -21,12 +21,20 @@
 // says why as its title.
 //
 // The diff is repository text and model output (CLAUDE.md rule 10): it
-// reaches the DOM through textContent only (ADR 0007, S10). The whole-file
-// view is not built (#838).
+// reaches the DOM through textContent only (ADR 0007, S10).
+//
+// The whole-file view (#838, ADR 0058 section 4) reads the chosen file
+// through trellis's `read_file`, only when asked, as it is in the worktree
+// then: a later edit by the run is not in it until it is read again. The
+// view's `whole_file` key is the reducer's reading of the answer to the
+// last read asked, and which paths may be read is trellis's rule (nothing
+// git ignores, nothing in .git or outside the repository); a refusal is
+// shown with trellis's reason. The text is repository text, drawn one
+// line a text node through ds.js.
 
 import { answerApproval, onReview } from "./dialogs.js";
 import { el, fill } from "./dom.js";
-import { diff, dsStatus, lineCounts, railRows } from "./ds.js";
+import { diff, dsStatus, lineCounts, railRows, wholeFile } from "./ds.js";
 import { isCount, str } from "./fmt.js";
 import { burrow } from "./keys.js";
 import { lineId, send } from "./rpc.js";
@@ -37,6 +45,8 @@ let files = [];
 let chosen = null;
 // The `file:line` the comment form is open on; null while it is closed.
 let commenting = null;
+// The view's `whole_file` as last sent: null until a file is read.
+let whole = null;
 
 // The levels a file is shown at, below the overview.
 const FILE_LEVEL = ["run", "code", "code-file"];
@@ -130,10 +140,39 @@ function drawFile(doc) {
   }
 }
 
-// Draws the Code level's key of one `view` event; any other key is
+// The whole-file view of the chosen file: what the last read answered,
+// when it was for this file; otherwise only the way to read it.
+function drawWhole(doc) {
+  const body = doc.getElementById("code-whole");
+  const note = doc.getElementById("code-whole-note");
+  const read = doc.getElementById("code-whole-read");
+  const mine = whole !== null && chosen !== null && str(whole.path) === chosen;
+  const state = mine ? str(whole.state) : null;
+  read.disabled = chosen === null || state === "reading";
+  read.textContent = state === "read" ? "Read it again" : "Read the whole file";
+  if (state === "read" && typeof whole.text === "string") {
+    const size = isCount(whole.bytes) ? `${whole.bytes} bytes on disk` : "size not reported";
+    const meta = whole.cut === true ? `${size} · cut at 256 KiB, the rest not shown` : size;
+    body.replaceChildren(wholeFile(doc, { file: chosen, meta, text: whole.text }));
+    note.textContent = "As it was in the worktree when it was read; a later edit is not in it until it is read again.";
+    return;
+  }
+  body.replaceChildren();
+  if (state === "reading") note.textContent = `Reading ${chosen} through trellis…`;
+  else if (state === "refused") note.textContent = `trellis did not read ${chosen}: ${str(whole.why) ?? "no reason given"}`;
+  else note.textContent = chosen === null ? "" : "The file as it is in the worktree now, read through trellis when asked.";
+}
+
+// Draws the Code level's keys of one `view` event; any other key is
 // another module's.
 export function drawCode(doc, view) {
-  if (view === null || typeof view !== "object" || !("code" in view)) return;
+  if (view === null || typeof view !== "object") return;
+  if ("whole_file" in view) {
+    const w = view.whole_file;
+    whole = w !== null && typeof w === "object" ? w : null;
+    drawWhole(doc);
+  }
+  if (!("code" in view)) return;
   const c = view.code;
   files = c !== null && typeof c === "object" && Array.isArray(c.files) ? c.files : [];
   drawFiles(doc);
@@ -165,7 +204,18 @@ function openFile(doc, path) {
   note(doc, "");
   drawFiles(doc);
   drawFile(doc);
+  drawWhole(doc);
   burrow(doc, FILE_LEVEL);
+}
+
+// Asks trellis for the chosen file's whole text. The answer comes back as
+// the view's `whole_file`; a line the core refuses is said in the note.
+function readWhole(doc, tauri) {
+  if (chosen === null) return;
+  const line = { id: lineId("code", "read_file"), type: "read_file", path: chosen };
+  send(tauri, line, (why) => {
+    doc.getElementById("code-whole-note").textContent = why;
+  });
 }
 
 // Sends the open comment as a steer naming its line.
@@ -210,6 +260,7 @@ export function wireCode(doc, tauri) {
     sendComment(doc, tauri);
   });
   doc.getElementById("code-comment-cancel").addEventListener("click", () => closeComment(doc, ""));
+  doc.getElementById("code-whole-read").addEventListener("click", () => readWhole(doc, tauri));
   onReview({
     pathOf: (id) => {
       const f = files.find((x) => x && str(x.approval) === id);
@@ -219,4 +270,5 @@ export function wireCode(doc, tauri) {
   });
   drawFiles(doc);
   drawFile(doc);
+  drawWhole(doc);
 }

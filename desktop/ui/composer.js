@@ -48,6 +48,16 @@
 // goes back to Steer whenever a run starts or ends, so Stop and send is
 // never what Send does by default. The queue is the view's `pending`, the
 // reducer's reading of trellis's own list, drawn through ds.js.
+//
+// Take back (#838, ADR 0058 section 3) on a queued steer or follow-up
+// sends `withdraw` with the item's own id, which rpc reads as the message
+// to take back. The text comes back to the textarea only on the core's
+// `taken-back` event, which it emits once trellis has answered that the
+// message was withdrawn: never on the click, since trellis refuses one a
+// model request already carries, and a text put back then would be sent
+// twice. Edit and reorder are not built: rpc edits no queued message
+// (withdraw it and send again), and the desktop sends each follow-up at
+// once, so it holds none to reorder.
 
 import { queueItems, queueVerb } from "./ds.js";
 import { el } from "./dom.js";
@@ -392,6 +402,27 @@ export async function wireComposer(doc, tauri) {
       drawTemplate(doc);
       p.note.textContent = "Stopping; your task runs once trellis has ended this run.";
     });
+  });
+  // One listener for the queue's Take back, which drawPending draws
+  // afresh: the withdraw names the item by the id it was sent with.
+  p.queueList.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-take-back]");
+    if (b === null || b.disabled) return;
+    forward(tauri, p, { id: b.dataset.takeBack, type: "withdraw" });
+  });
+  // trellis took a message back: its text returns to the textarea, after
+  // anything typed there since, and Send's verb is the one it was sent
+  // with while the run is still in flight.
+  await tauri.event.listen("taken-back", (event) => {
+    const t = event.payload;
+    const text = str(t && t.text);
+    if (text === null) return;
+    p.text.value = p.text.value.trim() === "" ? text : `${p.text.value}\n\n${text}`;
+    const kind = str(t.kind);
+    if (running && (kind === "steer" || kind === "follow_up")) verb = kind;
+    drawRunning(doc);
+    p.note.textContent = "Taken back: trellis will not deliver it, and its text is in the box above.";
+    p.text.focus();
   });
   // One listener for the verbs, which drawRunning draws afresh.
   p.verbs.addEventListener("click", (e) => {

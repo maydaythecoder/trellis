@@ -3789,6 +3789,9 @@ mod tests {
             (&ui["code.js"], "drawFile", "diff(doc, {"),
             (&ui["code.js"], "stateOf", "dsStatus(doc, "),
             (&ui["code.js"], "countsOf", "lineCounts(doc, "),
+            (&ui["code.js"], "drawWhole", "wholeFile(doc, {"),
+            (&ui["plan.js"], "drawPlan", "planEditor(doc, draft)"),
+            (&ui["plan.js"], "planBody", "planSteps(doc, steps)"),
             (&ui["summary.js"], "drawChecks", "railRows(doc, rows)"),
             (&ui["summary.js"], "drawRadius", "stats(doc, ["),
             (&ui["summary.js"], "drawFiles", "lineCounts(doc, "),
@@ -4425,13 +4428,18 @@ mod tests {
     #[test]
     fn composer_queue_draws_pending_through_ds_and_sends_its_prompt_only_with_the_abort() {
         // The risk (#830): the queue drawn by composer.js's own markup,
-        // drifting from the Queue card; a take-back or cancel control that
-        // sends `withdraw`, which is #838's; or Stop and send writing its
-        // prompt from the page, on a timer or before the run has ended,
-        // rather than as the abort's `then` the core sequences. The queue
-        // is ds.js's queueItems over the view's `pending`, take back is
-        // marked not built, and the Stop and send branch of Send only opens
-        // the Stop dialog.
+        // drifting from the Queue card; or Stop and send writing its prompt
+        // from the page, on a timer or before the run has ended, rather than
+        // as the abort's `then` the core sequences. And (#838) Take back
+        // putting the text back in the textarea on its click, before trellis
+        // has said it took the message back, so a steer a model request
+        // already carries is sent twice; or a withdraw sent from anywhere
+        // but the queue's own control. The queue is ds.js's queueItems over
+        // the view's `pending`; its one listener sends the one withdraw,
+        // naming the item by its own id, and touches no text; the text
+        // returns only in the core's `taken-back` listener; edit and
+        // reorder are marked not built; and the Stop and send branch of
+        // Send only opens the Stop dialog.
         let js = code_of("composer.js");
         assert!(
             function_body(&js, "drawPending").contains("queueItems(doc, items)"),
@@ -4441,9 +4449,32 @@ mod tests {
             js.contains(r#"if ("pending" in view) drawPending(doc, view.pending);"#),
             "the queue is not the view's pending"
         );
-        for bad in ["withdraw", "setTimeout", "setInterval"] {
+        for bad in ["setTimeout", "setInterval"] {
             assert!(!js.contains(bad), "composer.js holds {bad}");
         }
+        assert_eq!(
+            js.matches("type: \"withdraw\"").count(),
+            1,
+            "composer.js sends withdraw from more than one place"
+        );
+        let take = click_handler(&js, "p.queueList");
+        assert!(
+            take.contains("forward(tauri, p, { id: b.dataset.takeBack, type: \"withdraw\""),
+            "Take back does not send the item's withdraw: {take}"
+        );
+        assert!(
+            !take.contains("p.text"),
+            "Take back puts the text back on the click: {take}"
+        );
+        assert!(
+            listener(&js, "taken-back").contains("p.text.value ="),
+            "the text does not come back on trellis's answer"
+        );
+        assert_eq!(
+            js.matches("p.text.value = ").count(),
+            js.matches("p.text.value = \"\"").count() + 1,
+            "composer.js fills the textarea somewhere other than taken-back"
+        );
         let submit = composer_submit(&js);
         let stop = submit
             .split("if (running && verb === \"stop\") {")
@@ -4473,7 +4504,54 @@ mod tests {
             (0..page.len()).any(|i| within(&page, i, queue)
                 && page[i].attr("class") == Some("unbuilt")
                 && page[i].text.contains("not built")),
-            "take back is not marked not built"
+            "edit and reorder are not marked not built"
+        );
+        assert!(
+            !page[queue].text.contains("Take back"),
+            "take back is still marked not built"
+        );
+    }
+
+    #[test]
+    fn a_plan_edit_is_sent_as_a_steer_through_rpc_js_alone() {
+        // The risk (#838, ADR 0058 section 5): the Plan panel sending its
+        // edit some other way than the composer's steer (a command of its
+        // own, a second send, a call around rpc.js), so the core's rules do
+        // not hold for it or the trail does not keep it as the person's; or
+        // offering Edit when no steer can reach the run. The core's side is
+        // a_plan_edit_is_sent_as_a_steer in commands.rs. The panel is
+        // render.js's `plan` pane, its one send is a steer whose message is
+        // steerHead's words then the edited lines, and Edit shows only
+        // while the reducer's can_steer says a steer reaches the run.
+        let js = code_of("plan.js");
+        assert!(
+            code_of("render.js").contains("plan: [\"pane-plan\", drawPlan],"),
+            "render.js does not draw the plan pane"
+        );
+        for bad in ["invoke(", "type: \"plan\"", "withdraw", "setTimeout"] {
+            assert!(!js.contains(bad), "plan.js holds {bad}");
+        }
+        assert_eq!(
+            js.matches("send(").count(),
+            1,
+            "plan.js sends from more than one place"
+        );
+        assert!(
+            function_body(&js, "sendEdit").contains(
+                "{ id: lineId(\"plan\", \"steer\"), type: \"steer\", message: `${steerHead(plan.turn)}\\n${edited}` }"
+            ),
+            "the edit is not one steer of steerHead and the edited lines"
+        );
+        assert!(
+            function_body(&js, "drawPlan").contains(
+                "const editable = steps !== null && steps.length > 0 && plan.can_steer === true;"
+            ),
+            "Edit is offered without the reducer's can_steer"
+        );
+        assert_eq!(
+            imports_of(&js).get("send").map(String::as_str),
+            Some("rpc.js"),
+            "plan.js sends around rpc.js"
         );
     }
 
