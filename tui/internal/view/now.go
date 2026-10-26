@@ -153,7 +153,7 @@ func where(s State, w, h int) []string {
 		{Text: "  control  not reported", Role: RoleLabel},
 		{Text: "  root     " + root},
 	}
-	return Box(s.Theme, "where", "", rows, w, h)
+	return paneBox(s, PanelWhere, "where", "", rows, w, h)
 }
 
 // messages is the messages row: trellis's newest stderr line, human text
@@ -180,20 +180,22 @@ func baseName(path string) string {
 	return parts[len(parts)-1]
 }
 
-// askingRows is the rows drawn above the approval box: the status bar and
-// the Now strip, which stay on screen while a question waits, so the
-// person answering sees the run's state and how to answer (#850).
-const askingRows = 2
+// askingRows is the rows drawn around the approval box: the Trail and the
+// Now strip above it and the status bar below, which stay on screen while
+// a question waits, so the person answering sees the run's state and how
+// to answer (#850, #851).
+const askingRows = 3
 
-// Asking is the screen while a question waits on the person: the status
-// bar and the Now strip, then the approval box (Modal) over the rest,
-// which covers the panes, so the keys on screen are the ones that act.
+// Asking is the screen while a question waits on the person: the Trail
+// and the Now strip, the approval box (Modal) over the stage, which covers
+// the panes so the keys on screen are the ones that act, and the status
+// bar.
 func Asking(s State, question, diff string, scroll, w, h int) string {
 	if w < MinWidth || h < MinHeight {
 		return tooSmall(w, h)
 	}
-	top := fill(s.Theme, RoleLabel, status(s, w), w) + "\n" + fill(s.Theme, nowRole(s), nowStrip(s, w), w)
-	return top + "\n" + Modal(s.Theme, question, diff, scroll, w, h-askingRows)
+	top := fill(s.Theme, RoleLabel, trail(s, w), w) + "\n" + fill(s.Theme, nowRole(s), nowStrip(s, w), w)
+	return top + "\n" + Modal(s.Theme, question, diff, scroll, w, h-askingRows) + "\n" + fill(s.Theme, RoleLabel, statusBar(s, w), w)
 }
 
 // AskingLastFrom is ModalLastFrom for the box Asking draws at w by h: the

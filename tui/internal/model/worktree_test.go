@@ -90,7 +90,8 @@ func TestStatusWorktreeIsWholeAtEightyColumnsWithALongSpec(t *testing.T) {
 	respond(m, stateID, "get_state", map[string]any{"model": spec, "tier": "unknown, probing…"})
 	bar80 := func() string {
 		m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-		return strings.SplitN(m.View(), "\n", 2)[0]
+		rows := strings.Split(m.View(), "\n")
+		return rows[len(rows)-1]
 	}
 	bar := bar80()
 	if !strings.Contains(bar, "worktree clean") || !strings.Contains(bar, "tier unknown, probing…") {
