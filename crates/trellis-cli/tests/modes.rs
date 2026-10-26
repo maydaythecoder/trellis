@@ -2740,7 +2740,6 @@ fn rpc_stream_carries_every_field_the_desktop_reads() {
         // No turn of this run is the governance audit: each called the
         // model.
         gaps.extend(missing(t, &turn["model_call_only"], &at));
-        gaps.extend(missing(t, &later["events"]["turn"]["model_call_only"], &at));
         // The provider stub is a driver that sends a prompt.
         gaps.extend(missing(
             t,
@@ -3006,7 +3005,6 @@ fn rpc_every_turn_through_the_governance_audit_keeps_the_contract() {
         .flat_map(|t| {
             let mut g = missing(t, &turn["model_call_only"], &label(t));
             g.extend(missing(t, &turn["prompt_driver_only"], &label(t)));
-            g.extend(missing(t, &later_turn["model_call_only"], &label(t)));
             g
         })
         .collect();
@@ -3208,6 +3206,77 @@ fn rpc_elapsed_excludes_time_waiting_on_an_approval() {
     assert_eq!(ends.len(), 2, "{records:?}");
     assert_eq!(ends[1]["outcome"], "interrupted", "{}", ends[1]);
     assert!(ends[1].get("elapsed_ms").is_none(), "{}", ends[1]);
+}
+
+#[test]
+fn rpc_turn_tool_target_wrote_match_the_trail_actions() {
+    // The risk (#800): a client told one thing live and the trail another
+    // afterwards, as when each client split `call` at a space and searched
+    // the observation for `applied: true`. The run touches a tool of each
+    // shape: a read, a refused edit and an applied one, a created file, a
+    // grep aimed at a path, and checks with and without paths. Every turn's
+    // tool, target and wrote must be its trail action's, in order.
+    let c = contract();
+    let always = names(&c["rpc"]["not_every_client"]["events"]["turn"]["always"]);
+    for field in ["tool", "target", "wrote"] {
+        assert!(always.contains(&field), "{field}: {always:?}");
+    }
+    let f = fixture("rpc-turn-action");
+    commit_passing_checks(&f);
+    let config = f.root.join(".trellis/config.toml");
+    let mut cfg = std::fs::read_to_string(&config).unwrap();
+    cfg.push_str("\n[tools]\nenable = [\"write_file\", \"grep\"]\n");
+    std::fs::write(&config, cfg).unwrap();
+    git(&f.root, &["commit", "-qam", "tools"]);
+    let script = f.spec.trim_start_matches("scripted:").to_string();
+    std::fs::write(
+        &script,
+        serde_json::json!({"steps": [
+            {"tool": "read_file", "path": "a.py"},
+            {"tool": "edit", "path": "a.py", "old": "return 9", "new": "return 2"},
+            {"tool": "edit", "path": "a.py", "old": "return 1", "new": "return 2"},
+            {"tool": "write_file", "path": "b.py", "content": "X = 1\n"},
+            {"tool": "grep", "pattern": "def", "path": "a.py"},
+            {"tool": "run_checks", "paths": ["a.py"], "kinds": ["typecheck", "tests"]},
+            {"tool": "run_checks", "paths": [], "kinds": ["tests"]},
+            {"tool": "done", "summary": "changed it"},
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.choose(&f.spec);
+    rpc.send(serde_json::json!({"id": "p", "type": "prompt", "task": "change f"}));
+    let records = rpc.finish();
+    let end = records.iter().find(|r| r["type"] == "run_end").unwrap();
+    assert_eq!(end["outcome"], "converged", "{records:?}");
+
+    let triple = |v: &Value| (v["tool"].clone(), v["target"].clone(), v["wrote"].clone());
+    let live: Vec<_> = records
+        .iter()
+        .filter(|r| r["fields"]["message"] == "turn")
+        .map(|r| triple(&r["fields"]))
+        .collect();
+    let trails = trails(&f);
+    assert_eq!(trails.len(), 1, "{trails:?}");
+    let recorded: Vec<_> = trails[0]["factual"]["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(triple)
+        .collect();
+    assert_eq!(live, recorded);
+    // Not vacuous: both answers of `wrote` were given, the refused edit's
+    // false beside the applied one's true.
+    let wrote: Vec<&Value> = live.iter().map(|(_, _, w)| w).collect();
+    assert_eq!(live.len(), 7, "{live:?}");
+    assert_eq!(
+        wrote,
+        [false, false, true, true, false, false, false]
+            .map(Value::from)
+            .iter()
+            .collect::<Vec<_>>()
+    );
 }
 
 /// Holds the `model call` contract over one stream: each carries what the

@@ -4,6 +4,7 @@
 //! stages in a pipeline written around it. See
 //! `docs/adr/0005-loop-shape.md`.
 
+mod action;
 mod adapter;
 mod agent;
 mod agent_clone;
@@ -34,6 +35,7 @@ mod tools;
 mod trust;
 mod wire;
 
+pub use action::{TurnAction, summarise, turn_action};
 pub use adapter::{
     CompactRequests, Compacted, HostedModel, LOCAL_CONTEXT_BYTES, RequestedCompaction, RuntimeModel,
 };

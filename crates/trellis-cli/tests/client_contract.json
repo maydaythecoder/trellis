@@ -84,15 +84,11 @@
       },
       "events": {
         "turn": {
-          "always": ["elapsed_ms"],
-          "model_call_only": ["duration_ms"],
+          "always": ["elapsed_ms", "duration_ms", "tool", "target", "wrote"],
           "blast_radius_only": ["summarised"],
           "prompt_driver_only": ["completion_tokens_used"],
-          "absent_when": {
-            "duration_ms": "the governance audit's turn event, which sends none (trellis-loop agent.rs)"
-          },
-          "read_by": {"elapsed_ms": [], "duration_ms": [], "summarised": [], "completion_tokens_used": []},
-          "about": "duration_ms is the tool call's time in milliseconds by the monotonic clock, with any wait on a person in approve mode taken out; summarised is how many of the radius's call sites its observation summarised by file instead of listing them, 0 when it listed every one. elapsed_ms is the run budget's wall clock after the turn: monotonic milliseconds since the loop sent run budget, with every wait on a person in approve mode taken out, the figure run budget's max_wall_clock_ms is checked against. completion_tokens_used is the count max_completion_tokens is checked against, over the run so far: the completion tokens the replies reported, a hosted reply that reported none counted at its request's max_tokens. It is not this turn's completion_tokens, and prompt tokens are never in it. A scripted run calls no model and has no count."
+          "read_by": {"elapsed_ms": [], "duration_ms": [], "tool": [], "target": [], "wrote": [], "summarised": [], "completion_tokens_used": []},
+          "about": "tool, target and wrote are the turn as the trail's action for it records them (trellis-loop action.rs turn_action, which the trail's action_from also calls): the tool as the model named it, what it was aimed at, and whether an edit applied or write_file created a file; bash and a repository's own tool write false, what they changed being in the trail's changed. The governance audit's turn is run_checks on Governance. duration_ms is the tool call's time in milliseconds by the monotonic clock, with any wait on a person in approve mode taken out, and for the governance audit's turn the audit's time; summarised is how many of the radius's call sites its observation summarised by file instead of listing them, 0 when it listed every one. elapsed_ms is the run budget's wall clock after the turn: monotonic milliseconds since the loop sent run budget, with every wait on a person in approve mode taken out, the figure run budget's max_wall_clock_ms is checked against. completion_tokens_used is the count max_completion_tokens is checked against, over the run so far: the completion tokens the replies reported, a hosted reply that reported none counted at its request's max_tokens. It is not this turn's completion_tokens, and prompt tokens are never in it. A scripted run calls no model and has no count."
         },
         "model call": {
           "always": ["elapsed_ms"],

@@ -980,25 +980,31 @@ pub async fn run_seeded<M: Model>(
                         // interface's checks pane, its action graph —
                         // never saw. A trail and a live view that disagree
                         // about what ran is worse than either alone.
+                        let audit = ToolCall::RunChecks {
+                            paths: Vec::new(),
+                            kinds: vec![CheckKind::Governance],
+                        };
+                        // What the trail records for this turn, from the
+                        // same observation it reads (`Turn::observation`).
+                        let did = crate::action::turn_action(&audit, &detail.stdout);
                         tracing::info!(
                             turn = iterations,
-                            call = %turn_event_label(&ToolCall::RunChecks {
-                                paths: Vec::new(),
-                                kinds: vec![CheckKind::Governance],
-                            }),
+                            call = %turn_event_label(&audit),
                             verdict = ?Some(v.passed()),
                             check_kind = %format!("{:?}", detail.kind),
                             observation = %tail(&detail.stdout, 6),
+                            tool = %did.tool,
+                            target = %did.target,
+                            wrote = did.wrote,
+                            // The audit's own time, as the trail records it.
+                            duration_ms = audit_ms,
                             elapsed_ms = millis(clock.spent()),
                             completion_tokens_used = model.tokens_used(),
                             "turn"
                         );
                         t.turns.push(Turn {
                             observation: detail.stdout.clone(),
-                            call: ToolCall::RunChecks {
-                                paths: Vec::new(),
-                                kinds: vec![CheckKind::Governance],
-                            },
+                            call: audit,
                             verdict_passed: Some(v.passed()),
                             check_kind: Some(format!("{:?}", detail.kind)),
                             radius_counts: None,
@@ -1145,12 +1151,19 @@ pub async fn run_seeded<M: Model>(
                     Some((r, c, u)) => (Some(r), Some(c), Some(u)),
                     None => (None, None, None),
                 };
+                // What the trail will record for this turn, from the same
+                // call and observation, so a client need not split `call`
+                // or search the observation itself (#800).
+                let did = crate::action::turn_action(&call, &observation);
                 tracing::info!(
                     turn = iterations,
                     call = %turn_event_label(&call),
                     verdict = ?verdict_passed,
                     check_kind = check_kind.as_deref().unwrap_or(""),
                     observation = %tail(&observation, 6),
+                    tool = %did.tool,
+                    target = %did.target,
+                    wrote = did.wrote,
                     resolved = rad_resolved,
                     candidates = rad_candidates,
                     unresolved = rad_unresolved,

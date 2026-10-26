@@ -244,6 +244,19 @@ with `read_by` empty until the clients' own tickets switch to it. Held by
 the contract tests there that read `not_every_client`, and
 `a_multi_agent_run_end_carries_no_elapsed_and_each_partition_sends_its_share`
 in `tests/partitions.rs`.
+*Added 2026-10-26 (#800), owner-directed as #799:* each `turn` carries
+`tool`, `target` and `wrote`, the turn as the trail's action for it records
+them. One function computes them for both, `turn_action` in
+`crates/trellis-loop/src/action.rs`, which the trail's `action_from` now
+calls, so the live event and the trail cannot disagree; the clients split
+`call` at a space and searched the observation for `applied: true`, a copy of
+that logic, until their own tickets switch to these fields. The governance
+audit's `turn` carries `duration_ms`, the audit's time, as the trail records
+it, so `duration_ms` is on every turn. `call` and every field emitted before
+are unchanged. Listed under `rpc.not_every_client.events.turn` with `read_by`
+empty. Held by `rpc_turn_tool_target_wrote_match_the_trail_actions` and
+`rpc_every_turn_through_the_governance_audit_keeps_the_contract` in
+`tests/modes.rs`.
 
 ### 7. Auditing Tauri's tree
 
