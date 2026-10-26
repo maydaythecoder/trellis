@@ -503,7 +503,7 @@ fn a_decision_word_that_is_a_path_component_does_not_fail_ready() {
         "Record the token meanings",
         &body(
             "**Files:** docs/design/DESIGN.md; docs/design/events.md\n\n\
-             Add the table to `docs/design/DESIGN.md` and DESIGN.md's index line.",
+             Add the table to `docs/design/DESIGN.md` (under `docs/design/`) and DESIGN.md's index line.",
         ),
         &["origin:manual"],
     );
@@ -535,6 +535,26 @@ fn a_decision_word_joined_to_prose_by_a_slash_still_fails_ready() {
         &["origin:manual"],
     );
     assert!(!value(&ready(&t, &no_blockers())).is_ready());
+}
+
+#[test]
+fn decision_words_joined_by_two_slashes_or_in_link_text_still_fail_ready() {
+    // Counting separators would read "Investigate/decide/document" as a
+    // path, and a markdown link puts its text in one token with its target;
+    // a path needs an extension or a trailing `/`, and a word is skipped
+    // only when it touches a separator, so neither hides a decision.
+    for tail in [
+        "Investigate/decide/document the cache scope.",
+        "[Investigate](docs/plans/cache.md) the cache scope.",
+        "[Investigate](https://example.com/a/b) the cache scope.",
+    ] {
+        let t = ticket(
+            "Cache scope",
+            &body(&format!("**Files:** docs/plans/cache.md\n\n{tail}")),
+            &["origin:manual"],
+        );
+        assert!(!value(&ready(&t, &no_blockers())).is_ready(), "{tail:?}");
+    }
 }
 
 #[test]

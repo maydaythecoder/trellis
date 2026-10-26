@@ -291,30 +291,38 @@ pub(crate) fn decision_words(title: &str, body: &str) -> Vec<String> {
     }
 
     // Each word, flagged when it is part of a path rather than prose. The
-    // flag is decided on the whitespace-delimited token the word sits in
-    // (`is_path_token`), not on the characters next to the word: a bare `/`
-    // joins prose too ("Decide/consider the cache"), and a decision word in
-    // prose must still be found, so that case fails to a person (§1). A
-    // word followed by `.<ext>` (`DESIGN.md` on its own) is a file name.
-    let bytes = text.as_bytes();
+    // text is split on whitespace first and each token is judged once
+    // (`is_path_token`), so the cost stays linear in the body size; then
+    // the words inside a path token are flagged when they touch one of its
+    // separators (`/`, `.`, `-`). Prose joined by slashes alone
+    // ("Decide/consider", "Investigate/decide/document") is not a path, and
+    // link text in `[Investigate](docs/a/b.md)` touches only brackets, so
+    // both are still scanned and fail to a person (§1). A word followed by
+    // `.<ext>` (`DESIGN.md` on its own) is a file name wherever it sits.
     let mut words: Vec<(String, bool)> = Vec::new();
-    let mut start: Option<usize> = None;
-    for (i, c) in text
-        .char_indices()
-        .chain(std::iter::once((text.len(), '\0')))
-    {
-        let is_word = c.is_alphanumeric() || c == '_';
-        match (start, is_word) {
-            (None, true) => start = Some(i),
-            (Some(s), false) => {
-                let after = bytes.get(i).copied().unwrap_or(b' ');
-                let after2 = bytes.get(i + 1).copied().unwrap_or(b' ');
-                let in_path = is_path_token(enclosing_token(&text, s, i))
-                    || (after == b'.' && after2.is_ascii_alphanumeric());
-                words.push((text[s..i].to_lowercase(), in_path));
-                start = None;
+    for token in text.split_whitespace() {
+        let path_token = is_path_token(token);
+        let bytes = token.as_bytes();
+        let mut start: Option<usize> = None;
+        for (i, c) in token
+            .char_indices()
+            .chain(std::iter::once((token.len(), '\0')))
+        {
+            let is_word = c.is_alphanumeric() || c == '_';
+            match (start, is_word) {
+                (None, true) => start = Some(i),
+                (Some(s), false) => {
+                    let before = if s == 0 { b' ' } else { bytes[s - 1] };
+                    let after = bytes.get(i).copied().unwrap_or(b' ');
+                    let after2 = bytes.get(i + 1).copied().unwrap_or(b' ');
+                    let separator = |b: u8| matches!(b, b'/' | b'.' | b'-');
+                    let in_path = (path_token && (separator(before) || separator(after)))
+                        || (after == b'.' && after2.is_ascii_alphanumeric());
+                    words.push((token[s..i].to_lowercase(), in_path));
+                    start = None;
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
     let mut found: Vec<String> = Vec::new();
@@ -339,30 +347,21 @@ pub(crate) fn decision_words(title: &str, body: &str) -> Vec<String> {
     found
 }
 
-/// The whitespace-delimited token around `text[start..end]`, so a word is
-/// judged with the path it sits in: `design` in `docs/design/DESIGN.md`
-/// gets the whole path, backticks and brackets included.
-fn enclosing_token(text: &str, start: usize, end: usize) -> &str {
-    let from = text[..start]
-        .rfind(char::is_whitespace)
-        .map_or(0, |i| i + 1);
-    let to = text[end..]
-        .find(char::is_whitespace)
-        .map_or(text.len(), |i| end + i);
-    &text[from..to]
-}
-
-/// Whether a token is a path: two separators (`docs/design/`), or one plus
-/// a file extension (`docs/DESIGN.md`). One bare `/` is not enough, because
-/// prose joins words with it too ("Decide/consider") and a decision word
-/// there still has to be found. Only `/` counts: ticket Files lines use it,
-/// and a `\` path is scanned, which is the safe direction.
+/// Whether a whitespace-delimited token is a path: it has a `/` and either
+/// ends with one (`docs/design/`) or carries a file extension, a `.`
+/// followed by a letter or digit (`docs/DESIGN.md`). Slashes alone are not
+/// enough, because prose joins words with them too ("Decide/consider") and
+/// a decision word there still has to be found. Only `/` counts: ticket
+/// Files lines use it, and a `\` path is scanned, which is the safe
+/// direction.
 fn is_path_token(token: &str) -> bool {
-    let slashes = token.matches('/').count();
     let has_extension = token
         .match_indices('.')
         .any(|(i, _)| token[i + 1..].starts_with(|c: char| c.is_ascii_alphanumeric()));
-    slashes >= 2 || (slashes == 1 && has_extension)
+    // Closing punctuation (`docs/design/`, `(docs/design/)`) is not the end
+    // of the path, so it is trimmed before the trailing `/` is looked for.
+    let path_end = token.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '/');
+    token.contains('/') && (path_end.ends_with('/') || has_extension)
 }
 
 #[cfg(test)]
