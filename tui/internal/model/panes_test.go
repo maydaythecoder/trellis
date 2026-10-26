@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
@@ -167,7 +169,7 @@ func TestPanesObservationLinesFollowTheTurn(t *testing.T) {
 // Up scrolls back, Down returns and saturates at the end, and a new run is
 // followed from its start.
 func TestPanesScrollingBackStopsAtTheEndAndResumesFollowing(t *testing.T) {
-	m := fresh(t)
+	m := numbered(t, 200)
 	m.Update(keyType(keyDown))
 	if m.ScrollBack != 0 {
 		t.Fatal("down at the end did not saturate")
@@ -180,6 +182,63 @@ func TestPanesScrollingBackStopsAtTheEndAndResumesFollowing(t *testing.T) {
 	submit(m, "t")
 	if m.ScrollBack != 0 {
 		t.Fatal("a new run is not followed")
+	}
+}
+
+// #843: Home stopped at the total row count instead of the count less the
+// pane's height, so PgDn after Home first spent itself on rows above the
+// first and the view did not move: the first press at 80x24, the first
+// three at 120x40.
+func TestPanesPageDownMovesAtOnceAfterHome(t *testing.T) {
+	for _, size := range [][2]int{{80, 24}, {120, 40}} {
+		m := numbered(t, 200)
+		m.Update(windowSize(size[0], size[1]))
+		m.Update(keyType(tea.KeyHome))
+		top := m.View()
+		if !strings.Contains(top, "line 000") {
+			t.Fatalf("%dx%d: home does not show the first line:\n%s", size[0], size[1], top)
+		}
+		m.Update(keyType(tea.KeyPgDown))
+		if moved := m.View(); moved == top || strings.Contains(moved, "line 000") {
+			t.Fatalf("%dx%d: the first PgDn after Home did not move the view:\n%s", size[0], size[1], moved)
+		}
+	}
+}
+
+// #843: Up had no top. Each press past it raised the offset, and as many
+// Downs went by before the view moved again. Up now stops where Home does,
+// and the first Down from there moves.
+func TestPanesUpStopsAtTheTop(t *testing.T) {
+	m := numbered(t, 200)
+	m.Update(keyType(tea.KeyHome))
+	top := m.ScrollBack
+	for i := 0; i < 5; i++ {
+		m.Update(keyType(keyUp))
+	}
+	if m.ScrollBack != top {
+		t.Fatalf("scroll back %d after Up at the top %d", m.ScrollBack, top)
+	}
+	at := m.View()
+	m.Update(keyType(keyDown))
+	if m.ScrollBack != top-1 || m.View() == at {
+		t.Fatalf("the first Down from the top did not move: scroll back %d, top %d", m.ScrollBack, top)
+	}
+	// A short transcript has no rows above its first page, so Up holds.
+	short := numbered(t, 3)
+	short.Update(keyType(keyUp))
+	if short.ScrollBack != 0 {
+		t.Fatalf("scroll back %d over a transcript that fits", short.ScrollBack)
+	}
+}
+
+// #843: a window made taller lowers the top; an offset set at the shorter
+// size is brought down to it, so the next key moves the view at once.
+func TestPanesAResizeKeepsTheOffsetWithinTheTop(t *testing.T) {
+	m := numbered(t, 200)
+	m.Update(keyType(tea.KeyHome))
+	m.Update(windowSize(80, 60))
+	if top := view.TranscriptTop(m.viewState(), 80, 60); m.ScrollBack != top {
+		t.Fatalf("scroll back %d after growing, top %d", m.ScrollBack, top)
 	}
 }
 
