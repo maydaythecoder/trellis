@@ -62,6 +62,7 @@
 //! repository or git text: the page writes them through `textContent` only
 //! (ADR 0007, S10).
 
+use crate::asked::{self, Asked};
 use crate::frames::Response;
 use crate::json;
 use serde_json::{Map, Value, json};
@@ -536,8 +537,8 @@ struct Slot {
     tag: Option<String>,
     date: Option<String>,
     subject: Option<String>,
-    /// The id of the last `get_codebase` asked for it.
-    asked: Option<String>,
+    /// The last `get_codebase` asked for it.
+    asked: Asked,
     answer: Option<Result<Codebase, String>>,
 }
 
@@ -549,7 +550,7 @@ impl Slot {
             tag: None,
             date: None,
             subject: None,
-            asked: None,
+            asked: Asked::default(),
             answer: None,
         }
     }
@@ -559,11 +560,11 @@ impl Slot {
     }
 
     fn state(&self) -> &'static str {
-        match (&self.answer, &self.asked) {
-            (Some(Ok(_)), _) => "loaded",
-            (Some(Err(_)), _) => "failed",
-            (None, Some(_)) => "asked",
-            (None, None) => "planned",
+        match &self.answer {
+            Some(Ok(_)) => "loaded",
+            Some(Err(_)) => "failed",
+            None if self.asked.is_asked() => "asked",
+            None => "planned",
         }
     }
 }
@@ -673,7 +674,7 @@ fn plan(h: &History) -> Vec<Slot> {
                 tag: Some(t.name.clone()),
                 date: t.date.clone(),
                 subject: subject(&t.commit),
-                asked: None,
+                asked: Asked::default(),
                 answer: None,
             })
             .collect()
@@ -687,7 +688,7 @@ fn plan(h: &History) -> Vec<Slot> {
                 tag: None,
                 date: c.date.clone(),
                 subject: c.subject.clone(),
-                asked: None,
+                asked: Asked::default(),
                 answer: None,
             })
             .collect()
@@ -1230,15 +1231,15 @@ enum Radius {
 /// The Atlas's part of the reducer.
 #[derive(Debug)]
 pub struct Atlas {
-    asked_history: Option<String>,
+    asked_history: Asked,
     history: Option<Result<History, String>>,
     /// Whether the history's snapshots have been planned: once per root.
     planned: bool,
     /// Scrubber order: oldest first, HEAD last.
     slots: Vec<Slot>,
-    asked_symbols: Option<String>,
+    asked_symbols: Asked,
     symbols: Option<Result<Symbols, String>>,
-    asked_radius: Option<String>,
+    asked_radius: Asked,
     radius: Option<Radius>,
     layout: Option<Layout>,
     placed_symbols: Vec<PlacedSymbol>,
@@ -1248,13 +1249,13 @@ pub struct Atlas {
 impl Default for Atlas {
     fn default() -> Self {
         Self {
-            asked_history: None,
+            asked_history: Asked::default(),
             history: None,
             planned: false,
             slots: vec![Slot::head()],
-            asked_symbols: None,
+            asked_symbols: Asked::default(),
             symbols: None,
-            asked_radius: None,
+            asked_radius: Asked::default(),
             radius: None,
             layout: None,
             placed_symbols: Vec::new(),
@@ -1273,18 +1274,17 @@ impl Atlas {
         if !is_atlas_id(id) {
             return;
         }
-        let id = id.map(str::to_string);
         match command {
-            "get_history" => self.asked_history = id,
+            "get_history" => self.asked_history.ask(id),
             // One module's symbols would replace every module's.
-            "get_symbols" if line.get("module").is_none() => self.asked_symbols = id,
+            "get_symbols" if line.get("module").is_none() => self.asked_symbols.ask(id),
             "get_radius" => {
                 let symbol = line
                     .get("symbol")
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string();
-                self.asked_radius = id;
+                self.asked_radius.ask(id);
                 self.radius = Some(Radius::Asked(symbol));
             }
             "get_codebase" => {
@@ -1294,7 +1294,7 @@ impl Atlas {
                     .iter_mut()
                     .find(|s| s.reference.as_deref() == reference)
                 {
-                    slot.asked = id;
+                    slot.asked.ask(id);
                 }
             }
             _ => {}
@@ -1308,23 +1308,18 @@ impl Atlas {
         if !is_atlas_id(id) {
             return false;
         }
-        let why = |what: &str| {
-            r.error
-                .clone()
-                .unwrap_or_else(|| format!("{what} was refused, and trellis gave no reason"))
-        };
         let read = |what: &str| -> Result<&Value, String> {
             match (r.success, &r.data) {
                 (Some(true), Some(d)) => Ok(d),
                 (Some(true), None) => Err(format!("{what} answered with no data")),
-                _ => Err(why(what)),
+                _ => Err(asked::refusal(what, r)),
             }
         };
         let bad = |what: &str, e: String| {
             format!("{what} answered with bad data, so nothing from it is shown: {e}")
         };
         match r.command.as_deref() {
-            Some("get_history") if id == self.asked_history.as_deref() => {
+            Some("get_history") if self.asked_history.is(id) => {
                 self.history = Some(
                     read("get_history")
                         .and_then(|d| read_history(d).map_err(|e| bad("get_history", e))),
@@ -1353,7 +1348,7 @@ impl Atlas {
                 let Some(slot) = self
                     .slots
                     .iter_mut()
-                    .find(|s| s.asked.is_some() && s.asked.as_deref() == id)
+                    .find(|s| s.asked.is_asked() && s.asked.is(id))
                 else {
                     return false;
                 };
@@ -1370,7 +1365,7 @@ impl Atlas {
                 self.relayout();
                 true
             }
-            Some("get_symbols") if id == self.asked_symbols.as_deref() => {
+            Some("get_symbols") if self.asked_symbols.is(id) => {
                 self.symbols = Some(
                     read("get_symbols")
                         .and_then(|d| read_symbols(d).map_err(|e| bad("get_symbols", e))),
@@ -1378,7 +1373,7 @@ impl Atlas {
                 self.place();
                 true
             }
-            Some("get_radius") if id == self.asked_radius.as_deref() => {
+            Some("get_radius") if self.asked_radius.is(id) => {
                 let symbol = match &self.radius {
                     Some(Radius::Asked(s) | Radius::Refused(s, _) | Radius::Answered(s, _)) => {
                         s.clone()

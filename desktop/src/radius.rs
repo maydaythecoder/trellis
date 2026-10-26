@@ -18,6 +18,7 @@
 //! messages are repository or trellis text, which the page writes through
 //! `textContent` only (ADR 0007, S10).
 
+use crate::asked;
 use crate::frames::Response;
 use crate::json;
 use serde_json::{Value, json};
@@ -252,15 +253,10 @@ pub fn event(r: &Response) -> Value {
     let mut v = match (r.success, &r.data) {
         (Some(true), Some(data)) => match read(data) {
             Ok(radius) => radius.to_json(),
-            Err(why) => json!({"error": why}),
+            Err(why) => asked::error(why),
         },
-        (Some(true), None) => json!({"error": "get_radius answered with no radius"}),
-        _ => json!({
-            "error": r
-                .error
-                .clone()
-                .unwrap_or_else(|| "get_radius was refused, and trellis gave no reason".into()),
-        }),
+        (Some(true), None) => asked::error("get_radius answered with no radius"),
+        _ => asked::error(asked::refusal("get_radius", r)),
     };
     v["id"] = json!(r.id);
     v
