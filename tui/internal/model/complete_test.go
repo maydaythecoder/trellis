@@ -199,3 +199,23 @@ func TestCompleteListIsCapped(t *testing.T) {
 		t.Fatalf("tab: input %q offered %q", m.Input, m.Offered)
 	}
 }
+
+// #904: Esc empties the line and the @ offer made for it, so the task box
+// lists no path for a fragment that is gone.
+func TestCompleteEscClearsTheOffer(t *testing.T) {
+	m := fresh(t)
+	typeLine(m, "fix @models")
+	tab(m)
+	respond(m, m.TakeOutbox()[0].Cmd["id"], "list_paths", map[string]any{"paths": []any{"app/models.py", "src/models.py"}})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	if !strings.Contains(m.View(), "app/models.py") {
+		t.Fatalf("the offer is not drawn before Esc:\n%s", m.View())
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.Input != "" || len(m.Offered) != 0 || strings.Contains(m.View(), "app/models.py") {
+		t.Fatalf("after Esc: input %q, offered %v\n%s", m.Input, m.Offered, m.View())
+	}
+	if m.Quitting {
+		t.Fatal("the first Esc, on a line with text, left the program")
+	}
+}
