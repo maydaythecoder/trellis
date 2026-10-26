@@ -67,6 +67,8 @@ var numeric = map[string]bool{
 	"version": true, "exit": true, "kv_slots": true, "tiers_vram": true,
 	"tiers_ram": true, "tiers_disk": true, "elapsed_ms": true,
 	"lines_added": true, "lines_removed": true, "start_line": true,
+	"duration_ms": true, "completion_tokens_used": true,
+	"max_wall_clock_ms": true, "max_tokens": true, "context_bytes": true,
 }
 
 var kindOf = map[string]Kind{

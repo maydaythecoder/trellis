@@ -23,11 +23,14 @@ const (
 	PanelEdits   Panel = "edits"
 	PanelChecks  Panel = "checks"
 	PanelRadius  Panel = "radius"
+	// PanelSummary is the summary level (#854): no box at the top level,
+	// reached from the Now strip's way in, or the panes' row once folded.
+	PanelSummary Panel = "summary"
 )
 
 // Panels is every pane, in the order Tab visits them and the rail lists
-// them: the order they stand in the right column.
-var Panels = []Panel{PanelWhere, PanelActions, PanelEdits, PanelChecks, PanelRadius}
+// them: the order they stand in the right column, then the summary.
+var Panels = []Panel{PanelWhere, PanelActions, PanelEdits, PanelChecks, PanelRadius, PanelSummary}
 
 // Nav is where the person is in the run view.
 type Nav struct {
@@ -119,8 +122,11 @@ func keycaps(s State) string {
 	case 3:
 		return keyRow(key{"ESC", "out"}, key{"↑↓", "scroll"}, stopKey(s))
 	case 2:
-		if s.Nav.Open == PanelEdits {
+		switch s.Nav.Open {
+		case PanelEdits:
 			return keyRow(key{"ESC", "out"}, key{"↑↓", "file"}, key{"⏎", "diff"}, stopKey(s))
+		case PanelSummary:
+			return keyRow(key{"ESC", "out"}, key{"↑↓", "scroll"}, stopKey(s))
 		}
 		return keyRow(key{"ESC", "out"}, stopKey(s))
 	}
@@ -199,6 +205,21 @@ func spread(left, right []Span, w int) []Span {
 	gap := max(w-spansWidth(left)-spansWidth(right), 1)
 	out := append(append([]Span{}, left...), Span{Text: strings.Repeat(" ", gap)})
 	return append(out, right...)
+}
+
+// summaryWay is the Now strip's way into the summary level at the top
+// level beside the panes (#854), as the wireframe's "Summary so far": in
+// brackets and in signal, with the key that goes in, once Tab selects it.
+// Folded, the panes' row is the way in instead.
+func summaryWay(s State) []Span {
+	word := "summary"
+	if s.Running {
+		word = "summary so far"
+	}
+	if s.Nav.Selected == PanelSummary {
+		return []Span{{Text: "[" + word + "]  " + keyRow(key{"⏎", "in"}) + " ", Role: RoleYou}}
+	}
+	return []Span{{Text: word + " ", Role: RoleLabel}}
 }
 
 // stage is the rows between the Now strip and the messages row, h rows of
@@ -302,16 +323,26 @@ func pane(s State, p Panel, w, h int) []string {
 		return edits(s, w, h)
 	case PanelChecks:
 		return checks(s, w, h)
+	case PanelSummary:
+		return summary(s, w, h)
 	}
 	return radius(s, w, h)
 }
 
-// rail is the panes' titles written downward, three columns wide and h
-// rows tall, each title given an equal share of the rows and cut to it.
+// rail is the right column's panes' titles written downward, three columns
+// wide and h rows tall, each title given an equal share of the rows and cut
+// to it. The summary has no title on it: it stands in no column, and a
+// sixth title would cut every other one shorter (#854).
 func rail(s State, h int) []string {
-	out := make([]string, 0, h)
-	share := max(h/len(Panels), 2)
+	var panes []Panel
 	for _, p := range Panels {
+		if p != PanelSummary {
+			panes = append(panes, p)
+		}
+	}
+	out := make([]string, 0, h)
+	share := max(h/len(panes), 2)
+	for _, p := range panes {
 		role := RoleLabel
 		if p == s.Nav.Open {
 			role = RoleYou

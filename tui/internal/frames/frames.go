@@ -71,6 +71,12 @@ type Frame struct {
 	// checked it before the call (#799); nil when the event carried none.
 	ModelCallElapsedMs *uint64
 	Runtime            *RuntimeFields
+	// The run's other ceilings, from RunBudget (#799): the wall clock in
+	// milliseconds, completion tokens, and one prompt's bytes, which a
+	// driver with no context ceiling (the scripted one) does not send.
+	MaxWallClockMs *uint64
+	MaxTokens      *uint64
+	ContextBytes   *uint64
 }
 
 // TurnFields is a turn event. Turn and Call are what make an event a turn,
@@ -103,6 +109,12 @@ type TurnFields struct {
 	// ElapsedMs is the run's wall-clock spend after the turn as its budget
 	// measures it, waits on a person and pauses left out (#799).
 	ElapsedMs *uint64
+	// DurationMs is the tool call's own time, a wait on a person left out
+	// (#800). CompletionTokensUsed is the completion tokens over every reply
+	// so far, the counter run budget's max_tokens is checked against, never
+	// a sum with prompt tokens (#799).
+	DurationMs           *uint64
+	CompletionTokensUsed *uint64
 	// Present only on an edit that applied (#802): the whole lines it added
 	// and removed, the line of the file before it where the hunk starts,
 	// and the hunk as a unified diff, cut past 8192 bytes with a last line
@@ -249,10 +261,13 @@ func Parse(l rpc.Line) Frame {
 			CompletionTokens: u(f, "completion_tokens"),
 			QueueWaitMs:      u(f, "queue_wait_ms"),
 			ElapsedMs:        u(f, "elapsed_ms"),
+			DurationMs:       u(f, "duration_ms"),
 			LinesAdded:       u(f, "lines_added"),
 			LinesRemoved:     u(f, "lines_removed"),
 			StartLine:        u(f, "start_line"),
 			Diff:             s(f, "diff"),
+			// Below the rest, so their names do not realign every field above.
+			CompletionTokensUsed: u(f, "completion_tokens_used"),
 		}}
 	case msg != nil && *msg == "model call":
 		// Without its turn it names nothing.
@@ -275,7 +290,8 @@ func Parse(l rpc.Line) Frame {
 			TiersDisk: u(f, "tiers_disk"),
 		}}
 	case msg != nil && *msg == "run budget":
-		return Frame{Kind: RunBudget, MaxIterations: u(f, "max_iterations")}
+		return Frame{Kind: RunBudget, MaxIterations: u(f, "max_iterations"),
+			MaxWallClockMs: u(f, "max_wall_clock_ms"), MaxTokens: u(f, "max_tokens"), ContextBytes: u(f, "context_bytes")}
 	case msg != nil && *msg == "steer delivered":
 		return Frame{Kind: SteerDelivered, AfterStep: u(f, "after_step")}
 	case msg != nil:

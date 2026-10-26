@@ -1,5 +1,5 @@
  Run                                                                                                    L1 / 4  TRELLIS 
- ● RUNNING  1:23*  █░░░░░░░ 3/40  ran edit, turn 3 → src/parser.py                                                      
+ ● RUNNING  1:23*  █░░░░░░░ 3/40  ran edit, turn 3 → src/parser.py                                       summary so far 
 ┌ transcript ──────────────────────────────────────────────────────────┐┌ where ───────────────────────────────────────┐
 │> fix the failing parser test                                         ││  phase    ran edit, turn 3                   │
 │· blast_radius parse_expr                                             ││  runtime  ollama · qwen2.5-coder:32b         │

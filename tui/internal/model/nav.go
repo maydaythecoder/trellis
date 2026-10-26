@@ -24,7 +24,7 @@ func (m *Model) navKey(k tea.KeyMsg) bool {
 			// the file.
 			m.nav.Diff, m.nav.Scroll = false, 0
 		case m.nav.Open != "":
-			m.nav.Open = ""
+			m.nav.Open, m.nav.Scroll = "", 0
 		case m.Input != "":
 			m.Input = ""
 			// The @ offer goes with the line it was for (#904).
@@ -37,7 +37,7 @@ func (m *Model) navKey(k tea.KeyMsg) bool {
 		return true
 	case tea.KeyEnter:
 		if m.nav.Open == "" && m.Input == "" && m.nav.Selected != "" {
-			m.nav.Open = m.nav.Selected
+			m.nav.Open, m.nav.Scroll = m.nav.Selected, 0
 			return true
 		}
 		// At the code level ⏎ on an empty line goes into the cursor's
@@ -66,12 +66,12 @@ func (m *Model) navKey(k tea.KeyMsg) bool {
 		}
 		return true
 	case tea.KeyUp, tea.KeyDown, tea.KeyPgUp, tea.KeyPgDown, tea.KeyHome, tea.KeyEnd:
-		// A file's diff scrolls and the code level's cursor moves (#853);
-		// any other pane does not scroll yet. The transcript keeps its
-		// offset for when the person comes back out.
+		// A file's diff and the summary level scroll (#853, #854), and the
+		// code level's cursor moves; any other pane does not scroll yet. The
+		// transcript keeps its offset for when the person comes back out.
 		switch {
-		case m.nav.Diff:
-			m.scrollCodeKey(k.Type)
+		case m.nav.Diff, m.nav.Open == view.PanelSummary:
+			m.scrollLevelKey(k.Type)
 		case m.nav.Open == view.PanelEdits && (k.Type == tea.KeyUp || k.Type == tea.KeyDown):
 			if paths := view.CodePaths(m.viewState()); len(paths) > 0 {
 				d := 1
@@ -97,32 +97,41 @@ func (m *Model) fileAt(paths []string) int {
 	return 0
 }
 
-// scrollCodeKey scrolls the diff level by the key: a row for an arrow, a
-// page for PgUp and PgDn, and to either end for Home and End.
-func (m *Model) scrollCodeKey(k tea.KeyType) {
+// scrollLevelKey scrolls the diff level or the summary level by the key: a
+// row for an arrow, a page for PgUp and PgDn, and to either end for Home
+// and End.
+func (m *Model) scrollLevelKey(k tea.KeyType) {
 	switch k {
 	case tea.KeyUp:
-		m.scrollCode(-1)
+		m.scrollLevel(-1)
 	case tea.KeyDown:
-		m.scrollCode(1)
+		m.scrollLevel(1)
 	case tea.KeyPgUp:
-		m.scrollCode(-view.TranscriptPage)
+		m.scrollLevel(-view.TranscriptPage)
 	case tea.KeyPgDown:
-		m.scrollCode(view.TranscriptPage)
+		m.scrollLevel(view.TranscriptPage)
 	case tea.KeyHome:
 		m.nav.Scroll = 0
 	case tea.KeyEnd:
-		w, h := m.size()
-		m.nav.Scroll = view.CodeTop(m.viewState(), w, h)
+		m.nav.Scroll = m.levelTop()
 	}
 }
 
-// scrollCode moves the diff level's first row by d, held between the first
-// row and the view's own last page (view.CodeTop), as the transcript and
-// the approval box are held (#843).
-func (m *Model) scrollCode(d int) {
+// scrollLevel moves the level's first row by d, held between the first row
+// and the view's own last page (levelTop), as the transcript and the
+// approval box are held (#843).
+func (m *Model) scrollLevel(d int) {
+	m.nav.Scroll = max(min(m.nav.Scroll+d, m.levelTop()), 0)
+}
+
+// levelTop is the furthest the level shown scrolls: the summary's, or a
+// file's diff's.
+func (m *Model) levelTop() int {
 	w, h := m.size()
-	m.nav.Scroll = max(min(m.nav.Scroll+d, view.CodeTop(m.viewState(), w, h)), 0)
+	if m.nav.Open == view.PanelSummary {
+		return view.SummaryTop(m.viewState(), w, h)
+	}
+	return view.CodeTop(m.viewState(), w, h)
 }
 
 // nextPanel is the pane after p in view.Panels, or before it going back,

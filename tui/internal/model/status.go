@@ -19,6 +19,7 @@ const (
 	forPaths    = "paths"
 	forCodebase = "codebase"
 	forRadius   = "radius"
+	forClosing  = "closing"
 )
 
 // ask sends a command whose answer is read for purpose. The newest

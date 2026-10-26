@@ -29,6 +29,8 @@ func (m *Model) clearPanes() {
 	m.strip.Phase = view.Phase{}
 	m.strip.Stopping = false
 	m.strip.Outcome, m.strip.Exit = "", nil
+	m.runID = ""
+	m.closing = closing{}
 }
 
 // emptyPanes makes the three lists a run fills, each keeping the newest
@@ -75,7 +77,7 @@ func (m *Model) panesTurn(t *frames.TurnFields) {
 		if t.CheckKind != nil && strings.TrimSpace(*t.CheckKind) != "" {
 			name = *t.CheckKind
 		}
-		m.Checks.Push(view.Check{Name: name, Passed: *t.Verdict == "Some(true)"})
+		m.Checks.Push(view.Check{Name: name, Passed: *t.Verdict == "Some(true)", Turn: t.Turn, TookMs: t.DurationMs})
 	}
 
 	if t.Resolved != nil && t.Candidates != nil && t.Unresolved != nil {
@@ -92,13 +94,19 @@ func (m *Model) panesTurn(t *frames.TurnFields) {
 		CompletionTokens: t.CompletionTokens,
 		ModelMs:          t.ModelMs,
 		QueueWaitMs:      t.QueueWaitMs,
+		// The ceilings stay the run budget's; a turn carries none.
+		MaxWallClockMs: m.Budget.MaxWallClockMs,
+		MaxTokens:      m.Budget.MaxTokens,
+		ContextBytes:   m.Budget.ContextBytes,
+		TokensUsed:     t.CompletionTokensUsed,
 	}
 }
 
-// runBudget is the run's ceiling, from the loop's one run budget event: a
+// runBudget is the run's ceilings, from the loop's one run budget event: a
 // new budget with nothing counted yet.
-func (m *Model) runBudget(max *uint64) {
-	m.Budget = view.Budget{MaxIterations: max}
+func (m *Model) runBudget(f frames.Frame) {
+	m.Budget = view.Budget{MaxIterations: f.MaxIterations, MaxWallClockMs: f.MaxWallClockMs,
+		MaxTokens: f.MaxTokens, ContextBytes: f.ContextBytes}
 }
 
 // tick keeps the budget's elapsed time current between turns (#641): the
@@ -193,6 +201,7 @@ func (m *Model) viewState() view.State {
 		Asked:      m.waiting(),
 		Reviewing:  m.Modal != nil && m.Modal.Reviewing,
 		Compose:    m.composeState(),
+		Summary:    view.Summary{RunID: m.runID, Steers: m.steerItems(), Closing: m.closingState()},
 	}
 }
 

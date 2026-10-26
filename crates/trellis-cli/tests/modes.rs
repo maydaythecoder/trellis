@@ -3163,7 +3163,7 @@ fn rpc_run_budget_carries_every_ceiling() {
     // stub reported, with prompt tokens far larger beside them, so a counter
     // that summed the two kinds (UI rule 5) fails too.
     let c = contract();
-    let later = &c["rpc"]["not_every_client"];
+    let events = &c["rpc"]["events"];
     let f = fixture("rpc-run-budget");
     std::fs::create_dir_all(f.root.join(".trellis")).unwrap();
     std::fs::write(
@@ -3210,15 +3210,15 @@ fn rpc_run_budget_carries_every_ceiling() {
     let budgets = of("run budget");
     assert_eq!(budgets.len(), 1, "one run budget event: {records:?}");
     let b = budgets[0];
-    let spec = &later["events"]["run budget"];
-    let mut gaps = missing(b, &c["rpc"]["events"]["run budget"]["always"], "run budget");
-    gaps.extend(missing(b, &spec["always"], "run budget"));
+    // Every ceiling is in rpc.events since both clients read them (#854).
+    let spec = &events["run budget"];
+    let mut gaps = missing(b, &spec["always"], "run budget");
     // A hosted driver always has a context ceiling.
     gaps.extend(missing(b, &spec["context_driver_only"], "run budget"));
     for t in of("turn") {
         gaps.extend(missing(
             t,
-            &later["events"]["turn"]["always"],
+            &events["turn"]["always"],
             &format!("turn {}", t["turn"]),
         ));
     }
@@ -5379,7 +5379,6 @@ fn rpc_set_budget_sends_run_budget_again() {
     // stream, not a clock: the raise is answered while the loop waits on the
     // edit's question, and only the yes lets it reach its next budget check.
     let c = contract();
-    let later = &c["rpc"]["not_every_client"];
     let f = one_iteration_budget("rpc-set-budget-again");
     let (mut rpc, server, q) = at_the_edit_s_question(
         &f,
@@ -5463,12 +5462,7 @@ fn rpc_set_budget_sends_run_budget_again() {
     ));
     gaps.extend(missing(
         again,
-        &later["events"]["run budget"]["always"],
-        "run budget",
-    ));
-    gaps.extend(missing(
-        again,
-        &later["events"]["run budget"]["context_driver_only"],
+        &c["rpc"]["events"]["run budget"]["context_driver_only"],
         "run budget",
     ));
     assert!(

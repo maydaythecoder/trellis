@@ -81,6 +81,10 @@ type Edit struct {
 type Check struct {
 	Name   string
 	Passed bool
+	// Turn is the turn that ran it, and TookMs that turn's tool call time
+	// (duration_ms), nil when the turn carried none (#854).
+	Turn   uint64
+	TookMs *uint64
 }
 
 // Action is one thing the agent did, and whether it changed the tree. No
@@ -108,6 +112,13 @@ type Budget struct {
 	CompletionTokens *uint64
 	ModelMs          *uint64
 	QueueWaitMs      *uint64
+	// The run's other ceilings, from run budget, and the completion tokens
+	// spent against MaxTokens, from the last turn (#854). The wall clock's
+	// ceiling is in milliseconds, as trellis sends it.
+	MaxWallClockMs *uint64
+	MaxTokens      *uint64
+	ContextBytes   *uint64
+	TokensUsed     *uint64
 }
 
 // Dropped is how many of a run pane's oldest rows the model no longer
@@ -161,6 +172,9 @@ type State struct {
 	// Compose is the verb, the held line and the queue the task box draws
 	// (compose.go, #852).
 	Compose Compose
+	// Summary is what the summary level draws that the panes do not hold
+	// (summary.go, #854).
+	Summary Summary
 }
 
 // radiusH is the radius pane's height: its three counts, the line that
@@ -183,7 +197,11 @@ func Render(s State, w, h int) string {
 	entry, bodyH := layout(s, w, h)
 	var out []string
 	out = append(out, line(s.Theme, trail(s, w), w))
-	out = append(out, line(s.Theme, nowStrip(s), w))
+	now := nowStrip(s)
+	if !folded(w, h) && s.Nav.Open == "" {
+		now = spread(now, summaryWay(s), w)
+	}
+	out = append(out, line(s.Theme, now, w))
 	out = append(out, stage(s, folded(w, h), w, bodyH)...)
 	if m := messages(s, w); m != "" {
 		out = append(out, m)
@@ -594,8 +612,8 @@ func actions(s State, w, h int) []string {
 }
 
 // budgetSegments are the budget row's segments, in order (#911): a Meter
-// for each limit the TUI holds, which today is the turns against the run's
-// max_iterations (trellis reports a client no other ceiling yet, #799);
+// for the turns against the run's max_iterations (the summary level draws
+// every other ceiling, #854);
 // the prompt's size in kB; the time by this view's clock; and #257's rate
 // and queue wait, nil when not drawn at all. A figure trellis did not
 // report is Dash, never 0 (#641): at launch the line used to read

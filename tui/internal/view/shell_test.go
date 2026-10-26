@@ -147,12 +147,18 @@ func TestShellGoldenRenders(t *testing.T) {
 		{"edits-120x40", 120, 40, PanelEdits},
 		{"diff-80x24", 80, 24, PanelEdits},
 		{"diff-120x40", 120, 40, PanelEdits},
+		// The summary level (#854), from summaryState.
+		{"summary-80x24", 80, 24, PanelSummary},
+		{"summary-120x40", 120, 40, PanelSummary},
 	} {
 		s := shellState()
 		s.Nav = Nav{Open: c.open, Selected: c.open}
-		if c.open == PanelEdits {
+		switch c.open {
+		case PanelEdits:
 			s = codeState()
 			s.Nav = Nav{Open: c.open, Selected: c.open, Diff: strings.HasPrefix(c.name, "diff")}
+		case PanelSummary:
+			s = summaryState()
 		}
 		got := Render(s, c.w, c.h) + "\n"
 		path := filepath.Join("testdata", "shell-"+c.name+".golden")

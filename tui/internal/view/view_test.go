@@ -565,3 +565,200 @@ func TestDiffColoursLinesByRole(t *testing.T) {
 		}
 	}
 }
+
+// summaryState is codeState's run once it has converged, at the summary
+// level: checks of two kinds, one run with no duration_ms; the budget with
+// every ceiling run budget sends; two steers, one delivered and one not;
+// the trail run_end named; and the model's closing words.
+func summaryState() State {
+	s := codeState()
+	s.Running, s.Asked = false, nil
+	exit := int64(0)
+	s.Now = Now{Outcome: "converged", Exit: &exit, EngineClock: true}
+	s.Outcome = "converged"
+	s.Checks = []Check{
+		{Name: "Typecheck", Passed: true, Turn: 2, TookMs: u(120)},
+		{Name: "Tests", Passed: false, Turn: 3, TookMs: u(340)},
+		{Name: "Typecheck", Passed: true, Turn: 6},
+	}
+	s.Budget = Budget{Iteration: 6, MaxIterations: u(40), PromptBytes: u(24100), ElapsedSecs: u(83),
+		MaxWallClockMs: u(321000), MaxTokens: u(54321), ContextBytes: u(123456), TokensUsed: u(540)}
+	words := "Fixed the parser: the last token is kept.\nThe comment case has a test."
+	s.Summary = Summary{
+		RunID: "r-20261026-1",
+		Steers: []Queued{
+			{Kind: "steer", Text: "use the helper", Fate: FateAfter, After: 2},
+			{Kind: "steer", Text: "keep the old name", Fate: FateNot, Why: "the run ended first"},
+		},
+		Closing: Closing{Words: &words},
+	}
+	s.Nav = Nav{Open: PanelSummary, Selected: PanelSummary}
+	return s
+}
+
+// summaryText is the whole summary level at width w, every row of it: the
+// level drawn tall enough that nothing scrolls out.
+func summaryText(s State, w int) string {
+	return strings.Join(summary(s, w, 200), "\n")
+}
+
+// #854: the summary names how the run ended in run_end's own outcome word
+// and exit code, and lists the checks by kind, each run of a kind under it
+// with its turn, the verdict trellis sent and its turn's time. The risks:
+// an outcome drawn while the run is in flight, which has none; a kind
+// listed once per run rather than once; a check whose turn sent no
+// duration_ms drawn as 0 ms; and a level that cannot be reached at 80
+// columns, where the right column folds.
+func TestSummaryShowsOutcomeExitAndChecksByKind(t *testing.T) {
+	s := summaryState()
+	for _, w := range []int{80 - railW, 120 - railW} {
+		out := summaryText(s, w)
+		for _, want := range [][]string{
+			{"how the run ended"},
+			{"outcome", "● converged"},
+			{"exit", "0"},
+			{"turn 2  passed  120 ms"},
+			{"turn 6  passed  " + Dash, "no duration_ms"},
+			{"turn 3  failed  340 ms"},
+		} {
+			if rowWith(out, want...) == "" {
+				t.Fatalf("%d: no row holds %q:\n%s", w, want, out)
+			}
+		}
+		if strings.Count(out, "│   Typecheck ") != 1 || strings.Count(out, "│   Tests ") != 1 {
+			t.Fatalf("%d: each kind is not listed once:\n%s", w, out)
+		}
+		if strings.Index(out, "Typecheck") > strings.Index(out, "turn 6") || strings.Index(out, "Tests") > strings.Index(out, "turn 3") {
+			t.Fatalf("%d: a run is not under its kind:\n%s", w, out)
+		}
+		if strings.Contains(out, "0 ms") && !strings.Contains(out, "120 ms") {
+			t.Fatalf("%d: a duration trellis did not send is drawn as 0:\n%s", w, out)
+		}
+	}
+
+	// In flight: so far, and no outcome or exit code but Dash with why.
+	s.Running, s.Outcome, s.Now = true, "", Now{}
+	out := summaryText(s, 80-railW)
+	if rowWith(out, "so far") == "" || rowWith(out, "outcome", Dash, "outcome and exit code come") == "" || rowWith(out, "exit", Dash) == "" ||
+		strings.Contains(out, "converged") || strings.Contains(out, "how the run ended") {
+		t.Fatalf("the run in flight has an outcome:\n%s", out)
+	}
+
+	// Reached at 80x24, folded: the Trail names the level, and its first
+	// rows are on screen.
+	for _, size := range [][2]int{{80, 24}, {120, 40}} {
+		out := Render(summaryState(), size[0], size[1])
+		if !strings.HasPrefix(out, " Run ⟩ summary") || !strings.Contains(out, "L2 / 4") || rowWith(out, "outcome", "● converged") == "" {
+			t.Fatalf("%v: the summary level is not where the Trail says:\n%s", size, out)
+		}
+	}
+}
+
+// #854, CLAUDE.md rule 4: Verified and Reviewed are two rows, each its own
+// figure, never one number, a total or a share of the other. Both are
+// counted only in the trail, which trellis rpc does not send and this view
+// does not read, so each is Dash, never 0, with the reason beside it and
+// the trail's id for `trellis log`. The risk is a summary that adds them,
+// shows one as a fraction of the other, or prints 0 for what was never
+// reported.
+func TestSummaryKeepsVerifiedAndReviewedApart(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		edit func(*State)
+		why  string
+	}{
+		{"ended", func(*State) {}, "`trellis log` lists run r-20261026-1"},
+		{"no trail", func(s *State) { s.Summary.RunID = "" }, "run_end named no trail"},
+		{"so far", func(s *State) { s.Running, s.Outcome = true, "" }, "which trellis writes at run_end"},
+	} {
+		s := summaryState()
+		c.edit(&s)
+		out := summaryText(s, 80-railW)
+		verified, reviewed := rowWith(out, "Verified", Dash), rowWith(out, "Reviewed", Dash)
+		if verified == "" || reviewed == "" || verified == reviewed {
+			t.Fatalf("%s: Verified and Reviewed are not two rows, each with its Dash:\n%s", c.name, out)
+		}
+		for _, r := range strings.Split(out, "\n") {
+			if strings.Contains(r, "Verified") && strings.Contains(r, "Reviewed") {
+				t.Fatalf("%s: one row holds both: %q", c.name, r)
+			}
+		}
+		at := strings.Index(out, "Verified")
+		section := out[at:strings.Index(out, " RADIUS")]
+		for _, refused := range []string{"%", "/", "total", "ratio", " 0 "} {
+			if strings.Contains(section, refused) {
+				t.Fatalf("%s: the modes show %q:\n%s", c.name, refused, section)
+			}
+		}
+		// The reasons wrap, so they are read with the box's sides and the
+		// spaces between rows taken out.
+		if strings.Count(strings.Join(strings.Fields(strings.ReplaceAll(section, "│", "")), " "), c.why) != 2 {
+			t.Fatalf("%s: each row does not say why it is unreported (%q):\n%s", c.name, c.why, section)
+		}
+	}
+}
+
+// #854: the radius is its three counts, never a ratio (rule 3), and the
+// budget is each figure used against the ceiling run budget sent, the
+// completion tokens never summed with the prompt (UI rule 5); a ceiling
+// trellis did not send is Dash with why, never 0. The steers say what
+// became of each in the queue's words.
+func TestSummaryRadiusBudgetAndSteers(t *testing.T) {
+	out := summaryText(summaryState(), 80-railW)
+	for _, want := range [][]string{
+		{"resolved", "47"}, {"candidates", "3"}, {"unresolved", "2"}, {"a floor on reach, not a boundary"},
+		{"TURNS", "6/40"}, {"WALL CLOCK", "1:23/5:21"}, {"COMPLETION", "540/54321 tokens"},
+		{"LAST PROMPT", "24.1 kB/123.5 kB"},
+		{"delivered after turn 2 · steer: use the helper"},
+		{"not delivered (the run ended first) · steer: keep the old name"},
+		{"src/parser.py", "+3 −1", "● left in the tree"},
+	} {
+		if rowWith(out, want...) == "" {
+			t.Fatalf("no row holds %q:\n%s", want, out)
+		}
+	}
+	radius := out[strings.Index(out, " RADIUS"):strings.Index(out, " FILES")]
+	for _, refused := range []string{"%", "/", "total", "52"} {
+		if strings.Contains(radius, refused) {
+			t.Fatalf("the radius shows %q:\n%s", refused, radius)
+		}
+	}
+	s := summaryState()
+	s.Budget.ContextBytes, s.Budget.TokensUsed = nil, nil
+	out = summaryText(s, 80-railW)
+	if rowWith(out, "LAST PROMPT", "24.1 kB/"+Dash) == "" || rowWith(out, "no prompt ceiling") == "" ||
+		rowWith(out, "COMPLETION", Dash+"/54321") == "" || rowWith(out, "completion_tokens_used") == "" {
+		t.Fatalf("a ceiling or a count trellis did not send is not Dash with why:\n%s", out)
+	}
+}
+
+// #854, CLAUDE.md rule 10: the model's closing words are drawn behind a
+// fence under a label saying they are its words and not a verdict, never
+// in a check's colour, and every line is made plain, so an escape sequence
+// in them never reaches the terminal; a cut says how much it dropped.
+// With no words, the level says why.
+func TestSummaryClosingWordsAreFencedAndPlain(t *testing.T) {
+	s := summaryState()
+	words := "all checks passed\x1b[2J\nsee \x1b]0;title\x07the diff"
+	s.Summary.Closing = Closing{Words: &words, Cut: 10, Total: 16394}
+	out := summaryText(s, 80-railW)
+	if rowWith(out, "THE MODEL'S CLOSING WORDS", "not a verdict") == "" ||
+		rowWith(out, "│ all checks passed") == "" || rowWith(out, "│ see", "the diff") == "" ||
+		rowWith(out, "this view cut the last 10 of 16394 bytes") == "" {
+		t.Fatalf("the closing words are not fenced under their label:\n%s", out)
+	}
+	if strings.ContainsAny(out, "\x1b\x07") {
+		t.Fatalf("an escape sequence in the model's words reached the screen:\n%q", out)
+	}
+	th := theme.New(themetest.Renderer(t, "TrueColor", true))
+	s.Theme = th
+	painted := summaryText(s, 80-railW)
+	passed := style(th, RolePassed).Render("all checks passed")
+	if strings.Contains(painted, passed) {
+		t.Fatalf("the model's words are painted as a passed check:\n%q", painted)
+	}
+	s.Summary.Closing = Closing{Why: "this run did not converge"}
+	if out := summaryText(s, 80-railW); rowWith(out, Dash, "this run did not converge") == "" {
+		t.Fatalf("no words and no reason:\n%s", out)
+	}
+}

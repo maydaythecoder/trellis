@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -133,6 +134,11 @@ type Model struct {
 	strip view.Now
 	// nav is the level shown and the pane selected (nav.go, #851).
 	nav view.Nav
+	// runID is the trail the last run_end named, for the summary (#854);
+	// "" until one has, and again once a run starts.
+	runID string
+	// closing is the model's closing words for the summary (#854).
+	closing closing
 
 	// theme is what the screen and the modal are painted with (Options).
 	theme theme.Theme
@@ -232,8 +238,8 @@ func (m *Model) Update(msg tea.Msg) {
 		if m.Modal != nil {
 			m.scrollModal(0)
 		}
-		if m.nav.Diff {
-			m.scrollCode(0)
+		if m.nav.Diff || m.nav.Open == view.PanelSummary {
+			m.scrollLevel(0)
 		}
 	case FrameMsg:
 		m.frame(msg.Frame)
@@ -440,7 +446,7 @@ func (m *Model) frame(f frames.Frame) {
 	case frames.SteerDelivered:
 		m.steerDeliveredEvent(f.AfterStep)
 	case frames.RunBudget:
-		m.runBudget(f.MaxIterations)
+		m.runBudget(f)
 	case frames.RunEnd:
 		m.runEnd(f.RunEndFields)
 	case frames.Response:
@@ -512,6 +518,11 @@ func (m *Model) runEnd(e *frames.RunEndFields) {
 	m.approvals = nil
 	m.Outcome = OutcomeLine(e)
 	m.restored = e.Restored
+	m.runID = ""
+	if e.RunID != nil {
+		m.runID = view.Plain(*e.RunID)
+	}
+	m.askClosing(e.Outcome)
 	// The strip names the ending in run_end's own words and exit code, and
 	// keeps the time the run took: trellis's own figure when run_end carries
 	// one, else this view's clock, marked as its own. A run_end without one
@@ -620,6 +631,9 @@ func (m *Model) response(r *frames.ResponseFields) {
 		case forClassify:
 			m.classified(r, true)
 			return
+		case forClosing:
+			m.closingAnswered(r, true)
+			return
 		}
 		if cmd == "set_model" && r.ID != nil && *r.ID == m.setModelID {
 			// A model is chosen: its tier can now be asked for.
@@ -632,6 +646,9 @@ func (m *Model) response(r *frames.ResponseFields) {
 			return
 		case forClassify:
 			m.classified(r, false)
+			return
+		case forClosing:
+			m.closingAnswered(r, false)
 			return
 		}
 	}
@@ -667,6 +684,83 @@ func (m *Model) response(r *frames.ResponseFields) {
 		cmd = "a command"
 	}
 	m.push(view.RoleRefusal, "! "+view.Plain(cmd)+": "+view.Plain(view.FirstLine(why)))
+}
+
+// closing is where the summary's closing words stand (#854): asked, with
+// the id of the question in flight; said, with what this view cut of them;
+// or unsaid, with why. The zero closing has asked nothing.
+type closing struct {
+	id         string
+	words      *string
+	cut, total int
+	why        string
+}
+
+// askClosing asks trellis for the model's closing words, after a converged
+// run only: trellis keeps the words of the last run that ended on done, so
+// after any other outcome the answer could be an earlier run's, shown as
+// this one's. Whatever the last run's words were, they go.
+func (m *Model) askClosing(outcome *string) {
+	m.closing = closing{}
+	if outcome != nil && *outcome == "converged" {
+		m.closing.id = m.ask("get_last_assistant_text", forClosing, nil)
+	}
+}
+
+// closingAnswered reads get_last_assistant_text's answer, only while this
+// run's question is the one open: a new run forgets it, so an answer that
+// comes after one has started is not read as that run's. The words are
+// model output, cut to ClosingCap at a character's start and kept as sent;
+// the view makes them plain line by line.
+func (m *Model) closingAnswered(r *frames.ResponseFields, ok bool) {
+	if r.ID == nil || m.closing.id == "" || *r.ID != m.closing.id {
+		return
+	}
+	m.closing.id = ""
+	if !ok {
+		why := "no reason given"
+		if r.Error != nil && strings.TrimSpace(*r.Error) != "" {
+			why = view.FirstLine(*r.Error)
+		}
+		m.closing.why = "get_last_assistant_text refused: " + view.Plain(why)
+		return
+	}
+	d, _ := r.Data.(map[string]any)
+	text, isStr := d["text"].(string)
+	if !isStr {
+		m.closing.why = "trellis holds no closing words: no run of this trellis rpc has ended on done"
+		return
+	}
+	m.closing.total = len(text)
+	if len(text) > ClosingCap {
+		end := ClosingCap
+		for end > 0 && !utf8.RuneStart(text[end]) {
+			end--
+		}
+		text = text[:end]
+	}
+	m.closing.cut = m.closing.total - len(text)
+	m.closing.words = &text
+}
+
+// closingState is the closing words as the summary draws them, or why
+// there are none yet.
+func (m *Model) closingState() view.Closing {
+	c := view.Closing{Words: m.closing.words, Cut: m.closing.cut, Total: m.closing.total}
+	switch {
+	case c.Words != nil:
+	case m.closing.why != "":
+		c.Why = m.closing.why
+	case m.closing.id != "":
+		c.Why = "asked trellis for the model's closing words"
+	case m.Running:
+		c.Why = "the model's closing words come once the run has converged"
+	case m.Outcome != "":
+		c.Why = "this run did not converge, and trellis keeps only the closing words of the last run that ended on done, which may be an earlier run's"
+	default:
+		c.Why = "no run has converged"
+	}
+	return c
 }
 
 // exited ends the program. A child that exits without having been asked to
