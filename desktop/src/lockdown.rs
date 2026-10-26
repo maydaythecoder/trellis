@@ -3201,6 +3201,160 @@ mod tests {
         assert!(!function_body(&js, "moduleView").contains("three counts"));
     }
 
+    /// Each page helper's one home (#816): a module that needs one imports
+    /// it from there.
+    const HELPER_HOMES: &[(&str, &str)] = &[
+        ("el", "dom.js"),
+        ("muted", "dom.js"),
+        ("svg", "dom.js"),
+        ("fill", "dom.js"),
+        ("atEnd", "dom.js"),
+        ("appendRows", "dom.js"),
+        ("str", "fmt.js"),
+        ("isCount", "fmt.js"),
+        ("notReported", "fmt.js"),
+        ("plural", "fmt.js"),
+        ("bytes", "fmt.js"),
+        ("millis", "fmt.js"),
+        ("tokens", "fmt.js"),
+        ("send", "rpc.js"),
+        ("lineId", "rpc.js"),
+        ("start", "rpc.js"),
+        ("onShown", "rpc.js"),
+        ("runEnded", "rpc.js"),
+    ];
+
+    /// The copies of a helper a module still defines for itself, as
+    /// #816 found them. #817 to #820 move them, each taking its lines out;
+    /// the list only ever shrinks.
+    const NOT_YET_MOVED: &[(&str, &str)] = &[
+        ("atlas.js", "el"),
+        ("atlas.js", "isCount"),
+        ("atlas.js", "plural"),
+        ("atlas.js", "send"),
+        ("atlas.js", "start"),
+        ("atlas.js", "str"),
+        ("codebase.js", "el"),
+        ("codebase.js", "isCount"),
+        ("codebase.js", "start"),
+        ("codebase.js", "str"),
+        ("model.js", "el"),
+        ("model.js", "lineId"),
+        ("model.js", "send"),
+        ("model.js", "str"),
+        ("queue.js", "el"),
+        ("queue.js", "isCount"),
+        ("queue.js", "muted"),
+        ("queue.js", "start"),
+        ("queue.js", "str"),
+        ("radius.js", "el"),
+        ("radius.js", "isCount"),
+        ("radius.js", "start"),
+        ("radius.js", "str"),
+        ("settings.js", "el"),
+        ("settings.js", "isCount"),
+        ("settings.js", "lineId"),
+        ("settings.js", "str"),
+        ("status.js", "str"),
+        ("trails.js", "el"),
+        ("trails.js", "isCount"),
+        ("trails.js", "start"),
+        ("vault.js", "el"),
+        ("vault.js", "isCount"),
+        ("vault.js", "send"),
+        ("vault.js", "start"),
+        ("vault.js", "str"),
+    ];
+
+    /// The names a module defines at its top level, at the start of a
+    /// line: `function name(`, exported, async or both, and `const name =`
+    /// or `let name =` bound to a function or an arrow. A definition
+    /// nested in another function is indented and is not counted.
+    fn top_level_definitions(code: &str) -> BTreeSet<String> {
+        let ident = |s: &str| -> String {
+            s.chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+                .collect()
+        };
+        let mut out = BTreeSet::new();
+        for line in code.lines() {
+            let mut l = line.strip_prefix("export ").unwrap_or(line);
+            l = l.strip_prefix("async ").unwrap_or(l);
+            if let Some(rest) = l.strip_prefix("function ") {
+                out.insert(ident(rest.trim_start()));
+            } else if let Some(rest) = l.strip_prefix("const ").or_else(|| l.strip_prefix("let ")) {
+                let name = ident(rest);
+                let value = rest[name.len()..].trim_start();
+                if let Some(v) = value.strip_prefix('=') {
+                    let v = v.trim_start();
+                    let v = v.strip_prefix("async").map_or(v, str::trim_start);
+                    // An arrow's one parameter may go without parentheses
+                    // (`v => ...`), and is a definition all the same.
+                    let param = ident(v);
+                    let bare_arrow =
+                        !param.is_empty() && v[param.len()..].trim_start().starts_with("=>");
+                    if v.starts_with("function") || v.starts_with('(') || bare_arrow {
+                        out.insert(name);
+                    }
+                }
+            }
+        }
+        out.remove("");
+        out
+    }
+
+    #[test]
+    fn page_helpers_live_in_one_module_each() {
+        // The risk: a helper written again in one more module (`el` was
+        // written twelve times, `str` twelve), so a fix to one copy leaves
+        // the others wrong; and a line in NOT_YET_MOVED left behind after
+        // its copy moved, which would let a new copy back in unnoticed.
+        let ui = ui_code();
+        for (name, home) in HELPER_HOMES {
+            let code = ui
+                .get(*home)
+                .unwrap_or_else(|| panic!("ui/{home} is missing"));
+            assert!(
+                top_level_definitions(code).contains(*name),
+                "{home} does not define {name}, though it is its home"
+            );
+        }
+        for (module, code) in &ui {
+            for name in top_level_definitions(code) {
+                let Some((_, home)) = HELPER_HOMES.iter().find(|(n, _)| *n == name) else {
+                    continue;
+                };
+                assert!(
+                    module == home || NOT_YET_MOVED.contains(&(module.as_str(), name.as_str())),
+                    "{module} defines {name}, whose one home is {home}: import it from there"
+                );
+            }
+        }
+        for (module, name) in NOT_YET_MOVED {
+            let code = ui
+                .get(*module)
+                .unwrap_or_else(|| panic!("ui/{module} is missing"));
+            assert!(
+                top_level_definitions(code).contains(*name),
+                "{module} no longer defines {name}: take ({module}, {name}) out of NOT_YET_MOVED"
+            );
+        }
+    }
+
+    #[test]
+    fn page_helper_definitions_are_read_at_the_top_level_only() {
+        // The risk: the reader above misses a definition form, so a copy
+        // passes unseen, or counts a nested one, so a local helper of the
+        // same name fails a module for nothing.
+        let code = "function el(doc) {}\nexport async function send(t) {}\nconst str = (v) => v;\nlet plural = async (k) => k;\nconst fill = function (p) {};\nconst SIZE = 3;\n  function start() {}\nexport function atEnd(p) {}\n";
+        // An arrow whose one parameter has no parentheses is read too, and
+        // a value that only names another binding is not a definition.
+        let bare = top_level_definitions("const isCount = v => v;\nconst muted = el;\n");
+        assert_eq!(bare.into_iter().collect::<Vec<_>>(), ["isCount"]);
+        let got: Vec<String> = top_level_definitions(code).into_iter().collect();
+        assert_eq!(got, ["atEnd", "el", "fill", "plural", "send", "str"]);
+    }
+
     #[test]
     fn page_has_no_style_attribute() {
         // The risk: an inline style, which the CSP's `style-src 'self'`
@@ -3211,23 +3365,15 @@ mod tests {
             assert!(!e.attrs.contains_key("style"), "<{} style=...>", e.tag);
             assert_ne!(e.tag, "style", "a <style> element");
         }
-        for name in [
-            "main.js",
-            "render.js",
-            "overview.js",
-            "composer.js",
-            "dialogs.js",
-            "model.js",
-            "settings.js",
-            "status.js",
-            "graph.js",
-            "codebase.js",
-            "radius.js",
-            "trails.js",
-            "vault.js",
-            "queue.js",
-            "atlas.js",
-        ] {
+        // Every module under ui/, read from the directory: the list this
+        // was written by hand missed web.js (#816).
+        let modules: Vec<String> = ui_code().into_keys().collect();
+        assert!(
+            modules.len() >= 18,
+            "ui/ lists {} modules: {modules:?}",
+            modules.len()
+        );
+        for name in &modules {
             let js = ui_file(name);
             for bad in [".style", "cssText", "\"style\"", "'style'"] {
                 assert!(!js.contains(bad), "{name} writes a style: {bad}");
@@ -3362,7 +3508,7 @@ mod tests {
         let js = code_of("composer.js");
         let submit = composer_submit(&js);
         let sent = submit
-            .split("if (await send(tauri, p, line)) {")
+            .split("if (await forward(tauri, p, line)) {")
             .nth(1)
             .and_then(|r| r.split("\n    }").next())
             .expect("the prompt has a success branch");
@@ -3584,32 +3730,38 @@ mod tests {
         // turn. The end is followed only when the pane was already there,
         // measured before it is redrawn; the one other scroll to the end in
         // render.js is the jump button's own click.
-        let js = code_of("render.js");
-        let at_end = function_body(&js, "atEnd");
+        // The transcript is drawn by dom.js's appendRows (#817), where the
+        // end is measured and followed.
+        let dom = code_of("dom.js");
+        let at_end = function_body(&dom, "atEnd");
         assert!(
             at_end
                 .contains("pane.scrollHeight - pane.clientHeight - pane.scrollTop <= AT_END_SLACK"),
             "atEnd measures something else: {at_end}"
         );
-        let transcript = function_body(&js, "transcript");
-        let measured = transcript
+        let rows = function_body(&dom, "appendRows");
+        let measured = rows
             .find("const follow = atEnd(pane);")
-            .expect("transcript reads the end before drawing");
-        let drawn = transcript.find("pane.append(").expect("transcript appends");
+            .expect("appendRows reads the end before drawing");
+        let drawn = rows.find("pane.append(").expect("appendRows appends");
         assert!(
             measured < drawn,
             "the end is read after the redraw moved it"
         );
         assert_eq!(
-            transcript
-                .matches("pane.scrollTop = pane.scrollHeight;")
-                .count(),
+            rows.matches("pane.scrollTop = pane.scrollHeight;").count(),
             1,
-            "transcript scrolls to the end in more than one place"
+            "appendRows scrolls to the end in more than one place"
         );
         assert!(
-            transcript.contains("if (follow) {\n    pane.scrollTop = pane.scrollHeight;"),
-            "the scroll to the end is not under the at-end check: {transcript}"
+            rows.contains("if (follow) pane.scrollTop = pane.scrollHeight;"),
+            "the scroll to the end is not under the at-end check: {rows}"
+        );
+        let js = code_of("render.js");
+        assert!(
+            function_body(&js, "transcript")
+                .contains(r#"appendRows(doc, pane, lines, "Nothing has run yet.")"#),
+            "render.js draws the transcript some other way"
         );
         let scrolls: Vec<&str> = js
             .lines()
@@ -3618,10 +3770,7 @@ mod tests {
             .collect();
         assert_eq!(
             scrolls,
-            [
-                "pane.scrollTop = pane.scrollHeight;",
-                "pane.scrollTop = pane.scrollHeight;"
-            ],
+            ["pane.scrollTop = pane.scrollHeight;"],
             "render.js scrolls somewhere else too"
         );
         assert!(
@@ -3638,19 +3787,22 @@ mod tests {
         // reader read the whole log again. Lines beyond those drawn are
         // appended; only a list that does not extend the drawn one (the cap
         // dropped lines, or the transcript was cleared) is drawn afresh.
-        let js = code_of("render.js");
-        let transcript = function_body(&js, "transcript");
+        let dom = code_of("dom.js");
+        let rows = function_body(&dom, "appendRows");
         for want in [
             "drawn.every((c, i) => c.textContent === list[i])",
             "list.slice(drawn.length)",
             "if (grows && drawn.length > 0) pane.append(...rows);",
-            "else fill(doc, pane, rows, \"Nothing has run yet.\", \"div\");",
+            "else fill(doc, pane, rows, empty, \"div\");",
         ] {
-            assert!(
-                transcript.contains(want),
-                "transcript lacks {want}: {transcript}"
-            );
+            assert!(rows.contains(want), "appendRows lacks {want}: {rows}");
         }
+        let render = code_of("render.js");
+        let transcript = function_body(&render, "transcript");
+        assert!(
+            transcript.contains(r#"appendRows(doc, pane, lines, "Nothing has run yet.")"#),
+            "render.js draws the transcript some other way: {transcript}"
+        );
         let page = page();
         let log = &page[index_of(&page, "pane-transcript")];
         assert_eq!(
@@ -3690,7 +3842,9 @@ mod tests {
         let transcript = function_body(&js, "transcript");
         assert!(transcript.contains(r#"const jump = doc.getElementById("log-jump");"#));
         assert!(
-            transcript.contains("if (follow) {\n    pane.scrollTop = pane.scrollHeight;\n    jump.hidden = true;\n  } else if (rows.length > 0) {\n    jump.hidden = false;\n  }"),
+            transcript.contains(
+                "if (followed) jump.hidden = true;\n  else if (drawn > 0) jump.hidden = false;"
+            ),
             "the jump button is shown or hidden on something else: {transcript}"
         );
         let wire = function_body(&js, "wireLog");
@@ -3726,32 +3880,21 @@ mod tests {
         // The risk (#643): the messages pane keeping the old rule, so a
         // reader of trellis's stderr is pulled to the end at each view while
         // the actions log is not; or a second, differently measured notion
-        // of "at the end". dialogs.js imports render.js's atEnd and scrolls
-        // only under it.
+        // of "at the end". dialogs.js draws the pane with dom.js's
+        // appendRows, the actions log's own (#817), and scrolls nowhere
+        // else.
         let js = code_of("dialogs.js");
         assert!(
-            js.contains(r#"import { atEnd } from "./render.js";"#),
+            js.contains(r#"import { appendRows, el } from "./dom.js";"#),
             "dialogs.js measures the end its own way"
         );
         let stderr = function_body(&js, "drawStderr");
-        let measured = stderr
-            .find("const follow = atEnd(log);")
-            .expect("drawStderr reads the end before drawing");
-        let drawn = stderr
-            .find("log.replaceChildren(")
-            .expect("drawStderr redraws the pane");
         assert!(
-            measured < drawn,
-            "the end is read after the redraw moved it"
+            stderr.contains(r#"appendRows(doc, doc.getElementById("messages-log"), lines,"#),
+            "drawStderr draws the pane some other way: {stderr}"
         );
-        let scrolls: Vec<&str> = js
-            .lines()
-            .filter(|l| l.contains("scrollTop"))
-            .map(str::trim)
-            .collect();
-        assert_eq!(
-            scrolls,
-            ["if (follow) log.scrollTop = log.scrollHeight;"],
+        assert!(
+            !js.contains("scrollTop"),
             "dialogs.js scrolls somewhere unguarded"
         );
     }
@@ -3953,13 +4096,19 @@ mod tests {
         assert_eq!(page[title].text.trim(), "Session tokens");
         let render = ui_file("render.js");
         for want in [
-            "` · prompt ${tokens(m.prompt_tokens)}`",
-            "` · completion ${tokens(m.completion_tokens)}`",
-            r#"isCount(v) ? String(v) : "unknown""#,
+            "` · prompt ${notReported(m.prompt_tokens)}`",
+            "` · completion ${notReported(m.completion_tokens)}`",
             "el(doc, \"code\", model)",
         ] {
             assert!(render.contains(want), "render.js lacks {want}");
         }
+        // A figure a run did not report is said to be, never drawn as 0:
+        // fmt.js's notReported, which render.js takes (#817).
+        assert!(
+            function_body(&code_of("fmt.js"), "notReported")
+                .contains("if (isCount(v)) return String(v);"),
+            "notReported draws something other than the figure"
+        );
         let main = ui_file("main.js");
         for want in [
             r#"type: "get_session_stats""#,
