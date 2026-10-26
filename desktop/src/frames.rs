@@ -50,6 +50,17 @@ pub enum Frame {
         turn: Option<u64>,
         paused_ms: Option<u64>,
     },
+    /// The loop's `plan` event (#810): the model's plan as trellis kept it.
+    /// `steps` is the JSON array in one string, kept as sent: it is model
+    /// output, read by the reducer, which says when it cannot be read
+    /// rather than dropping the event. Each field is `None` when absent or
+    /// of the wrong type.
+    Plan {
+        turn: Option<u64>,
+        steps: Option<String>,
+        steps_cut: Option<u64>,
+        texts_cut: Option<u64>,
+    },
     /// The loop's `steer delivered` event.
     SteerDelivered {
         after_step: Option<u64>,
@@ -297,6 +308,14 @@ pub fn parse_stdout(line: &str) -> Frame {
         Some("resumed") => Frame::Resumed {
             turn: json::u64(f, "turn"),
             paused_ms: json::u64(f, "paused_ms"),
+        },
+        // Read whatever it carries: a plan event is the model's latest plan
+        // even when its steps cannot be read, and the panel says so.
+        Some("plan") => Frame::Plan {
+            turn: json::u64(f, "turn"),
+            steps: json::string(f, "steps"),
+            steps_cut: json::u64(f, "steps_cut"),
+            texts_cut: json::u64(f, "texts_cut"),
         },
         Some("steer delivered") => Frame::SteerDelivered {
             after_step: json::u64(f, "after_step"),

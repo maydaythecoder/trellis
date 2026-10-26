@@ -31,7 +31,7 @@ mod vault;
 use crate::atlas;
 use crate::capped::{Capped, Item, cut};
 use crate::feed::{Feed, Row};
-use crate::frames::{ApprovalRequest, Frame, RunBudget, RunEnd, RuntimeIdentified, Turn};
+use crate::frames::{ApprovalRequest, Frame, Response, RunBudget, RunEnd, RuntimeIdentified, Turn};
 use crate::graph;
 use crate::queue;
 use serde_json::{Map, Value, json};
@@ -127,13 +127,21 @@ pub enum Pane {
     /// [`SUMMARY_INPUTS`] names, the trail `run_end` named and the closing
     /// words trellis answers for a converged run.
     Summary,
+    /// The model's plan (#838): the latest `plan` event of the run, its
+    /// steps as the model wrote them, or why they could not be read.
+    Plan,
+    /// The Code level's whole-file view (#838): the text of the file a
+    /// `read_file` asked for, as trellis answered it, or why it did not.
+    /// A pane of its own, not part of `code`, which is drawn again on every
+    /// edit turn and would carry up to 256 KiB each time.
+    WholeFile,
 }
 
 /// Every pane the view carries. Each is a key the page must draw:
 /// `view_renders_every_pane_key` in `lockdown.rs` drives a whole run through
 /// [`DesktopState::update`] and fails naming a key here that no module the
 /// page loads reads from the `view` event (ADR 0052 section 1, #513).
-const PANES: [Pane; 29] = [
+const PANES: [Pane; 31] = [
     Pane::Transcript,
     Pane::Actions,
     Pane::Edits,
@@ -163,6 +171,8 @@ const PANES: [Pane; 29] = [
     Pane::Pending,
     Pane::Code,
     Pane::Summary,
+    Pane::Plan,
+    Pane::WholeFile,
 ];
 
 /// The panes a run starts afresh: everything but the transcript, which,
@@ -172,8 +182,10 @@ const PANES: [Pane; 29] = [
 /// are the repository's templates, not the run's. The undelivered list is
 /// the last stopped run's, so a new run drops it, and so is the alert: what
 /// failed before this run started is not this run's failure. The stderr
-/// pane, as the transcript, carries on.
-const RUN_PANES: [Pane; 16] = [
+/// pane, as the transcript, carries on. The plan is the run's model's, so a
+/// new run starts with none; the whole-file view is the worktree's, read
+/// when asked, and stays.
+const RUN_PANES: [Pane; 17] = [
     Pane::Actions,
     Pane::Edits,
     Pane::Checks,
@@ -190,6 +202,7 @@ const RUN_PANES: [Pane; 16] = [
     Pane::Now,
     Pane::Where,
     Pane::Code,
+    Pane::Plan,
 ];
 
 /// The panes the Now strip and Where it is are drawn from: a change to any
@@ -398,6 +411,8 @@ impl Pane {
             // Not `summary`: that word holds `sum`, which no view key may
             // (turn_usage_is_per_turn_and_never_summed).
             Pane::Summary => "recap",
+            Pane::Plan => "plan",
+            Pane::WholeFile => "whole_file",
         }
     }
 
@@ -818,6 +833,9 @@ enum Fate {
     Started,
     /// Never delivered, with why.
     Not(String),
+    /// Taken back: trellis answered its `withdraw` (#838), so it is in no
+    /// model request and starts no run.
+    Withdrawn,
 }
 
 /// One item of the composer's queue (#830), keyed by the line id it was
@@ -826,8 +844,199 @@ enum Fate {
 struct Queued {
     id: String,
     kind: QueuedKind,
+    /// The text the queue shows, cut at [`QUEUED_TEXT_BYTES`].
     text: String,
+    /// The text as trellis listed it, cut only at [`TAKEN_BACK_BYTES`]: what
+    /// a take-back hands to the composer (#838), so a long steer comes back
+    /// whole rather than as the queue's shortened copy.
+    sent: String,
     fate: Fate,
+    /// A `withdraw` for it was forwarded and not yet answered (#838). Its
+    /// fate is unchanged until trellis answers: a withdraw asked is not a
+    /// message taken back, and trellis refuses one already delivered.
+    withdrawing: bool,
+}
+
+/// The longest text a take-back returns: `rpc_send`'s line cap, which no
+/// steer or follow-up this desktop sent can pass. trellis's list is
+/// untrusted, so it is held to that here too.
+const TAKEN_BACK_BYTES: usize = 64 * 1024;
+
+/// The longest `steps` string of a `plan` event this desktop parses (#838).
+/// trellis keeps at most eight steps of at most 200 characters, about 7 KiB
+/// of JSON at four bytes a character; a longer string is not a plan it
+/// kept, and is said to be unreadable rather than parsed.
+const PLAN_STEPS_BYTES: usize = 16 * 1024;
+
+/// The most steps trellis keeps in a plan (ADR 0058 section 5).
+const PLAN_STEPS_MAX: usize = 8;
+
+/// The most characters trellis keeps in one step's text.
+const PLAN_TEXT_CHARS: usize = 200;
+
+/// The most text the whole-file view keeps: `read_file`'s own cap (ADR 0058
+/// section 4), applied again because trellis's answer is untrusted.
+const WHOLE_FILE_BYTES: usize = 256 * 1024;
+
+/// One step of the model's plan, as it wrote it: its text and its state,
+/// one of `todo`, `current` and `done`. The model's words (CLAUDE.md rule
+/// 10): shown, never counted.
+#[derive(Debug, Clone, PartialEq)]
+struct PlanStep {
+    text: String,
+    state: &'static str,
+}
+
+/// The run's latest `plan` event (#838). A later one replaces it whole.
+#[derive(Debug, Clone, PartialEq)]
+struct Plan {
+    turn: Option<u64>,
+    /// The steps, or why they could not be read.
+    steps: Result<Vec<PlanStep>, String>,
+    steps_cut: Option<u64>,
+    texts_cut: Option<u64>,
+}
+
+/// A `plan` event's `steps` string read as the contract says it is: a
+/// JSON array of at most eight `{text, state}` objects, each text a string
+/// of at most 200 characters and each state `todo`, `current` or `done`.
+/// It is model output kept by trellis; anything else is said to be
+/// unreadable, with why, and nothing of it is drawn as a step.
+fn plan_steps(steps: Option<&str>) -> Result<Vec<PlanStep>, String> {
+    let Some(steps) = steps else {
+        return Err("the plan event carried no steps string".into());
+    };
+    if steps.len() > PLAN_STEPS_BYTES {
+        return Err(format!(
+            "its steps are {} bytes, past the {PLAN_STEPS_BYTES} this desktop reads",
+            steps.len()
+        ));
+    }
+    let list = match serde_json::from_str::<Value>(steps) {
+        Ok(Value::Array(list)) => list,
+        Ok(_) => return Err("its steps are not a JSON array".into()),
+        Err(e) => return Err(format!("its steps are not JSON: {e}")),
+    };
+    if list.len() > PLAN_STEPS_MAX {
+        return Err(format!(
+            "it carries {} steps, and trellis keeps at most {PLAN_STEPS_MAX}",
+            list.len()
+        ));
+    }
+    list.iter()
+        .enumerate()
+        .map(|(i, step)| {
+            let n = i + 1;
+            let Some(text) = step.get("text").and_then(Value::as_str) else {
+                return Err(format!("step {n} has no text"));
+            };
+            if text.chars().count() > PLAN_TEXT_CHARS {
+                return Err(format!(
+                    "step {n}'s text is longer than the {PLAN_TEXT_CHARS} characters trellis keeps"
+                ));
+            }
+            let state = match step.get("state").and_then(Value::as_str) {
+                Some("todo") => "todo",
+                Some("current") => "current",
+                Some("done") => "done",
+                _ => return Err(format!("step {n}'s state is not todo, current or done")),
+            };
+            Ok(PlanStep {
+                text: text.to_string(),
+                state,
+            })
+        })
+        .collect()
+}
+
+/// The whole-file view (#838): nothing asked yet, a `read_file` waiting on
+/// its answer, the text trellis answered, or why there is none.
+#[derive(Debug, Clone, Default, PartialEq)]
+enum WholeFile {
+    #[default]
+    Unasked,
+    /// Only the answer to this id is read, so a file asked for earlier
+    /// and answered late never replaces the one asked for last.
+    Reading {
+        id: String,
+        path: String,
+    },
+    Read {
+        path: String,
+        text: String,
+        bytes: u64,
+        cut: bool,
+    },
+    Refused {
+        path: String,
+        why: String,
+    },
+}
+
+impl WholeFile {
+    /// `read_file`'s answer `r` for the file asked as `path`: its text, cut
+    /// again at [`WHOLE_FILE_BYTES`], or why there is none. An answer in a
+    /// shape the contract does not give, or for another path, is refused
+    /// here rather than drawn.
+    fn answered(path: String, r: &Response) -> Self {
+        if r.success != Some(true) {
+            let why = r.error.clone().unwrap_or_else(|| "no reason given".into());
+            return WholeFile::Refused {
+                path,
+                why: why.fit(QUEUED_TEXT_BYTES),
+            };
+        }
+        let d = r.data.as_ref();
+        let field = |k: &str| d.and_then(|d| d.get(k));
+        let shape = (
+            field("path").and_then(Value::as_str),
+            field("text").and_then(Value::as_str),
+            field("bytes").and_then(Value::as_u64),
+            field("cut").and_then(Value::as_bool),
+        );
+        let (Some(answered), Some(text), Some(bytes), Some(was_cut)) = shape else {
+            return WholeFile::Refused {
+                path,
+                why: "trellis answered read_file in a shape this desktop does not read".into(),
+            };
+        };
+        if answered != path {
+            return WholeFile::Refused {
+                path,
+                why: "trellis answered read_file for another path than the one asked".into(),
+            };
+        }
+        let mut text = text.to_string();
+        let over = text.len() > WHOLE_FILE_BYTES;
+        if over {
+            // At a character boundary and with no marker: the view says it
+            // was cut beside the text, never inside the file's lines.
+            text.truncate(text.floor_char_boundary(WHOLE_FILE_BYTES));
+        }
+        WholeFile::Read {
+            path,
+            text,
+            bytes,
+            cut: was_cut || over,
+        }
+    }
+
+    fn to_json(&self) -> Value {
+        match self {
+            WholeFile::Unasked => Value::Null,
+            WholeFile::Reading { path, .. } => json!({"path": path, "state": "reading",
+                "text": null, "bytes": null, "cut": null, "why": null}),
+            WholeFile::Read {
+                path,
+                text,
+                bytes,
+                cut,
+            } => json!({"path": path, "state": "read", "text": text, "bytes": bytes,
+                "cut": cut, "why": null}),
+            WholeFile::Refused { path, why } => json!({"path": path, "state": "refused",
+                "text": null, "bytes": null, "cut": null, "why": why}),
+        }
+    }
 }
 
 /// The prompt a Stop and send holds (#830, DESIGN.md §2.1): sent once both
@@ -1054,8 +1263,9 @@ fn comment_refusal(
 /// vault, queue, models and session tokens panes), not a line in the run's
 /// transcript or the page's one alert. `get_trails` and `get_overview` are
 /// the page's own commands, not rpc lines, so their answers never come here.
-/// `get_symbols` and `get_history` are the Atlas's.
-const VIEW_READS: [&str; 10] = [
+/// `get_symbols` and `get_history` are the Atlas's; `read_file` is the Code
+/// level's whole-file view (#838).
+const VIEW_READS: [&str; 11] = [
     "get_codebase",
     "get_radius",
     "get_symbols",
@@ -1066,6 +1276,7 @@ const VIEW_READS: [&str; 10] = [
     "get_queue",
     "list_models",
     "get_session_stats",
+    "read_file",
 ];
 
 /// The id of the `get_available_models` the core writes first to every
@@ -1421,6 +1632,14 @@ pub struct DesktopState {
     closing: Closing,
     /// Whether the core has yet to ask for them.
     closing_unasked: bool,
+    /// The run's latest `plan` event (#838); `None` until one, and from
+    /// each run's start.
+    plan: Option<Plan>,
+    /// The Code level's whole-file view (#838).
+    whole_file: WholeFile,
+    /// The text of a message trellis has just confirmed taken back, for
+    /// the core to hand to the composer once (#838).
+    taken_back: Option<Value>,
 }
 
 impl DesktopState {
@@ -1479,6 +1698,22 @@ impl DesktopState {
                     None => Changed::default(),
                 }
             }
+            // The model's latest plan replaces the last whole (#838): its
+            // steps as the model wrote them, or why they cannot be read.
+            Frame::Plan {
+                turn,
+                steps,
+                steps_cut,
+                texts_cut,
+            } => {
+                self.plan = Some(Plan {
+                    turn,
+                    steps: plan_steps(steps.as_deref()),
+                    steps_cut,
+                    texts_cut,
+                });
+                Changed::of(&[Pane::Plan])
+            }
             Frame::RuntimeIdentified(r) => {
                 self.runtime = Some(r);
                 Changed::of(&[Pane::Runtime])
@@ -1524,13 +1759,17 @@ impl DesktopState {
                 self.phase = None;
                 // Nobody is left to answer a question the run asked.
                 self.approvals.clear();
-                // The budget's wall-clock row reads run_end's figure.
+                // The budget's wall-clock row reads run_end's figure, and
+                // the queue's Take back and the plan's Edit go with the run
+                // (#838).
                 let mut c = Changed::of(&[
                     Pane::Running,
                     Pane::Approvals,
                     Pane::Outcome,
                     Pane::Phase,
                     Pane::Budget,
+                    Pane::Pending,
+                    Pane::Plan,
                 ]);
                 if let Some(error) = &e.error {
                     self.alert.push(format!("The run ended in error: {error}"));
@@ -1659,7 +1898,11 @@ impl DesktopState {
                     // Stop and send's prompt is not sent after it.
                     (Some("abort"), Some(false)) => {
                         self.stopping = false;
-                        c = c.with(Pane::Now).with(Pane::Where).with(Pane::Budget);
+                        c = c
+                            .with(Pane::Now)
+                            .with(Pane::Where)
+                            .with(Pane::Budget)
+                            .with(Pane::Plan);
                         if self
                             .held
                             .as_ref()
@@ -1675,6 +1918,27 @@ impl DesktopState {
                     (Some("pause"), Some(_)) => {
                         self.pause_asked = false;
                         c = c.with(Pane::Now).with(Pane::Where);
+                    }
+                    // A withdraw is answered with the message's own id
+                    // (#838): taken back, its text goes to the composer; refused
+                    // (already delivered, unknown id), the item stands where it
+                    // did, and the reason reaches the transcript below.
+                    (Some("withdraw"), Some(answer)) => {
+                        if let Some(id) = r.id.as_deref()
+                            && self.withdraw_answered(id, answer, r.data.as_ref())
+                        {
+                            c = c.with(Pane::Pending);
+                        }
+                    }
+                    // The whole-file view reads only the answer to the
+                    // read_file it last asked (#838).
+                    (Some("read_file"), Some(_)) => {
+                        if let WholeFile::Reading { id, path } = &self.whole_file
+                            && r.id.as_deref() == Some(id.as_str())
+                        {
+                            self.whole_file = WholeFile::answered(path.clone(), &r);
+                            c = c.with(Pane::WholeFile);
+                        }
                     }
                     // An `approve` is sent with the question's own id, and
                     // either answer means trellis holds it open no more: an
@@ -1864,8 +2128,9 @@ impl DesktopState {
             Pane::Running,
             Pane::Phase,
             Pane::Approvals,
-            // Its Raise goes with the run.
+            // Its Raise goes with the run, and so does the plan's Edit.
             Pane::Budget,
+            Pane::Plan,
             Pane::Model,
             Pane::Models,
             Pane::SessionTokens,
@@ -1879,14 +2144,15 @@ impl DesktopState {
     /// so a `run_end` read as soon as it is written finds it set.
     pub fn abort_sent(&mut self) -> Changed {
         self.stopping = true;
-        // A stopping run takes no raise: the budget's Raise goes with it.
-        Changed::of(&[Pane::Now, Pane::Where, Pane::Budget])
+        // A stopping run takes no raise and no steer: the budget's Raise
+        // and the plan's Edit go with it.
+        Changed::of(&[Pane::Now, Pane::Where, Pane::Budget, Pane::Plan])
     }
 
     /// The `abort` could not be written to the child: nothing is stopping.
     pub fn abort_unsent(&mut self) -> Changed {
         self.stopping = false;
-        Changed::of(&[Pane::Now, Pane::Where, Pane::Budget])
+        Changed::of(&[Pane::Now, Pane::Where, Pane::Budget, Pane::Plan])
     }
 
     /// The core forwarded a `pause` (#837): Resume replaces Pause until the
@@ -1901,6 +2167,117 @@ impl DesktopState {
     pub fn pause_unsent(&mut self) -> Changed {
         self.pause_asked = false;
         Changed::of(&[Pane::Now])
+    }
+
+    /// Whether the queue holds a steer or follow-up sent with `id` that a
+    /// `withdraw` may take back now (#838): still queued, no withdraw for
+    /// it waiting, and its run in flight, since rpc takes back nothing
+    /// with none. A Stop and send's prompt is the core's to hold, not
+    /// trellis's, so no withdraw names it.
+    pub fn withdrawable(&self, id: &str) -> bool {
+        self.running
+            && self.queued.iter().any(|q| {
+                q.id == id
+                    && q.kind != QueuedKind::Prompt
+                    && q.fate == Fate::Queued
+                    && !q.withdrawing
+            })
+    }
+
+    /// The core forwards a `withdraw` for `id` (#838): its item waits on the
+    /// answer, offering no second Take back. Called before the line is
+    /// written, so the answer finds it set. Its fate is not changed: only
+    /// trellis's answer says it was taken back.
+    pub fn withdraw_sent(&mut self, id: &str) -> Changed {
+        match self.queued.iter_mut().find(|q| {
+            q.id == id && q.kind != QueuedKind::Prompt && q.fate == Fate::Queued && !q.withdrawing
+        }) {
+            Some(q) => {
+                q.withdrawing = true;
+                Changed::of(&[Pane::Pending])
+            }
+            None => Changed::default(),
+        }
+    }
+
+    /// The `withdraw` for `id` could not be written to the child: nothing
+    /// was asked, and Take back is offered again.
+    pub fn withdraw_unsent(&mut self, id: &str) -> Changed {
+        self.withdraw_settled(id)
+    }
+
+    /// The item waiting on a withdraw for `id` waits no more; whether there
+    /// was one.
+    fn withdraw_settled(&mut self, id: &str) -> Changed {
+        match self.queued.iter_mut().find(|q| q.id == id && q.withdrawing) {
+            Some(q) => {
+                q.withdrawing = false;
+                Changed::of(&[Pane::Pending])
+            }
+            None => Changed::default(),
+        }
+    }
+
+    /// trellis's answer to the withdraw for `id` (#838). Taken back, the
+    /// item is withdrawn and its text is held for the composer, once. The
+    /// answer is trellis's word that it withdrew the message, so it settles
+    /// the item whatever the view last made of it: the withdrawn steer's own
+    /// `steer` answer, `success: false`, may be read first and mark it not
+    /// delivered. A message already withdrawn or delivered is not one
+    /// trellis can withdraw, so it is left alone. Refused, the item stands
+    /// where it did. Whether the queue changed.
+    fn withdraw_answered(&mut self, id: &str, taken: bool, data: Option<&Value>) -> bool {
+        if !taken {
+            return !self.withdraw_settled(id).is_empty();
+        }
+        let kind = data
+            .and_then(|d| d.get("type"))
+            .and_then(Value::as_str)
+            .and_then(QueuedKind::listed);
+        let Some(q) = self.queued.iter_mut().find(|q| {
+            q.id == id
+                && q.kind != QueuedKind::Prompt
+                && kind.is_none_or(|k| k == q.kind)
+                && matches!(q.fate, Fate::Queued | Fate::Not(_))
+        }) else {
+            return false;
+        };
+        q.fate = Fate::Withdrawn;
+        q.withdrawing = false;
+        self.taken_back = Some(json!({"id": q.id, "kind": q.kind.word(), "text": q.sent}));
+        true
+    }
+
+    /// The text of a message trellis has confirmed taken back (#838),
+    /// `{id, kind, text}`, once: the core hands it to the composer, so the
+    /// text returns on trellis's answer and never on the click.
+    pub fn taken_back(&mut self) -> Option<Value> {
+        self.taken_back.take()
+    }
+
+    /// The core forwards a `read_file` for `path` with line id `id` (#838):
+    /// the whole-file view says it is reading, and reads only this answer.
+    pub fn read_file_asked(&mut self, id: &str, path: &str) -> Changed {
+        self.whole_file = WholeFile::Reading {
+            id: id.to_string(),
+            path: path.to_string(),
+        };
+        Changed::of(&[Pane::WholeFile])
+    }
+
+    /// The `read_file` with id `id` could not be written to the child, for
+    /// `why`: no answer will come, so the view says why rather than reading.
+    pub fn read_file_unsent(&mut self, id: &str, why: &str) -> Changed {
+        match &self.whole_file {
+            WholeFile::Reading { id: asked, path } if asked == id => {
+                self.whole_file = WholeFile::Refused {
+                    path: path.clone(),
+                    why: why.to_string().fit(QUEUED_TEXT_BYTES),
+                };
+                Changed::of(&[Pane::WholeFile])
+            }
+            _ => Changed::default(),
+        }
     }
 
     /// Whether a run is in flight, from `run_start` to `run_end` or the
@@ -2196,6 +2573,28 @@ impl DesktopState {
             Pane::Where => self.where_it_is(),
             Pane::Code => self.code(),
             Pane::Summary => self.summary(),
+            Pane::Plan => match &self.plan {
+                None => Value::Null,
+                Some(p) => {
+                    let (steps, why) = match &p.steps {
+                        Ok(list) => (
+                            Value::Array(
+                                list.iter()
+                                    .map(|s| json!({"text": s.text, "state": s.state}))
+                                    .collect(),
+                            ),
+                            None,
+                        ),
+                        Err(why) => (Value::Null, Some(why.as_str())),
+                    };
+                    // A person's edit goes back as a steer, which reaches
+                    // only a run in flight and not stopping.
+                    json!({"turn": p.turn, "steps": steps, "why": why,
+                           "steps_cut": p.steps_cut, "texts_cut": p.texts_cut,
+                           "can_steer": self.running && !self.stopping})
+                }
+            },
+            Pane::WholeFile => self.whole_file.to_json(),
             Pane::Pending => Value::Array(
                 self.queued
                     .iter()
@@ -2205,9 +2604,22 @@ impl DesktopState {
                             Fate::After(n) => ("delivered", Some(*n), None),
                             Fate::Started => ("delivered", None, None),
                             Fate::Not(why) => ("not_delivered", None, Some(why.as_str())),
+                            Fate::Withdrawn => ("withdrawn", None, None),
+                        };
+                        // Take back (#838): offered on a steer or follow-up
+                        // still queued while its run is in flight, since rpc
+                        // takes back nothing with none; `asked` while the
+                        // withdraw waits on its answer.
+                        let take_back = if q.withdrawing {
+                            Some("asked")
+                        } else if self.withdrawable(&q.id) {
+                            Some("offer")
+                        } else {
+                            None
                         };
                         json!({"id": q.id, "kind": q.kind.word(), "text": q.text,
-                               "state": state, "after_turn": after, "why": why})
+                               "state": state, "after_turn": after, "why": why,
+                               "take_back": take_back})
                     })
                     .collect(),
             ),
@@ -2966,6 +3378,7 @@ impl DesktopState {
         self.trail_unread = false;
         self.closing = Closing::Unasked;
         self.closing_unasked = false;
+        self.plan = None;
     }
 
     /// The page sent a steer, `text`, with line id `id`: its row, pending
@@ -3080,11 +3493,14 @@ impl DesktopState {
                 _ => Fate::Queued,
             };
             let text = cut(message.to_string(), message.len(), QUEUED_TEXT_BYTES);
+            let sent = cut(message.to_string(), message.len(), TAKEN_BACK_BYTES);
             self.queued.push(Queued {
                 id,
                 kind,
                 text,
+                sent,
                 fate,
+                withdrawing: false,
             });
             changed = true;
         }
@@ -3154,8 +3570,10 @@ impl DesktopState {
         self.queued.push(Queued {
             id,
             kind: QueuedKind::Prompt,
+            sent: text.clone(),
             text,
             fate: Fate::Queued,
+            withdrawing: false,
         });
         self.held = Some(Held {
             abort_id: abort_id.to_string(),
@@ -3920,7 +4338,7 @@ mod tests {
         );
         assert_eq!(
             s.abort_unsent(),
-            Changed::of(&[Pane::Now, Pane::Where, Pane::Budget])
+            Changed::of(&[Pane::Now, Pane::Where, Pane::Budget, Pane::Plan])
         );
     }
 
@@ -5915,7 +6333,8 @@ mod tests {
         assert_eq!(
             q[2],
             json!({"id": "s2", "kind": "steer", "text": "<b>and</b> the lexer",
-                   "state": "queued", "after_turn": null, "why": null}),
+                   "state": "queued", "after_turn": null, "why": null,
+                   "take_back": "offer"}),
             "the text is kept as sent, for the page to write as text"
         );
         assert_eq!(q[0]["kind"], "follow_up", "{q}");
@@ -6628,7 +7047,9 @@ mod tests {
             | "lines_removed"
             | "start_line"
             | "duration_ms"
-            | "paused_ms" => {
+            | "paused_ms"
+            | "steps_cut"
+            | "texts_cut" => {
                 *n += 1;
                 json!(*n)
             }

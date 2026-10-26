@@ -369,6 +369,21 @@ never from `set_budget`'s answer. Held by
 `every_field_in_the_rpc_contract_is_read` in `src/state.rs`, and by
 `run_controls_need_a_run_and_a_raise_is_checked_before_it_leaves_the_core`
 in `src/commands.rs`.
+*Added 2026-10-26 (#838):* the desktop's `rpc_send` now forwards `withdraw`
+and `read_file`, and it reads the `plan` event's `turn`, `steps`,
+`steps_cut` and `texts_cut`, so their `read_by` names it (the #808, #809
+and #810 notes above said it did not). Take back sends `withdraw` only for
+a steer or follow-up the queue holds still queued during a run, and the
+text returns to the composer only when trellis answers that it withdrew
+the message, through the core's `taken-back` event, never on the click.
+The whole-file view sends `read_file` when asked and draws trellis's
+answer, cut again at 256 KiB; which paths may be read stays rpc's rule. The
+Plan panel draws the latest `plan` event, says a `steps` string it cannot
+read is unreadable rather than drawing part of it, and sends a person's
+edit as an ordinary `steer`. Held by `take_back_withdraws_and_returns_the_text`,
+`whole_file_view_reads_through_read_file` and
+`a_plan_edit_is_sent_as_a_steer` in `src/commands.rs`, and by
+`every_field_in_the_rpc_contract_is_read` in `src/state.rs`.
 
 ### 7. Auditing Tauri's tree
 

@@ -15,8 +15,9 @@
 //   keys.js (the levels and the keys between them), render.js (and
 //   graph.js, which render.js imports), overview.js, composer.js,
 //   dialogs.js, model.js, settings.js, status.js, code.js (the Code
-//   level below Run, #831) and summary.js (the summary level below Run,
-//   #832).
+//   level below Run, #831), summary.js (the summary level below Run,
+//   #832) and plan.js (the Run level's Plan panel, #838, which render.js
+//   draws through).
 // - codebase.js, radius.js, trails.js, vault.js, queue.js and atlas.js,
 //   which each start themselves through rpc.js's start and listen for what
 //   they draw.
@@ -41,6 +42,7 @@ import { redrawNow, wireNow } from "./now.js";
 import { drawStatus, exitText, wireStatus } from "./status.js";
 import { drawCode, wireCode } from "./code.js";
 import { drawSummary, wireSummary } from "./summary.js";
+import { wirePlan } from "./plan.js";
 
 function show(id, text) {
   document.getElementById(id).textContent = text;
@@ -128,6 +130,7 @@ async function main() {
   wireRegister(document, window, () => redrawNow(document));
   wireCode(document, tauri);
   wireSummary(document);
+  wirePlan(document, tauri);
   // The run controls (#837): Pause and Resume in the Now strip, and Raise
   // beside each budget row set_budget takes.
   wireNow(tauri);

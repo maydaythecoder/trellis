@@ -76,7 +76,9 @@
   run) or Stop and send (an abort carrying the prompt, which the core sends
   once the run has ended), by the view's own record. The queue under it is
   the view's `pending`: what trellis lists as waiting, each with its state;
-  take back, edit and reorder are marked not built (#838). Stop shows only
+  Take back sends withdraw, and the text returns to the textarea once
+  trellis has taken it back (#838); edit and reorder are marked not built.
+  Stop shows only
   during a run, set apart from Send in the danger colour, and asks through
   the stop-confirm dialog before an abort is sent, since the rollback it
   causes cannot be undone (#637). The core refuses what does not fit that record, whatever
@@ -263,6 +265,13 @@
             </div>
           </div>
           <div class="cd-rv-col">
+            <!-- The model's plan (#838; the Plan card): plan.js draws the
+            view's plan key, the run's latest plan event, and sends a
+            person's edit to it as a steer. -->
+            <div class="pane" role="region" aria-labelledby="plan-title">
+              <h3 id="plan-title">Plan</h3>
+              <div id="pane-plan"></div>
+            </div>
             <div class="pane pane-log" role="region" aria-labelledby="log-title">
               <h3 id="log-title">Actions log</h3>
               <div id="pane-transcript" class="log cd-tx" role="log" aria-labelledby="log-title" tabindex="0"></div>
@@ -505,7 +514,9 @@
       pane's way in (data-burrow, not a panel of the overview), and a file's
       diff one more in: code.js draws both from the view's code key, which
       the reducer derives from the run's writes, its open approvals and how
-      it ended. keys.js's burrow shows them as levels 3 and 4. -->
+      it ended. keys.js's burrow shows them as levels 3 and 4. A file's
+      whole text is read through trellis's read_file when asked (#838), into
+      the view's whole_file key. -->
       <section id="code" aria-labelledby="code-title" hidden>
         <h2 id="code-title" tabindex="-1">Code</h2>
         <p class="muted">Each file this run wrote or asks to write: its lines added and removed, and where its change stands. A file goes in to its diff.</p>
@@ -527,7 +538,6 @@
               <button type="button" class="cd-btn cd-btn-down" data-answer="reject">Reject</button>
               <button type="button" class="cd-btn cd-btn-signal" data-answer="approve">Approve</button>
             </div>
-            <p class="unbuilt" title="a file's whole text at the worktree is #838">Whole file · not built</p>
             <div id="code-diff" class="code-diff"></div>
             <form id="code-comment" class="code-comment-form" hidden>
               <label for="code-comment-text" id="code-comment-label">Comment</label>
@@ -538,6 +548,13 @@
               </div>
             </form>
             <p id="code-comment-note" class="muted" role="status"></p>
+          </div>
+        </div>
+        <div class="cd-panel" role="region" aria-labelledby="code-whole-title">
+          <div class="cd-panel-head"><h3 id="code-whole-title" class="cd-panel-title">Whole file</h3><button type="button" id="code-whole-read" class="cd-btn cd-btn-ghost" disabled>Read the whole file</button></div>
+          <div class="cd-panel-body">
+            <p id="code-whole-note" class="muted" role="status"></p>
+            <div id="code-whole" class="code-diff"></div>
           </div>
         </div>
       </section>
@@ -638,7 +655,7 @@
         <div id="composer-queue" class="composer-list" hidden>
           <h3 id="composer-queue-title">Queue</h3>
           <ol id="composer-queue-list" class="cd-q-list" aria-labelledby="composer-queue-title"></ol>
-          <p class="unbuilt" title="taking a queued item back is #838; the desktop sends each follow-up at once, so it holds none to reorder">Take back, edit and reorder · not built</p>
+          <p class="unbuilt" title="rpc edits no queued message: take it back and send it again; the desktop sends each follow-up at once, so it holds none to reorder">Edit and reorder · not built</p>
         </div>
         <div id="composer-undelivered" class="composer-list" hidden>
           <h3 id="composer-undelivered-title">Sent and not delivered</h3>
