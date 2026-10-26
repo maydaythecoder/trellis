@@ -64,6 +64,7 @@
 
 use crate::asked::{self, Asked};
 use crate::frames::Response;
+use crate::graph::round;
 use crate::json;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -115,10 +116,6 @@ fn repository_path(p: &str) -> bool {
 /// SHA-256). Only such an id is sent back to trellis as a `ref`.
 fn is_commit(s: &str) -> bool {
     (7..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
-}
-
-fn round(v: f64) -> f64 {
-    (v * 1e6).round() / 1e6
 }
 
 // --- answers, as read -----------------------------------------------------
@@ -1015,10 +1012,10 @@ fn walk(nodes: &[Node], n: usize, f: &mut impl FnMut(&Node)) {
 
 fn normalised(r: &Rect) -> Rect {
     [
-        round(r[0] / WORLD_W),
-        round(r[1] / WORLD_H),
-        round(r[2] / WORLD_W),
-        round(r[3] / WORLD_H),
+        round(r[0] / WORLD_W, 6),
+        round(r[1] / WORLD_H, 6),
+        round(r[2] / WORLD_W, 6),
+        round(r[3] / WORLD_H, 6),
     ]
 }
 
@@ -1056,7 +1053,7 @@ fn emit(
                 parent,
                 test: node.depth > 0 && test_dir(&node.path),
                 rect: normalised(&node.rect),
-                header: round(node.header / WORLD_H),
+                header: round(node.header / WORLD_H, 6),
             });
             let me = regions.len() - 1;
             for &k in &node.kids {
@@ -1211,7 +1208,7 @@ fn place_symbols(layout: &Layout, symbols: &[Symbol]) -> (Vec<PlacedSymbol>, usi
                 depth: depth[k],
                 holds: !kids[k].is_empty(),
                 rect: normalised(&rects[k]),
-                header: round(headers[k] / WORLD_H),
+                header: round(headers[k] / WORLD_H, 6),
             });
         }
     }
