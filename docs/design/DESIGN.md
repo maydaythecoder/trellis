@@ -96,8 +96,9 @@ what the engine reports today. Where they differ, a client does what the last
 column says. A row marked `not built` becomes a ticket for the engine (and an
 ADR where the contract changes), never a client-side approximation. The
 commands `trellis rpc` accepts on 2026-10-25 are `prompt`, `steer`,
-`follow_up`, `abort`, `approve`, `compact`, `quit` and the read-only `get_*`,
-`list_*`, `classify` and `vault_*` queries (`crates/trellis-cli/src/rpc.rs`).
+`follow_up`, `abort`, `approve`, `compact`, `set_model`, `quit` and the
+read-only `get_*`, `list_*`, `classify` and `vault_*` queries
+(`crates/trellis-cli/src/rpc.rs`).
 
 | The brand book says | The rule here | What a client does |
 |---|---|---|
@@ -111,7 +112,7 @@ commands `trellis rpc` accepts on 2026-10-25 are `prompt`, `steer`,
 | A finished run gets `\(^o^)/  all 212 passed` (README, Ascii card). | Counts come only from `trellis-checks` (rule 1). | A face may mark the outcome; any count beside it is a recorded check's count, never the model's. |
 | Components ship as React on `window.Trellis` with `components/bundle.css` (README, "Components"). | The desktop is plain ES modules with no bundler and a CSP without `'unsafe-inline'`; the TUI is Go (`desktop/CLAUDE.md`, ADR 0052). | The cards and `components/bundle.css` are references. Each client builds the component in its own code. |
 | Meter widths and Sparkline paths are drawn per value (Meter, Sparkline cards). | No `style` attribute and no `.style` from script on the desktop (`desktop/CLAUDE.md`). | Meters are block characters in text (`█░`), the same in both faces; anything else that varies takes a class, never an inline style. |
-| Event names `session.start`, `tool.call`, `context.update`, … (`events.md`). | A client reads only the contract's names (`run_start`, `turn`, `run budget`, `steer delivered`, …) and fields (rule 7). | `system/events.md` is intent; the mapping from the contract to each mark is its own document, `docs/design/events.md`. |
+| Event names `session.start`, `tool.call`, `context.update`, … (`events.md`). | A client reads only the contract's names (`run_start`, `turn`, `run budget`, `steer delivered`, …) and fields (rule 7). | `system/events.md` is intent. The mapping from the contract's names to each mark is not written yet (open); when it is, it is its own document, `docs/design/events.md`. |
 
 ## 3. The system
 
