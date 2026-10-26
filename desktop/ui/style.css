@@ -274,221 +274,131 @@
   box-sizing: border-box;
 }
 
+html {
+  height: 100%;
+}
+
+/* The page is the design system's Shell (ds.css's .cd-shell, #909): the
+   Trail across the top, the sibling rail and the stage, the status bar
+   along the bottom. Only the stage scrolls, so the Trail and the bar never
+   scroll away. Body text is the system's sans; anything trellis measured
+   or said is its mono (ds.css). */
 body {
-  margin: 0;
-  display: flex;
-  flex-direction: column;
   height: 100vh;
-  background: var(--ground);
-  color: var(--ink);
-  font: 14px/1.45 system-ui, sans-serif;
+  margin: 0;
+  font: 14px/22px var(--font-sans);
 }
 
-/* The shell (#826; ADR 0048 section 5 as amended 2026-10-26): the Trail
-   across the top, the sibling rail and the stage, the status bar along the
-   bottom. Only the stage scrolls, so the Trail and the bar never scroll
-   away. */
-.shell-top {
-  flex: none;
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
-}
-
-.trail {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  font: 12px/16px var(--font-mono);
-  color: var(--ink-secondary);
-}
-
-.trail-path {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
+.cd-trail-path {
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.trail-sep {
-  margin-right: 8px;
-  color: var(--ink-muted);
-}
-
-.trail-seg {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--ink-secondary);
-  font: inherit;
-  cursor: pointer;
-}
-
-.trail-seg:hover {
-  color: var(--ink);
-}
-
-/* The level shown: ink, underlined in signal. */
-.trail-current {
-  padding-bottom: 1px;
-  color: var(--ink);
-  font-weight: 500;
-  box-shadow: inset 0 -1px 0 var(--signal);
-}
-
-.trail-depth {
+.cd-trail-path li {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
+}
+
+.cd-trail-depth {
   margin: 0;
-  color: var(--ink-muted);
 }
 
-.trail-ticks {
-  display: inline-flex;
-  gap: 3px;
-}
-
-.trail-tick {
-  width: 10px;
-  height: 3px;
-  background: var(--line-strong);
-}
-
-.trail-tick.on {
-  background: var(--signal);
-}
-
-/* A keycap: it names a key, and is no button. */
-.shell-top kbd,
-.shell-bar kbd {
-  display: inline-block;
-  min-width: 18px;
-  padding: 0 4px;
-  border-radius: 3px;
-  background: var(--panel-raised);
-  box-shadow: var(--frame-strong);
-  color: var(--ink);
-  font: 500 11px/18px var(--font-mono);
-  text-align: center;
-}
-
-.shell-middle {
-  flex: 1 1 auto;
-  display: flex;
-  min-height: 0;
-}
-
-/* The overview's other panels, collapsed, titles written down the rail,
-   the one shown in signal. */
-.siblings {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 8px 4px;
-  border-right: 1px solid var(--line);
-  background: var(--panel-inset);
+/* The sibling rail holds buttons where the system's preview draws spans:
+   each is a way into its level. */
+.cd-shell-rail {
   overflow-y: auto;
 }
 
-.sibling {
-  padding: 10px 4px;
+.cd-shell-rail button {
+  padding: 0;
   border: 0;
-  border-radius: 4px;
   background: transparent;
   color: var(--ink-muted);
-  font: 12px/16px var(--font-mono);
+  font: 600 10px/16px var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
   writing-mode: vertical-rl;
   cursor: pointer;
 }
 
-.sibling:hover {
+.cd-shell-rail button:hover {
   color: var(--ink);
 }
 
-.sibling[aria-current="location"] {
+.cd-shell-rail button[aria-current="location"] {
   color: var(--signal);
 }
 
-.shell-bar {
-  flex: none;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 4px 16px;
-  padding: 6px 16px;
-  border-top: 1px solid var(--line);
-  background: var(--panel);
-  font-size: 12px;
+/* The stage stays in the second column while the rail is hidden at the
+   overview, and is what scrolls. */
+#stage {
+  grid-column: 2;
+  min-width: 0;
+  overflow-y: auto;
 }
 
 .keys {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
   margin: 0;
-  color: var(--ink-muted);
 }
 
-/* The overview's ways in: each panel is a button, so ⏎ on it, or a click,
-   enters its level. */
+/* The overview's ways in: each Panel is a button, so ⏎ on it, or a click,
+   enters its level. Its name and icon head it, its one live figure from
+   the overview object below; what the level is, in words, is its title. */
 .levels {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 12px;
-  margin: 0 0 16px;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--space-6);
+  margin: 0;
   padding: 0;
   list-style: none;
 }
 
 .level-tile {
-  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 4px;
   width: 100%;
   height: 100%;
-  padding: 12px 36px 12px 12px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--panel);
-  color: var(--ink);
-  font: inherit;
+  min-height: 112px;
+  padding: 0;
+  border: 0;
   text-align: left;
+  font: inherit;
   cursor: pointer;
 }
 
-.level-tile:hover {
-  border-color: var(--line-strong);
-  background: var(--panel-raised);
+.level-tile:hover .cd-drill,
+.level-tile:focus-visible .cd-drill {
+  color: var(--signal);
 }
 
 .level-name {
-  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
-.level-note {
+.level-figure {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+
+#overview,
+#run {
+  display: grid;
+  gap: var(--space-6);
+  align-content: start;
+}
+
+.ov-root {
+  margin: 0;
   color: var(--ink-muted);
-  font-size: 13px;
-}
-
-.drill {
-  position: absolute;
-  top: 10px;
-  right: 12px;
-  color: var(--ink-muted);
-  font: 500 14px/1 var(--font-mono);
-}
-
-.level-tile:hover .drill,
-.level-tile:focus-visible .drill {
-  color: var(--signal);
+  font: 400 12px/16px var(--font-mono);
+  overflow-wrap: anywhere;
 }
 
 button:focus-visible,
@@ -502,16 +412,9 @@ summary:focus-visible,
   outline-offset: 2px;
 }
 
-main {
-  flex: 1 1 0;
-  min-width: 0;
-  overflow-y: auto;
-  padding: 12px 16px;
-}
-
 h2 {
-  margin: 0 0 12px;
-  font-size: 18px;
+  margin: 0 0 var(--space-3);
+  font: 600 18px/24px var(--font-sans);
 }
 
 /* Read by a screen reader and not drawn (#646): the page's one h1. Not
@@ -525,18 +428,24 @@ h2 {
   white-space: nowrap;
 }
 
+/* A region's title, as the design system's Panel heads one (.cd-panel-title). */
 h3 {
-  margin: 0 0 6px;
-  font-size: 13px;
-  color: var(--ink-muted);
+  margin: 0;
+  font: 600 11px/16px var(--font-mono);
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  color: var(--ink-secondary);
 }
 
 .status {
-  margin: 0 0 8px;
+  margin: 0;
   color: var(--ink-muted);
+  font: 400 12px/16px var(--font-mono);
   overflow-wrap: anywhere;
+}
+
+.status:empty {
+  display: none;
 }
 
 .unbuilt,
@@ -545,24 +454,91 @@ h3 {
   color: var(--ink-muted);
 }
 
-.run-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 12px;
-}
-
+/* A pane is the design system's Panel (ds.css's .cd-panel), drawn on the
+   markup every level already has: its h3 is the head, the rest the body.
+   Each level's own markup moves to the components themselves under #910. */
 .pane {
   min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  padding: 0 0 var(--space-3);
   background: var(--panel);
+  box-shadow: var(--frame);
+  border-radius: var(--radius-0);
   overflow-wrap: anywhere;
 }
 
-.pane-log,
-.pane-graph {
-  grid-column: 1 / -1;
+.pane:hover {
+  box-shadow: var(--frame-strong);
+}
+
+.pane:focus-within {
+  box-shadow: var(--frame-signal);
+}
+
+.pane > h3 {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.pane > :not(h3) {
+  margin: var(--space-3) var(--space-3) 0;
+}
+
+/* Inside a pane's body, what a module draws stands a gutter apart; a
+   log's lines do not. */
+.pane > div:not(.log) > * + * {
+  margin-top: var(--space-3);
+}
+
+/* Stats side by side (ds.js's stats), as the design system's previews set
+   them, numeral to numeral. */
+.stat-row {
+  align-items: flex-start;
+  gap: var(--space-3) var(--space-6);
+}
+
+.stat-row .cd-stat {
+  gap: var(--space-1);
+}
+
+/* A long name on one line, ending in an ellipsis; the element's title
+   carries it whole. */
+.cut {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* A figure trellis did not report (ds.js's unreported): a dash in the
+   muted ink, never 0, its reason on hover and to a screen reader. */
+.unreported {
+  color: var(--ink-muted);
+  cursor: help;
+}
+
+.level-name .icon {
+  margin-right: 0;
+}
+
+/* The run view's three columns (ds.css's .cd-rv-grid) need 1300 px; below
+   that the left and right columns stand side by side under the log, and
+   below 900 px everything is one column, so the page fits its minimum
+   window (page_css_fits_the_minimum_window). */
+@media (max-width: 1300px) {
+  .run-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .run-grid > :nth-child(2) {
+    grid-column: 1 / -1;
+    order: -1;
+  }
+}
+
+@media (max-width: 900px) {
+  .run-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* The overview's four panes: two columns where the window allows, one
@@ -570,8 +546,7 @@ h3 {
 .overview-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 12px;
-  margin-top: 8px;
+  gap: var(--space-6);
 }
 
 h4 {
@@ -587,14 +562,20 @@ h4:first-child {
   margin-top: 6px;
 }
 
+/* A pane's button is the design system's outline Button (.cd-btn). */
 .pane button {
-  padding: 1px 8px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--ground);
-  color: var(--signal);
-  font: inherit;
+  padding: var(--space-0\.5) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  box-shadow: var(--frame-strong);
+  color: var(--ink);
+  font: 500 12px/18px var(--font-mono);
   cursor: pointer;
+}
+
+.pane button:hover:not(:disabled) {
+  background: var(--panel-raised);
 }
 
 .pane button:disabled {
@@ -603,15 +584,32 @@ h4:first-child {
 }
 
 .log {
-  max-height: 320px;
+  max-height: 480px;
   overflow-y: auto;
-  font: 12px/1.4 ui-monospace, monospace;
+  color: var(--ink-secondary);
+  font: 400 12px/18px var(--font-mono);
   white-space: pre-wrap;
+}
+
+/* The actions log is the design system's Transcript (ds.css's .cd-tx,
+   #827): its rows are grids, and only a tool's raw call keeps its spaces. */
+.log.cd-tx {
+  max-height: 640px;
+  white-space: normal;
+}
+
+.log.cd-tx > .empty {
+  padding: var(--space-2) var(--space-3);
 }
 
 .rows {
   margin: 0;
   padding-left: 18px;
+}
+
+/* The Open refusal's line (#659) is a list row with no marker. */
+.rows li[role="status"] {
+  list-style: none;
 }
 
 .rows li.empty {
@@ -639,7 +637,7 @@ p {
 }
 
 code {
-  font: 12px ui-monospace, monospace;
+  font: 400 12px/16px var(--font-mono);
 }
 
 .passed {
@@ -652,29 +650,40 @@ code {
 
 /* The composer (#301), below every section. The textarea takes the
    width it is given, never a fixed one. */
+/* The composer (#301), below every section, drawn as the design system's
+   Compose panel: its label in label-caps, the textarea as the Queue's
+   (.cd-q-text), Send as the signal Button. The verbs and the queue are
+   #830's. */
 .composer {
-  margin-top: 16px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  padding: var(--space-3);
   background: var(--panel);
+  box-shadow: var(--frame);
   overflow-wrap: anywhere;
 }
 
 .composer label {
   color: var(--ink-muted);
+  font: 400 12px/16px var(--font-mono);
+}
+
+#composer-label {
+  font: 600 11px/16px var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-secondary);
 }
 
 .composer textarea {
   display: block;
   width: 100%;
-  margin: 4px 0 8px;
-  padding: 6px 8px;
+  min-height: 64px;
+  margin: var(--space-2) 0;
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--control-border);
-  border-radius: 4px;
-  background: var(--ground);
+  border-radius: var(--radius-xs);
+  background: var(--panel-inset);
   color: var(--ink);
-  font: inherit;
+  font: 400 13px/20px var(--font-mono);
   resize: vertical;
 }
 
@@ -687,12 +696,12 @@ code {
 
 .composer select,
 .composer button {
-  padding: 3px 10px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--ground);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-xs);
+  background: transparent;
   color: var(--ink);
-  font: inherit;
+  font: 500 13px/20px var(--font-mono);
 }
 
 .composer select {
@@ -700,8 +709,15 @@ code {
 }
 
 .composer button {
-  color: var(--signal);
+  border-color: transparent;
+  box-shadow: var(--frame-strong);
   cursor: pointer;
+}
+
+#composer-send:not(:disabled) {
+  background: var(--signal);
+  color: var(--ink-inverse);
+  box-shadow: none;
 }
 
 .composer button:disabled,
@@ -843,73 +859,126 @@ code {
   font-weight: 600;
 }
 
-/* The model pane (#564), open at launch above every section until a model
-   is chosen. */
-.model-pane {
-  margin: 0 0 12px;
-  padding: 8px 12px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--panel);
-  overflow-wrap: anywhere;
+/* The model chooser (#564, #909): the status bar's model, a design-system
+   Status, opens it as a popover over the stage, raised, framed strong and
+   over the scrim, which the summary itself draws so a click outside closes
+   it. It is served open, since no model is chosen at launch. */
+.model-pop > summary {
+  list-style: none;
+  cursor: pointer;
 }
 
-.model-pane summary {
-  cursor: pointer;
-  font-weight: 600;
+.model-pop > summary::-webkit-details-marker {
+  display: none;
+}
+
+.model-pop[open] > summary::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: var(--scrim);
+  cursor: default;
+}
+
+.status-right,
+.status-bar {
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+.model-pop > summary .cut {
+  max-width: 24ch;
 }
 
 .model-form {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 8px;
+  gap: var(--space-2);
 }
 
-.model-options {
-  padding-left: 0;
+.model-pop > .model-form {
+  position: fixed;
+  right: var(--space-4);
+  bottom: calc(var(--space-8) + var(--space-2));
+  z-index: 21;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 560px;
+  max-width: calc(100vw - 2 * var(--space-4));
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  background: var(--panel-raised);
+  box-shadow: var(--frame-strong);
+  border-radius: var(--radius-md);
+  color: var(--ink);
+  font: 400 13px/20px var(--font-sans);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.model-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--line);
+}
+
+.model-head h2 {
+  margin: 0;
+  font: 600 11px/16px var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-secondary);
+}
+
+.model-form h3 {
+  margin-top: var(--space-2);
+}
+
+.model-options,
+.model-rows {
+  margin: 0;
+  padding: 0;
   list-style: none;
+}
+
+.model-rows li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
 }
 
 .model-form input[type="text"] {
   width: 100%;
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2);
   border: 1px solid var(--control-border);
-  border-radius: 4px;
-  background: var(--ground);
+  border-radius: var(--radius-xs);
+  background: var(--panel-inset);
   color: var(--ink);
-  font: 12px ui-monospace, monospace;
+  font: 400 12px/18px var(--font-mono);
 }
 
-.model-form button {
-  padding: 3px 10px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--ground);
-  color: var(--signal);
-  font: inherit;
-  cursor: pointer;
-}
-
-/* The status bar (#306): six short facts on one wrapping line. */
+/* The status bar (#306, #909): a design-system Status or a short value per
+   cell, each label read by a screen reader and not drawn. */
 .status-bar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px 12px;
   margin: 0;
-  font-size: 12px;
 }
 
-.status-bar dt {
-  color: var(--ink-muted);
+.status-bar > div {
+  display: contents;
 }
 
 /* One line per cell (#652): a long value ends in an ellipsis, never cut
    off unmarked, and the binary and root cells carry their whole path as
    their title. */
 .status-bar dd {
-  max-width: 40ch;
-  margin: 0 8px 0 0;
+  max-width: 32ch;
+  margin: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;

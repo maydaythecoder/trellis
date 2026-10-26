@@ -81,6 +81,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>trellis</title>
     <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="ds.css">
     <link rel="stylesheet" href="style.css">
     <script type="module" src="web.js"></script>
     <script type="module" src="main.js"></script>
@@ -91,7 +92,7 @@
     <script type="module" src="queue.js"></script>
     <script type="module" src="atlas.js"></script>
   </head>
-  <body>
+  <body class="cd-shell">
     <!-- The icon set (docs/design/system/icons, #835), one <symbol> each,
     drawn where a label uses one with <use href>: an icon is never the
     only carrier of a meaning, so each sits beside its word, and the
@@ -133,21 +134,21 @@
     Trail across the top, the sibling rail on the left, the stage, and the
     status bar along the bottom. keys.js draws the Trail and the rail for
     the level shown and owns the keys that move between levels. -->
-    <header class="shell-top">
-      <nav id="trail" class="trail" aria-label="Trail">
-        <ol id="trail-path" class="trail-path">
-          <li><span class="trail-current" aria-current="location">Overview</span></li>
+    <header class="cd-shell-top">
+      <nav id="trail" class="cd-trail" aria-label="Trail">
+        <ol id="trail-path" class="cd-trail-path">
+          <li><span class="cd-trail-current" aria-current="location">Overview</span></li>
         </ol>
-        <p class="trail-depth">
-          <span id="trail-ticks" class="trail-ticks" aria-hidden="true"><span class="trail-tick on"></span><span class="trail-tick"></span><span class="trail-tick"></span><span class="trail-tick"></span></span>
+        <p class="cd-trail-depth">
+          <span id="trail-ticks" class="cd-trail-ticks" aria-hidden="true"><span class="cd-trail-tick cd-trail-tick-on"></span><span class="cd-trail-tick"></span><span class="cd-trail-tick"></span><span class="cd-trail-tick"></span></span>
           <span id="trail-level">L1 / 4</span>
-          <kbd>ESC</kbd> out
+          <span class="cd-key-row"><kbd class="cd-key">ESC</kbd><span>out</span></span>
         </p>
       </nav>
     </header>
-    <div class="shell-middle">
-      <nav id="siblings" class="siblings" aria-label="Siblings" hidden></nav>
-    <main id="stage">
+    <div class="cd-shell-stage">
+      <nav id="siblings" class="cd-shell-rail" aria-label="Siblings" hidden></nav>
+    <main id="stage" class="cd-shell-body">
       <h1 class="visually-hidden">trellis</h1>
       <p id="status" class="status"></p>
       <div id="alert" class="alert" role="alert" hidden>
@@ -155,43 +156,16 @@
         <button type="button" id="alert-dismiss">Dismiss</button>
       </div>
 
-      <details id="model-pane" class="model-pane" open>
-        <summary id="model-summary">Model: none chosen yet</summary>
-        <form id="model" class="model-form" aria-labelledby="model-summary">
-          <p id="model-current"></p>
-          <ul id="model-options" class="rows model-options"></ul>
-          <label for="model-typed">Model spec</label>
-          <input id="model-typed" name="spec" type="text" spellcheck="false" autocomplete="off">
-          <div class="composer-row">
-            <input id="model-save" name="save" type="checkbox">
-            <label for="model-save">Save to my user config (never the repository's)</label>
-          </div>
-          <div class="composer-row">
-            <button type="submit" id="model-use">Use this model</button>
-            <button type="button" id="model-refresh">Look again</button>
-          </div>
-          <p id="model-note" class="muted" role="status"></p>
-          <h3 id="model-probed-title">Where trellis looked</h3>
-          <ul id="model-probed" class="rows" aria-labelledby="model-probed-title"></ul>
-          <h3 id="model-providers-title">Your providers</h3>
-          <ul id="model-providers" class="rows" aria-labelledby="model-providers-title"></ul>
-          <details id="model-catalog-pane">
-            <summary id="model-catalog-title">Catalogue: weights trellis model pull fetches</summary>
-            <ul id="model-catalog" class="rows" aria-labelledby="model-catalog-title"></ul>
-          </details>
-        </form>
-      </details>
-
       <section id="overview" aria-labelledby="overview-title">
-        <h2 id="overview-title" tabindex="-1">Overview</h2>
-        <p id="ov-root" class="muted">Reading the overview.</p>
+        <h2 id="overview-title" class="visually-hidden" tabindex="-1">Overview</h2>
+        <p id="ov-root" class="ov-root">Reading the overview.</p>
         <ul class="levels" aria-label="Ways in">
-          <li><button type="button" class="level-tile" data-enter="run"><span class="level-name">Run</span><span class="level-note">The run in flight: its log, actions, edits and checks.</span><span class="drill" aria-hidden="true">⤢</span></button></li>
-          <li><button type="button" class="level-tile" data-enter="trails"><span class="level-name">Trails</span><span class="level-note">Each past run's committed record.</span><span class="drill" aria-hidden="true">⤢</span></button></li>
-          <li><button type="button" class="level-tile" data-enter="codebase"><span class="level-name">Codebase</span><span class="level-note">The module graph trellis indexed, and a symbol's radius.</span><span class="drill" aria-hidden="true">⤢</span></button></li>
-          <li><button type="button" class="level-tile" data-enter="atlas"><span class="level-name">Atlas</span><span class="level-note">The map of the repository over its history.</span><span class="drill" aria-hidden="true">⤢</span></button></li>
-          <li><button type="button" class="level-tile" data-enter="board"><span class="level-name">Board</span><span class="level-note">The task queue, and PR and CI state.</span><span class="drill" aria-hidden="true">⤢</span></button></li>
-          <li><button type="button" class="level-tile" data-enter="vault"><span class="level-name">Vault</span><span class="level-note">The note vault: search a note, read its relations.</span><span class="drill" aria-hidden="true">⤢</span></button></li>
+          <li><button type="button" class="cd-panel level-tile" data-enter="run" title="The run in flight: its log, actions, edits and checks."><span class="cd-panel-head"><span class="cd-panel-title level-name"><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-run"></use></svg>Run</span><span class="cd-drill" aria-hidden="true">⤢</span></span><span id="lv-run" class="cd-panel-body level-figure"></span></button></li>
+          <li><button type="button" class="cd-panel level-tile" data-enter="trails" title="Each past run's committed record."><span class="cd-panel-head"><span class="cd-panel-title level-name"><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-trail"></use></svg>Trails</span><span class="cd-drill" aria-hidden="true">⤢</span></span><span id="lv-trails" class="cd-panel-body level-figure"></span></button></li>
+          <li><button type="button" class="cd-panel level-tile" data-enter="codebase" title="The module graph trellis indexed, and a symbol's radius."><span class="cd-panel-head"><span class="cd-panel-title level-name"><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-call-graph"></use></svg>Codebase</span><span class="cd-drill" aria-hidden="true">⤢</span></span><span id="lv-codebase" class="cd-panel-body level-figure"></span></button></li>
+          <li><button type="button" class="cd-panel level-tile" data-enter="atlas" title="The map of the repository over its history."><span class="cd-panel-head"><span class="cd-panel-title level-name"><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-blast-radius"></use></svg>Atlas</span><span class="cd-drill" aria-hidden="true">⤢</span></span></button></li>
+          <li><button type="button" class="cd-panel level-tile" data-enter="board" title="The task queue, and PR and CI state."><span class="cd-panel-head"><span class="cd-panel-title level-name"><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-queue"></use></svg>Board</span><span class="cd-drill" aria-hidden="true">⤢</span></span><span id="lv-board" class="cd-panel-body level-figure"></span></button></li>
+          <li><button type="button" class="cd-panel level-tile" data-enter="vault" title="The note vault: search a note, read its relations."><span class="cd-panel-head"><span class="cd-panel-title level-name"><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-vault"></use></svg>Vault</span><span class="cd-drill" aria-hidden="true">⤢</span></span></button></li>
         </ul>
         <div class="overview-grid">
           <div class="pane" role="region" aria-labelledby="ov-recent-title">
@@ -231,53 +205,63 @@
       </section>
 
       <section id="run" aria-labelledby="run-title" hidden>
-        <h2 id="run-title" tabindex="-1">Run</h2>
-        <div class="run-grid">
-          <div class="pane pane-log" role="region" aria-labelledby="log-title">
-            <h3 id="log-title">Actions log</h3>
-            <div id="pane-transcript" class="log" role="log" aria-labelledby="log-title" tabindex="0"></div>
-            <button type="button" id="log-jump" hidden>New lines below · Jump to the end</button>
+        <h2 id="run-title" class="visually-hidden" tabindex="-1">Run</h2>
+        <!-- The run view as the design system draws it (docs/design/system/
+        components/RunView.md; #909): three columns, the run's figures on the
+        left, the log and the graph in the middle, what it changed and how
+        it ended on the right. -->
+        <div class="cd-rv-grid run-grid">
+          <div class="cd-rv-col">
+            <div class="pane" role="region" aria-labelledby="budget-title">
+              <h3 id="budget-title">Budget</h3>
+              <div id="pane-budget"></div>
+            </div>
+            <div class="pane" role="region" aria-labelledby="tier-title">
+              <h3 id="tier-title">Tier</h3>
+              <div id="pane-tier"></div>
+            </div>
+            <div class="pane" role="region" aria-labelledby="runtime-title">
+              <h3 id="runtime-title">Runtime</h3>
+              <div id="pane-runtime"></div>
+            </div>
+            <div class="pane" role="region" aria-labelledby="session-tokens-title">
+              <h3 id="session-tokens-title">Session tokens</h3>
+              <div id="pane-session-tokens"></div>
+            </div>
           </div>
-          <div class="pane" role="region" aria-labelledby="tier-title">
-            <h3 id="tier-title">Tier</h3>
-            <p id="pane-tier"></p>
+          <div class="cd-rv-col">
+            <div class="pane pane-log" role="region" aria-labelledby="log-title">
+              <h3 id="log-title">Actions log</h3>
+              <div id="pane-transcript" class="log cd-tx" role="log" aria-labelledby="log-title" tabindex="0"></div>
+              <button type="button" id="log-jump" hidden>New lines below · Jump to the end</button>
+            </div>
+            <div class="pane pane-graph" role="region" aria-labelledby="graph-title">
+              <h3 id="graph-title">Graph</h3>
+              <div id="graph"></div>
+            </div>
           </div>
-          <div class="pane" role="region" aria-labelledby="budget-title">
-            <h3 id="budget-title">Budget</h3>
-            <p id="pane-budget"></p>
-          </div>
-          <div class="pane" role="region" aria-labelledby="runtime-title">
-            <h3 id="runtime-title">Runtime</h3>
-            <div id="pane-runtime"></div>
-          </div>
-          <div class="pane" role="region" aria-labelledby="session-tokens-title">
-            <h3 id="session-tokens-title">Session tokens</h3>
-            <ul id="pane-session-tokens" class="rows"></ul>
-          </div>
-          <div class="pane" role="region" aria-labelledby="radius-title">
-            <h3 id="radius-title">Radius</h3>
-            <div id="pane-radius"></div>
-          </div>
-          <div class="pane" role="region" aria-labelledby="checks-title">
-            <h3 id="checks-title">Checks</h3>
-            <ul id="pane-checks" class="rows"></ul>
-          </div>
-          <div class="pane" role="region" aria-labelledby="actions-title">
-            <h3 id="actions-title">Turns</h3>
-            <ol id="pane-actions" class="rows"></ol>
-          </div>
-          <div class="pane" role="region" aria-labelledby="edits-title">
-            <h3 id="edits-title">Edits</h3>
-            <ul id="pane-edits" class="rows"></ul>
-          </div>
-          <div class="pane" role="region" aria-labelledby="outcome-title">
-            <h3 id="outcome-title">Last run</h3>
-            <p id="pane-running"></p>
-            <div id="pane-outcome"></div>
-          </div>
-          <div class="pane pane-graph" role="region" aria-labelledby="graph-title">
-            <h3 id="graph-title">Graph</h3>
-            <div id="graph"></div>
+          <div class="cd-rv-col">
+            <div class="pane" role="region" aria-labelledby="outcome-title">
+              <h3 id="outcome-title">Last run</h3>
+              <p id="pane-running"></p>
+              <div id="pane-outcome"></div>
+            </div>
+            <div class="pane" role="region" aria-labelledby="checks-title">
+              <h3 id="checks-title">Checks</h3>
+              <ol id="pane-checks" class="cd-rail"></ol>
+            </div>
+            <div class="pane" role="region" aria-labelledby="edits-title">
+              <h3 id="edits-title">Edits</h3>
+              <ol id="pane-edits" class="cd-rail"></ol>
+            </div>
+            <div class="pane" role="region" aria-labelledby="actions-title">
+              <h3 id="actions-title">Turns</h3>
+              <ol id="pane-actions" class="cd-rail"></ol>
+            </div>
+            <div class="pane" role="region" aria-labelledby="radius-title">
+              <h3 id="radius-title">Radius</h3>
+              <div id="pane-radius"></div>
+            </div>
           </div>
         </div>
       </section>
@@ -522,16 +506,49 @@
       </dialog>
     </main>
     </div>
-    <footer class="shell-bar">
-      <p class="keys" aria-label="Keys"><span class="key"><kbd>⏎</kbd> in</span> <span class="key"><kbd>ESC</kbd> out</span> <span class="key"><kbd>Tab</kbd> next</span></p>
-      <dl id="status-bar" class="status-bar" aria-label="Status">
-        <dt>trellis</dt><dd id="status-trellis">not started yet</dd>
-        <dt>root</dt><dd id="status-root">none open</dd>
-        <dt>model</dt><dd id="status-model">none chosen yet</dd>
-        <dt>run</dt><dd id="status-run">no run in flight</dd>
-        <dt>phase</dt><dd id="status-phase">none</dd>
-        <dt>child</dt><dd id="status-child">not started yet</dd>
-      </dl>
+    <!-- The status bar (#306, #909): the live keys on the left; on the right
+    what is running and where, each a design-system Status or a short value,
+    and the model, whose chooser opens from it as a popover over the stage.
+    The chooser is served open: at launch no model is chosen, and prompt
+    input stays disabled until the child takes one (ADR 0048 section 5). -->
+    <footer class="cd-shell-bar">
+      <p class="cd-row keys" aria-label="Keys"><span class="cd-key-row"><kbd class="cd-key">⏎</kbd><span>in</span></span><span class="cd-key-row"><kbd class="cd-key">ESC</kbd><span>out</span></span><span class="cd-key-row"><kbd class="cd-key">Tab</kbd><span>next</span></span></p>
+      <div class="cd-row status-right">
+        <dl id="status-bar" class="cd-row status-bar" aria-label="Status">
+          <div><dt class="visually-hidden">trellis rpc</dt><dd id="status-child">not started</dd></div>
+          <div><dt class="visually-hidden">trellis</dt><dd id="status-trellis">not started</dd></div>
+          <div><dt class="visually-hidden">root</dt><dd id="status-root">none open</dd></div>
+          <div><dt class="visually-hidden">run</dt><dd id="status-run">idle</dd></div>
+          <div><dt class="visually-hidden">phase</dt><dd id="status-phase"></dd></div>
+        </dl>
+        <details id="model-pane" class="model-pop" open>
+          <summary id="model-summary"><span class="cd-status cd-status-signal"><span class="cd-status-dot" aria-hidden="true"></span><span class="cut">no model</span></span></summary>
+          <form id="model" class="model-form" aria-labelledby="model-title">
+            <div class="model-head"><h2 id="model-title">Model</h2><span class="cd-key-row"><kbd class="cd-key">ESC</kbd><span>close</span></span></div>
+            <p id="model-current"></p>
+            <ul id="model-options" class="model-options"></ul>
+            <label for="model-typed">Spec</label>
+            <input id="model-typed" name="spec" type="text" spellcheck="false" autocomplete="off">
+            <div class="composer-row">
+              <input id="model-save" name="save" type="checkbox">
+              <label for="model-save">Save to my user config (never the repository's)</label>
+            </div>
+            <div class="composer-row">
+              <button type="submit" id="model-use" class="cd-btn cd-btn-signal">Use this model</button>
+              <button type="button" id="model-refresh" class="cd-btn cd-btn-ghost">Look again</button>
+            </div>
+            <p id="model-note" class="muted" role="status"></p>
+            <h3 id="model-probed-title">Where trellis looked</h3>
+            <ul id="model-probed" class="model-rows" aria-labelledby="model-probed-title"></ul>
+            <h3 id="model-providers-title">Your providers</h3>
+            <ul id="model-providers" class="model-rows" aria-labelledby="model-providers-title"></ul>
+            <details id="model-catalog-pane">
+              <summary id="model-catalog-title">Catalogue: weights trellis model pull fetches</summary>
+              <ul id="model-catalog" class="model-rows" aria-labelledby="model-catalog-title"></ul>
+            </details>
+          </form>
+        </details>
+      </div>
     </footer>
   </body>
 </html>

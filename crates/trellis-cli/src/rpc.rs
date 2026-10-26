@@ -550,12 +550,16 @@ impl<M: trellis_loop::Model> trellis_loop::Model for Watched<'_, M> {
         self.model.next_step(t)
     }
 
-    fn tokens_used(&self) -> u64 {
+    fn tokens_used(&self) -> Option<u64> {
         self.model.tokens_used()
     }
 
     fn prompt_bytes(&self) -> Option<usize> {
         self.model.prompt_bytes()
+    }
+
+    fn context_bytes(&self) -> Option<usize> {
+        self.model.context_bytes()
     }
 
     fn compactions(&self) -> &[trellis_loop::Compacted] {
@@ -2002,6 +2006,8 @@ impl Chain {
             run_ids: Some(self.ran.clone()),
             run_ended: Some(self.ended.clone()),
             tier: Some(self.tier.clone()),
+            // This run's own, for its `run_end`.
+            elapsed_ms: std::sync::OnceLock::new(),
         };
         // Cleared first, so a run that stops before it decides a tier
         // leaves none, rather than the last run's for another model.
@@ -2126,9 +2132,10 @@ fn same_place(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// `get_state`'s view of how the last run ended.
+/// `get_state`'s view of how the last run ended: `run_end`'s outcome
+/// fields, without its trail id or the loop's spend.
 fn run_end_response(r: &Result<RunExit>, id: Option<&str>) -> Value {
-    let mut v = output::run_end(r, None, id);
+    let mut v = output::run_end(r, None, None, id);
     if let Some(o) = v.as_object_mut() {
         o.remove("type");
     }
@@ -3016,8 +3023,9 @@ mod tests {
         use trellis_loop::Model;
         let mut inner = crate::testutil::figures();
         let w = Watched::new(&mut inner, None);
-        assert_eq!(w.tokens_used(), 7);
+        assert_eq!(w.tokens_used(), Some(7));
         assert_eq!(w.prompt_bytes(), Some(4321));
+        assert_eq!(w.context_bytes(), Some(9_000));
         assert_eq!(w.compactions().len(), 1);
         assert_eq!(w.compactions()[0].elided_bytes, 50);
         assert_eq!(w.requested_compactions().len(), 1);

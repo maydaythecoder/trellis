@@ -16,17 +16,11 @@
 // (CLAUDE.md rules 3 and 4).
 
 import { el, muted } from "./dom.js";
+import { dsStatus, figure, railRows, stats, unreported } from "./ds.js";
 import { isCount, notReported, str } from "./fmt.js";
 
 function list(v) {
   return Array.isArray(v) ? v : [];
-}
-
-// A definition list from [label, value] pairs, each value already text.
-function pairs(doc, rows) {
-  const dl = el(doc, "dl");
-  for (const [label, value] of rows) dl.append(el(doc, "dt", label), el(doc, "dd", value));
-  return dl;
 }
 
 // One muted line in place of a pane's contents.
@@ -120,9 +114,20 @@ export function drawOpenRefusal(doc, text) {
   doc.getElementById("ov-recent-status").textContent = text;
 }
 
-// last run: the open repository's newest trail. The overview carries no
-// budget and no approvals for it (#558's `last_run` has neither), so those
-// rows say so rather than drawing a figure trellis did not send.
+// The tone a trail's outcome word is drawn in: an outcome is not a check,
+// so a converged run is ok and the rest are not, each with its word.
+const OUTCOME_TONES = { converged: "ok", "not converged": "down", interrupted: "warn", error: "down" };
+
+// A trail's outcome as a Status, or unreported when it carries none.
+function outcomeStatus(doc, t) {
+  const word = str(t.outcome);
+  return word === null ? unreported(doc, "the trail carries no outcome") : dsStatus(doc, OUTCOME_TONES[word] ?? "idle", word, { tag: true });
+}
+
+// last run: the open repository's newest trail, as Stats. The overview
+// carries no budget and no approvals for it (#558's `last_run` has
+// neither), so those figures are drawn unreported rather than as a figure
+// trellis did not send.
 function lastRun(doc, pane, o) {
   if (!("root" in o)) {
     only(doc, pane, NO_ROOT_PANE);
@@ -137,29 +142,31 @@ function lastRun(doc, pane, o) {
     only(doc, pane, `The newest trail could not be read: ${t.error}`);
     return;
   }
+  const head = el(doc, "p");
+  // The run's outcome and its checks' results are two vocabularies, so
+  // each keeps its own place.
+  head.append(outcomeStatus(doc, t), " ", muted(doc, "span", `integrity ${str(t.integrity) ?? "not reported"}`));
   const checks = list(t.checks).map((c) => {
     const result = c && c.passed === true ? "passed" : c && c.passed === false ? "failed" : "unknown";
-    return `${str(c && c.kind) ?? "check"} ${result}`;
+    return { label: str(c && c.kind) ?? "check", meta: el(doc, "strong", result, result), tone: result === "passed" ? "ok" : result === "failed" ? "down" : null };
   });
-  const rows = [
-    ["trail", str(t.run_id) ?? "not reported"],
-    ["task", str(t.task) ?? "not reported"],
-    ["started", str(t.started_at) ?? "not recorded"],
-    // The run's outcome and its checks' results are two vocabularies, so
-    // each keeps its own row.
-    ["outcome", str(t.outcome) ?? "not reported"],
-    ["integrity", str(t.integrity) ?? "not reported"],
-    ["turns", isCount(t.turns) ? String(t.turns) : "not measured"],
-    ["edits", isCount(t.edits) ? `${t.edits} file(s)` : "not reported"],
-    ["checks", checks.length > 0 ? checks.join(", ") : "none ran"],
-    // Two counts, never one number (CLAUDE.md rule 4).
-    ["verified", notReported(t.verified)],
-    ["reviewed", notReported(t.reviewed)],
-    ["budget", "not reported in the overview"],
-    ["tier", str(t.tier) ?? "not recorded"],
-    ["approvals", "not reported in the overview"],
-  ];
-  pane.replaceChildren(pairs(doc, rows));
+  const checkRail = el(doc, "ol", null, "cd-rail");
+  checkRail.append(...railRows(doc, checks));
+  pane.replaceChildren(
+    head,
+    el(doc, "p", str(t.task) ?? "task not reported"),
+    stats(doc, [
+      { label: "turns", value: figure(doc, t.turns, "the trail's turns were not measured") },
+      { label: "edits", value: figure(doc, t.edits, "the trail did not report edits"), unit: "files" },
+      // Two counts, never one number (CLAUDE.md rule 4).
+      { label: "verified", value: figure(doc, t.verified, "the trail did not report it") },
+      { label: "reviewed", value: figure(doc, t.reviewed, "the trail did not report it") },
+      { label: "budget", value: unreported(doc, "the overview carries no budget") },
+      { label: "approvals", value: unreported(doc, "the overview carries no approvals") },
+    ]),
+    checks.length > 0 ? checkRail : muted(doc, "p", "no checks ran"),
+    muted(doc, "p", `trail ${str(t.run_id) ?? "not reported"} · started ${str(t.started_at) ?? "not recorded"} · tier ${str(t.tier) ?? "not recorded"}`),
+  );
 }
 
 // codebase: the cached index's module count, and its call sites as three
@@ -177,15 +184,16 @@ function codebase(doc, pane, o) {
     only(doc, pane, `Not shown: ${str(o.codebase_reason) ?? "no reason given"}.`);
     return;
   }
+  const why = "the saved index did not carry it";
   pane.replaceChildren(
-    pairs(doc, [
-      ["modules indexed", notReported(c.modules_indexed)],
-      ["bound call sites", notReported(c.bound_call_sites)],
-      ["ambiguous", notReported(c.ambiguous)],
-      ["unresolved", notReported(c.unresolved)],
+    stats(doc, [{ label: "modules", value: figure(doc, c.modules_indexed, why), unit: "indexed" }]),
+    stats(doc, [
+      { label: "bound", value: figure(doc, c.bound_call_sites, why), unit: "call sites" },
+      { label: "ambiguous", value: figure(doc, c.ambiguous, why) },
+      { label: "unresolved", value: figure(doc, c.unresolved, why) },
     ]),
     muted(doc, "p", "Three counts from different populations; no share of one is drawn."),
-    muted(doc, "p", "From the saved index, .trellis/index.bin, which trellis index and the Codebase section save."),
+    muted(doc, "p", "From .trellis/index.bin, which trellis index and the Codebase section save."),
   );
 }
 
@@ -318,6 +326,49 @@ function rootLine(doc, pane, o, actions) {
   }
 }
 
+// The level tiles' figures (#909): one live figure per tile from the parts
+// of the object it already reads, or nothing where the overview carries
+// none (the Atlas and the Vault tiles have no slot). Each is drawn small,
+// under the tile's name, and says nothing the pane below does not.
+function levelRun(doc, pane, o) {
+  const t = o.last_run;
+  if (!("root" in o) || t === null || t === undefined) pane.replaceChildren();
+  else if (str(t.error) !== null) pane.replaceChildren(dsStatus(doc, "down", "trail unreadable", { title: t.error }));
+  else pane.replaceChildren(outcomeStatus(doc, t));
+}
+
+function levelTrails(doc, pane, o) {
+  const t = o.last_run;
+  const at = t && typeof t === "object" ? str(t.started_at) : null;
+  if (at === null) pane.replaceChildren();
+  else pane.replaceChildren(muted(doc, "span", `newest ${at.replace("T", " ").replace(/:\d\dZ$/, "Z")}`));
+}
+
+function levelCodebase(doc, pane, o) {
+  const c = o.codebase;
+  if (!("root" in o)) pane.replaceChildren();
+  else if (c === null || typeof c !== "object") pane.replaceChildren(unreported(doc, str(o.codebase_reason) ?? "no reason given"));
+  else pane.replaceChildren(stats(doc, [{ label: "modules", value: figure(doc, c.modules_indexed, "the saved index did not carry it") }]));
+}
+
+function levelBoard(doc, pane, o) {
+  const b = o.board && typeof o.board === "object" ? o.board : null;
+  if (!("root" in o) || b === null) {
+    pane.replaceChildren();
+    return;
+  }
+  const pr = b.pr_ci && typeof b.pr_ci === "object" ? b.pr_ci : {};
+  pane.replaceChildren(
+    stats(doc, [
+      { label: "tasks", value: Array.isArray(b.tasks) ? String(b.tasks.length) : unreported(doc, "the queue could not be read") },
+      {
+        label: "open prs",
+        value: pr.available === true ? String(list(pr.pull_requests).length) : unreported(doc, str(pr.reason) ?? "gh is not available"),
+      },
+    ]),
+  );
+}
+
 // element id -> drawing function, each given the whole object.
 const PANES = {
   "ov-root": rootLine,
@@ -325,6 +376,10 @@ const PANES = {
   "ov-last-run": lastRun,
   "ov-codebase": codebase,
   "ov-board": board,
+  "lv-run": levelRun,
+  "lv-trails": levelTrails,
+  "lv-codebase": levelCodebase,
+  "lv-board": levelBoard,
 };
 
 // Draws every pane from one overview object. `actions.open(path)` is what
