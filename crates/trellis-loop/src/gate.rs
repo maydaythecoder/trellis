@@ -210,6 +210,7 @@ pub const APPROVABLE_TOOLS: &[&str] = &[
     "callees_of",
     "coverage_report",
     "ask_human",
+    "plan",
 ];
 
 /// Whether each built-in tool only reads, the fact a `pre_tool` or
@@ -230,6 +231,7 @@ pub(crate) const READ_ONLY_TOOLS: &[(&str, bool)] = &[
     ("callees_of", true),
     ("coverage_report", true),
     ("ask_human", true),
+    ("plan", true),
     ("edit", false),
     ("write_file", false),
     ("bash", false),
@@ -274,6 +276,7 @@ pub fn tool_name(call: &ToolCall) -> &str {
         ToolCall::CoverageReport { .. } => "coverage_report",
         ToolCall::Custom { name, .. } => name,
         ToolCall::AskHuman { .. } => "ask_human",
+        ToolCall::Plan { .. } => "plan",
     }
 }
 
@@ -461,6 +464,12 @@ pub(crate) fn call_summary(call: &ToolCall) -> String {
         ToolCall::Custom { name, args } => format!("{name} {args}"),
         // Quoted and cut: model output, on one line of a log or the trail.
         ToolCall::AskHuman { question, .. } => format!("ask_human {:?}", first_line(question)),
+        // A count, not the text: the steps are model output, and the
+        // observation lists them quoted.
+        ToolCall::Plan { steps } => match steps.len() {
+            1 => "plan (1 step)".to_string(),
+            n => format!("plan ({n} steps)"),
+        },
     }
 }
 
@@ -586,39 +595,176 @@ pub fn preview_edit(root: &Path, path: &str, old: &str, new: &str) -> Option<Edi
     }
     let at = src.find(old.as_str())?;
     let after = format!("{}{}{}", &src[..at], new, &src[at + old.len()..]);
-
-    let a: Vec<&str> = src.lines().collect();
-    let b: Vec<&str> = after.lines().collect();
-    // Trim the lines both versions share at either end; what is left is the
-    // change, as whole lines.
-    let head = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
-    let tail = a[head..]
-        .iter()
-        .rev()
-        .zip(b[head..].iter().rev())
-        .take_while(|(x, y)| x == y)
-        .count();
-    let removed = &a[head..a.len() - tail];
-    let added = &b[head..b.len() - tail];
+    let h = Hunk::of(&src, &after, at, old.len(), new.len());
 
     let mut diff = format!("--- {path}\n+++ {path}\n");
-    if head > 0 {
-        diff.push_str(&format!("  {}\n", a[head - 1]));
+    if let Some(l) = h.before() {
+        diff.push_str(&format!("  {l}\n"));
     }
-    for l in removed {
+    for l in h.removed() {
         diff.push_str(&format!("- {l}\n"));
     }
-    for l in added {
+    for l in h.added() {
         diff.push_str(&format!("+ {l}\n"));
     }
-    if tail > 0 {
-        diff.push_str(&format!("  {}\n", a[a.len() - tail]));
+    if let Some(l) = h.after() {
+        diff.push_str(&format!("  {l}\n"));
     }
     Some(EditPreview {
-        added: added.len(),
-        removed: removed.len(),
+        added: h.added().len(),
+        removed: h.removed().len(),
         diff,
     })
+}
+
+/// What an applied edit changed, as its `turn` event reports it (#802).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditDiff {
+    pub lines_added: usize,
+    pub lines_removed: usize,
+    /// The 1-based line, in the file before the edit, of the first line the
+    /// edit removed or replaced; with nothing removed, the line the added
+    /// lines were put before.
+    pub start_line: usize,
+    /// A unified diff of the one hunk, with a line of context either side
+    /// and its `@@` header. Repository text and model output: a client
+    /// shows it as text and never interprets it (CLAUDE.md rule 10).
+    pub diff: String,
+}
+
+/// The most of a diff an [`EditDiff`] keeps, in bytes: the cap a command's
+/// output is kept to, since the diff travels on the same event stream, and
+/// an edit that rewrote a whole file would otherwise put the file on one
+/// event line.
+pub(crate) const DIFF_CAP: usize = crate::exec::OUTPUT_CAP;
+
+/// The applied edit that replaced `old_len` bytes at `at` of `src` with
+/// `new_len` bytes, giving `after`. Both texts are LF, as `apply_edit`
+/// matches them.
+///
+/// The hunk is the one `preview_edit` puts to a person in approve mode, so
+/// the counts on the question and on the turn cannot disagree.
+pub(crate) fn edit_diff(
+    path: &str,
+    src: &str,
+    after: &str,
+    at: usize,
+    old_len: usize,
+    new_len: usize,
+) -> EditDiff {
+    let h = Hunk::of(src, after, at, old_len, new_len);
+    let start_line = h.first + 1;
+    let context = usize::from(h.before().is_some()) + usize::from(h.after().is_some());
+    let from = start_line - usize::from(h.before().is_some());
+    // GNU's numbering of a hunk side with no lines: by the line before it.
+    let range = |n: usize| match context + n {
+        0 => format!("{},0", from - 1),
+        len => format!("{from},{len}"),
+    };
+    let mut lines = vec![
+        format!("--- {path}"),
+        format!("+++ {path}"),
+        format!(
+            "@@ -{} +{} @@",
+            range(h.removed().len()),
+            range(h.added().len())
+        ),
+    ];
+    lines.extend(h.before().map(|l| format!(" {l}")));
+    lines.extend(h.removed().iter().map(|l| format!("-{l}")));
+    lines.extend(h.added().iter().map(|l| format!("+{l}")));
+    lines.extend(h.after().map(|l| format!(" {l}")));
+
+    let mut diff = String::new();
+    for (i, l) in lines.iter().enumerate() {
+        if diff.len() + l.len() + 1 > DIFF_CAP {
+            // Cut at a line, and say so: a silently cut diff reads as the
+            // whole change. The counts are still the whole change's.
+            diff.push_str(&format!(
+                "...({} more diff lines cut at {DIFF_CAP} bytes)...\n",
+                lines.len() - i
+            ));
+            break;
+        }
+        diff.push_str(l);
+        diff.push('\n');
+    }
+    EditDiff {
+        lines_added: h.added().len(),
+        lines_removed: h.removed().len(),
+        start_line,
+        diff,
+    }
+}
+
+/// The 1-based line a byte offset falls on: the newlines before it, plus one.
+///
+/// Not `lines().count()`, which gives the line above when the offset starts
+/// a line and 0 at offset 0.
+pub fn line_of(src: &str, offset: usize) -> usize {
+    src.as_bytes()[..offset.min(src.len())]
+        .iter()
+        .filter(|&&b| b == b'\n')
+        .count()
+        + 1
+}
+
+/// The whole lines one edit changed, as indices into the text's lines
+/// before (`a`) and after (`b`) it. Lines before `first` are the same in
+/// both, and `a[a_end..]` is `b[b_end..]`.
+struct Hunk<'a> {
+    a: Vec<&'a str>,
+    b: Vec<&'a str>,
+    first: usize,
+    a_end: usize,
+    b_end: usize,
+}
+
+impl<'a> Hunk<'a> {
+    /// The window is the lines the replaced bytes sit on, found from `at`
+    /// with `line_of`, and only the shared lines inside it are trimmed: the
+    /// lines outside it are the same in both texts by construction, so a
+    /// large file is not compared line by line from either end to find a
+    /// one-line change, and the hunk never lies outside the edit's lines.
+    fn of(src: &'a str, after: &'a str, at: usize, old_len: usize, new_len: usize) -> Self {
+        let a: Vec<&str> = src.lines().collect();
+        let b: Vec<&str> = after.lines().collect();
+        // The text before `at` is the same in both, so its lines are; past
+        // the line holding the edit's end, so is the text, in both.
+        let mut first = (line_of(src, at) - 1).min(a.len()).min(b.len());
+        let mut a_end = line_of(src, at + old_len).min(a.len());
+        let mut b_end = line_of(after, at + new_len).min(b.len());
+        while first < a_end && first < b_end && a[first] == b[first] {
+            first += 1;
+        }
+        while a_end > first && b_end > first && a[a_end - 1] == b[b_end - 1] {
+            a_end -= 1;
+            b_end -= 1;
+        }
+        Self {
+            a,
+            b,
+            first,
+            a_end,
+            b_end,
+        }
+    }
+
+    fn removed(&self) -> &[&'a str] {
+        &self.a[self.first..self.a_end]
+    }
+
+    fn added(&self) -> &[&'a str] {
+        &self.b[self.first..self.b_end]
+    }
+
+    fn before(&self) -> Option<&'a str> {
+        self.first.checked_sub(1).map(|i| self.a[i])
+    }
+
+    fn after(&self) -> Option<&'a str> {
+        self.a.get(self.a_end).copied()
+    }
 }
 
 #[cfg(test)]
@@ -694,6 +840,25 @@ mod tests {
             )
             .is_some()
         );
+    }
+
+    #[test]
+    fn a_diff_past_its_cap_is_cut_at_a_line_and_says_so() {
+        // The risk: an edit that rewrites a whole file puts the file on one
+        // event line, or a cut diff reads as the whole change. The counts
+        // stay the whole change's; only the text is cut.
+        let body: String = (0..2_000).map(|i| format!("x{i} = {i}\n")).collect();
+        let src = format!("def f():\n{body}");
+        let after = "def f():\n    pass\n";
+        let d = edit_diff("a.py", &src, after, 9, body.len(), "    pass\n".len());
+        assert_eq!((d.lines_added, d.lines_removed), (1, 2_000));
+        assert!(d.diff.len() <= DIFF_CAP + 64, "{}", d.diff.len());
+        assert!(
+            d.diff
+                .starts_with("--- a.py\n+++ a.py\n@@ -1,2001 +1,2 @@\n")
+        );
+        let last = d.diff.lines().last().unwrap();
+        assert!(last.contains("more diff lines cut"), "{last}");
     }
 
     #[test]

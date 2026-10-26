@@ -16,6 +16,8 @@ fi
 bash scripts/checks/adr-numbers.sh --self-test > /dev/null || fail "adr-numbers.sh self-test failed"
 # The exit-gate check holds a ticked box to a test that exists (#467, #484).
 bash scripts/checks/gate-checked.sh --self-test > /dev/null || fail "gate-checked.sh self-test failed"
+# The Verify form for a file or function size limit (#926).
+bash scripts/checks/size-limit.sh --self-test > /dev/null || fail "size-limit.sh self-test failed"
 adr=$(bash scripts/checks/adr-numbers.sh "$GATE_BASE") || { printf '%s\n' "$adr"; fail "two ADRs share a number, or a held number is misused"; }
 # Go branch (ADR 0052, #504): gofmt clean, go vet clean, and no `//nolint`
 # added, Go's form of a lint suppression.

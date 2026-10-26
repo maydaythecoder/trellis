@@ -16,7 +16,7 @@
 //! "the model claims success" to "the run converged" passes through an
 //! executed check or it does not complete.
 
-use crate::budget::{Budget, Exhaustion, Spend, WallClock};
+use crate::budget::{Budget, Exhaustion, LiveBudget, Spend, WallClock};
 use crate::orchestrator::Handle;
 use crate::tools::ToolResult;
 use std::time::{Duration, Instant};
@@ -124,6 +124,13 @@ pub enum ToolCall {
     AskHuman {
         question: String,
         options: Vec<String>,
+    },
+    /// The model's plan, a short checklist (ADR 0058 §5). Carried as the
+    /// model sent it, so a recorded run reads back as the same call; what
+    /// is kept is [`crate::tools::keep_plan`]'s. Nothing is written and no
+    /// verdict comes of it: the result is `Output`. Opt-in.
+    Plan {
+        steps: Vec<crate::tools::PlanStep>,
     },
 }
 
@@ -606,11 +613,27 @@ impl SteeringLog {
     /// Takes everything waiting on the channel. Before a request, a steer is
     /// delivered and a follow-up set aside; at the end of a run (`ending`),
     /// both are set aside, since there is no next request to carry a steer.
-    fn drain(&mut self, rx: &mut Option<SteeringRx>, after_step: usize, ending: bool) {
+    /// A message a person withdrew (`fates`, ADR 0058 §3) is dropped here,
+    /// so the model never receives it.
+    fn drain(
+        &mut self,
+        rx: &mut Option<SteeringRx>,
+        fates: Option<&SteeringFates>,
+        after_step: usize,
+        ending: bool,
+    ) {
         let Some(rx) = rx else { return };
         while let Ok(m) = rx.try_recv() {
+            let deliver = !ending && matches!(m, Steering::Steer(_));
+            // Decided before the event, so a client that has read `steer
+            // delivered` finds the steer marked delivered wherever it asks.
+            if let Some(f) = fates
+                && !f.take(deliver, after_step)
+            {
+                continue;
+            }
             match m {
-                Steering::Steer(text) if !ending => {
+                Steering::Steer(text) if deliver => {
                     tracing::info!(after_step, bytes = text.len(), "steer delivered");
                     self.delivered.push(Steer { text, after_step });
                 }
@@ -620,12 +643,239 @@ impl SteeringLog {
     }
 }
 
+/// What became of each message sent on a steering channel, by its place in
+/// the channel's order (0 for the first sent): ADR 0058 §3's one lock.
+///
+/// The loop marks a steer delivered under it before the steer is put in a
+/// request, and a person's withdrawal marks a message withdrawn under it
+/// only while it is still waiting, so whichever comes first wins and a
+/// steer is either in a request or withdrawn, never both and never neither.
+/// The sender numbers messages in the order it sends them; the loop counts
+/// every message it takes off the channel, whatever becomes of it, so the
+/// two numberings agree because the channel is FIFO.
+#[derive(Debug, Default)]
+pub struct SteeringFates {
+    state: std::sync::Mutex<FatesState>,
+}
+
+#[derive(Debug, Default)]
+struct FatesState {
+    /// How many messages the loop has taken off the channel: the number
+    /// the next one taken carries.
+    taken: u64,
+    /// Steers put in a request, with the step they followed.
+    delivered: std::collections::HashMap<u64, usize>,
+    withdrawn: std::collections::HashSet<u64>,
+}
+
+/// Why [`SteeringFates::withdraw`] was refused.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum WithdrawRefused {
+    #[error("already delivered")]
+    AlreadyDelivered,
+}
+
+impl SteeringFates {
+    fn state(&self) -> std::sync::MutexGuard<'_, FatesState> {
+        // Every holder makes one insertion or one increment, so a poisoned
+        // lock still guards a consistent record.
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Marks message `n` withdrawn, so the loop drops it when it reaches
+    /// it. Refused once the steer it numbers is in a request. A follow-up
+    /// is never marked delivered here: whether its run has started is the
+    /// sender's to know.
+    pub fn withdraw(&self, n: u64) -> Result<(), WithdrawRefused> {
+        let mut s = self.state();
+        if s.delivered.contains_key(&n) {
+            return Err(WithdrawRefused::AlreadyDelivered);
+        }
+        s.withdrawn.insert(n);
+        Ok(())
+    }
+
+    /// The step message `n` followed, once the loop has put it in a
+    /// request.
+    pub fn delivered(&self, n: u64) -> Option<usize> {
+        self.state().delivered.get(&n).copied()
+    }
+
+    /// The drain's half: numbers the next message taken off the channel,
+    /// and marks it delivered after `after_step` when `deliver` is set and
+    /// nobody withdrew it first. `false` when it was withdrawn: drop it.
+    fn take(&self, deliver: bool, after_step: usize) -> bool {
+        let mut s = self.state();
+        // Counted before anything else, so a dropped message still takes
+        // its number and the ones after it keep theirs.
+        let n = s.taken;
+        s.taken += 1;
+        if s.withdrawn.contains(&n) {
+            return false;
+        }
+        if deliver {
+            s.delivered.insert(n, after_step);
+        }
+        true
+    }
+}
+
 /// The receiving end of the steering channel.
 ///
 /// Unbounded: the sender is a person typing, and a bounded channel that
 /// filled would have to drop their text or block the interface they typed
 /// it into.
 pub type SteeringRx = tokio::sync::mpsc::UnboundedReceiver<Steering>;
+
+/// A person's pause (ADR 0058 §1): asked for from outside the run, honoured
+/// by the loop at the top of an iteration, once the model request in flight
+/// and the tool call it chose have finished and before the budget is checked
+/// or a steer drained.
+///
+/// The loop awaits the release rather than blocking on it, so a run's
+/// caller that drops the loop's future (an abort, Ctrl-C) ends a held run as
+/// it ends any other. One lock decides every change of phase, so a `resume`
+/// racing the loop's arrival at the hold either withdraws the request or
+/// releases the hold, and the pause's waiter is told which.
+#[derive(Debug, Default)]
+pub struct Hold {
+    state: std::sync::Mutex<HoldState>,
+    released: tokio::sync::Notify,
+}
+
+#[derive(Debug, Default)]
+struct HoldState {
+    phase: HoldPhase,
+    /// Set once; from then on nothing holds and nothing is accepted.
+    closed: Option<String>,
+}
+
+#[derive(Debug, Default)]
+enum HoldPhase {
+    #[default]
+    Running,
+    /// Asked for and not yet reached; the sender answers the pause.
+    Requested(tokio::sync::oneshot::Sender<PauseAnswer>),
+    Held,
+}
+
+/// A pause's answer: the turn of the model call it holds before, numbered
+/// as the `model call` event numbers it, or why it never held.
+pub type PauseAnswer = Result<u32, String>;
+
+/// Why [`Hold::pause`] or [`Hold::resume`] was refused.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum HoldRefused {
+    #[error("already paused")]
+    AlreadyPaused,
+    #[error("not paused")]
+    NotPaused,
+    /// The run will reach no more hold points: the reason [`Hold::close`]
+    /// was given.
+    #[error("{0}")]
+    Closed(String),
+}
+
+/// What a pause still waiting to be reached is answered with when a
+/// `resume` withdraws it.
+const PAUSE_WITHDRAWN: &str = "resumed before the run reached the hold; it did not pause";
+
+impl Hold {
+    fn state(&self) -> std::sync::MutexGuard<'_, HoldState> {
+        // Every holder writes one phase whole, so a poisoned lock still
+        // guards a consistent one.
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Asks the loop to hold at its next iteration. The receiver is answered
+    /// once it holds, or with why it never did.
+    pub fn pause(&self) -> Result<tokio::sync::oneshot::Receiver<PauseAnswer>, HoldRefused> {
+        let mut s = self.state();
+        if let Some(why) = &s.closed {
+            return Err(HoldRefused::Closed(why.clone()));
+        }
+        // A pause asked for and not yet reached counts as paused: a second
+        // one would leave two waiters on one hold.
+        if !matches!(s.phase, HoldPhase::Running) {
+            return Err(HoldRefused::AlreadyPaused);
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        s.phase = HoldPhase::Requested(tx);
+        Ok(rx)
+    }
+
+    /// Lets a held loop go on, or withdraws a pause it has not reached, so a
+    /// person who changes their mind does not wait out a model request.
+    /// Once closed nothing is held or asked for, so it is refused as not
+    /// paused; the close's reason is about a pause, not a resume.
+    pub fn resume(&self) -> Result<(), HoldRefused> {
+        let mut s = self.state();
+        match std::mem::take(&mut s.phase) {
+            HoldPhase::Running => Err(HoldRefused::NotPaused),
+            HoldPhase::Requested(tx) => {
+                let _ = tx.send(Err(PAUSE_WITHDRAWN.into()));
+                Ok(())
+            }
+            HoldPhase::Held => {
+                self.released.notify_one();
+                Ok(())
+            }
+        }
+    }
+
+    /// Ends the hold for good: a held loop goes on, a pause not yet reached
+    /// is answered with `why`, and later ones are refused with it. The first
+    /// reason stands.
+    pub fn close(&self, why: &str) {
+        let mut s = self.state();
+        let why = s.closed.get_or_insert_with(|| why.to_string()).clone();
+        match std::mem::take(&mut s.phase) {
+            HoldPhase::Running => {}
+            HoldPhase::Requested(tx) => {
+                let _ = tx.send(Err(why));
+            }
+            HoldPhase::Held => self.released.notify_one(),
+        }
+    }
+
+    /// The hold point. Returns how long the loop was held, `None` when no
+    /// pause was waiting.
+    async fn honour(&self, turn: u32) -> Option<Duration> {
+        {
+            let mut s = self.state();
+            let tx = match std::mem::take(&mut s.phase) {
+                HoldPhase::Requested(tx) => tx,
+                other => {
+                    s.phase = other;
+                    return None;
+                }
+            };
+            s.phase = HoldPhase::Held;
+            // The event before the answer, so a client that reads the
+            // answer has already read the event it draws `paused` from.
+            tracing::info!(turn, "paused");
+            let _ = tx.send(Ok(turn));
+        }
+        let since = Instant::now();
+        loop {
+            // A statement of its own, so the guard is dropped before the
+            // await. `notify_one` stores a permit when nobody waits, so a
+            // release between this check and the await is not lost.
+            let held = matches!(self.state().phase, HoldPhase::Held);
+            if !held {
+                break;
+            }
+            self.released.notified().await;
+        }
+        let held = since.elapsed();
+        tracing::info!(turn, paused_ms = millis(held), "resumed");
+        Some(held)
+    }
+}
 
 impl Transcript {
     /// Whether the most recent executed check passed **and nothing that may
@@ -671,6 +921,110 @@ impl Transcript {
                 .iter()
                 .any(|t| t.may_have_changed_tree)
     }
+}
+
+/// What one turn did, as the trail records it and the `turn` event reports
+/// it: the tool, what it was pointed at, and whether it wrote through the
+/// orchestrator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnAction {
+    pub tool: String,
+    pub target: String,
+    pub wrote: bool,
+}
+
+/// The trail's reading of a call and its full observation (#800).
+///
+/// One function, because the run's `turn` event and the trail's action
+/// (trellis-cli's `action_from`) used to be two readings of the same turn:
+/// a client split the event's `call` label and searched its observation
+/// tail, and a trail and a live view that disagree about what a turn
+/// touched is worse than either alone. Here rather than in trellis-cli or
+/// trellis-trail because the loop emits the event and neither of those is
+/// a dependency it may take.
+///
+/// `observation` is the turn's whole observation, not the event's tail: a
+/// created file is read from its first line.
+pub fn turn_action(call: &ToolCall, observation: &str) -> TurnAction {
+    let (tool, target) = match call {
+        ToolCall::BlastRadius { symbol } => ("blast_radius", symbol.clone()),
+        ToolCall::ReadFile { path } => ("read_file", path.clone()),
+        ToolCall::Edit { path, .. } => ("edit", path.clone()),
+        ToolCall::RunChecks { paths, kinds } => {
+            let kinds: Vec<String> = kinds.iter().map(|k| format!("{k:?}")).collect();
+            // The checks requested, then what they were pointed at. An empty
+            // `paths` is the whole repository and says so, rather than
+            // rendering as a blank the reader has to interpret.
+            let where_ = if paths.is_empty() {
+                "whole repository".to_string()
+            } else {
+                paths.join(", ")
+            };
+            ("run_checks", format!("{} on {where_}", kinds.join("+")))
+        }
+        ToolCall::ReadSkill { name } => ("read_skill", name.clone()),
+        // ADR 0023's tools. A repository's own tool is recorded under its
+        // own name, with the arguments it was sent.
+        ToolCall::WriteFile { path, .. } => ("write_file", path.clone()),
+        ToolCall::Grep { pattern, path } => (
+            "grep",
+            match path {
+                Some(p) => format!("{pattern} in {p}"),
+                None => pattern.clone(),
+            },
+        ),
+        ToolCall::Find { glob } => ("find", glob.clone()),
+        ToolCall::Ls { path } => ("ls", path.clone()),
+        ToolCall::Bash { command } => ("bash", summarise(command)),
+        ToolCall::SearchNotes { query, .. } => ("search_notes", summarise(query)),
+        ToolCall::ReadNote { note } => ("read_note", note.clone()),
+        ToolCall::CallersOf { symbol } => ("callers_of", symbol.clone()),
+        ToolCall::CalleesOf { symbol } => ("callees_of", symbol.clone()),
+        ToolCall::CoverageReport { paths } => ("coverage_report", summarise(&paths.join(" "))),
+        ToolCall::Custom { name, args } => (name.as_str(), summarise(&args.to_string())),
+        // Quoted: model output, and a trail is read back into prompts.
+        ToolCall::AskHuman { question, .. } => ("ask_human", summarise(&format!("{question:?}"))),
+        // The steps as kept, quoted, for the reason the question is.
+        ToolCall::Plan { steps } => {
+            let kept = crate::tools::keep_plan(steps);
+            let texts: Vec<&str> = kept.steps.iter().map(|s| s.text.as_str()).collect();
+            ("plan", summarise(&format!("{texts:?}")))
+        }
+    };
+    TurnAction {
+        tool: tool.to_string(),
+        target,
+        // Only an applied edit or a created file changes the tree through
+        // the orchestrator. A refused one is an action that happened and
+        // wrote nothing, which is exactly what this distinguishes. What bash
+        // or a custom tool changed is recorded in the trail's `changed`
+        // instead, from what the orchestrator carried back (ADR 0023 §7),
+        // and `wrote` keeps the meaning older trails gave it.
+        wrote: match call {
+            ToolCall::Edit { .. } => observation.contains("applied: true"),
+            ToolCall::WriteFile { path, .. } => {
+                observation.starts_with(&format!("created {path} "))
+            }
+            _ => false,
+        },
+    }
+}
+
+/// An observation reduced to one line a person can read in a list.
+pub fn summarise(observation: &str) -> String {
+    const MAX: usize = 120;
+    let first = observation
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    if first.chars().count() <= MAX {
+        return first.to_string();
+    }
+    // Cut on a character boundary, and say it was cut — a silently truncated
+    // line reads as the whole outcome.
+    let head: String = first.chars().take(MAX - 1).collect();
+    format!("{head}…")
 }
 
 /// A short label for a call, for instrumentation.
@@ -839,6 +1193,19 @@ pub struct Seed {
     /// a person still open then was never measured, so there is no figure
     /// to give. `None` asks for nothing.
     pub elapsed: Option<tokio::sync::oneshot::Sender<u64>>,
+    /// A person's pause (ADR 0058 §1), honoured at the top of each
+    /// iteration. `None` never holds.
+    pub hold: Option<std::sync::Arc<Hold>>,
+    /// A person's raises to the run's ceilings (ADR 0058 §2), adopted with
+    /// the budget the run is given and enforced from the next budget check
+    /// after each. The whole run's ceiling: a partition's loop is given its
+    /// share and never this (rule 9). `None` is a budget nobody raises.
+    pub budget: Option<std::sync::Arc<LiveBudget>>,
+    /// What became of each message on `steering` (ADR 0058 §3): the drain
+    /// marks a steer delivered here before it is in a request, and drops a
+    /// message a person withdrew. `None` is a channel nothing withdraws
+    /// from.
+    pub fates: Option<std::sync::Arc<SteeringFates>>,
 }
 
 /// As [`run`], but seeded with prior context and the repository's own rules.
@@ -854,20 +1221,19 @@ pub async fn run_seeded<M: Model>(
     seed: Seed,
 ) -> (Outcome, Transcript) {
     let mut clock = WallClock::start();
+    // The ceilings in force, which only a person's raise moves (ADR 0058
+    // §2). Every read of a ceiling below is of this, so a raise reaches the
+    // budget check and the wall clock a check is given alike.
+    let mut budget = budget.clone();
+    let live = seed.budget;
+    if let Some(l) = &live {
+        l.adopt(&budget);
+    }
     // The ceilings this run enforces, once, for an interface that draws
     // progress against them (#243): a constant there drew "3/4" for a run
-    // budgeted at 40. Each is in the unit of the figure checked against it
-    // (`turn`, `elapsed_ms`, `completion_tokens_used`, `prompt_bytes`), so
-    // a client draws two numbers per row and computes none.
-    tracing::info!(
-        max_iterations = budget.max_iterations,
-        max_wall_clock_ms = millis(budget.max_wall_clock),
-        // The budget counts completion tokens only (`Model::tokens_used`),
-        // so the ceiling's name says which; prompt tokens are never added.
-        max_completion_tokens = budget.max_tokens,
-        max_context_bytes = model.context_bytes(),
-        "run budget"
-    );
+    // budgeted at 40. Sent again with every ceiling when a raise takes
+    // effect.
+    announce_budget(&budget, model.context_bytes());
     let report_to = seed.elapsed;
     let mut t = Transcript {
         task: task.to_string(),
@@ -878,6 +1244,8 @@ pub async fn run_seeded<M: Model>(
         repo: seed.repo,
     };
     let mut steering = seed.steering;
+    let hold = seed.hold;
+    let fates = seed.fates;
     let mut iterations: u32 = 0;
     let mut checks_passed: u32 = 0;
     // The one extra turn the budget grants on exhaustion, so the model can
@@ -885,13 +1253,43 @@ pub async fn run_seeded<M: Model>(
     let mut escalated = false;
 
     let outcome = 'run: loop {
+        // Before the budget check, so the check after a pause charges
+        // nothing for it, and before the drain, so a steer sent while held
+        // is in the first request after it. Every stop rule is checked where
+        // it is checked without a pause: a held run calls nothing.
+        if let Some(h) = &hold
+            && let Some(held) = h.honour(iterations + 1).await
+        {
+            // Not charged to the wall-clock budget, as a wait on a person
+            // in approve mode is not: a run paused to be read should not be
+            // what ends it.
+            clock.leave_out(held);
+        }
+        // A raise takes effect here, at the budget check, after a pause so
+        // one sent while held counts at once. A tool call or check already
+        // dispatched has run out under the ceiling it was dispatched with.
+        let raised = live.as_ref().and_then(|l| l.take_raised());
+        if let Some(r) = &raised {
+            budget = r.clone();
+            announce_budget(&budget, model.context_bytes());
+        }
         let spend = Spend {
             iterations,
             elapsed: clock.spent(),
             // A driver with no count has spent none against the ceiling.
             tokens: model.tokens_used().unwrap_or(0),
         };
-        if let Some(e) = budget.exceeded(&spend) {
+        let exceeded = budget.exceeded(&spend);
+        // A raise that lifts every ceiling above the spend after the one
+        // extra turn was granted ends the escalation (ADR 0058 §2): the run
+        // is in budget again, and telling the model its turn is its last
+        // would be false.
+        if raised.is_some() && exceeded.is_none() && escalated {
+            tracing::info!("budget raised above the spend; escalation ended");
+            escalated = false;
+            t.final_notice = false;
+        }
+        if let Some(e) = exceeded {
             if escalated {
                 tracing::warn!(exhaustion = ?e, "budget exhausted after escalation");
                 break 'run Outcome::NotConverged {
@@ -908,7 +1306,8 @@ pub async fn run_seeded<M: Model>(
         // while turn N was in progress is therefore in request N+1 and in no
         // earlier one, and a steer can never land between a call and the
         // observation of its result.
-        t.steering.drain(&mut steering, t.turns.len(), false);
+        t.steering
+            .drain(&mut steering, fates.as_deref(), t.turns.len(), false);
         // Replies are not streamed (ADR 0024), so on a slow local model a
         // client hears nothing between one `turn` and the next and reads
         // the run as hung. Said before the wait, under the number the
@@ -980,25 +1379,33 @@ pub async fn run_seeded<M: Model>(
                         // interface's checks pane, its action graph —
                         // never saw. A trail and a live view that disagree
                         // about what ran is worse than either alone.
+                        let audit_call = ToolCall::RunChecks {
+                            paths: Vec::new(),
+                            kinds: vec![CheckKind::Governance],
+                        };
+                        let action = turn_action(&audit_call, &detail.stdout);
                         tracing::info!(
                             turn = iterations,
-                            call = %turn_event_label(&ToolCall::RunChecks {
-                                paths: Vec::new(),
-                                kinds: vec![CheckKind::Governance],
-                            }),
+                            call = %turn_event_label(&audit_call),
                             verdict = ?Some(v.passed()),
                             check_kind = %format!("{:?}", detail.kind),
                             observation = %tail(&detail.stdout, 6),
+                            tool = %action.tool,
+                            target = %action.target,
+                            wrote = action.wrote,
+                            // The audit's own time, as the trail records it
+                            // (#800), so this turn is not the one a client
+                            // reading `duration_ms` finds without one.
+                            duration_ms = audit_ms,
+                            // As on every turn (#799), so a field a client
+                            // reads on each turn is not missing on this one.
                             elapsed_ms = millis(clock.spent()),
                             completion_tokens_used = model.tokens_used(),
                             "turn"
                         );
                         t.turns.push(Turn {
                             observation: detail.stdout.clone(),
-                            call: ToolCall::RunChecks {
-                                paths: Vec::new(),
-                                kinds: vec![CheckKind::Governance],
-                            },
+                            call: audit_call,
                             verdict_passed: Some(v.passed()),
                             check_kind: Some(format!("{:?}", detail.kind)),
                             radius_counts: None,
@@ -1145,12 +1552,30 @@ pub async fn run_seeded<M: Model>(
                     Some((r, c, u)) => (Some(r), Some(c), Some(u)),
                     None => (None, None, None),
                 };
+                // What the trail will record for this turn, from the same
+                // function and the whole observation (#800), so a client
+                // need not parse `call` or search `observation` for it.
+                let action = turn_action(&call, &observation);
+                // What an applied edit changed (#802), from the write itself.
+                // Absent on every other turn, bash's included: what a command
+                // changed is carried back, not diffed here.
+                let edit = match &result {
+                    ToolResult::Edit(e) if e.applied => Some(&e.change),
+                    _ => None,
+                };
                 tracing::info!(
                     turn = iterations,
                     call = %turn_event_label(&call),
                     verdict = ?verdict_passed,
                     check_kind = check_kind.as_deref().unwrap_or(""),
                     observation = %tail(&observation, 6),
+                    tool = %action.tool,
+                    target = %action.target,
+                    wrote = action.wrote,
+                    lines_added = edit.map(|e| e.lines_added),
+                    lines_removed = edit.map(|e| e.lines_removed),
+                    start_line = edit.map(|e| e.start_line),
+                    diff = edit.map(|e| e.diff.as_str()),
                     resolved = rad_resolved,
                     candidates = rad_candidates,
                     unresolved = rad_unresolved,
@@ -1171,6 +1596,22 @@ pub async fn run_seeded<M: Model>(
                     completion_tokens_used = model.tokens_used(),
                     "turn"
                 );
+                // The plan as kept, after its turn (ADR 0058 §5). Only on
+                // `Output`: a disabled tool or a declined approval comes
+                // back as `Error`, and then there is no plan to draw.
+                // `steps` is a JSON array in one string, because an event's
+                // fields are flat.
+                if let (ToolCall::Plan { steps }, ToolResult::Output(_)) = (&call, &result) {
+                    let kept = crate::tools::keep_plan(steps);
+                    tracing::info!(
+                        turn = iterations,
+                        steps = %serde_json::to_string(&kept.steps)
+                            .expect("plan steps are strings and unit variants"),
+                        steps_cut = kept.steps_cut,
+                        texts_cut = kept.texts_cut,
+                        "plan"
+                    );
+                }
 
                 t.turns.push(Turn {
                     observation,
@@ -1206,6 +1647,7 @@ pub async fn run_seeded<M: Model>(
                 {
                     tracing::info!("the model asked a person a question; stopping");
                     report_elapsed(report_to, &clock);
+                    close_budget(&live);
                     return (
                         Outcome::NotConverged {
                             reason: NotConverged::AskedHuman {
@@ -1237,9 +1679,35 @@ pub async fn run_seeded<M: Model>(
 
     // Whatever arrived after the last request, whichever way the run ended,
     // goes back to the caller rather than being dropped with the receiver.
-    t.steering.drain(&mut steering, t.turns.len(), true);
+    t.steering
+        .drain(&mut steering, fates.as_deref(), t.turns.len(), true);
     report_elapsed(report_to, &clock);
+    close_budget(&live);
     (outcome, t)
+}
+
+/// The `run budget` event: every ceiling in force. Each is in the unit of
+/// the figure checked against it (`turn`, `elapsed_ms`,
+/// `completion_tokens_used`, `prompt_bytes`), so a client draws two numbers
+/// per row and computes none.
+fn announce_budget(budget: &Budget, context_bytes: Option<usize>) {
+    tracing::info!(
+        max_iterations = budget.max_iterations,
+        max_wall_clock_ms = millis(budget.max_wall_clock),
+        // The budget counts completion tokens only (`Model::tokens_used`),
+        // so the ceiling's name says which; prompt tokens are never added.
+        max_completion_tokens = budget.max_tokens,
+        max_context_bytes = context_bytes,
+        "run budget"
+    );
+}
+
+/// The loop checks the budget no more: a raise now would be answered as
+/// taking effect and never would.
+fn close_budget(live: &Option<std::sync::Arc<LiveBudget>>) {
+    if let Some(l) = live {
+        l.close("the run's loop has ended and checks its budget no more; nothing changed");
+    }
 }
 
 /// Sends what `clock` has spent to the caller that asked ([`Seed::elapsed`]).
@@ -2837,6 +3305,86 @@ rank = \"non-negotiable\"
         );
     }
 
+    /// The risk (ADR 0058 §2): a person's raise accepted and never enforced,
+    /// so the run ends on the ceiling it started with; or a raise that lands
+    /// on the escalation turn leaves the model told, turn after turn, that
+    /// its turn is its last. The raise is made from inside the escalated
+    /// request, as a person's would land while the model is asked, and is
+    /// seen at the next budget check.
+    #[tokio::test]
+    async fn a_raise_after_escalation_ends_it_at_the_next_budget_check() {
+        struct Raising {
+            live: std::sync::Arc<LiveBudget>,
+            at: usize,
+            notices: Vec<bool>,
+        }
+        impl Model for Raising {
+            async fn next_step(&mut self, t: &Transcript) -> Result<Step, String> {
+                self.notices.push(t.final_notice);
+                if t.final_notice && self.at == 1 {
+                    self.live
+                        .raise(&crate::budget::Raise {
+                            max_iterations: Some(4),
+                            ..Default::default()
+                        })
+                        .map_err(|e| e.to_string())?;
+                }
+                self.at += 1;
+                Ok(if self.at < 4 {
+                    Step::Call(ToolCall::BlastRadius {
+                        symbol: format!("helper{}", self.at),
+                    })
+                } else {
+                    Step::Done {
+                        summary: "looked".into(),
+                    }
+                })
+            }
+        }
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+        let live = std::sync::Arc::new(LiveBudget::default());
+        let mut m = Raising {
+            live: live.clone(),
+            at: 0,
+            notices: Vec::new(),
+        };
+        let one = Budget {
+            max_iterations: 1,
+            ..Budget::default()
+        };
+        let seed = Seed {
+            budget: Some(live.clone()),
+            ..Seed::default()
+        };
+        let (outcome, _) = run_seeded("task", &mut m, &h, &one, seed).await;
+        assert_eq!(
+            m.notices,
+            [false, true, false, false],
+            "escalated once at the first ceiling, then in budget again after the raise"
+        );
+        assert!(
+            !matches!(
+                outcome,
+                Outcome::NotConverged {
+                    reason: NotConverged::BudgetExhausted(_),
+                    ..
+                }
+            ),
+            "the raised ceiling was not enforced: {outcome:?}"
+        );
+        assert!(
+            matches!(
+                live.raise(&crate::budget::Raise {
+                    max_iterations: Some(9),
+                    ..Default::default()
+                }),
+                Err(crate::budget::RaiseRefused::Closed(_))
+            ),
+            "a raise after the loop returned is refused, not answered as taking effect"
+        );
+    }
+
     #[tokio::test]
     async fn an_exhausted_budget_escalates_once_then_stops() {
         let d = repo();
@@ -4029,6 +4577,97 @@ rank = \"non-negotiable\"
         }
     }
 
+    /// A seed whose steering channel and hold the test drives as a person
+    /// would, beside the run.
+    fn held(hold: &std::sync::Arc<Hold>) -> (Seed, tokio::sync::mpsc::UnboundedSender<Steering>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let seed = Seed {
+            steering: Some(rx),
+            hold: Some(hold.clone()),
+            ..Seed::default()
+        };
+        (seed, tx)
+    }
+
+    #[tokio::test]
+    async fn a_pause_holds_the_loop_before_its_next_request_until_resumed() {
+        // The risk (ADR 0058 §1): a pause answered while the loop goes on to
+        // ask the model, so the person reads a run that is still moving. A
+        // steer sent only after the pause is answered must be in the first
+        // request, which is then provably made after the answer.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+        let hold = std::sync::Arc::new(Hold::default());
+        let (mut m, _unused) = Steered::new(
+            vec![
+                read_util(),
+                Step::Done {
+                    summary: "looked".into(),
+                },
+            ],
+            vec![],
+        );
+        let (seed, tx) = held(&hold);
+        let b = budget();
+        let answer = hold.pause().expect("a pause with nothing held");
+        let person = async {
+            assert_eq!(answer.await.expect("answered"), Ok(1));
+            assert_eq!(hold.pause().unwrap_err(), HoldRefused::AlreadyPaused);
+            tx.send(steer("STEER-WHILE-HELD")).unwrap();
+            hold.resume().expect("held, so resumed");
+            assert_eq!(hold.resume().unwrap_err(), HoldRefused::NotPaused);
+        };
+        let ((_, t), ()) = tokio::join!(run_seeded("look", &mut m, &h, &b, seed), person);
+
+        assert!(
+            m.prompts[0].contains("STEER-WHILE-HELD"),
+            "the first request was made before the pause was answered: {}",
+            m.prompts[0]
+        );
+        assert_eq!(t.turns.len(), 1, "the same run went on after the hold");
+        hold.close("the run ended");
+        assert_eq!(
+            hold.pause().unwrap_err(),
+            HoldRefused::Closed("the run ended".into())
+        );
+        assert_eq!(hold.resume().unwrap_err(), HoldRefused::NotPaused);
+    }
+
+    #[tokio::test]
+    async fn a_hold_closed_while_held_lets_the_run_go_on_and_a_pending_pause_is_told_why() {
+        // The risk: rpc closes the hold when its input ends, since no
+        // `resume` can arrive then; a close that left the loop held would
+        // hang the process on a run nobody can release. And a pause that
+        // was never reached must be answered, not left waiting.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+        let hold = std::sync::Arc::new(Hold::default());
+        let (mut m, _unused) = Steered::new(vec![read_util()], vec![]);
+        let (seed, _tx) = held(&hold);
+        let b = budget();
+        let answer = hold.pause().unwrap();
+        let person = async {
+            assert_eq!(answer.await.unwrap(), Ok(1));
+            hold.close("input ended");
+        };
+        let ((outcome, t), ()) = tokio::join!(run_seeded("look", &mut m, &h, &b, seed), person);
+        assert!(!t.turns.is_empty(), "{outcome:?}");
+
+        let never = std::sync::Arc::new(Hold::default());
+        let answer = never.pause().unwrap();
+        never.close("the run ended before it reached the hold");
+        assert_eq!(
+            answer.await.unwrap(),
+            Err("the run ended before it reached the hold".into())
+        );
+        let withdrawn = Hold::default();
+        let answer = withdrawn.pause().unwrap();
+        withdrawn
+            .resume()
+            .expect("a pause not yet reached is withdrawn");
+        assert_eq!(answer.await.unwrap(), Err(PAUSE_WITHDRAWN.into()));
+    }
+
     #[tokio::test]
     async fn a_steer_sent_during_turn_n_is_in_request_n_plus_1_and_not_in_request_n() {
         // The delivery contract: user text typed while the model works on
@@ -4199,6 +4838,59 @@ rank = \"non-negotiable\"
             assert!(!p.contains("FOLLOW-"), "a follow-up reached the model: {p}");
             assert!(!p.contains("STEER-LATE"), "{p}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_withdrawn_steer_never_reaches_the_model_and_a_delivered_one_cannot_be_withdrawn() {
+        // The risks (ADR 0058 §3): a steer the person took back still put in
+        // a request, or one the model was sent reported as taken back; a
+        // withdrawn follow-up handed back as waiting for a later run; and a
+        // dropped message shifting the numbering, so the next withdrawal
+        // lands on the wrong message.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        for m in [
+            steer("STEER-WITHDRAWN"),
+            Steering::FollowUp("FOLLOW-WITHDRAWN".into()),
+            steer("STEER-KEPT"),
+            Steering::FollowUp("FOLLOW-KEPT".into()),
+        ] {
+            tx.send(m).unwrap();
+        }
+        let fates = std::sync::Arc::new(SteeringFates::default());
+        fates.withdraw(0).unwrap();
+        fates.withdraw(1).unwrap();
+        let (mut m, _unused) = Steered::new(vec![read_util()], Vec::new());
+        m.tx = None;
+        let seed = Seed {
+            steering: Some(rx),
+            fates: Some(fates.clone()),
+            ..Seed::default()
+        };
+        let (_, t) = run_seeded("look", &mut m, &h, &budget(), seed).await;
+
+        assert_eq!(
+            t.steering.delivered,
+            vec![Steer {
+                text: "STEER-KEPT".into(),
+                after_step: 0,
+            }]
+        );
+        assert_eq!(
+            t.steering.undelivered,
+            vec![Steering::FollowUp("FOLLOW-KEPT".into())]
+        );
+        assert!(m.prompts[0].contains("STEER-KEPT"), "{}", m.prompts[0]);
+        for p in &m.prompts {
+            assert!(
+                !p.contains("STEER-WITHDRAWN"),
+                "a withdrawn steer reached the model: {p}"
+            );
+        }
+        assert_eq!(fates.delivered(2), Some(0));
+        assert_eq!(fates.withdraw(2), Err(WithdrawRefused::AlreadyDelivered));
+        assert_eq!(fates.delivered(0), None);
     }
 
     #[tokio::test]

@@ -38,19 +38,23 @@ pub use adapter::{
     CompactRequests, Compacted, HostedModel, LOCAL_CONTEXT_BYTES, RequestedCompaction, RuntimeModel,
 };
 pub use agent::{
-    Model, NotConverged, Outcome, PriorContext, RadiusSite, RepoContext, Seed, Steer, Steering,
-    SteeringLog, SteeringRx, Step, StepUsage, ToolCall, Transcript, Turn, VaultContext, run,
-    run_seeded,
+    Hold, HoldRefused, Model, NotConverged, Outcome, PauseAnswer, PriorContext, RadiusSite,
+    RepoContext, Seed, Steer, Steering, SteeringFates, SteeringLog, SteeringRx, Step, StepUsage,
+    ToolCall, Transcript, Turn, TurnAction, VaultContext, WithdrawRefused, run, run_seeded,
+    summarise, turn_action,
 };
 pub use agent_clone::{AgentClone, AgentCloneError, CarriedBack, NEW_FILE_WALK_CAP, NotCarried};
-pub use budget::{Budget, BudgetTooSmall, CostRegime, Exhaustion, Spend};
+pub use budget::{
+    Budget, BudgetTooSmall, CostRegime, Exhaustion, LiveBudget, Raise, RaiseRefused, Spend,
+};
 pub use exec::{ExecError, default_shell};
 pub use extra_context::{
     ContextFile, DEFAULT_ROLE, ExtraContext, FORCED_SKILL_HEAD, ForcedSkill, GROUNDING,
 };
 pub use gate::{
-    APPROVABLE_TOOLS, ApprovalGate, ApprovalRequest, BashPolicyGate, DECLINED, EditPreview,
-    GateDecision, GateFuture, GovernanceGate, ToolGate, preview_edit, tool_name,
+    APPROVABLE_TOOLS, ApprovalGate, ApprovalRequest, BashPolicyGate, DECLINED, EditDiff,
+    EditPreview, GateDecision, GateFuture, GovernanceGate, ToolGate, line_of, preview_edit,
+    tool_name,
 };
 pub use governance::{CONFLICT_LINE, ConflictEscalation, EscalatedRule, Governance, Refusal, Rule};
 pub use hooks::{
@@ -74,7 +78,7 @@ pub use skills::{
 pub use supervise::{
     PartitionFailure, PartitionReport, PartitionTask, SuperviseError, Supervised, Supervisor,
 };
-pub use tools::{EditOutcome, ToolResult};
+pub use tools::{EditOutcome, PlanState, PlanStep, ToolResult};
 pub use trust::{
     Fingerprint, HashCache, ItemChange, TrustDiagnosis, TrustGuard, TrustItem, TrustState,
     TrustStore,

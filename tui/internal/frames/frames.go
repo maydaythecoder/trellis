@@ -42,7 +42,7 @@ const (
 	ApprovalRequest
 	// Warning is a loop event at WARN or ERROR that is not a turn, such as
 	// "no progress; stopping": the explanation for a run about to end, shown
-	// as text (tui_bridge.rs does the same).
+	// as text.
 	Warning
 	// ModelCall is the loop's "model call" event, sent before each call to
 	// the model with the turn number the turn it produces will carry
@@ -50,6 +50,14 @@ const (
 	ModelCall
 	// RuntimeIdentified is colibri's self-report, once per run (#627).
 	RuntimeIdentified
+	// Paused is the loop's word that the run is held at the hold a pause
+	// asked for, and Resumed that it goes on (#806). Only these say the run
+	// is held: a pause asked for is not yet a hold.
+	Paused
+	Resumed
+	// Plan is the model's latest plan (#810), sent only where the
+	// repository enables the plan tool.
+	Plan
 )
 
 // Frame is one typed line. Only the fields of its Kind are set.
@@ -67,14 +75,48 @@ type Frame struct {
 	Approval       *ApprovalFields
 	// ModelCallTurn is the turn a ModelCall names.
 	ModelCallTurn *uint64
-	Runtime       *RuntimeFields
+	// ModelCallElapsedMs is the budget's wall-clock spend as the loop
+	// checked it before the call (#799); nil when the event carried none.
+	ModelCallElapsedMs *uint64
+	Runtime            *RuntimeFields
+	// The run's other ceilings, from RunBudget (#799): the wall clock in
+	// milliseconds, completion tokens, and one prompt's bytes, which a
+	// driver with no context ceiling (the scripted one) does not send.
+	MaxWallClockMs      *uint64
+	MaxCompletionTokens *uint64
+	MaxContextBytes     *uint64
+	// HoldTurn is the model call a Paused or Resumed hold is before, and
+	// PausedMs how long a Resumed one held, by trellis's monotonic clock.
+	HoldTurn *uint64
+	PausedMs *uint64
+	// PlanFields is a Plan event's.
+	PlanFields *PlanFields
+}
+
+// PlanFields is a plan event as sent. Steps is the plan as trellis kept
+// it, a JSON array in one string, the model's words: kept as sent here and
+// read, defensively, by the model package. StepsCut and TextsCut say how
+// many steps past the eighth trellis dropped and how many texts it
+// shortened.
+type PlanFields struct {
+	Turn     *uint64
+	Steps    *string
+	StepsCut *uint64
+	TextsCut *uint64
 }
 
 // TurnFields is a turn event. Turn and Call are what make an event a turn,
-// the test tui_bridge.rs and rpc.rs apply, so both are required.
+// the test rpc.rs applies, so both are required.
 type TurnFields struct {
 	Turn uint64
 	Call string
+	// What the trail records for the turn (#800), from the engine's own
+	// reading of the call and its whole observation, so the TUI never splits
+	// Call or searches Observation for them.
+	Tool   *string
+	Target *string
+	// True only for an edit that applied or a file write_file created.
+	Wrote *bool
 	// Verdict is the loop's Debug rendering, "Some(true)", "Some(false)" or
 	// "None", kept as sent.
 	Verdict     *string
@@ -90,6 +132,24 @@ type TurnFields struct {
 	ModelMs          *uint64
 	CompletionTokens *uint64
 	QueueWaitMs      *uint64
+	// ElapsedMs is the run's wall-clock spend after the turn as its budget
+	// measures it, waits on a person and pauses left out (#799).
+	ElapsedMs *uint64
+	// DurationMs is the tool call's own time, a wait on a person left out
+	// (#800). CompletionTokensUsed is the completion tokens over every reply
+	// so far, the counter run budget's max_completion_tokens is checked against, never
+	// a sum with prompt tokens (#799).
+	DurationMs           *uint64
+	CompletionTokensUsed *uint64
+	// Present only on an edit that applied (#802): the whole lines it added
+	// and removed, the line of the file before it where the hunk starts,
+	// and the hunk as a unified diff, cut past 8192 bytes with a last line
+	// saying so. The diff is repository text and model output, shown as
+	// text and never interpreted (CLAUDE.md rule 10).
+	LinesAdded   *uint64
+	LinesRemoved *uint64
+	StartLine    *uint64
+	Diff         *string
 }
 
 // RuntimeFields is the "runtime identified" event (client_contract.json).
@@ -124,6 +184,10 @@ type RunEndFields struct {
 	RunID    *string
 	Restored *bool
 	Error    *string
+	// ElapsedMs is the loop's whole wall-clock spend, as its budget measured
+	// it. Absent for a run the loop did not finish (an interrupt, an error
+	// before it started, a partitioned run), and never a partial figure.
+	ElapsedMs *uint64
 }
 
 type ResponseFields struct {
@@ -166,12 +230,13 @@ func Parse(l rpc.Line) Frame {
 			}}
 		case "run_end":
 			return Frame{Kind: RunEnd, RunEndFields: &RunEndFields{
-				Outcome:  s(o, "outcome"),
-				Exit:     i(o, "exit"),
-				ID:       s(o, "id"),
-				RunID:    s(o, "run_id"),
-				Restored: b(o, "restored"),
-				Error:    s(o, "error"),
+				Outcome:   s(o, "outcome"),
+				Exit:      i(o, "exit"),
+				ID:        s(o, "id"),
+				RunID:     s(o, "run_id"),
+				Restored:  b(o, "restored"),
+				Error:     s(o, "error"),
+				ElapsedMs: u(o, "elapsed_ms"),
 			}}
 		case "response":
 			return Frame{Kind: Response, ResponseFields: &ResponseFields{
@@ -208,6 +273,9 @@ func Parse(l rpc.Line) Frame {
 		return Frame{Kind: Turn, TurnFields: &TurnFields{
 			Turn:             *turn,
 			Call:             *call,
+			Tool:             s(f, "tool"),
+			Target:           s(f, "target"),
+			Wrote:            b(f, "wrote"),
 			Verdict:          s(f, "verdict"),
 			CheckKind:        s(f, "check_kind"),
 			Observation:      s(f, "observation"),
@@ -218,6 +286,14 @@ func Parse(l rpc.Line) Frame {
 			ModelMs:          u(f, "model_ms"),
 			CompletionTokens: u(f, "completion_tokens"),
 			QueueWaitMs:      u(f, "queue_wait_ms"),
+			ElapsedMs:        u(f, "elapsed_ms"),
+			DurationMs:       u(f, "duration_ms"),
+			LinesAdded:       u(f, "lines_added"),
+			LinesRemoved:     u(f, "lines_removed"),
+			StartLine:        u(f, "start_line"),
+			Diff:             s(f, "diff"),
+			// Below the rest, so their names do not realign every field above.
+			CompletionTokensUsed: u(f, "completion_tokens_used"),
 		}}
 	case msg != nil && *msg == "model call":
 		// Without its turn it names nothing.
@@ -225,7 +301,7 @@ func Parse(l rpc.Line) Frame {
 		if turn == nil {
 			return Frame{Kind: Ignored}
 		}
-		return Frame{Kind: ModelCall, ModelCallTurn: turn}
+		return Frame{Kind: ModelCall, ModelCallTurn: turn, ModelCallElapsedMs: u(f, "elapsed_ms")}
 	case msg != nil && *msg == "runtime identified":
 		served := s(f, "served")
 		if served == nil {
@@ -240,9 +316,17 @@ func Parse(l rpc.Line) Frame {
 			TiersDisk: u(f, "tiers_disk"),
 		}}
 	case msg != nil && *msg == "run budget":
-		return Frame{Kind: RunBudget, MaxIterations: u(f, "max_iterations")}
+		return Frame{Kind: RunBudget, MaxIterations: u(f, "max_iterations"),
+			MaxWallClockMs: u(f, "max_wall_clock_ms"), MaxCompletionTokens: u(f, "max_completion_tokens"), MaxContextBytes: u(f, "max_context_bytes")}
 	case msg != nil && *msg == "steer delivered":
 		return Frame{Kind: SteerDelivered, AfterStep: u(f, "after_step")}
+	case msg != nil && *msg == "paused":
+		return Frame{Kind: Paused, HoldTurn: u(f, "turn")}
+	case msg != nil && *msg == "resumed":
+		return Frame{Kind: Resumed, HoldTurn: u(f, "turn"), PausedMs: u(f, "paused_ms")}
+	case msg != nil && *msg == "plan":
+		return Frame{Kind: Plan, PlanFields: &PlanFields{Turn: u(f, "turn"), Steps: s(f, "steps"),
+			StepsCut: u(f, "steps_cut"), TextsCut: u(f, "texts_cut")}}
 	case msg != nil:
 		if lvl := s(o, "level"); lvl != nil && (*lvl == "WARN" || *lvl == "ERROR") {
 			return Frame{Kind: Warning, Text: *msg}

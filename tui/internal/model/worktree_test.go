@@ -13,9 +13,9 @@ import (
 // read: the four panes each get something.
 func worked(m *Model) {
 	feed(m, turn(1, "blast_radius f", map[string]any{"resolved": 4, "candidates": 1, "unresolved": 0}))
-	feed(m, turn(2, "edit a.py", map[string]any{"observation": "applied: true"}))
-	feed(m, turn(3, "edit a.py", map[string]any{"observation": "applied: true"}))
-	feed(m, turn(4, "write_file b.py", map[string]any{"observation": "created b.py"}))
+	feed(m, turn(2, "edit a.py", map[string]any{"observation": "applied: true", "tool": "edit", "target": "a.py", "wrote": true}))
+	feed(m, turn(3, "edit a.py", map[string]any{"observation": "applied: true", "tool": "edit", "target": "a.py", "wrote": true}))
+	feed(m, turn(4, "write_file b.py", map[string]any{"observation": "created b.py", "tool": "write_file", "target": "b.py", "wrote": true}))
 	feed(m, turn(5, "run_checks", map[string]any{"verdict": "Some(false)", "check_kind": "pytest"}))
 }
 
@@ -103,7 +103,7 @@ func TestStatusWorktreeIsWholeAtEightyColumnsWithALongSpec(t *testing.T) {
 	// The longest state the bar can say, after a converged run.
 	submit(m, "t")
 	for _, f := range []string{"a.py", "b.py", "c.py"} {
-		feed(m, turn(1, "edit "+f, map[string]any{"observation": "applied: true"}))
+		feed(m, turn(1, "edit "+f, map[string]any{"observation": "applied: true", "tool": "edit", "target": f, "wrote": true}))
 	}
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
 	if bar := bar80(); !strings.Contains(bar, "● 3 to review") {

@@ -48,7 +48,9 @@ func TestStatusShowsModelAndTierFromGetState(t *testing.T) {
 	submit(m, "t")
 	m.TakeOutbox()
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
-	if got := kinds(m.TakeOutbox()); strings.Join(got, ",") != "get_state" {
+	// A converged run's closing words are asked for too, for the summary
+	// (#854).
+	if got := kinds(m.TakeOutbox()); strings.Join(got, ",") != "get_state,get_last_assistant_text" {
 		t.Fatalf("after run_end: %v", got)
 	}
 }
@@ -83,8 +85,8 @@ func TestStatusWorktreeCleanOrEditsPending(t *testing.T) {
 	if bar := barOf(m); !strings.Contains(bar, "● clean") {
 		t.Fatalf("%q", bar)
 	}
-	feed(m, turn(1, "edit a.py", map[string]any{"observation": "applied: true"}))
-	feed(m, turn(2, "edit b.py", map[string]any{"observation": "applied: true"}))
+	feed(m, turn(1, "edit a.py", map[string]any{"observation": "applied: true", "tool": "edit", "target": "a.py", "wrote": true}))
+	feed(m, turn(2, "edit b.py", map[string]any{"observation": "applied: true", "tool": "edit", "target": "b.py", "wrote": true}))
 	if bar := barOf(m); !strings.Contains(bar, "● 2 pending") {
 		t.Fatalf("%q", bar)
 	}

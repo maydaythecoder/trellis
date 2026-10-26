@@ -1,6 +1,6 @@
 // Command trellis-tui is the Go TUI, a client of `trellis rpc` (ADR 0052).
 //
-//	trellis-tui --root <repo> [--trellis <path>] [--model <spec>] [--theme auto|dark|light] [task]
+//	trellis-tui --root <repo> [--trellis <path>] [--model <spec>] [--theme auto|dark|light] [--register serious|playful] [task]
 //	trellis-tui --version
 //
 // It starts one `trellis --root <repo> rpc` child, using the trellis it is
@@ -11,6 +11,9 @@
 // Before the child starts it reads the terminal's colour depth and
 // background once, for the theme (internal/theme). --theme dark or light
 // replaces the terminal's answer, since Windows always answers dark.
+// --register is the brand book's register dial (#857): serious, the
+// default, or playful, which draws one Ascii face where the Now strip has no
+// run to show and changes nothing else.
 //
 // The flow: run parses the flags, starts the child (internal/rpc) and hands
 // it to the Bubble Tea program (internal/model's App, which feeds the
@@ -55,6 +58,7 @@ type args struct {
 	trellis string
 	model   string
 	theme   string
+	reg     string
 	task    string
 }
 
@@ -67,6 +71,7 @@ func parseArgs(argv []string, stderr io.Writer) (args, error) {
 	fs.StringVar(&a.trellis, "trellis", "", "the trellis binary (default: the one beside this executable)")
 	fs.StringVar(&a.model, "model", "", "the model spec for this session, sent as set_model")
 	fs.StringVar(&a.theme, "theme", "auto", "the background the colours are chosen for: auto (ask the terminal), dark or light")
+	fs.StringVar(&a.reg, "register", "serious", "the register dial: serious, or playful for one Ascii face where the screen has no run to show")
 	if err := fs.Parse(argv); err != nil {
 		return a, err
 	}
@@ -78,6 +83,11 @@ func parseArgs(argv []string, stderr io.Writer) (args, error) {
 	case "auto", "dark", "light":
 	default:
 		return a, fmt.Errorf("--theme is auto, dark or light, not %q", a.theme)
+	}
+	switch a.reg {
+	case "serious", "playful":
+	default:
+		return a, fmt.Errorf("--register is serious or playful, not %q", a.reg)
 	}
 	if a.root == "" {
 		return a, errors.New("--root <repo> is required")
@@ -156,7 +166,7 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "trellis-tui:", err)
 		return 1
 	}
-	m := model.New(model.Options{Task: a.task, ModelSpec: a.model, Theme: th})
+	m := model.New(model.Options{Task: a.task, ModelSpec: a.model, Theme: th, Playful: a.reg == "playful"})
 	app := model.NewApp(m, c)
 	_, err = tea.NewProgram(app, tea.WithAltScreen()).Run()
 	// The program has ended, on whatever path: what it left waiting on the

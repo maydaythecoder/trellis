@@ -23,11 +23,22 @@ const (
 	PanelEdits   Panel = "edits"
 	PanelChecks  Panel = "checks"
 	PanelRadius  Panel = "radius"
+	// PanelSummary is the summary level (#854): no box at the top level,
+	// reached from the Now strip's way in, or the panes' row once folded.
+	PanelSummary Panel = "summary"
+	// PanelPlan is the plan level (#857): the model's latest plan, with no
+	// box at the top level either, reached as the summary is.
+	PanelPlan Panel = "plan"
 )
 
 // Panels is every pane, in the order Tab visits them and the rail lists
-// them: the order they stand in the right column.
-var Panels = []Panel{PanelWhere, PanelActions, PanelEdits, PanelChecks, PanelRadius}
+// them: the order they stand in the right column, then the plan and the
+// summary.
+var Panels = []Panel{PanelWhere, PanelActions, PanelEdits, PanelChecks, PanelRadius, PanelPlan, PanelSummary}
+
+// boxless is whether p has no box at the top level: the plan and the
+// summary stand in no column, so the rail does not list them.
+func boxless(p Panel) bool { return p == PanelPlan || p == PanelSummary }
 
 // Nav is where the person is in the run view.
 type Nav struct {
@@ -36,6 +47,13 @@ type Nav struct {
 	// Selected is the pane Tab last selected at the top level, which ⏎
 	// goes into; "" when none is.
 	Selected Panel
+	// File is the code level's cursor, the path of the file ⏎ shows the
+	// diff of (#853); "" is the first file.
+	File string
+	// Diff is set at the diff level, one below the edits pane, which
+	// shows File's diff from row Scroll down.
+	Diff   bool
+	Scroll int
 }
 
 // Levels is the depth the Trail's gauge counts to, as the desktop's does:
@@ -62,9 +80,13 @@ const railW = 3
 // folded is whether the right column folds on a w by h screen.
 func folded(w, h int) bool { return w < FoldWidth || h < FoldHeight }
 
-// level is the Trail's depth: 1 at the top, 2 inside a pane.
+// level is the Trail's depth: 1 at the top, 2 inside a pane, 3 at a
+// file's diff.
 func level(s State) int {
-	if s.Nav.Open != "" {
+	switch {
+	case s.Nav.Open == PanelEdits && s.Nav.Diff:
+		return 3
+	case s.Nav.Open != "":
 		return 2
 	}
 	return 1
@@ -78,6 +100,9 @@ func trail(s State, w int) []Span {
 	if s.Nav.Open != "" {
 		left += " ⟩ " + string(s.Nav.Open)
 	}
+	if level(s) == 3 {
+		left += " ⟩ " + Plain(diffPath(s))
+	}
 	right := fmt.Sprintf("L%d / %d", level(s), Levels)
 	if s.Nav.Open != "" {
 		right += "  " + keyRow(key{"ESC", "out"})
@@ -87,12 +112,68 @@ func trail(s State, w int) []Span {
 }
 
 // keycaps are the keys that act at the level shown, for the status bar:
-// TAB and ⏎ at the top level, ESC inside a pane, and ^C always.
+// TAB and ⏎ at the top level, ESC inside a pane, the cursor and ⏎ at the
+// code level, the scroll at a diff, and ^C always. While a question is on
+// screen its keys are the ones that act: y and n, and c where it asks to
+// write a file, whose diff then answers it in place (#853).
 func keycaps(s State) string {
-	if s.Nav.Open != "" {
+	if q, ok := onScreen(s); ok {
+		if s.Reviewing {
+			return keyRow(key{"y", "accept"}, key{"n", "reject"}, key{"ESC", "to the question"}, stopKey(s))
+		}
+		if _, _, file := ApprovalFile(q.Question, q.Detail); file {
+			return keyRow(key{"y", "accept"}, key{"n", "reject"}, key{"c", "review in code"}, stopKey(s))
+		}
+		return keyRow(key{"y", "accept"}, key{"n", "reject"}, stopKey(s))
+	}
+	switch level(s) {
+	case 3:
+		return keyRow(key{"ESC", "out"}, key{"↑↓", "scroll"}, stopKey(s))
+	case 2:
+		switch s.Nav.Open {
+		case PanelEdits:
+			return keyRow(key{"ESC", "out"}, key{"↑↓", "file"}, key{"⏎", "diff"}, stopKey(s))
+		case PanelSummary:
+			return keyRow(key{"ESC", "out"}, key{"↑↓", "scroll"}, stopKey(s))
+		case PanelPlan:
+			return planKeys(s)
+		}
 		return keyRow(key{"ESC", "out"}, stopKey(s))
 	}
 	return keyRow(key{"TAB", "select"}, key{"⏎", "in"}, stopKey(s))
+}
+
+// onlyHere is the key the status bar alone shows, kept when the row runs
+// short: c under a question that asks to write a file, since the box's
+// border has room for y and n only, and at 80 columns c was cut with the
+// rest and the code level could not be reached while a question waited
+// (#853).
+func onlyHere(s State) (key, bool) {
+	q, ok := onScreen(s)
+	if !ok || s.Reviewing {
+		return key{}, false
+	}
+	_, _, file := ApprovalFile(q.Question, q.Detail)
+	return key{"c", "review in code"}, file
+}
+
+// onScreen is the question the approval box shows, if one is up.
+func onScreen(s State) (Asked, bool) {
+	for _, a := range s.Asked {
+		if a.OnScreen {
+			return a, true
+		}
+	}
+	return Asked{}, false
+}
+
+// diffPath is the path the diff level shows: the cursor's file.
+func diffPath(s State) string {
+	files := codeFiles(s)
+	if at, ok := chosen(s, files); ok && (s.Nav.File == "" || files[at].path == s.Nav.File) {
+		return files[at].path
+	}
+	return s.Nav.File
 }
 
 // stopKey is ^C, the only key that stops a run (owner decision,
@@ -107,14 +188,19 @@ func stopKey(s State) key {
 
 // statusBar is the last row: the live keys on the left, and on the right
 // the worktree as a Status, the model and the tier (barRight). When the
-// row runs short the model is cut first, then the keys give way to ^C
+// row runs short the model is cut first, then the keys give way to the
+// one key nothing else on screen shows, if there is one, then to ^C
 // alone, then to nothing: what the worktree holds matters more than a key
 // the Trail and the strip already imply.
 func statusBar(s State, w int) []Span {
 	// Two spaces at least between the keys and the Status, so the last key
 	// and the worktree's word never read as one phrase.
 	const gap = 2
-	for _, keys := range []string{" " + keycaps(s), " " + keyRow(stopKey(s)), ""} {
+	tries := []string{" " + keycaps(s)}
+	if k, ok := onlyHere(s); ok {
+		tries = append(tries, " "+keyRow(k))
+	}
+	for _, keys := range append(tries, " "+keyRow(stopKey(s)), "") {
 		right := append(barRight(s, max(w-Width(keys)-gap-1, 1)), Span{Text: " "})
 		if Width(keys)+gap+spansWidth(right) <= w {
 			return spread([]Span{{Text: keys, Role: RoleLabel}}, right, w)
@@ -129,6 +215,32 @@ func spread(left, right []Span, w int) []Span {
 	gap := max(w-spansWidth(left)-spansWidth(right), 1)
 	out := append(append([]Span{}, left...), Span{Text: strings.Repeat(" ", gap)})
 	return append(out, right...)
+}
+
+// levelWays is the Now strip's ways into the plan and summary levels at
+// the top level beside the panes (#854, #857), as the wireframe's "Summary
+// so far": each in brackets and in signal, with the key that goes in, once
+// Tab selects it. Folded, the panes' row is the way in instead.
+func levelWays(s State) []Span {
+	word := "summary"
+	if s.Running {
+		word = "summary so far"
+	}
+	var out []Span
+	for _, w := range []struct {
+		p    Panel
+		word string
+	}{{PanelPlan, "plan"}, {PanelSummary, word}} {
+		if out != nil {
+			out = append(out, Span{Text: "  "})
+		}
+		if s.Nav.Selected == w.p {
+			out = append(out, Span{Text: "[" + w.word + "]  " + keyRow(key{"⏎", "in"}), Role: RoleYou})
+		} else {
+			out = append(out, Span{Text: w.word, Role: RoleLabel})
+		}
+	}
+	return append(out, Span{Text: " "})
 }
 
 // stage is the rows between the Now strip and the messages row, h rows of
@@ -211,6 +323,9 @@ func foldedRow(s State, w int) string {
 func inside(s State, w, h int) []string {
 	r := rail(s, h)
 	body := pane(s, s.Nav.Open, w-railW, h)
+	if level(s) == 3 {
+		body = codeLevel(s, w-railW, h)
+	}
 	out := make([]string, h)
 	for i := range out {
 		out[i] = r[i] + body[i]
@@ -229,16 +344,28 @@ func pane(s State, p Panel, w, h int) []string {
 		return edits(s, w, h)
 	case PanelChecks:
 		return checks(s, w, h)
+	case PanelSummary:
+		return summary(s, w, h)
+	case PanelPlan:
+		return plan(s, w, h)
 	}
 	return radius(s, w, h)
 }
 
-// rail is the panes' titles written downward, three columns wide and h
-// rows tall, each title given an equal share of the rows and cut to it.
+// rail is the right column's panes' titles written downward, three columns
+// wide and h rows tall, each title given an equal share of the rows and cut
+// to it. The summary and the plan have no title on it: they stand in no
+// column, and a sixth title would cut every other one shorter (#854).
 func rail(s State, h int) []string {
-	out := make([]string, 0, h)
-	share := max(h/len(Panels), 2)
+	var panes []Panel
 	for _, p := range Panels {
+		if !boxless(p) {
+			panes = append(panes, p)
+		}
+	}
+	out := make([]string, 0, h)
+	share := max(h/len(panes), 2)
+	for _, p := range panes {
 		role := RoleLabel
 		if p == s.Nav.Open {
 			role = RoleYou

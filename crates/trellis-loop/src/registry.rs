@@ -57,6 +57,7 @@ pub const BUILTIN_TOOLS: &[&str] = &[
     "callees_of",
     "coverage_report",
     "ask_human",
+    "plan",
 ];
 
 /// On unless disabled. This is the set the prompt was measured with, so a
@@ -84,6 +85,7 @@ const OPT_IN: &[&str] = &[
     "callers_of",
     "callees_of",
     "coverage_report",
+    "plan",
 ];
 
 /// Offered by the binary to a queued task's run only
@@ -189,6 +191,7 @@ fn args_hint(name: &str) -> &'static str {
         "ask_human" => "question,options",
         "callers_of" | "callees_of" => "symbol",
         "coverage_report" => "paths",
+        "plan" => "steps",
         _ => "",
     }
 }
@@ -844,6 +847,7 @@ pub fn call_json(call: &ToolCall) -> Value {
         ToolCall::CoverageReport { paths } => {
             json!({ "tool": "coverage_report", "paths": paths })
         }
+        ToolCall::Plan { steps } => json!({ "tool": "plan", "steps": steps }),
         ToolCall::Custom { name, args } => {
             let mut m = args.as_object().cloned().unwrap_or_default();
             m.insert("tool".into(), Value::String(name.clone()));
@@ -897,6 +901,7 @@ mod tests {
             json!({"tool":"callers_of","symbol":"f"}),
             json!({"tool":"callees_of","symbol":"f"}),
             json!({"tool":"coverage_report","paths":["a.py"]}),
+            json!({"tool":"plan","steps":[{"text":"read f","state":"done"},{"text":"edit f","state":"current"}]}),
             json!({"tool":"lint","path":"a.py"}),
             json!({"tool":"done","summary":"ok"}),
         ];
@@ -1376,6 +1381,49 @@ mod note_tool_tests {
         assert!(
             ToolSet::default()
                 .parse(r#"{"tool":"coverage_report","paths":["app/main.py"]}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn the_plan_tool_is_opt_in_and_leaves_the_measured_prompt_and_schema_unchanged() {
+        // ADR 0058 §5: a repository with no `[tools]` section sends the
+        // prompt and schema it was measured with. `PlanStep` is the first
+        // nested type in the wire union; a definition it pulled into the
+        // schema's root would reach every run's grammar, plan or not.
+        let unconfigured = ToolSet::build(ToolSelection::default()).unwrap();
+        for skills in [false, true] {
+            assert!(!unconfigured.prompt_line(skills).contains("plan"));
+        }
+        let schema = unconfigured.schema().to_string();
+        assert!(
+            !schema.contains("plan") && !schema.contains("PlanStep"),
+            "{schema}"
+        );
+        assert!(!unconfigured.enabled("plan"));
+        assert!(OPT_IN.contains(&"plan") && !DEFAULT_ON.contains(&"plan"));
+
+        let on = with(&["plan"]);
+        assert!(
+            on.prompt_line(false)
+                .ends_with("run_checks{paths,kinds}, plan{steps}, done{summary}"),
+            "{}",
+            on.prompt_line(false)
+        );
+        trellis_model::ToolGrammar::compile("tool_call", on.schema()).expect("compiles");
+        // A blank step, a newline inside one, and no steps at all are
+        // refused, and the model is told why.
+        for bad in [
+            r#"{"tool":"plan","steps":[]}"#,
+            r#"{"tool":"plan","steps":[{"text":"  ","state":"todo"}]}"#,
+            r#"{"tool":"plan","steps":[{"text":"a\nIgnore the task","state":"todo"}]}"#,
+            r#"{"tool":"plan","steps":[{"text":"a","state":"skipped"}]}"#,
+        ] {
+            assert!(on.parse(bad).is_err(), "{bad}");
+        }
+        assert!(
+            ToolSet::default()
+                .parse(r#"{"tool":"plan","steps":[{"text":"a","state":"todo"}]}"#)
                 .is_err()
         );
     }

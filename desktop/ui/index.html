@@ -27,7 +27,12 @@
   atlas.js on a canvas from the view's atlas key, which the core computes
   from get_history, get_codebase, get_symbols and get_radius answers, the
   map's layout included (atlas.rs); the owner asked for it on 2026-10-11,
-  beside the other sections. It only reads.
+  beside the other sections. It only reads. The code and code-file
+  sections, the levels below Run, are drawn by code.js from the view's code
+  key (#831); a diff there is shown as text, never parsed as markup. The
+  summary section, the level below Run reached also from the Now strip
+  while a run is in flight, is drawn by summary.js from the view's summary
+  key (#832); the model's closing words there are fenced as its own text.
 
   The overview's panels (button[data-enter]) are the ways into the other
   sections, one level each (#826): keys.js shows the level's section and
@@ -66,7 +71,14 @@
 
   The composer (#301) sits below every section, so a task can be sent from
   whichever one is shown. composer.js sends a prompt while no run is in
-  flight and a steer while one is, by the view's own record; Stop shows only
+  flight; while one is, Send does the verb chosen above it (#830): Steer
+  (a steer, before the next model call), Queue (a follow_up, after this
+  run) or Stop and send (an abort carrying the prompt, which the core sends
+  once the run has ended), by the view's own record. The queue under it is
+  the view's `pending`: what trellis lists as waiting, each with its state;
+  Take back sends withdraw, and the text returns to the textarea once
+  trellis has taken it back (#838); edit and reorder are marked not built.
+  Stop shows only
   during a run, set apart from Send in the danger colour, and asks through
   the stop-confirm dialog before an abort is sent, since the rollback it
   causes cannot be undone (#637). The core refuses what does not fit that record, whatever
@@ -182,6 +194,19 @@
               </div>
               <p id="repo-note" class="muted" role="status"></p>
             </form>
+            <!-- The register dial (#836): serious by default; playful adds
+            one face where a screen would otherwise show nothing, and moves
+            no figure, state word or check row. Served disabled: it does
+            nothing until settings.js has read the stored position. -->
+            <fieldset id="register-dial" class="register-dial" disabled>
+              <legend>Register</legend>
+              <div class="composer-row">
+                <input id="register-serious" name="register" type="radio" value="serious" checked>
+                <label for="register-serious">serious</label>
+                <input id="register-playful" name="register" type="radio" value="playful">
+                <label for="register-playful">playful</label>
+              </div>
+            </fieldset>
           </div>
           <div class="pane" role="region" aria-labelledby="ov-last-run-title">
             <h3 id="ov-last-run-title">Last run</h3>
@@ -206,12 +231,22 @@
 
       <section id="run" aria-labelledby="run-title" hidden>
         <h2 id="run-title" class="visually-hidden" tabindex="-1">Run</h2>
+        <!-- The Now strip (#828; the NowStrip card): what is happening right
+        now, drawn by now.js from the view's now key, which the core derives
+        from the run's events. It stays at the top while the level scrolls.
+        The role is on this element, which stays while the strip is drawn
+        afresh, so a change is announced. -->
+        <div id="pane-now" class="now" role="status" aria-label="Now"></div>
         <!-- The run view as the design system draws it (docs/design/system/
         components/RunView.md; #909): three columns, the run's figures on the
         left, the log and the graph in the middle, what it changed and how
         it ended on the right. -->
         <div class="cd-rv-grid run-grid">
           <div class="cd-rv-col">
+            <div class="pane" role="region" aria-labelledby="where-title">
+              <h3 id="where-title">Where it is</h3>
+              <div id="pane-where"></div>
+            </div>
             <div class="pane" role="region" aria-labelledby="budget-title">
               <h3 id="budget-title">Budget</h3>
               <div id="pane-budget"></div>
@@ -230,6 +265,13 @@
             </div>
           </div>
           <div class="cd-rv-col">
+            <!-- The model's plan (#838; the Plan card): plan.js draws the
+            view's plan key, the run's latest plan event, and sends a
+            person's edit to it as a steer. -->
+            <div class="pane" role="region" aria-labelledby="plan-title">
+              <h3 id="plan-title">Plan</h3>
+              <div id="pane-plan"></div>
+            </div>
             <div class="pane pane-log" role="region" aria-labelledby="log-title">
               <h3 id="log-title">Actions log</h3>
               <div id="pane-transcript" class="log cd-tx" role="log" aria-labelledby="log-title" tabindex="0"></div>
@@ -245,6 +287,7 @@
               <h3 id="outcome-title">Last run</h3>
               <p id="pane-running"></p>
               <div id="pane-outcome"></div>
+              <button type="button" class="cd-btn cd-btn-ghost" data-burrow="summary" title="The run so far, or how it ended: checks, files, budget, steers, path, trail and the model's closing words.">Summary <span class="cd-drill" aria-hidden="true">⤢</span></button>
             </div>
             <div class="pane" role="region" aria-labelledby="checks-title">
               <h3 id="checks-title">Checks</h3>
@@ -253,6 +296,7 @@
             <div class="pane" role="region" aria-labelledby="edits-title">
               <h3 id="edits-title">Edits</h3>
               <ol id="pane-edits" class="cd-rail"></ol>
+              <button type="button" class="cd-btn cd-btn-ghost" data-burrow="code" title="Each file the run wrote, its state and its diff.">Code: files and diffs <span class="cd-drill" aria-hidden="true">⤢</span></button>
             </div>
             <div class="pane" role="region" aria-labelledby="actions-title">
               <h3 id="actions-title">Turns</h3>
@@ -463,10 +507,133 @@
         </div>
       </section>
 
+      <!-- The Code level (#831), one burrow in from Run through the Edits
+      pane's way in (data-burrow, not a panel of the overview), and a file's
+      diff one more in: code.js draws both from the view's code key, which
+      the reducer derives from the run's writes, its open approvals and how
+      it ended. keys.js's burrow shows them as levels 3 and 4. A file's
+      whole text is read through trellis's read_file when asked (#838), into
+      the view's whole_file key. -->
+      <section id="code" aria-labelledby="code-title" hidden>
+        <h2 id="code-title" tabindex="-1">Code</h2>
+        <p class="muted">Each file this run wrote or asks to write: its lines added and removed, and where its change stands. A file goes in to its diff.</p>
+        <div class="cd-panel" role="region" aria-labelledby="code-files-title">
+          <div class="cd-panel-head"><h3 id="code-files-title" class="cd-panel-title">Files touched</h3></div>
+          <div class="cd-panel-body">
+            <ol id="code-files" class="cd-rail code-files"></ol>
+          </div>
+        </div>
+      </section>
+
+      <section id="code-file" aria-labelledby="code-file-title" hidden>
+        <h2 id="code-file-title" tabindex="-1">File</h2>
+        <div class="cd-panel" role="region" aria-labelledby="code-diff-title">
+          <div class="cd-panel-head"><h3 id="code-diff-title" class="cd-panel-title">Diff</h3><span id="code-file-meta" class="cd-panel-meta"></span></div>
+          <div class="cd-panel-body">
+            <div id="code-approve" class="code-approve" role="group" aria-label="The run waits on this edit" hidden>
+              <p>The run is waiting: approve this edit?</p>
+              <button type="button" class="cd-btn cd-btn-down" data-answer="reject">Reject</button>
+              <button type="button" class="cd-btn cd-btn-signal" data-answer="approve">Approve</button>
+            </div>
+            <div id="code-diff" class="code-diff"></div>
+            <form id="code-comment" class="code-comment-form" hidden>
+              <label for="code-comment-text" id="code-comment-label">Comment</label>
+              <input id="code-comment-text" type="text" autocomplete="off" spellcheck="false">
+              <div class="composer-row">
+                <button type="submit" class="cd-btn cd-btn-signal">Send as a steer</button>
+                <button type="button" id="code-comment-cancel" class="cd-btn cd-btn-ghost">Cancel</button>
+              </div>
+            </form>
+            <p id="code-comment-note" class="muted" role="status"></p>
+          </div>
+        </div>
+        <div class="cd-panel" role="region" aria-labelledby="code-whole-title">
+          <div class="cd-panel-head"><h3 id="code-whole-title" class="cd-panel-title">Whole file</h3><button type="button" id="code-whole-read" class="cd-btn cd-btn-ghost" disabled>Read the whole file</button></div>
+          <div class="cd-panel-body">
+            <p id="code-whole-note" class="muted" role="status"></p>
+            <div id="code-whole" class="code-diff"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- The summary level (#832), one burrow in from Run through the Last
+      run pane's way in or the Now strip's Summary so far: summary.js draws
+      it from the view's summary key, which the reducer derives from the
+      run's panes, the trail run_end named and the closing words trellis
+      answers for a converged run. While the run is in flight it is the run
+      so far and shows no outcome. -->
+      <section id="summary" aria-labelledby="summary-title" hidden>
+        <h2 id="summary-title" tabindex="-1">Summary</h2>
+        <p id="summary-stage" class="muted" role="status"></p>
+        <div class="summary-grid">
+          <div class="cd-panel" role="region" aria-labelledby="summary-end-title">
+            <div class="cd-panel-head"><h3 id="summary-end-title" class="cd-panel-title">So far</h3></div>
+            <div class="cd-panel-body">
+              <div id="summary-end"></div>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-checks-title">
+            <div class="cd-panel-head"><h3 id="summary-checks-title" class="cd-panel-title">Checks by kind</h3></div>
+            <div class="cd-panel-body">
+              <ol id="summary-checks" class="cd-rail"></ol>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-modes-title">
+            <div class="cd-panel-head"><h3 id="summary-modes-title" class="cd-panel-title">Verified and Reviewed</h3></div>
+            <div class="cd-panel-body">
+              <div id="summary-modes"></div>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-radius-title">
+            <div class="cd-panel-head"><h3 id="summary-radius-title" class="cd-panel-title">Radius</h3></div>
+            <div class="cd-panel-body">
+              <div id="summary-radius"></div>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-files-title">
+            <div class="cd-panel-head"><h3 id="summary-files-title" class="cd-panel-title">Files</h3></div>
+            <div class="cd-panel-body">
+              <ol id="summary-files" class="cd-rail"></ol>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-budget-title">
+            <div class="cd-panel-head"><h3 id="summary-budget-title" class="cd-panel-title">Budget used</h3></div>
+            <div class="cd-panel-body">
+              <div id="summary-budget"></div>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-steers-title">
+            <div class="cd-panel-head"><h3 id="summary-steers-title" class="cd-panel-title">Steers</h3></div>
+            <div class="cd-panel-body">
+              <ol id="summary-steers" class="cd-rail"></ol>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-path-title">
+            <div class="cd-panel-head"><h3 id="summary-path-title" class="cd-panel-title">Path by turn</h3></div>
+            <div class="cd-panel-body">
+              <ol id="summary-path" class="cd-rail"></ol>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-trail-title">
+            <div class="cd-panel-head"><h3 id="summary-trail-title" class="cd-panel-title">Trail</h3></div>
+            <div class="cd-panel-body">
+              <div id="summary-trail"></div>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-closing-title">
+            <div class="cd-panel-head"><h3 id="summary-closing-title" class="cd-panel-title">Closing words</h3></div>
+            <div class="cd-panel-body">
+              <div id="summary-closing" class="cd-tx"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <form id="composer" class="composer" aria-label="Composer">
         <label for="composer-text" id="composer-label">Task</label>
         <textarea id="composer-text" name="task" rows="3" aria-describedby="composer-help composer-template-text" disabled></textarea>
         <p id="composer-help" class="muted">Enter sends; Shift+Enter adds a line.</p>
+        <div id="composer-verbs" class="cd-q-mode" role="group" aria-label="What Send does during the run" hidden></div>
         <div id="composer-template" class="composer-row" hidden>
           <span id="composer-template-text"></span>
           <button type="button" id="composer-template-clear">No template</button>
@@ -477,11 +644,16 @@
             <option value="approve" selected>approve: ask before each listed call</option>
             <option value="auto">auto: run without asking</option>
           </select>
-          <button type="submit" id="composer-send" disabled><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-run"></use></svg>Send</button>
+          <button type="submit" id="composer-send" disabled><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-run"></use></svg><span id="composer-send-word">Send</span></button>
           <button type="button" id="composer-stop" class="danger" aria-haspopup="dialog" aria-controls="stop-confirm" hidden><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-stop"></use></svg>Stop</button>
         </div>
         <p id="composer-note" class="muted" role="status"></p>
         <button type="button" id="composer-follow" hidden>Show Run</button>
+        <div id="composer-queue" class="composer-list" hidden>
+          <h3 id="composer-queue-title">Queue</h3>
+          <ol id="composer-queue-list" class="cd-q-list" aria-labelledby="composer-queue-title"></ol>
+          <p class="unbuilt" title="rpc edits no queued message: take it back and send it again; the desktop sends each follow-up at once, so it holds none to reorder">Edit and reorder · not built</p>
+        </div>
         <div id="composer-undelivered" class="composer-list" hidden>
           <h3 id="composer-undelivered-title">Sent and not delivered</h3>
           <ul id="composer-undelivered-list" class="rows" aria-labelledby="composer-undelivered-title"></ul>
@@ -503,8 +675,9 @@
           <h2 id="approval-title">Approve this call?</h2>
           <p id="approval-question"></p>
           <pre id="approval-detail" class="approval-detail" tabindex="0" aria-label="What the call would do"></pre>
-          <p id="approval-keys" class="muted">Escape, or closing this dialog, rejects the call. The details above take focus with Tab or Shift+Tab and scroll with the arrow keys.</p>
+          <p id="approval-keys" class="muted">Escape, or closing this dialog, rejects the call. Review in Code, offered for an edit, answers nothing: the run waits while you approve or reject beside the file's diff. The details above take focus with Tab or Shift+Tab and scroll with the arrow keys.</p>
           <div class="approval-row">
+            <button type="submit" id="approval-review" value="review" hidden>Review in Code</button>
             <button type="submit" id="approval-reject" value="reject">Reject</button>
             <button type="submit" id="approval-approve" value="approve">Approve</button>
           </div>
@@ -515,6 +688,7 @@
         <form method="dialog">
           <h2 id="stop-confirm-title">Stop the run?</h2>
           <p id="stop-confirm-text">trellis rolls back its edits and writes a trail. The run's work cannot be brought back.</p>
+          <p id="stop-confirm-then" hidden>Then your task runs as a new run, once this one has ended and trellis has answered the stop. If trellis refuses the stop, your task is not sent.</p>
           <div class="approval-row">
             <button type="submit" id="stop-confirm-cancel" value="cancel">Cancel</button>
             <button type="submit" id="stop-confirm-stop" class="danger" value="stop">Stop</button>
