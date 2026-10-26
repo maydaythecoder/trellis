@@ -35,6 +35,18 @@ function str(v) {
 // in a loop would otherwise fill it.
 const PAGE_ERRORS_KEPT = 5;
 const pageErrors = [];
+// The document the banner is drawn in, once wireDialogs has run; an error
+// kept before then is drawn when it does.
+let bannerDoc = null;
+
+// Keeps a page error for the banner and draws it. The hook rpc.js's
+// start() reports a module that failed to start through (#816), and the
+// window's error and unhandledrejection events through too.
+export function pageError(what) {
+  pageErrors.push(String(what));
+  while (pageErrors.length > PAGE_ERRORS_KEPT) pageErrors.shift();
+  if (bannerDoc !== null) drawBanner(bannerDoc);
+}
 // The view's alert as last sent; `null` while nothing has failed.
 let viewAlert = null;
 
@@ -156,13 +168,10 @@ export async function wireDialogs(doc, win, tauri) {
     viewAlert = null;
     drawBanner(doc);
   });
-  const keep = (what) => {
-    pageErrors.push(what);
-    while (pageErrors.length > PAGE_ERRORS_KEPT) pageErrors.shift();
-    drawBanner(doc);
-  };
-  win.addEventListener("error", (e) => keep(String(e.message || e.error || "an uncaught error")));
-  win.addEventListener("unhandledrejection", (e) => keep(`unhandled rejection: ${String(e.reason)}`));
+  bannerDoc = doc;
+  win.addEventListener("error", (e) => pageError(String(e.message || e.error || "an uncaught error")));
+  win.addEventListener("unhandledrejection", (e) => pageError(`unhandled rejection: ${String(e.reason)}`));
+  if (pageErrors.length > 0) drawBanner(doc);
   drawStderr(doc, []);
   await tauri.event.listen("child-started", () => forgetChild(doc));
 }

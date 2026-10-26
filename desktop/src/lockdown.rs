@@ -3201,6 +3201,167 @@ mod tests {
         assert!(!function_body(&js, "moduleView").contains("three counts"));
     }
 
+    /// Each page helper's one home (#816): a module that needs one imports
+    /// it from there.
+    const HELPER_HOMES: &[(&str, &str)] = &[
+        ("el", "dom.js"),
+        ("muted", "dom.js"),
+        ("svg", "dom.js"),
+        ("fill", "dom.js"),
+        ("atEnd", "dom.js"),
+        ("appendRows", "dom.js"),
+        ("str", "fmt.js"),
+        ("isCount", "fmt.js"),
+        ("notReported", "fmt.js"),
+        ("plural", "fmt.js"),
+        ("bytes", "fmt.js"),
+        ("millis", "fmt.js"),
+        ("tokens", "fmt.js"),
+        ("send", "rpc.js"),
+        ("lineId", "rpc.js"),
+        ("start", "rpc.js"),
+        ("onShown", "rpc.js"),
+        ("runEnded", "rpc.js"),
+    ];
+
+    /// The copies of a helper a module still defines for itself, as
+    /// #816 found them. #817 to #820 move them, each taking its lines out;
+    /// the list only ever shrinks.
+    const NOT_YET_MOVED: &[(&str, &str)] = &[
+        ("atlas.js", "el"),
+        ("atlas.js", "isCount"),
+        ("atlas.js", "plural"),
+        ("atlas.js", "send"),
+        ("atlas.js", "start"),
+        ("atlas.js", "str"),
+        ("codebase.js", "el"),
+        ("codebase.js", "isCount"),
+        ("codebase.js", "start"),
+        ("codebase.js", "str"),
+        ("composer.js", "el"),
+        ("composer.js", "lineId"),
+        ("composer.js", "send"),
+        ("composer.js", "str"),
+        ("dialogs.js", "el"),
+        ("dialogs.js", "str"),
+        ("model.js", "el"),
+        ("model.js", "lineId"),
+        ("model.js", "send"),
+        ("model.js", "str"),
+        ("overview.js", "el"),
+        ("overview.js", "isCount"),
+        ("overview.js", "muted"),
+        ("overview.js", "str"),
+        ("queue.js", "el"),
+        ("queue.js", "isCount"),
+        ("queue.js", "muted"),
+        ("queue.js", "start"),
+        ("queue.js", "str"),
+        ("radius.js", "el"),
+        ("radius.js", "isCount"),
+        ("radius.js", "start"),
+        ("radius.js", "str"),
+        ("render.js", "atEnd"),
+        ("render.js", "el"),
+        ("render.js", "fill"),
+        ("render.js", "isCount"),
+        ("render.js", "str"),
+        ("render.js", "tokens"),
+        ("settings.js", "el"),
+        ("settings.js", "isCount"),
+        ("settings.js", "lineId"),
+        ("settings.js", "str"),
+        ("status.js", "str"),
+        ("trails.js", "el"),
+        ("trails.js", "isCount"),
+        ("trails.js", "start"),
+        ("vault.js", "el"),
+        ("vault.js", "isCount"),
+        ("vault.js", "send"),
+        ("vault.js", "start"),
+        ("vault.js", "str"),
+    ];
+
+    /// The names a module defines at its top level, at the start of a
+    /// line: `function name(`, exported, async or both, and `const name =`
+    /// or `let name =` bound to a function or an arrow. A definition
+    /// nested in another function is indented and is not counted.
+    fn top_level_definitions(code: &str) -> BTreeSet<String> {
+        let ident = |s: &str| -> String {
+            s.chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+                .collect()
+        };
+        let mut out = BTreeSet::new();
+        for line in code.lines() {
+            let mut l = line.strip_prefix("export ").unwrap_or(line);
+            l = l.strip_prefix("async ").unwrap_or(l);
+            if let Some(rest) = l.strip_prefix("function ") {
+                out.insert(ident(rest.trim_start()));
+            } else if let Some(rest) = l.strip_prefix("const ").or_else(|| l.strip_prefix("let ")) {
+                let name = ident(rest);
+                let value = rest[name.len()..].trim_start();
+                if let Some(v) = value.strip_prefix('=') {
+                    let v = v.trim_start();
+                    let v = v.strip_prefix("async").map_or(v, str::trim_start);
+                    if v.starts_with("function") || v.starts_with('(') {
+                        out.insert(name);
+                    }
+                }
+            }
+        }
+        out.remove("");
+        out
+    }
+
+    #[test]
+    fn page_helpers_live_in_one_module_each() {
+        // The risk: a helper written again in one more module (`el` was
+        // written twelve times, `str` twelve), so a fix to one copy leaves
+        // the others wrong; and a line in NOT_YET_MOVED left behind after
+        // its copy moved, which would let a new copy back in unnoticed.
+        let ui = ui_code();
+        for (name, home) in HELPER_HOMES {
+            let code = ui
+                .get(*home)
+                .unwrap_or_else(|| panic!("ui/{home} is missing"));
+            assert!(
+                top_level_definitions(code).contains(*name),
+                "{home} does not define {name}, though it is its home"
+            );
+        }
+        for (module, code) in &ui {
+            for name in top_level_definitions(code) {
+                let Some((_, home)) = HELPER_HOMES.iter().find(|(n, _)| *n == name) else {
+                    continue;
+                };
+                assert!(
+                    module == home || NOT_YET_MOVED.contains(&(module.as_str(), name.as_str())),
+                    "{module} defines {name}, whose one home is {home}: import it from there"
+                );
+            }
+        }
+        for (module, name) in NOT_YET_MOVED {
+            let code = ui
+                .get(*module)
+                .unwrap_or_else(|| panic!("ui/{module} is missing"));
+            assert!(
+                top_level_definitions(code).contains(*name),
+                "{module} no longer defines {name}: take ({module}, {name}) out of NOT_YET_MOVED"
+            );
+        }
+    }
+
+    #[test]
+    fn page_helper_definitions_are_read_at_the_top_level_only() {
+        // The risk: the reader above misses a definition form, so a copy
+        // passes unseen, or counts a nested one, so a local helper of the
+        // same name fails a module for nothing.
+        let code = "function el(doc) {}\nexport async function send(t) {}\nconst str = (v) => v;\nlet plural = async (k) => k;\nconst fill = function (p) {};\nconst SIZE = 3;\n  function start() {}\nexport function atEnd(p) {}\n";
+        let got: Vec<String> = top_level_definitions(code).into_iter().collect();
+        assert_eq!(got, ["atEnd", "el", "fill", "plural", "send", "str"]);
+    }
+
     #[test]
     fn page_has_no_style_attribute() {
         // The risk: an inline style, which the CSP's `style-src 'self'`
@@ -3211,23 +3372,15 @@ mod tests {
             assert!(!e.attrs.contains_key("style"), "<{} style=...>", e.tag);
             assert_ne!(e.tag, "style", "a <style> element");
         }
-        for name in [
-            "main.js",
-            "render.js",
-            "overview.js",
-            "composer.js",
-            "dialogs.js",
-            "model.js",
-            "settings.js",
-            "status.js",
-            "graph.js",
-            "codebase.js",
-            "radius.js",
-            "trails.js",
-            "vault.js",
-            "queue.js",
-            "atlas.js",
-        ] {
+        // Every module under ui/, read from the directory: the list this
+        // was written by hand missed web.js (#816).
+        let modules: Vec<String> = ui_code().into_keys().collect();
+        assert!(
+            modules.len() >= 18,
+            "ui/ lists {} modules: {modules:?}",
+            modules.len()
+        );
+        for name in &modules {
             let js = ui_file(name);
             for bad in [".style", "cssText", "\"style\"", "'style'"] {
                 assert!(!js.contains(bad), "{name} writes a style: {bad}");
