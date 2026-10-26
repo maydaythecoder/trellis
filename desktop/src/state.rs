@@ -7137,7 +7137,7 @@ mod tests {
             build.push((name.clone(), m, true));
         }
         // An event every client does not read yet has no rpc.events record
-        // to join (`paused` and `resumed`, #837): its desktop fields are a
+        // to join (as `paused` and `resumed` had until #857): its desktop fields are a
         // record of their own, so a read_by naming the desktop is held too.
         for (name, extra) in later["events"]
             .as_object()

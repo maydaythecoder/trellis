@@ -69,13 +69,15 @@ var numeric = map[string]bool{
 	"lines_added": true, "lines_removed": true, "start_line": true,
 	"duration_ms": true, "completion_tokens_used": true,
 	"max_wall_clock_ms": true, "max_tokens": true, "context_bytes": true,
+	"paused_ms": true, "steps_cut": true, "texts_cut": true,
 }
 
 var kindOf = map[string]Kind{
 	"turn": Turn, "run budget": RunBudget, "steer delivered": SteerDelivered,
 	"run_start": RunStart, "run_end": RunEnd, "response": Response,
 	"approval_request": ApprovalRequest, "model call": ModelCall,
-	"runtime identified": RuntimeIdentified,
+	"runtime identified": RuntimeIdentified, "paused": Paused, "resumed": Resumed,
+	"plan": Plan,
 }
 
 // The risk (ADR 0048 section 6): trellis keeps a field the contract

@@ -50,6 +50,14 @@ const (
 	ModelCall
 	// RuntimeIdentified is colibri's self-report, once per run (#627).
 	RuntimeIdentified
+	// Paused is the loop's word that the run is held at the hold a pause
+	// asked for, and Resumed that it goes on (#806). Only these say the run
+	// is held: a pause asked for is not yet a hold.
+	Paused
+	Resumed
+	// Plan is the model's latest plan (#810), sent only where the
+	// repository enables the plan tool.
+	Plan
 )
 
 // Frame is one typed line. Only the fields of its Kind are set.
@@ -77,6 +85,24 @@ type Frame struct {
 	MaxWallClockMs *uint64
 	MaxTokens      *uint64
 	ContextBytes   *uint64
+	// HoldTurn is the model call a Paused or Resumed hold is before, and
+	// PausedMs how long a Resumed one held, by trellis's monotonic clock.
+	HoldTurn *uint64
+	PausedMs *uint64
+	// PlanFields is a Plan event's.
+	PlanFields *PlanFields
+}
+
+// PlanFields is a plan event as sent. Steps is the plan as trellis kept
+// it, a JSON array in one string, the model's words: kept as sent here and
+// read, defensively, by the model package. StepsCut and TextsCut say how
+// many steps past the eighth trellis dropped and how many texts it
+// shortened.
+type PlanFields struct {
+	Turn     *uint64
+	Steps    *string
+	StepsCut *uint64
+	TextsCut *uint64
 }
 
 // TurnFields is a turn event. Turn and Call are what make an event a turn,
@@ -294,6 +320,13 @@ func Parse(l rpc.Line) Frame {
 			MaxWallClockMs: u(f, "max_wall_clock_ms"), MaxTokens: u(f, "max_tokens"), ContextBytes: u(f, "context_bytes")}
 	case msg != nil && *msg == "steer delivered":
 		return Frame{Kind: SteerDelivered, AfterStep: u(f, "after_step")}
+	case msg != nil && *msg == "paused":
+		return Frame{Kind: Paused, HoldTurn: u(f, "turn")}
+	case msg != nil && *msg == "resumed":
+		return Frame{Kind: Resumed, HoldTurn: u(f, "turn"), PausedMs: u(f, "paused_ms")}
+	case msg != nil && *msg == "plan":
+		return Frame{Kind: Plan, PlanFields: &PlanFields{Turn: u(f, "turn"), Steps: s(f, "steps"),
+			StepsCut: u(f, "steps_cut"), TextsCut: u(f, "texts_cut")}}
 	case msg != nil:
 		if lvl := s(o, "level"); lvl != nil && (*lvl == "WARN" || *lvl == "ERROR") {
 			return Frame{Kind: Warning, Text: *msg}
