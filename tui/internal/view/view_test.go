@@ -86,7 +86,7 @@ func TestBudgetLineNamesWhatWasNotReported(t *testing.T) {
 func TestViewSixRegionsAtEightyByTwentyFour(t *testing.T) {
 	out := Render(populated(), 80, 24)
 	for _, want := range []string{"TRELLIS", "transcript", "edits", "checks", "radius", "budget",
-		"Reading blast radius", "resolved", "8400 B prompt", "iteration 2/40", "0:18 elapsed"} {
+		"Reading blast radius", "8400 B prompt", "iteration 2/40", "0:18 elapsed"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("%q missing from:\n%s", want, out)
 		}
@@ -196,7 +196,9 @@ func TestViewManyCompletionsNeverPanic(t *testing.T) {
 					t.Fatalf("%dx%d, %d offered: row %d is %d cells:\n%s", w, h, n, i, Width(l), out)
 				}
 			}
-			if !strings.Contains(out, "resolved") || !strings.Contains(out, "a floor on reach") {
+			// Folded (#851), the panes are a row under the transcript and
+			// the radius is reached by going in.
+			if !folded(w, h) && (!strings.Contains(out, "resolved") || !strings.Contains(out, "a floor on reach")) {
 				t.Fatalf("%dx%d, %d offered: the radius pane was cut:\n%s", w, h, n, out)
 			}
 			more := fmt.Sprintf("… %d more", n-(room-1))

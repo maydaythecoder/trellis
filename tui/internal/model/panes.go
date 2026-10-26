@@ -160,6 +160,7 @@ func (m *Model) viewState() view.State {
 		Restored:   m.restored,
 		Theme:      m.theme,
 		Now:        m.nowState(),
+		Nav:        m.nav,
 	}
 }
 
