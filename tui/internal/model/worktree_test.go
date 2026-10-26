@@ -27,18 +27,18 @@ func worked(m *Model) {
 func TestStatusWorktreeFollowsHowTheRunEnded(t *testing.T) {
 	m := running(t)
 	worked(m)
-	if bar := barOf(m); !strings.Contains(bar, "worktree 3 edit(s) pending") {
+	if bar := barOf(m); !strings.Contains(bar, "● 3 pending") {
 		t.Fatalf("%q", bar)
 	}
 	feed(m, runEnd(map[string]any{"outcome": "not_converged", "exit": 2, "restored": true}))
-	if bar := barOf(m); !strings.Contains(bar, "worktree restored") || strings.Contains(bar, "pending") {
+	if bar := barOf(m); !strings.Contains(bar, "● restored") || strings.Contains(bar, "pending") {
 		t.Fatalf("after a rollback: %q", bar)
 	}
 
 	submit(m, "change it again")
 	worked(m)
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
-	if bar := barOf(m); !strings.Contains(bar, "worktree 2 file(s) left for review") {
+	if bar := barOf(m); !strings.Contains(bar, "● 2 to review") {
 		t.Fatalf("after a converged run: %q", bar)
 	}
 
@@ -49,12 +49,12 @@ func TestStatusWorktreeFollowsHowTheRunEnded(t *testing.T) {
 		{"outcome": "not_converged", "exit": 2, "restored": false},
 	} {
 		m := running(t)
-		if feed(m, runEnd(end)); !strings.Contains(barOf(m), "worktree clean") {
+		if feed(m, runEnd(end)); !strings.Contains(barOf(m), "● clean") {
 			t.Fatalf("%v with no edits: %q", end, barOf(m))
 		}
 		m = running(t)
 		worked(m)
-		if feed(m, runEnd(end)); !strings.Contains(barOf(m), "worktree 2 file(s) left for review") {
+		if feed(m, runEnd(end)); !strings.Contains(barOf(m), "● 2 to review") {
 			t.Fatalf("%v: %q", end, barOf(m))
 		}
 	}
@@ -75,7 +75,7 @@ func TestStatusWorktreeASecondTaskClearsTheFourPanes(t *testing.T) {
 	if m.restored != nil {
 		t.Fatal("the last run's ending is kept for this one")
 	}
-	if bar := barOf(m); !strings.Contains(bar, "worktree clean") {
+	if bar := barOf(m); !strings.Contains(bar, "● clean") {
 		t.Fatalf("%q", bar)
 	}
 }
@@ -94,7 +94,7 @@ func TestStatusWorktreeIsWholeAtEightyColumnsWithALongSpec(t *testing.T) {
 		return rows[len(rows)-1]
 	}
 	bar := bar80()
-	if !strings.Contains(bar, "worktree clean") || !strings.Contains(bar, "tier unknown, probing…") {
+	if !strings.Contains(bar, "● clean") || !strings.Contains(bar, "tier unknown, probing…") {
 		t.Fatalf("%q", bar)
 	}
 	if !strings.Contains(bar, "…") || strings.Contains(bar, spec) || view.Width(bar) > 80 {
@@ -106,7 +106,7 @@ func TestStatusWorktreeIsWholeAtEightyColumnsWithALongSpec(t *testing.T) {
 		feed(m, turn(1, "edit "+f, map[string]any{"observation": "applied: true"}))
 	}
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
-	if bar := bar80(); !strings.Contains(bar, "worktree 3 file(s) left for review") {
+	if bar := bar80(); !strings.Contains(bar, "● 3 to review") {
 		t.Fatalf("%q", bar)
 	}
 }
@@ -120,8 +120,8 @@ func TestSlashHelpListsThePageKeysAndTheStop(t *testing.T) {
 	enter(m)
 	help := lines(m)
 	for _, want := range []string{
-		"PgUp PgDn        ten lines at a time; Home to the start, End back to following",
-		"^c               leave; a run in flight is stopped and rolled back first",
+		"[PGUP][PGDN]", "ten lines at a time; [HOME] to the start, [END] back to following",
+		"[^C]", "leave; a run in flight is stopped and rolled back first",
 	} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("%q not in help:\n%s", want, help)

@@ -25,7 +25,8 @@ var (
 // its border is blank.
 //
 // The frame is drawn in the line colour, the title and the bottom as
-// labels, and each row in its role's colour, from th (#841).
+// labels, and each row in its role's colour, from th (#841), or span by
+// span when it carries Spans (#911).
 func Box(th theme.Theme, title, bottom string, rows []Row, w, h int) []string {
 	return frameBox(th, RoleFrame, lightCorners, title, bottom, rows, w, h)
 }
@@ -48,7 +49,7 @@ func frameBox(th theme.Theme, frame Role, c corners, title, bottom string, rows 
 		if i < len(rows) {
 			r = rows[i]
 		}
-		out = append(out, side+fill(th, r.Role, r.Text, inner)+side)
+		out = append(out, side+line(th, r.spans(), inner)+side)
 	}
 	return append(out, edge(th, frame, c[2], c[3], bottom, inner))
 }

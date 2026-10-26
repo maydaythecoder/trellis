@@ -76,13 +76,20 @@ var helpLines = []string{
 	"  /codebase        which modules call which, and how much is unbound",
 	"  /clear           empty the transcript",
 	"  /help            this",
-	"  @<text> tab      repository paths starting with it; tab again inserts the first",
-	"  tab              select a pane; enter on an empty line goes into it",
-	"  esc              out of a pane, or clear the line; it never stops a run",
-	"  ^c               leave; a run in flight is stopped and rolled back first",
-	"  enter during a run queues the line as a steer for its next turn",
-	"  ↑ ↓              scroll the transcript",
-	"  PgUp PgDn        ten lines at a time; Home to the start, End back to following",
+	helpLine("@<text> "+view.Keycap("TAB"), "repository paths starting with it; "+view.Keycap("TAB")+" again inserts the first"),
+	helpLine(view.Keycap("TAB"), "select a pane; "+view.Keycap("⏎")+" on an empty line goes into it"),
+	helpLine(view.Keycap("ESC"), "out of a pane, or clear the line; it never stops a run"),
+	helpLine(view.Keycap("^C"), "leave; a run in flight is stopped and rolled back first"),
+	helpLine(view.Keycap("⏎"), "during a run, queues the line as a steer for its next turn"),
+	helpLine(view.Keycap("↑")+view.Keycap("↓"), "scroll the transcript"),
+	helpLine(view.Keycap("PGUP")+view.Keycap("PGDN"), "ten lines at a time; "+view.Keycap("HOME")+" to the start, "+view.Keycap("END")+" back to following"),
+	"",
+	// What the screen's marks mean (#911).
+	helpLine("1:23*", "a time by this view's own clock, which stops while a question waits"),
+	helpLine(view.Dash, "a figure trellis did not report; never drawn as 0"),
+	helpLine("████░░░░ 3/40", "a figure against its ceiling, the turn against max_iterations"),
+	helpLine("● 2 pending", "edits a run in flight has made in the worktree"),
+	helpLine("✎ 2", "actions that wrote to the tree"),
 	"",
 	"  A question is answered here; anything else is a task: it snapshots the",
 	"  worktree, drives the model, runs the repository's own checks and rolls",
@@ -90,6 +97,12 @@ var helpLines = []string{
 	"",
 	"  For the model catalogue, weights and config, leave and use",
 	"  `trellis model` or `trellis session`.",
+}
+
+// helpLine is one /help row: what is on screen or the key to press, in
+// the column the commands above use, and what it means or does.
+func helpLine(what, means string) string {
+	return "  " + view.Pad(what, 16) + " " + means
 }
 
 // radiusLines is /graph: the radius pane's three counts, in words.

@@ -12,7 +12,7 @@ import (
 // #848: a run's actions, edits and checks keep the newest PaneCap each, and
 // every pane says how many older rows it no longer holds; the bar still
 // counts every write while the run is in flight, and once it has ended
-// says "or more" of the files it can no longer count.
+// says "+" of the files it can no longer count.
 func TestCapsActionsEditsAndChecksHold(t *testing.T) {
 	m := running(t)
 	const over = 5
@@ -36,7 +36,7 @@ func TestCapsActionsEditsAndChecksHold(t *testing.T) {
 	m.Update(windowSize(140, 60))
 	v := m.View()
 	for _, want := range []string{
-		fmt.Sprintf("%d edit(s) pending", PaneCap+over),
+		fmt.Sprintf("● %d pending", PaneCap+over),
 		fmt.Sprintf("… %d earlier edits not kept", over),
 		fmt.Sprintf("… %d earlier checks not kept", over),
 		fmt.Sprintf("%d earlier actions not kept", over),
@@ -46,7 +46,7 @@ func TestCapsActionsEditsAndChecksHold(t *testing.T) {
 		}
 	}
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
-	if v := m.View(); !strings.Contains(v, fmt.Sprintf("%d or more file(s) left for review", PaneCap)) {
+	if v := m.View(); !strings.Contains(v, fmt.Sprintf("● %d+ to review", PaneCap)) {
 		t.Errorf("after the run the bar does not say it cannot count every file:\n%s", v)
 	}
 }
