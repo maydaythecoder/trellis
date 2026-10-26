@@ -90,7 +90,8 @@ func TestStatusWorktreeIsWholeAtEightyColumnsWithALongSpec(t *testing.T) {
 	respond(m, stateID, "get_state", map[string]any{"model": spec, "tier": "unknown, probing…"})
 	bar80 := func() string {
 		m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-		return strings.SplitN(m.View(), "\n", 2)[0]
+		rows := strings.Split(m.View(), "\n")
+		return rows[len(rows)-1]
 	}
 	bar := bar80()
 	if !strings.Contains(bar, "worktree clean") || !strings.Contains(bar, "tier unknown, probing…") {
@@ -150,10 +151,17 @@ func TestSlashHelpHasNoRowEndingMidWord(t *testing.T) {
 	// 0, to its bottom border.
 	var pane []string
 	rows := strings.Split(m.View(), "\n")
-	if !strings.HasPrefix(rows[1], "┌ transcript") {
-		t.Fatalf("no transcript pane at row 1:\n%s", m.View())
+	top := -1
+	for i, row := range rows {
+		if strings.HasPrefix(row, "┌ transcript") {
+			top = i
+			break
+		}
 	}
-	for _, row := range rows[2:] {
+	if top < 0 {
+		t.Fatalf("no transcript pane:\n%s", m.View())
+	}
+	for _, row := range rows[top+1:] {
 		r := []rune(row)
 		if r[0] != '│' {
 			break
