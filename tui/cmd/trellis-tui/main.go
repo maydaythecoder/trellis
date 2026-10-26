@@ -150,9 +150,8 @@ func run(argv []string, stdout, stderr io.Writer) int {
 	}
 	m := model.New(model.Options{Task: a.task, ModelSpec: a.model})
 	app := model.NewApp(m, c)
-	// Nothing paints with the theme yet. Handing it to the model changes
-	// internal/model/model.go and internal/view, which #839 is changing;
-	// the screen paints with it from #841.
+	// Nothing paints with the theme yet: #841 hands it to the model and
+	// the view, and paints every row with it.
 	_ = th
 	if _, err := tea.NewProgram(app, tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintln(stderr, "trellis-tui:", err)
