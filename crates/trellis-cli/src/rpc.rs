@@ -978,8 +978,11 @@ fn serve_with(
     // No `resume` can arrive either, and the join below would wait on a
     // held run forever. Released as a question is declined: the run goes on
     // to its end. A follow-up's run after it gets a fresh hold, which
-    // nothing can ask to hold.
-    if let Some(r) = &s.running {
+    // nothing can ask to hold. Not after an `abort`, for the reason above:
+    // released before the run takes the abort path, the loop would make a
+    // model request the person had stopped, and dropping its future ends a
+    // held run without a release.
+    if !aborting && let Some(r) = &s.running {
         r.current().hold.close(INPUT_ENDED);
     }
     if let Some(r) = s.running.take() {
