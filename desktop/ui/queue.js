@@ -23,7 +23,7 @@
 import { el, muted } from "./dom.js";
 import { isCount, str } from "./fmt.js";
 import { drawPrCi } from "./overview.js";
-import { send, start } from "./rpc.js";
+import { onShown, runEnded, send, start } from "./rpc.js";
 
 let asked = 0;
 // The overview reads for PR and CI state: each runs `trellis overview` and
@@ -198,8 +198,7 @@ export async function wireQueue(doc, tauri) {
   });
   // A run may have claimed, finished or failed a task.
   await tauri.event.listen("rpc-frame", (event) => {
-    const f = event.payload;
-    if (f !== null && typeof f === "object" && f.type === "run_end") askQueue(doc, tauri);
+    if (runEnded(event.payload)) askQueue(doc, tauri);
   });
   // Another repository is another queue. A PR and CI read still out is the
   // last repository's: it is dropped when it comes, and this one may start.
@@ -209,8 +208,9 @@ export async function wireQueue(doc, tauri) {
     pressed = null;
     if (shown()) refresh();
   });
-  const button = doc.querySelector('nav.rail button[aria-controls="board"]');
-  if (button) button.addEventListener("click", refresh);
+  // Entering the Board level shows the section (keys.js), and the board is
+  // read then (#826).
+  onShown(doc, "board", refresh);
 }
 
 if (typeof window !== "undefined" && window.__TAURI__) {
