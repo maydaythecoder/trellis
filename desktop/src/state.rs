@@ -28,19 +28,32 @@
 mod vault;
 
 use crate::atlas;
+use crate::capped::Capped;
 use crate::frames::{ApprovalRequest, Frame, RunEnd, RuntimeIdentified, Turn};
 use crate::graph;
 use crate::queue;
 use serde_json::{Map, Value, json};
-use std::collections::VecDeque;
 
 /// The transcript keeps this many lines, as the TUI's does: a run streams
 /// for as long as it lasts, and an uncapped log grows with it.
 pub const TRANSCRIPT_CAP: usize = 2000;
 
+/// And this many bytes, since one line can be of any length (#814): room
+/// for every line at about 500 bytes each. The whole transcript goes out in
+/// every view that changes it, so this also bounds those views.
+pub const TRANSCRIPT_BYTES: usize = 1024 * 1024;
+
 /// The trellis messages pane keeps this many stderr lines (#302): the cap
 /// ADR 0052's amendment to ADR 0048 section 2 puts on showing stderr.
 pub const STDERR_CAP: usize = 500;
+
+/// And this many bytes (#814), the same room per line as the transcript.
+pub const STDERR_BYTES: usize = 256 * 1024;
+
+/// The alert is one line in a banner the page announces (`role="alert"`),
+/// so it is held short (#814); what failed is also in the transcript or the
+/// run's outcome, which keep far more of it.
+pub const ALERT_BYTES: usize = 4 * 1024;
 
 /// One pane of the view, named as the view's key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -627,7 +640,8 @@ impl SessionTokens {
 /// The desktop's run panes.
 #[derive(Debug, Default)]
 pub struct DesktopState {
-    transcript: VecDeque<String>,
+    /// The run's lines, oldest first.
+    transcript: Capped<TRANSCRIPT_CAP, TRANSCRIPT_BYTES>,
     actions: Vec<Action>,
     edits: Vec<String>,
     checks: Vec<Check>,
@@ -654,12 +668,13 @@ pub struct DesktopState {
     /// What the last `abort` answer said was never delivered.
     undelivered: Vec<Undelivered>,
     /// The last failure, as text: a refused command, a run that ended in
-    /// error, or a stdout line that is not a JSON object. `None` until one,
-    /// and from each run's start.
-    alert: Option<String>,
+    /// error, or a stdout line that is not a JSON object. Empty until one,
+    /// and from each run's start; a new one replaces it.
+    alert: Capped<1, ALERT_BYTES>,
     /// trellis's stderr lines, shown as human text and never read as data
-    /// (ADR 0048 section 2, amended by ADR 0052), capped at [`STDERR_CAP`].
-    stderr: VecDeque<String>,
+    /// (ADR 0048 section 2, amended by ADR 0052), capped at [`STDERR_CAP`]
+    /// lines and [`STDERR_BYTES`] bytes.
+    stderr: Capped<STDERR_CAP, STDERR_BYTES>,
     /// The session's model; `None` until this child has taken one, which
     /// is what keeps prompt input shut (#564).
     model: Option<Chosen>,
@@ -730,7 +745,7 @@ impl DesktopState {
                 let mut c =
                     Changed::of(&[Pane::Running, Pane::Approvals, Pane::Outcome, Pane::Phase]);
                 if let Some(error) = &e.error {
-                    self.alert = Some(format!("The run ended in error: {error}"));
+                    self.alert.push(format!("The run ended in error: {error}"));
                     c = c.with(Pane::Alert);
                 }
                 self.outcome = Some(e);
@@ -861,7 +876,7 @@ impl DesktopState {
                         None => format!("{command} refused"),
                     };
                     self.push_line(format!("· {said}"));
-                    self.alert = Some(said);
+                    self.alert.push(said);
                     c.with(Pane::Transcript).with(Pane::Alert)
                 } else {
                     c
@@ -880,7 +895,7 @@ impl DesktopState {
             // came in the transcript, and said in the alert, since a reader
             // that cannot parse the stream may be missing a frame.
             Frame::Unparsed(line) => {
-                self.alert = Some(format!(
+                self.alert.push(format!(
                     "trellis rpc printed a line that is not a JSON object: {line}"
                 ));
                 self.push_line(line);
@@ -889,10 +904,7 @@ impl DesktopState {
             // trellis's human text: its own capped pane, apart from the
             // run's transcript, and never read for anything (#302).
             Frame::Human(line) => {
-                self.stderr.push_back(line);
-                while self.stderr.len() > STDERR_CAP {
-                    self.stderr.pop_front();
-                }
+                self.stderr.push(line);
                 Changed::of(&[Pane::Stderr])
             }
         }
@@ -1008,7 +1020,7 @@ impl DesktopState {
 
     fn pane(&self, p: Pane) -> Value {
         match p {
-            Pane::Transcript => json!(self.transcript),
+            Pane::Transcript => Value::from_iter(self.transcript.iter()),
             Pane::Actions => Value::Array(
                 self.actions
                     .iter()
@@ -1092,8 +1104,8 @@ impl DesktopState {
                     .map(|u| json!({"type": u.kind, "message": u.message}))
                     .collect(),
             ),
-            Pane::Alert => json!(self.alert),
-            Pane::Stderr => json!(self.stderr),
+            Pane::Alert => json!(self.alert.back()),
+            Pane::Stderr => Value::from_iter(self.stderr.iter()),
             Pane::Model => match &self.model {
                 Some(m) => json!({"spec": m.spec, "configured": m.configured,
                                   "saved_to": m.saved_to, "source": self.source(m)}),
@@ -1277,7 +1289,7 @@ impl DesktopState {
         c
     }
 
-    /// Empties the panes a run owns; the transcript is left to its cap.
+    /// Empties the panes a run owns; the transcript is left to its caps.
     fn reset_run(&mut self) {
         self.actions.clear();
         self.edits.clear();
@@ -1287,16 +1299,13 @@ impl DesktopState {
         self.approvals.clear();
         self.outcome = None;
         self.undelivered.clear();
-        self.alert = None;
+        self.alert.clear();
         self.phase = None;
         self.runtime = None;
     }
 
     fn push_line(&mut self, line: String) {
-        self.transcript.push_back(line);
-        while self.transcript.len() > TRANSCRIPT_CAP {
-            self.transcript.pop_front();
-        }
+        self.transcript.push(line);
     }
 }
 
@@ -2705,6 +2714,57 @@ mod tests {
         let t = all(&s)["transcript"].as_array().unwrap().clone();
         assert_eq!(t.len(), TRANSCRIPT_CAP);
         assert_eq!(t[0], "line 5", "the oldest go first");
+    }
+
+    #[test]
+    fn a_stored_line_past_the_cap_is_cut_and_said_so() {
+        // The risk (#814): a stdout line that is not JSON, or a stderr line,
+        // of any length was stored whole in the transcript, the trellis
+        // messages pane and the alert, and sent whole with every view that
+        // changed them; or a cut one, with nothing saying so, read as the
+        // whole line. Each copy is held to its own store's byte cap, keeps
+        // the line's start on a character boundary, and ends saying how
+        // many of its bytes were cut.
+        let line = "é".repeat(TRANSCRIPT_BYTES);
+        let alert = format!("trellis rpc printed a line that is not a JSON object: {line}");
+        let mut s = DesktopState::default();
+        feed(&mut s, &line);
+        s.update(Frame::Human(line.clone()));
+        let v = all(&s);
+        for (pane, kept, whole, cap) in [
+            ("transcript", &v["transcript"][0], &line, TRANSCRIPT_BYTES),
+            ("stderr", &v["stderr"][0], &line, STDERR_BYTES),
+            ("alert", &v["alert"], &alert, ALERT_BYTES),
+        ] {
+            let kept = kept.as_str().unwrap_or_else(|| panic!("{pane}: {kept}"));
+            assert!(kept.len() <= cap, "{pane}: {} bytes kept", kept.len());
+            assert!(kept.len() >= cap - 3, "{pane}: cut short of its cap");
+            let at = kept
+                .rfind(" [trellis-desktop:")
+                .unwrap_or_else(|| panic!("{pane}: the cut is not said"));
+            assert!(
+                whole.starts_with(&kept[..at]),
+                "{pane}: the start, as it came"
+            );
+            assert_eq!(
+                &kept[at..],
+                format!(
+                    " [trellis-desktop: the last {} of {} bytes were cut]",
+                    whole.len() - at,
+                    whole.len()
+                ),
+                "{pane}"
+            );
+        }
+        // The cut line fills the transcript's bytes, so the next line,
+        // however short, pushes it out; a line within the caps is whole.
+        feed(&mut s, "<b>short</b>");
+        let v = all(&s);
+        assert_eq!(v["transcript"], json!(["<b>short</b>"]));
+        assert_eq!(
+            v["alert"],
+            "trellis rpc printed a line that is not a JSON object: <b>short</b>"
+        );
     }
 
     /// A value of the shape `field` has on the wire, distinct from every

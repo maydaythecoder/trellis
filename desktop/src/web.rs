@@ -15,7 +15,9 @@
 //!   <value>}` or `{"error": "<why>"}` out, the same values and refusals
 //!   the window's IPC carries;
 //! - `GET /<token>/events`: the core's events, one server-sent `event:` per
-//!   `Sink::emit`, to every page that is open.
+//!   `Sink::emit`, to every page that is open. A page that falls behind
+//!   loses its oldest unsent events rather than holding the core's memory
+//!   (`STREAM_BACKLOG` and `STREAM_BYTES`, #814).
 //!
 //! A request whose path does not carry the token, or whose Host header is
 //! not `127.0.0.1:<port>` or `localhost:<port>`, is refused with 403 once
@@ -46,13 +48,14 @@
 //! Ctrl-C, and the core then sends the rpc child `quit` and waits for it, as
 //! the window does when it closes (ADR 0048 section 9): nothing is killed.
 
+use crate::capped::Capped;
+use crate::child::LINE_READ_CAP;
 use crate::commands::{Core, Sink};
 use serde_json::{Value, json};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 /// The page's files, by name, as `ui/` holds them. A file added to `ui/`
@@ -96,9 +99,13 @@ const LINGER_MAX: usize = 64 * 1024;
 /// How often an idle event stream carries a comment, so a page that went
 /// away is noticed by the write that fails.
 const KEEPALIVE: Duration = Duration::from_secs(15);
-/// Events an event stream may fall behind by before it is dropped: a page
-/// that stopped reading is not let hold the core's memory.
+/// Events an event stream may fall behind by, by count and by bytes, before
+/// its oldest unsent ones are dropped: a page that stopped reading is not
+/// let hold the core's memory (#814), and the core never waits on it.
 const STREAM_BACKLOG: usize = 1024;
+/// Twice the longest line `child.rs` reads, so the `rpc-frame` of any line
+/// read whole fits a stream with room beside it.
+const STREAM_BYTES: usize = 2 * LINE_READ_CAP;
 
 /// What the response to the page carries, as strict as the window's policy
 /// (`tauri.conf.json`, held by `lockdown.rs`): nothing inline, nothing from
@@ -108,21 +115,54 @@ pub const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; 
                        connect-src 'self'; object-src 'none'; base-uri 'none'; \
                        form-action 'none'; frame-ancestors 'none'";
 
+/// One page's event stream: the frames the core emitted that the page has
+/// not been sent yet, held to [`STREAM_BACKLOG`] and [`STREAM_BYTES`].
+#[derive(Default)]
+struct Stream {
+    unsent: Mutex<Capped<STREAM_BACKLOG, STREAM_BYTES>>,
+    /// Woken by each push, so the stream's thread sends without polling.
+    pushed: Condvar,
+}
+
+impl Stream {
+    fn push(&self, frame: String) {
+        self.unsent
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(frame);
+        self.pushed.notify_one();
+    }
+
+    /// The oldest unsent frame, waiting up to `wait` for one. It is taken
+    /// out under the lock and written after it, so a page slow to read
+    /// never holds up a push.
+    fn next(&self, wait: Duration) -> Option<String> {
+        let unsent = self.unsent.lock().unwrap_or_else(PoisonError::into_inner);
+        let (mut unsent, _) = self
+            .pushed
+            .wait_timeout_while(unsent, wait, |u| u.is_empty())
+            .unwrap_or_else(PoisonError::into_inner);
+        unsent.pop_front()
+    }
+}
+
 /// The core's events, fanned out to every open event stream.
 #[derive(Default)]
 pub struct WebSink {
-    streams: Mutex<Vec<SyncSender<String>>>,
+    /// Held weakly: a stream's own connection thread holds it, so a stream
+    /// whose page went away is gone, and dropped here at the next emit.
+    streams: Mutex<Vec<Weak<Stream>>>,
 }
 
 impl WebSink {
     /// A new stream: what the core emits from now on.
-    fn subscribe(&self) -> Receiver<String> {
-        let (tx, rx) = sync_channel(STREAM_BACKLOG);
+    fn subscribe(&self) -> Arc<Stream> {
+        let stream = Arc::new(Stream::default());
         self.streams
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push(tx);
-        rx
+            .push(Arc::downgrade(&stream));
+        stream
     }
 
     /// How many streams are open.
@@ -131,7 +171,9 @@ impl WebSink {
         self.streams
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .len()
+            .iter()
+            .filter(|s| s.strong_count() > 0)
+            .count()
     }
 }
 
@@ -140,12 +182,28 @@ impl Sink for WebSink {
         // One JSON object on one line: serde_json escapes the newlines in a
         // string, and the event names are the core's own constants.
         let frame = format!("event: {event}\ndata: {payload}\n\n");
-        // A stream whose page went away, or that fell `STREAM_BACKLOG`
-        // behind, is dropped here rather than waited on.
+        // Never cut: half an event is not one the page can read, so one past
+        // a stream's whole byte cap reaches no page, and that is said.
+        if frame.len() > STREAM_BYTES {
+            eprintln!(
+                "trellis-desktop: web: a {event} event of {} bytes is past the {STREAM_BYTES}-byte \
+                 stream cap, so no page was sent it",
+                frame.len()
+            );
+            return;
+        }
+        // A stream whose page went away is dropped here; one that fell
+        // behind loses its oldest unsent frames. Neither is waited on.
         self.streams
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .retain(|s| s.try_send(frame.clone()).is_ok());
+            .retain(|s| match s.upgrade() {
+                Some(stream) => {
+                    stream.push(frame.clone());
+                    true
+                }
+                None => false,
+            });
     }
 }
 
@@ -354,7 +412,7 @@ impl Server {
     /// The event stream: subscribed before startup runs, so the first
     /// page hears what startup emits, then every frame until the page goes.
     fn events(&self, out: &mut TcpStream) -> io::Result<()> {
-        let rx = self.sink.subscribe();
+        let stream = self.sink.subscribe();
         write_head(out, 200, "text/event-stream", None, &[])?;
         out.write_all(b": connected\n\n")?;
         out.flush()?;
@@ -366,11 +424,12 @@ impl Server {
         {
             std::thread::spawn(start);
         }
+        // Until a write fails: the page went away, and its stream with this
+        // thread.
         loop {
-            match rx.recv_timeout(KEEPALIVE) {
-                Ok(frame) => out.write_all(frame.as_bytes())?,
-                Err(RecvTimeoutError::Timeout) => out.write_all(b": keepalive\n\n")?,
-                Err(RecvTimeoutError::Disconnected) => return Ok(()),
+            match stream.next(KEEPALIVE) {
+                Some(frame) => out.write_all(frame.as_bytes())?,
+                None => out.write_all(b": keepalive\n\n")?,
             }
             out.flush()?;
         }
@@ -1258,6 +1317,54 @@ mod tests {
         }
         let got = until(&mut second, "data: \"tick\"\n");
         assert!(got.contains("event: rpc-human\ndata: \"tick\"\n"), "{got}");
+    }
+
+    #[test]
+    fn web_sink_caps_bytes_per_stream() {
+        // The risk (#814): a page that stopped reading held up to 1,024
+        // events of any size each, so one stalled tab could hold the core's
+        // memory by the gigabyte. A stream holds at most STREAM_BYTES of
+        // unsent events and loses the oldest first, without the core waiting
+        // on it; an event is never cut, since half of one is not an event
+        // the page can read, so one past the cap on its own reaches no page.
+        let sink = WebSink::default();
+        let stalled = sink.subscribe();
+        // Each frame is a quarter of the cap and a few bytes more: three
+        // fit, and a fourth does not.
+        let quarter = "x".repeat(STREAM_BYTES / 4);
+        for i in 0..5 {
+            sink.emit("rpc-human", json!(format!("{i} {quarter}")));
+            let held = stalled.unsent.lock().unwrap().bytes();
+            assert!(held <= STREAM_BYTES, "{held} bytes held after event {i}");
+        }
+        assert_eq!(stalled.unsent.lock().unwrap().len(), 3);
+        for i in 2..5 {
+            let frame = stalled.next(Duration::ZERO).expect("a frame");
+            assert!(
+                frame.starts_with(&format!("event: rpc-human\ndata: \"{i} x")),
+                "the oldest go first: {}",
+                &frame[..40]
+            );
+            assert!(frame.ends_with("x\"\n\n"), "a frame is never cut");
+        }
+        assert_eq!(stalled.next(Duration::ZERO), None);
+        // Past the cap on its own: no page is sent it, cut or whole.
+        sink.emit("rpc-human", json!("y".repeat(STREAM_BYTES)));
+        assert_eq!(stalled.next(Duration::ZERO), None);
+        // The stream goes on with what comes next.
+        sink.emit("view", json!({"running": true}));
+        assert_eq!(
+            stalled.next(Duration::ZERO).as_deref(),
+            Some("event: view\ndata: {\"running\":true}\n\n")
+        );
+        assert_eq!(sink.open(), 1);
+        // A stream whose page went away is dropped at the next emit.
+        drop(stalled);
+        sink.emit("view", json!({}));
+        assert!(
+            sink.streams.lock().unwrap().is_empty(),
+            "a gone stream is held"
+        );
     }
 
     #[test]
