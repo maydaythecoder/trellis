@@ -823,6 +823,21 @@ impl Rpc {
         }
     }
 
+    /// The first record matching `pred`, whether it was read already,
+    /// while waiting for another, or is still to come. For records written
+    /// from different threads, whose order on the stream is not fixed.
+    fn seen_or_next(&mut self, pred: impl Fn(&Value) -> bool) -> Value {
+        match self.seen.iter().find(|v| pred(v)) {
+            Some(v) => v.clone(),
+            None => self.next(pred),
+        }
+    }
+
+    /// [`Rpc::seen_or_next`] for the response to the command sent with `id`.
+    fn response(&mut self, id: &str) -> Value {
+        self.seen_or_next(|v| v["type"] == "response" && v["id"] == id)
+    }
+
     /// Waits, bounded, until `get_state` says no run is in flight. `run_end`
     /// is framed from inside the run's thread, which still has its tail to
     /// do. A `prompt` sent on reading it waits that out (#495); this is for
@@ -5131,11 +5146,13 @@ fn rpc_pause_holds_before_the_next_model_request() {
     let steer = "STEER-5d2 sent while paused";
     rpc.send(serde_json::json!({"id": "s", "type": "steer", "message": steer}));
     rpc.send(serde_json::json!({"id": "r", "type": "resume"}));
-    let r = rpc.next(|v| v["type"] == "response" && v["id"] == "r");
+    // `resume` is answered on the reader's thread and the steer from its
+    // waiter's once the request carries it, so either may come first.
+    let r = rpc.response("r");
     assert_eq!(r["success"], true, "{r}");
-    let s = rpc.next(|v| v["type"] == "response" && v["id"] == "s");
+    let s = rpc.response("s");
     assert_eq!(s["data"]["after_step"], 1, "{s}");
-    let end = rpc.next(|v| v["type"] == "run_end");
+    let end = rpc.seen_or_next(|v| v["type"] == "run_end");
     assert_eq!(end["id"], "p", "{end}");
     let records = rpc.finish();
 
@@ -5277,10 +5294,10 @@ fn rpc_resume_continues_the_same_run() {
     let held = rpc.next(|v| v["type"] == "response" && v["id"] == "h");
     assert_eq!(held["data"]["turn"], 2, "{held}");
     rpc.send(serde_json::json!({"id": "r", "type": "resume"}));
-    let r = rpc.next(|v| v["type"] == "response" && v["id"] == "r");
+    let r = rpc.response("r");
     assert_eq!(r["command"], "resume");
     assert_eq!(r["success"], true, "{r}");
-    let end = rpc.next(|v| v["type"] == "run_end");
+    let end = rpc.seen_or_next(|v| v["type"] == "run_end");
     assert_eq!(end["id"], "p", "{end}");
     assert_eq!(end["outcome"], "converged", "{end}");
     rpc.wait_idle();
