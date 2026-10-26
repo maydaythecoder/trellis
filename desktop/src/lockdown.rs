@@ -239,6 +239,11 @@ mod tests {
         "run", "overview", "codebase", "trails", "vault", "board", "atlas",
     ];
 
+    /// The levels below a section (#831), after the seven in page order:
+    /// each with the section it is burrowed into from, through a
+    /// `data-burrow` way in there rather than a panel of the overview.
+    const SUB_LEVELS: [(&str, &str); 2] = [("code", "run"), ("code-file", "code")];
+
     #[test]
     fn csp_has_no_unsafe_source_and_no_network_origin() {
         // The risk: a CSP edit that lets inline or eval'd script run, or
@@ -404,7 +409,40 @@ mod tests {
         );
         let sections: Vec<&Element> = page.iter().filter(|e| e.tag == "section").collect();
         let ids: Vec<&str> = sections.iter().filter_map(|s| s.attr("id")).collect();
-        assert_eq!(ids, SECTIONS, "every section, each with a way in");
+        let below: Vec<&str> = SUB_LEVELS.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            ids,
+            [&SECTIONS[..], &below[..]].concat(),
+            "every section, each with a way in"
+        );
+        // A level below a section is hidden at load, and entered from its
+        // section: the Code level by a way in the run section serves, a
+        // file by the rows code.js draws in the Code level.
+        for (id, from) in SUB_LEVELS {
+            let s = &page[index_of(&page, id)];
+            assert!(s.attrs.contains_key("hidden"), "#{id} is shown at load");
+            assert!(
+                !s.text.contains("Not built yet"),
+                "#{id} says it is not built"
+            );
+            let ways: Vec<usize> = (0..page.len())
+                .filter(|&i| page[i].attr("data-burrow") == Some(id))
+                .collect();
+            if from == "run" {
+                assert_eq!(ways.len(), 1, "one way into #{id}");
+                assert!(
+                    within(&page, ways[0], index_of(&page, from)),
+                    "#{id}'s way in is outside #{from}"
+                );
+                assert_eq!(page[ways[0]].tag, "button", "#{id}'s way in is a button");
+            } else {
+                assert!(ways.is_empty(), "#{id}'s ways in are drawn per file");
+                assert!(
+                    code_of("code.js").contains(&format!("pick.dataset.burrow = \"{id}\";")),
+                    "code.js draws no way into #{id}"
+                );
+            }
+        }
         let stage = index_of(&page, "stage");
         for &i in &(0..page.len())
             .filter(|&i| page[i].tag == "section")
@@ -674,6 +712,79 @@ mod tests {
                 .any(|s| s.trim() == ".approval-detail:focus-visible")
                 && squeeze(d).contains("outline:2px")),
             "focus on the details draws no outline"
+        );
+    }
+
+    #[test]
+    fn code_level_answers_and_comments_through_the_core_s_checks() {
+        // The risk (#831): Approve and Reject beside a diff that send their
+        // own `approve`, a second path that could answer a question twice or
+        // skip the dialog's bookkeeping; a Review in Code close taken as a
+        // no; or a line comment sent as something other than a steer naming
+        // the line the reducer named. No JavaScript runs under cargo test,
+        // so this holds the text; the reducer's side is
+        // a_line_comment_becomes_a_steer_naming_file_and_line.
+        let code = code_of("code.js");
+        let dialogs = code_of("dialogs.js");
+        assert!(
+            !code.contains("type: \"approve\"") && !code.contains("invoke("),
+            "code.js sends an answer itself"
+        );
+        assert!(
+            function_body(&code, "wireCode")
+                .contains("answerApproval(doc, bar.dataset.id, b.dataset.answer === \"approve\");"),
+            "Approve and Reject do not answer through dialogs.js"
+        );
+        assert_eq!(
+            dialogs.matches("type: \"approve\"").count(),
+            1,
+            "dialogs.js sends an answer from more than one place"
+        );
+        let answer = function_body(&dialogs, "answerApproval");
+        for want in [
+            "if (answered.has(id) || sendAnswer === null) return;",
+            "answered.add(id);",
+            "if (shown === id) withdraw(",
+            "sendAnswer(id, yes);",
+        ] {
+            assert!(answer.contains(want), "answerApproval lacks {want}");
+        }
+        // Review in Code answers nothing, and is decided before any answer.
+        let close = dialogs
+            .split("dialog.addEventListener(\"close\"")
+            .nth(1)
+            .expect("dialogs.js listens for the dialog's close");
+        let review = close
+            .find("dialog.returnValue === \"review\"")
+            .expect("the close reads Review in Code");
+        let answered = close.find("answered.add(id);").expect("the close answers");
+        assert!(review < answered, "Review in Code is taken as an answer");
+        assert!(
+            function_body(&dialogs, "forgetChild").contains("deferred.clear();"),
+            "a replaced child's deferred questions are kept"
+        );
+        let page = page();
+        let dialog = index_of(&page, "approval");
+        let b = index_of(&page, "approval-review");
+        assert!(within(&page, b, dialog) && page[b].attrs.contains_key("hidden"));
+        assert_eq!(page[b].attr("value"), Some("review"));
+        let bar = index_of(&page, "code-approve");
+        assert!(within(&page, bar, index_of(&page, "code-file")));
+        assert!(
+            page[bar].attrs.contains_key("hidden"),
+            "Approve and Reject show at load"
+        );
+        // A comment is a steer whose message starts with the line's name.
+        let send = function_body(&code, "sendComment");
+        for want in [
+            "type: \"steer\", message: `${at}: ${text}`",
+            "await send(tauri, line,",
+        ] {
+            assert!(send.contains(want), "sendComment lacks {want}");
+        }
+        assert!(
+            function_body(&code, "commentControl").contains("const at = str(l.at);"),
+            "a comment is offered on a line the reducer did not name"
         );
     }
 
@@ -1205,7 +1316,9 @@ mod tests {
                        "check_kind": "", "observation": "applied: true (+1 -1)",
                        "tool": "edit", "target": "app/core.py", "wrote": true,
                        "model_ms": 900, "prompt_bytes": 2300, "completion_tokens": 55,
-                       "queue_wait_ms": 100, "elapsed_ms": 2500}),
+                       "queue_wait_ms": 100, "elapsed_ms": 2500,
+                       "lines_added": 1, "lines_removed": 1, "start_line": 3,
+                       "diff": "--- app/core.py\n+++ app/core.py\n@@ -2,3 +2,3 @@\n def f():\n-    return 1\n+    return 2\n \n"}),
             ),
             loop_event(
                 "turn",
@@ -3517,16 +3630,25 @@ mod tests {
     }
 
     /// The level sections #910 moved onto the design system's components.
-    const DS_LEVELS: [&str; 5] = ["trails", "codebase", "atlas", "board", "vault"];
+    const DS_LEVELS: [&str; 7] = [
+        "trails",
+        "codebase",
+        "atlas",
+        "board",
+        "vault",
+        "code",
+        "code-file",
+    ];
 
     /// The modules that draw them, each through ds.js.
-    const DS_LEVEL_MODULES: [&str; 6] = [
+    const DS_LEVEL_MODULES: [&str; 7] = [
         "trails.js",
         "codebase.js",
         "radius.js",
         "queue.js",
         "vault.js",
         "atlas.js",
+        "code.js",
     ];
 
     /// What draws a component other than through ds.js (#910): a region in
@@ -3648,6 +3770,10 @@ mod tests {
             (&ui["codebase.js"], "drawDetails", "stats(doc, figures)"),
             (&ui["codebase.js"], "drawFigures", "stats(doc, ["),
             (&ui["atlas.js"], "figs", "return stats("),
+            (&ui["code.js"], "drawFiles", "railRows(doc, rows)"),
+            (&ui["code.js"], "drawFile", "diff(doc, {"),
+            (&ui["code.js"], "stateOf", "dsStatus(doc, "),
+            (&ui["code.js"], "countsOf", "lineCounts(doc, "),
             (
                 &ui["atlas.js"],
                 "renderPanel",

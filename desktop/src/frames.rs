@@ -20,8 +20,10 @@ use serde_json::Value;
 /// One child line, typed.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Frame {
-    /// The loop's `turn` event.
-    Turn(Turn),
+    /// The loop's `turn` event, boxed: with an applied edit's diff (#802)
+    /// it is the largest frame by far, and every other frame would carry
+    /// its size.
+    Turn(Box<Turn>),
     /// The loop's `model call` event, sent before each call to the model
     /// with the number the `turn` it produces will carry (#614). Without
     /// the turn it names nothing, so one that lacks it is [`Frame::Ignored`].
@@ -96,6 +98,16 @@ pub struct Turn {
     /// `run budget`'s `max_tokens` is checked against (#799): never prompt
     /// tokens, and never a sum of the two.
     pub completion_tokens_used: Option<u64>,
+    /// An applied edit's whole lines added and removed (#802); absent on
+    /// any other turn, a refused edit and `write_file` included.
+    pub lines_added: Option<u64>,
+    pub lines_removed: Option<u64>,
+    /// The 1-based line, in the file before the edit, of the first line it
+    /// removed or replaced.
+    pub start_line: Option<u64>,
+    /// The edit's one hunk as a unified diff, cut by trellis at 8192
+    /// bytes. Repository text and model output (CLAUDE.md rule 10).
+    pub diff: Option<String>,
 }
 
 /// A `run budget` event's ceilings (#799). Each is `None` when the event
@@ -220,7 +232,7 @@ pub fn parse_stdout(line: &str) -> Frame {
     };
     match f.get("message").and_then(Value::as_str) {
         Some("turn") => match (json::u64(f, "turn"), json::string(f, "call")) {
-            (Some(turn), Some(call)) => Frame::Turn(Turn {
+            (Some(turn), Some(call)) => Frame::Turn(Box::new(Turn {
                 turn,
                 call,
                 tool: json::string(f, "tool"),
@@ -238,7 +250,11 @@ pub fn parse_stdout(line: &str) -> Frame {
                 queue_wait_ms: json::u64(f, "queue_wait_ms"),
                 elapsed_ms: json::u64(f, "elapsed_ms"),
                 completion_tokens_used: json::u64(f, "completion_tokens_used"),
-            }),
+                lines_added: json::u64(f, "lines_added"),
+                lines_removed: json::u64(f, "lines_removed"),
+                start_line: json::u64(f, "start_line"),
+                diff: json::string(f, "diff"),
+            })),
             _ => Frame::Ignored,
         },
         Some("model call") => match json::u64(f, "turn") {

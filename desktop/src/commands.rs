@@ -2268,6 +2268,7 @@ mod tests {
                 "available",
                 "budget",
                 "checks",
+                "code",
                 "edits",
                 "graph",
                 "model",

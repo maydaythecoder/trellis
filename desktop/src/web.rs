@@ -88,6 +88,7 @@ pub const PAGE: &[(&str, &[u8])] = &[
     ("ds.js", include_bytes!("../ui/ds.js")),
     ("favicon.svg", include_bytes!("../ui/favicon.svg")),
     ("keys.js", include_bytes!("../ui/keys.js")),
+    ("code.js", include_bytes!("../ui/code.js")),
 ];
 
 /// The page's commands (`commands.rs`), the same four `build.rs` lists.

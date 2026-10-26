@@ -27,7 +27,9 @@
   atlas.js on a canvas from the view's atlas key, which the core computes
   from get_history, get_codebase, get_symbols and get_radius answers, the
   map's layout included (atlas.rs); the owner asked for it on 2026-10-11,
-  beside the other sections. It only reads.
+  beside the other sections. It only reads. The code and code-file
+  sections, the levels below Run, are drawn by code.js from the view's code
+  key (#831); a diff there is shown as text, never parsed as markup.
 
   The overview's panels (button[data-enter]) are the ways into the other
   sections, one level each (#826): keys.js shows the level's section and
@@ -268,6 +270,7 @@
             <div class="pane" role="region" aria-labelledby="edits-title">
               <h3 id="edits-title">Edits</h3>
               <ol id="pane-edits" class="cd-rail"></ol>
+              <button type="button" class="cd-btn cd-btn-ghost" data-burrow="code" title="Each file the run wrote, its state and its diff.">Code: files and diffs <span class="cd-drill" aria-hidden="true">⤢</span></button>
             </div>
             <div class="pane" role="region" aria-labelledby="actions-title">
               <h3 id="actions-title">Turns</h3>
@@ -481,6 +484,47 @@
         </div>
       </section>
 
+      <!-- The Code level (#831), one burrow in from Run through the Edits
+      pane's way in (data-burrow, not a panel of the overview), and a file's
+      diff one more in: code.js draws both from the view's code key, which
+      the reducer derives from the run's writes, its open approvals and how
+      it ended. keys.js's burrow shows them as levels 3 and 4. -->
+      <section id="code" aria-labelledby="code-title" hidden>
+        <h2 id="code-title" tabindex="-1">Code</h2>
+        <p class="muted">Each file this run wrote or asks to write: its lines added and removed, and where its change stands. A file goes in to its diff.</p>
+        <div class="cd-panel" role="region" aria-labelledby="code-files-title">
+          <div class="cd-panel-head"><h3 id="code-files-title" class="cd-panel-title">Files touched</h3></div>
+          <div class="cd-panel-body">
+            <ol id="code-files" class="cd-rail code-files"></ol>
+          </div>
+        </div>
+      </section>
+
+      <section id="code-file" aria-labelledby="code-file-title" hidden>
+        <h2 id="code-file-title" tabindex="-1">File</h2>
+        <div class="cd-panel" role="region" aria-labelledby="code-diff-title">
+          <div class="cd-panel-head"><h3 id="code-diff-title" class="cd-panel-title">Diff</h3><span id="code-file-meta" class="cd-panel-meta"></span></div>
+          <div class="cd-panel-body">
+            <div id="code-approve" class="code-approve" role="group" aria-label="The run waits on this edit" hidden>
+              <p>The run is waiting: approve this edit?</p>
+              <button type="button" class="cd-btn cd-btn-down" data-answer="reject">Reject</button>
+              <button type="button" class="cd-btn cd-btn-signal" data-answer="approve">Approve</button>
+            </div>
+            <p class="unbuilt" title="a file's whole text at the worktree is #838">Whole file · not built</p>
+            <div id="code-diff" class="code-diff"></div>
+            <form id="code-comment" class="code-comment-form" hidden>
+              <label for="code-comment-text" id="code-comment-label">Comment</label>
+              <input id="code-comment-text" type="text" autocomplete="off" spellcheck="false">
+              <div class="composer-row">
+                <button type="submit" class="cd-btn cd-btn-signal">Send as a steer</button>
+                <button type="button" id="code-comment-cancel" class="cd-btn cd-btn-ghost">Cancel</button>
+              </div>
+            </form>
+            <p id="code-comment-note" class="muted" role="status"></p>
+          </div>
+        </div>
+      </section>
+
       <form id="composer" class="composer" aria-label="Composer">
         <label for="composer-text" id="composer-label">Task</label>
         <textarea id="composer-text" name="task" rows="3" aria-describedby="composer-help composer-template-text" disabled></textarea>
@@ -527,8 +571,9 @@
           <h2 id="approval-title">Approve this call?</h2>
           <p id="approval-question"></p>
           <pre id="approval-detail" class="approval-detail" tabindex="0" aria-label="What the call would do"></pre>
-          <p id="approval-keys" class="muted">Escape, or closing this dialog, rejects the call. The details above take focus with Tab or Shift+Tab and scroll with the arrow keys.</p>
+          <p id="approval-keys" class="muted">Escape, or closing this dialog, rejects the call. Review in Code, offered for an edit, answers nothing: the run waits while you approve or reject beside the file's diff. The details above take focus with Tab or Shift+Tab and scroll with the arrow keys.</p>
           <div class="approval-row">
+            <button type="submit" id="approval-review" value="review" hidden>Review in Code</button>
             <button type="submit" id="approval-reject" value="reject">Reject</button>
             <button type="submit" id="approval-approve" value="approve">Approve</button>
           </div>

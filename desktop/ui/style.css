@@ -2347,3 +2347,82 @@ article.past-run section + section {
   vertical-align: -3px;
   flex: none;
 }
+
+/* The Code level (#831). A file's way in is its path, drawn as the Rail
+   row's label; its counts and state word are the row's meta. */
+#code,
+#code-file {
+  display: grid;
+  gap: var(--space-4);
+  align-content: start;
+}
+
+.code-pick {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.code-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* The diff's gutters in px, not the bundle's ch (#831): the old and the
+   new line number, the sign, the text, and the comment button's cell. */
+.code-diff .cd-diff-line {
+  grid-template-columns: 48px 48px 24px minmax(0, 1fr) 32px;
+}
+
+.code-diff .cd-diff-text {
+  overflow-wrap: anywhere;
+}
+
+.code-comment {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-muted);
+  font: 400 12px/20px var(--font-mono);
+  cursor: pointer;
+}
+
+.code-comment:hover {
+  color: var(--signal);
+}
+
+/* While the run waits on this edit: what the person is asked, in the
+   signal colour, the user's (DESIGN.md §3.1). */
+.code-approve {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--signal-soft);
+  box-shadow: var(--frame-signal);
+}
+
+.code-approve p {
+  margin: 0 auto 0 0;
+}
+
+.code-comment-form {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.code-comment-form input {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--control-border);
+  background: var(--panel-inset);
+  color: var(--ink);
+  font: 400 13px/20px var(--font-mono);
+}

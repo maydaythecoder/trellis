@@ -14,7 +14,8 @@
 // - main.js, this module, which starts the page and the modules it imports:
 //   keys.js (the levels and the keys between them), render.js (and
 //   graph.js, which render.js imports), overview.js, composer.js,
-//   dialogs.js, model.js, settings.js and status.js.
+//   dialogs.js, model.js, settings.js, status.js and code.js (the Code
+//   level below Run, #831).
 // - codebase.js, radius.js, trails.js, vault.js, queue.js and atlas.js,
 //   which each start themselves through rpc.js's start and listen for what
 //   they draw.
@@ -35,6 +36,7 @@ import { drawDialogs, wireDialogs } from "./dialogs.js";
 import { askModels, drawModelPane, modelPaneStopped, wireModelPane } from "./model.js";
 import { drawSettings, wireRepositorySwitch } from "./settings.js";
 import { drawStatus, exitText, wireStatus } from "./status.js";
+import { drawCode, wireCode } from "./code.js";
 
 function show(id, text) {
   document.getElementById(id).textContent = text;
@@ -119,6 +121,7 @@ async function main() {
   await wireModelPane(document, tauri);
   await wireStatus(document, tauri);
   wireRepositorySwitch(document, tauri);
+  wireCode(document, tauri);
   // A feed that finds rows missing: this page fell behind its event stream
   // and lost views (#827), so it asks once for the whole run again.
   let resend = false;
@@ -131,6 +134,9 @@ async function main() {
     drawModelPane(document, event.payload);
     drawSettings(document, event.payload);
     drawStatus(document, event.payload);
+    // Before the dialog, which asks the Code level whether a question it
+    // opens is about a file it shows (#831).
+    drawCode(document, event.payload);
     drawDialogs(document, event.payload, missing);
     if (resend) {
       resend = false;

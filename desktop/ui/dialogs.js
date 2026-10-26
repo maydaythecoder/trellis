@@ -10,6 +10,13 @@
 // core forwards an `approve` only for a question open in its own view
 // (`rpc_send`), so this page cannot answer one that was never asked.
 //
+// A question about a write the Code level shows (#831) also offers Review
+// in Code: that close answers nothing and is not a no. The question is
+// deferred, put to the person beside the file's diff, where Approve and
+// Reject answer it through answerApproval, this module's one way to send an
+// answer besides the dialog's close; the modal leaves it alone while it
+// waits there.
+//
 // The banner (`role="alert"`) shows the view's `alert`, what last failed as
 // the core worded it, and any error this page raised and did not catch.
 // The "trellis messages" pane lists the view's `stderr`: trellis's human
@@ -49,6 +56,12 @@ let viewAlert = null;
 // one already answered and its run would wait for ever.
 let shown = null;
 const answered = new Set();
+// Questions the person took to the Code level unanswered (#831), and the
+// Code level's two hooks: the file a question asks to write, and opening it.
+const deferred = new Set();
+let review = { pathOf: () => null, open: () => {} };
+// What sends an answer, once wireDialogs has run.
+let sendAnswer = null;
 // A dialog's `close` event comes after `close()` returns, as a task of its
 // own, so each one is matched to the question it was opened for: one entry
 // per `showModal()`, in order, each shifted off by its own close. A
@@ -91,14 +104,16 @@ function withdraw(dialog) {
 // the answer to the new child's question of the same id.
 function forgetChild(doc) {
   answered.clear();
+  deferred.clear();
   withdraw(doc.getElementById("approval"));
 }
 
 function drawApprovals(doc, list) {
   const dialog = doc.getElementById("approval");
-  const open = (Array.isArray(list) ? list : []).filter(
-    (a) => a && str(a.id) !== null && !answered.has(a.id),
-  );
+  const asked = Array.isArray(list) ? list : [];
+  // A deferred question trellis no longer holds is nobody's to answer.
+  for (const id of deferred) if (!asked.some((a) => a && a.id === id)) deferred.delete(id);
+  const open = asked.filter((a) => a && str(a.id) !== null && !answered.has(a.id) && !deferred.has(a.id));
   if (shown !== null && !open.some((a) => a.id === shown)) {
     // Its run ended or it was answered elsewhere: nobody waits on it now.
     withdraw(dialog);
@@ -109,11 +124,29 @@ function drawApprovals(doc, list) {
   doc.getElementById("approval-question").textContent =
     str(q.question) ?? "trellis did not say what it asks";
   doc.getElementById("approval-detail").textContent = str(q.detail) ?? "";
+  const path = review.pathOf(q.id);
+  doc.getElementById("approval-review").hidden = path === null;
   dialog.returnValue = "";
-  opened.push({ id: q.id, withdrawn: false });
+  opened.push({ id: q.id, withdrawn: false, path });
   dialog.showModal();
   // Reject has the focus, so a stray Enter is a no.
   doc.getElementById("approval-reject").focus();
+}
+
+// The Code level's hooks (#831): `pathOf(id)` answers the file a question
+// asks to write, or null, and `open(path)` shows that file.
+export function onReview(hooks) {
+  review = hooks;
+}
+
+// Answers question `id` from the Code level (#831): once, and never again
+// from the dialog, which is closed without an answer if it shows it.
+export function answerApproval(doc, id, yes) {
+  if (answered.has(id) || sendAnswer === null) return;
+  answered.add(id);
+  deferred.delete(id);
+  if (shown === id) withdraw(doc.getElementById("approval"));
+  sendAnswer(id, yes);
 }
 
 // Draws the dialog's, banner's and pane's keys of one `view` event; any
@@ -134,21 +167,31 @@ export function drawDialogs(doc, view, onMissing) {
 // registered, so the caller can ask for nothing before it is.
 export async function wireDialogs(doc, win, tauri) {
   const dialog = doc.getElementById("approval");
-  dialog.addEventListener("close", () => {
-    const entry = opened.shift();
-    if (entry === undefined || entry.withdrawn) return;
-    const id = entry.id;
-    if (shown === id) shown = null;
-    answered.add(id);
-    // Only the Approve button sets this value; Escape, Reject and a close
-    // by any other means leave something else, which is a no (ADR 0018).
-    const yes = dialog.returnValue === "approve";
+  sendAnswer = (id, yes) =>
     tauri.core
       .invoke("rpc_send", { line: { id, type: "approve", yes } })
       .catch((err) => {
         viewAlert = String(err);
         drawBanner(doc);
       });
+  dialog.addEventListener("close", () => {
+    const entry = opened.shift();
+    if (entry === undefined || entry.withdrawn) return;
+    const id = entry.id;
+    if (shown === id) shown = null;
+    // Review in Code sets this value, offered only for a question the Code
+    // level shows: it answers nothing, and the file's Approve or Reject
+    // will (#831).
+    if (dialog.returnValue === "review" && entry.path !== null) {
+      deferred.add(id);
+      review.open(entry.path);
+      return;
+    }
+    answered.add(id);
+    // Only the Approve button sets this value; Escape, Reject and a close
+    // by any other means leave something else, which is a no (ADR 0018).
+    const yes = dialog.returnValue === "approve";
+    sendAnswer(id, yes);
   });
   doc.getElementById("alert-dismiss").addEventListener("click", () => {
     pageErrors.length = 0;
