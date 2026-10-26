@@ -634,6 +634,155 @@ impl SteeringLog {
 /// it into.
 pub type SteeringRx = tokio::sync::mpsc::UnboundedReceiver<Steering>;
 
+/// A person's pause (ADR 0058 §1): asked for from outside the run, honoured
+/// by the loop at the top of an iteration, once the model request in flight
+/// and the tool call it chose have finished and before the budget is checked
+/// or a steer drained.
+///
+/// The loop awaits the release rather than blocking on it, so a run's
+/// caller that drops the loop's future (an abort, Ctrl-C) ends a held run as
+/// it ends any other. One lock decides every change of phase, so a `resume`
+/// racing the loop's arrival at the hold either withdraws the request or
+/// releases the hold, and the pause's waiter is told which.
+#[derive(Debug, Default)]
+pub struct Hold {
+    state: std::sync::Mutex<HoldState>,
+    released: tokio::sync::Notify,
+}
+
+#[derive(Debug, Default)]
+struct HoldState {
+    phase: HoldPhase,
+    /// Set once; from then on nothing holds and nothing is accepted.
+    closed: Option<String>,
+}
+
+#[derive(Debug, Default)]
+enum HoldPhase {
+    #[default]
+    Running,
+    /// Asked for and not yet reached; the sender answers the pause.
+    Requested(tokio::sync::oneshot::Sender<PauseAnswer>),
+    Held,
+}
+
+/// A pause's answer: the turn of the model call it holds before, numbered
+/// as the `model call` event numbers it, or why it never held.
+pub type PauseAnswer = Result<u32, String>;
+
+/// Why [`Hold::pause`] or [`Hold::resume`] was refused.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum HoldRefused {
+    #[error("already paused")]
+    AlreadyPaused,
+    #[error("not paused")]
+    NotPaused,
+    /// The run will reach no more hold points: the reason [`Hold::close`]
+    /// was given.
+    #[error("{0}")]
+    Closed(String),
+}
+
+/// What a pause still waiting to be reached is answered with when a
+/// `resume` withdraws it.
+const PAUSE_WITHDRAWN: &str = "resumed before the run reached the hold; it did not pause";
+
+impl Hold {
+    fn state(&self) -> std::sync::MutexGuard<'_, HoldState> {
+        // Every holder writes one phase whole, so a poisoned lock still
+        // guards a consistent one.
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Asks the loop to hold at its next iteration. The receiver is answered
+    /// once it holds, or with why it never did.
+    pub fn pause(&self) -> Result<tokio::sync::oneshot::Receiver<PauseAnswer>, HoldRefused> {
+        let mut s = self.state();
+        if let Some(why) = &s.closed {
+            return Err(HoldRefused::Closed(why.clone()));
+        }
+        // A pause asked for and not yet reached counts as paused: a second
+        // one would leave two waiters on one hold.
+        if !matches!(s.phase, HoldPhase::Running) {
+            return Err(HoldRefused::AlreadyPaused);
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        s.phase = HoldPhase::Requested(tx);
+        Ok(rx)
+    }
+
+    /// Lets a held loop go on, or withdraws a pause it has not reached, so a
+    /// person who changes their mind does not wait out a model request.
+    pub fn resume(&self) -> Result<(), HoldRefused> {
+        let mut s = self.state();
+        if let Some(why) = &s.closed {
+            return Err(HoldRefused::Closed(why.clone()));
+        }
+        match std::mem::take(&mut s.phase) {
+            HoldPhase::Running => Err(HoldRefused::NotPaused),
+            HoldPhase::Requested(tx) => {
+                let _ = tx.send(Err(PAUSE_WITHDRAWN.into()));
+                Ok(())
+            }
+            HoldPhase::Held => {
+                self.released.notify_one();
+                Ok(())
+            }
+        }
+    }
+
+    /// Ends the hold for good: a held loop goes on, a pause not yet reached
+    /// is answered with `why`, and later ones are refused with it. The first
+    /// reason stands.
+    pub fn close(&self, why: &str) {
+        let mut s = self.state();
+        let why = s.closed.get_or_insert_with(|| why.to_string()).clone();
+        match std::mem::take(&mut s.phase) {
+            HoldPhase::Running => {}
+            HoldPhase::Requested(tx) => {
+                let _ = tx.send(Err(why));
+            }
+            HoldPhase::Held => self.released.notify_one(),
+        }
+    }
+
+    /// The hold point. Returns how long the loop was held, `None` when no
+    /// pause was waiting.
+    async fn honour(&self, turn: u32) -> Option<Duration> {
+        {
+            let mut s = self.state();
+            let tx = match std::mem::take(&mut s.phase) {
+                HoldPhase::Requested(tx) => tx,
+                other => {
+                    s.phase = other;
+                    return None;
+                }
+            };
+            s.phase = HoldPhase::Held;
+            // The event before the answer, so a client that reads the
+            // answer has already read the event it draws `paused` from.
+            tracing::info!(turn, "paused");
+            let _ = tx.send(Ok(turn));
+        }
+        let since = Instant::now();
+        loop {
+            // A statement of its own, so the guard is dropped before the
+            // await. `notify_one` stores a permit when nobody waits, so a
+            // release between this check and the await is not lost.
+            let held = matches!(self.state().phase, HoldPhase::Held);
+            if !held {
+                break;
+            }
+            self.released.notified().await;
+        }
+        let held = since.elapsed();
+        tracing::info!(turn, paused_ms = millis(held), "resumed");
+        Some(held)
+    }
+}
+
 impl Transcript {
     /// Whether the most recent executed check passed **and nothing that may
     /// have changed the tree happened after it**.
@@ -943,6 +1092,9 @@ pub struct Seed {
     /// (an interrupt) leaves it empty rather than holding part of the run
     /// presented as all of it. `None` records nothing.
     pub spent: Option<SpentSlot>,
+    /// A person's pause (ADR 0058 §1), honoured at the top of each
+    /// iteration. `None` never holds.
+    pub hold: Option<std::sync::Arc<Hold>>,
 }
 
 /// The cell [`Seed::spent`] writes into: the budget's own elapsed figure,
@@ -976,8 +1128,10 @@ pub async fn run_seeded<M: Model>(
         context_bytes = model.context_bytes(),
         "run budget"
     );
-    // Time spent waiting on a person in approve mode. Not charged to the
-    // wall-clock budget: a diff read carefully should not be what ends a run.
+    // Time spent waiting on a person in approve mode, and time a person held
+    // the run paused (ADR 0058 §1). Not charged to the wall-clock budget: a
+    // diff read carefully, or a run paused to be read, should not be what
+    // ends a run.
     let mut waited_on_human = std::time::Duration::ZERO;
     let mut t = Transcript {
         task: task.to_string(),
@@ -989,6 +1143,7 @@ pub async fn run_seeded<M: Model>(
     };
     let mut steering = seed.steering;
     let spent = seed.spent;
+    let hold = seed.hold;
     let mut iterations: u32 = 0;
     let mut checks_passed: u32 = 0;
     // The one extra turn the budget grants on exhaustion, so the model can
@@ -996,6 +1151,15 @@ pub async fn run_seeded<M: Model>(
     let mut escalated = false;
 
     let outcome = 'run: loop {
+        // Before the budget check, so the check after a pause charges
+        // nothing for it, and before the drain, so a steer sent while held
+        // is in the first request after it. Every stop rule is checked where
+        // it is checked without a pause: a held run calls nothing.
+        if let Some(h) = &hold
+            && let Some(held) = h.honour(iterations + 1).await
+        {
+            waited_on_human += held;
+        }
         let spend = Spend {
             iterations,
             elapsed: started.elapsed().saturating_sub(waited_on_human),
@@ -4155,6 +4319,96 @@ rank = \"non-negotiable\"
             steering: Some(rx),
             ..Seed::default()
         }
+    }
+
+    /// A seed whose steering channel and hold the test drives as a person
+    /// would, beside the run.
+    fn held(hold: &std::sync::Arc<Hold>) -> (Seed, tokio::sync::mpsc::UnboundedSender<Steering>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let seed = Seed {
+            steering: Some(rx),
+            hold: Some(hold.clone()),
+            ..Seed::default()
+        };
+        (seed, tx)
+    }
+
+    #[tokio::test]
+    async fn a_pause_holds_the_loop_before_its_next_request_until_resumed() {
+        // The risk (ADR 0058 §1): a pause answered while the loop goes on to
+        // ask the model, so the person reads a run that is still moving. A
+        // steer sent only after the pause is answered must be in the first
+        // request, which is then provably made after the answer.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+        let hold = std::sync::Arc::new(Hold::default());
+        let (mut m, _unused) = Steered::new(
+            vec![
+                read_util(),
+                Step::Done {
+                    summary: "looked".into(),
+                },
+            ],
+            vec![],
+        );
+        let (seed, tx) = held(&hold);
+        let b = budget();
+        let answer = hold.pause().expect("a pause with nothing held");
+        let person = async {
+            assert_eq!(answer.await.expect("answered"), Ok(1));
+            assert_eq!(hold.pause().unwrap_err(), HoldRefused::AlreadyPaused);
+            tx.send(steer("STEER-WHILE-HELD")).unwrap();
+            hold.resume().expect("held, so resumed");
+            assert_eq!(hold.resume().unwrap_err(), HoldRefused::NotPaused);
+        };
+        let ((_, t), ()) = tokio::join!(run_seeded("look", &mut m, &h, &b, seed), person);
+
+        assert!(
+            m.prompts[0].contains("STEER-WHILE-HELD"),
+            "the first request was made before the pause was answered: {}",
+            m.prompts[0]
+        );
+        assert_eq!(t.turns.len(), 1, "the same run went on after the hold");
+        hold.close("the run ended");
+        assert_eq!(
+            hold.pause().unwrap_err(),
+            HoldRefused::Closed("the run ended".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hold_closed_while_held_lets_the_run_go_on_and_a_pending_pause_is_told_why() {
+        // The risk: rpc closes the hold when its input ends, since no
+        // `resume` can arrive then; a close that left the loop held would
+        // hang the process on a run nobody can release. And a pause that
+        // was never reached must be answered, not left waiting.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+        let hold = std::sync::Arc::new(Hold::default());
+        let (mut m, _unused) = Steered::new(vec![read_util()], vec![]);
+        let (seed, _tx) = held(&hold);
+        let b = budget();
+        let answer = hold.pause().unwrap();
+        let person = async {
+            assert_eq!(answer.await.unwrap(), Ok(1));
+            hold.close("input ended");
+        };
+        let ((outcome, t), ()) = tokio::join!(run_seeded("look", &mut m, &h, &b, seed), person);
+        assert!(!t.turns.is_empty(), "{outcome:?}");
+
+        let never = std::sync::Arc::new(Hold::default());
+        let answer = never.pause().unwrap();
+        never.close("the run ended before it reached the hold");
+        assert_eq!(
+            answer.await.unwrap(),
+            Err("the run ended before it reached the hold".into())
+        );
+        let withdrawn = Hold::default();
+        let answer = withdrawn.pause().unwrap();
+        withdrawn
+            .resume()
+            .expect("a pause not yet reached is withdrawn");
+        assert_eq!(answer.await.unwrap(), Err(PAUSE_WITHDRAWN.into()));
     }
 
     #[tokio::test]

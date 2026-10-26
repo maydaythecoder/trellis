@@ -1,7 +1,7 @@
 # ADR 0058 — Run controls for the clients: pause and resume, raising a limit, withdrawing a queued message, `read_file`, and a plan tool
 
-**Status:** Accepted (owner-directed). Sections 4 and 5 built (#809,
-#810). Not built: #806, #807 and #808 build sections 1 to 3; #868 records
+**Status:** Accepted (owner-directed). Sections 1, 4 and 5 built (#806,
+#809, #810). Not built: #807 and #808 build sections 2 and 3; #868 records
 the controls in the trail (section 6).
 **Date:** 2026-10-26
 **Issue:** #798 (story S20, #790).
@@ -272,7 +272,7 @@ each new command, and DESIGN.md §2.1's rows for these controls change from
 
 ## Status
 
-Accepted (owner-directed), 2026-10-25. Sections 4 and 5 built (#809, #810); the rest not built.
+Accepted (owner-directed), 2026-10-25. Sections 1, 4 and 5 built (#806, #809, #810); the rest not built.
 
 ## Reversibility
 

@@ -98,7 +98,8 @@ ADR where the contract changes), never a client-side approximation. The
 commands `trellis rpc` accepts on 2026-10-25 are `prompt`, `steer`,
 `follow_up`, `abort`, `approve`, `compact`, `set_model`, `quit` and the
 read-only `get_*`, `list_*`, `classify` and `vault_*` queries
-(`crates/trellis-cli/src/rpc.rs`).
+(`crates/trellis-cli/src/rpc.rs`); `read_file` (#809) and `pause` and
+`resume` (#806) were added on 2026-10-26.
 
 | The brand book says | The rule here | What a client does |
 |---|---|---|
@@ -108,7 +109,7 @@ read-only `get_*`, `list_*`, `classify` and `vault_*` queries
 | Budget limits extend with `+step` or an input, mid-run (Budget card). | No command changes a budget during a run; a change would be the user's action in the trail (ADR 0008: budgets divide, never multiply). | The control is drawn and marked `not built` until the ADR that adds it is accepted. |
 | Plan steps and the reasoning are editable and sent as steers (Plan card). | The `plan` event (ADR 0058 §5, #810) carries the model's steps when a repository enables the `plan` tool; they are the model's words (rule 1), and no command edits them. No event carries the reasoning. | The list is drawn from the latest `plan` event; a person's edit to it, or to the model's last message, is sent as a `steer`. With no plan event, `Reply as a steer` under the model's last message. |
 | Queue items are reordered, edited and cancelled with ↑ ↓ ✎ × (Queue card). | Steers are delivered in order before the next model call; no command cancels or edits a queued item. | Each item shows `queued`, `delivered after turn N` or `not delivered`. Reorder applies only among follow-ups the client still holds; cancel and edit are `not built` for anything already sent. |
-| Run states `running · waiting on you · paused · failed · done · idle` (NowStrip card). | `run_end`'s words: `converged`, `not_converged`, `interrupted`, `error`, with the exit code (rule 5). | Live states as the card names them (`paused` only once pause exists); an ended run shows its outcome word and exit code, never `done` or `failed`. |
+| Run states `running · waiting on you · paused · failed · done · idle` (NowStrip card). | `run_end`'s words: `converged`, `not_converged`, `interrupted`, `error`, with the exit code (rule 5). `pause` and `resume` (ADR 0058 §1, #806) hold the loop before its next model request; the `paused` and `resumed` events say when it holds and goes on, and held time is not charged to the wall clock. | Live states as the card names them, `paused` from the `paused` event to the `resumed` one or `run_end`; Pause sends `pause` and Resume `resume`. An ended run shows its outcome word and exit code, never `done` or `failed`. |
 | A finished run gets `\(^o^)/  all 212 passed` (README, Ascii card). | Counts come only from `trellis-checks` (rule 1). | A face may mark the outcome; any count beside it is a recorded check's count, never the model's. |
 | Components ship as React on `window.Trellis` with `components/bundle.css` (README, "Components"). | The desktop is plain ES modules with no bundler and a CSP without `'unsafe-inline'`; the TUI is Go (`desktop/CLAUDE.md`, ADR 0052). | The cards and `components/bundle.css` are references. Each client builds the component in its own code. |
 | Meter widths and Sparkline paths are drawn per value (Meter, Sparkline cards). | No `style` attribute and no `.style` from script on the desktop (`desktop/CLAUDE.md`). | Meters are block characters in text (`█░`), the same in both faces; anything else that varies takes a class, never an inline style. |

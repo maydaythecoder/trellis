@@ -306,6 +306,24 @@ contract test reads it yet. Held by `plan_result_is_output_never_a_pass` and
 `plan_event_carries_the_steps_and_cuts_past_eight` in trellis-loop, and by
 `rpc_plan_event_keeps_the_contract_and_the_trail_records_the_call_as_an_action`
 in `tests/modes.rs`.
+*Added 2026-10-26 (#806):* `pause` and `resume`, for the Now strip's Pause
+(ADR 0058 §1). Neither takes fields. `pause` is answered `{turn}` once the
+loop holds at the top of its next iteration, after a `paused` event with
+the same `turn`; `resume` is answered at once with no data, and the loop
+sends `resumed` with `turn` and `paused_ms` as it goes on. Held time is not
+charged to the wall clock, so `elapsed_ms` leaves it out. Refusals: `no run
+in flight`, `already paused`, `not paused`, and, after `run_end`, that the
+run ended before it reached the hold. A `resume` before the hold is
+reached withdraws the pause; when input ends a held run goes on, since
+nothing could resume it. `abort`, `approve`, `steer` and `follow_up` work
+while held. The answers are under `rpc.responses`, the events under
+`rpc.not_every_client` with empty `read_by`, so neither client's contract
+test reads them yet, and the desktop's `rpc_send` does not forward them.
+Held by `rpc_pause_holds_before_the_next_model_request`,
+`rpc_pause_is_not_charged_to_the_wall_clock`,
+`rpc_resume_continues_the_same_run` and
+`rpc_abort_while_paused_rolls_back_and_hands_back_the_held_steer` in
+`tests/modes.rs`.
 
 ### 7. Auditing Tauri's tree
 

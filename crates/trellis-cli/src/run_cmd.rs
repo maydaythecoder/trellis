@@ -1260,6 +1260,8 @@ fn run_body(
         steering: control.steering,
         // Read by `output::framed` for `run_end`'s `elapsed_ms` (#799).
         spent: Some(extras.spent.clone()),
+        // rpc's `pause` and `resume` (ADR 0058 §1); `None` everywhere else.
+        hold: extras.hold.clone(),
     };
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -2448,6 +2450,8 @@ fn run_partitioned(p: Partitioned<'_>, out: &mut (dyn std::io::Write + Send)) ->
             // Each partition spends its own wall clock, concurrently, so no
             // one partition's figure is the run's; `run_end` carries none.
             spent: None,
+            // rpc starts no partitioned run, and `pause` reaches only rpc's.
+            hold: None,
         };
         let results = Arc::clone(&results);
         async move {

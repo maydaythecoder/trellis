@@ -158,6 +158,10 @@ pub(crate) struct RunExtras {
     /// did not finish (an interrupt, an error before it, a partitioned
     /// run), so `run_end` then carries no figure rather than part of one.
     pub spent: trellis_loop::SpentSlot,
+    /// rpc's `pause` and `resume` (ADR 0058 §1), honoured by the agent loop
+    /// at the top of each iteration; its caller closes it when the run ends.
+    /// `None` everywhere but rpc.
+    pub hold: Option<Arc<trellis_loop::Hold>>,
 }
 
 /// The shared cell `RunExtras::done` writes into. `Arc<Mutex<_>>` because
@@ -184,6 +188,7 @@ impl Default for RunExtras {
             run_ended: None,
             tier: None,
             spent: trellis_loop::SpentSlot::default(),
+            hold: None,
         }
     }
 }

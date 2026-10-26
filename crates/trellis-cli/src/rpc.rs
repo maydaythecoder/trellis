@@ -3,8 +3,8 @@
 //!
 //! A `prompt` runs a task through `cmd_run_with`, the path `trellis run`
 //! takes, on its own thread. The main thread keeps reading, so `abort`,
-//! `approve`, `get_state`, `steer` and `follow_up` are answered while the
-//! run is in flight. One run at a time; the clean-worktree rule is
+//! `approve`, `get_state`, `steer`, `follow_up`, `pause` and `resume` are
+//! answered while the run is in flight. One run at a time; the clean-worktree rule is
 //! `cmd_run`'s and is unchanged. A follow-up is the one way a run starts
 //! other than `prompt`: after the run it was sent during ends.
 //!
@@ -81,6 +81,15 @@ const COMMANDS: &[(&str, &str)] = &[
     (
         "follow_up",
         "a task to run as a new prompt once the run in flight ends: {message}",
+    ),
+    (
+        "pause",
+        "hold the run in flight before its next model request; answered once it holds: \
+         {turn}, the model call it holds before. Held time is not charged to the wall clock",
+    ),
+    (
+        "resume",
+        "let a paused run go on, or withdraw a pause it has not reached yet",
     ),
     (
         "compact",
@@ -442,6 +451,13 @@ impl<S: tracing::Subscriber> Layer<S> for TurnCapture {
 /// loop will read the channel no more.
 const STEER_ENDED: &str = "the run ended before its next model request; not delivered";
 
+/// What a `pause` is answered with, and a held run released by, when input
+/// ends: nobody is left to send `resume`.
+const INPUT_ENDED: &str = "input ended; nothing could resume the run, so it did not hold";
+
+/// What a `pause` the run never reached is answered with once it has ended.
+const HOLD_ENDED: &str = "the run ended before it reached the hold; it did not pause";
+
 /// What `prompt` and `classify` are refused with while a run is in flight.
 const ONE_AT_A_TIME: &str = "a run is in progress; one at a time (abort it, or wait)";
 
@@ -704,6 +720,9 @@ struct Current {
     /// `compact` requests, answered by the driver at its next request.
     compact: Arc<trellis_loop::CompactRequests>,
     steering: Arc<SteeringPort>,
+    /// `pause` and `resume` (ADR 0058 §1), honoured by the loop at the top
+    /// of its next iteration. Closed when the run ends.
+    hold: Arc<trellis_loop::Hold>,
 }
 
 impl Current {
@@ -712,6 +731,7 @@ impl Current {
             id,
             compact: Arc::new(trellis_loop::CompactRequests::default()),
             steering: SteeringPort::new(),
+            hold: Arc::default(),
         }
     }
 }
@@ -954,6 +974,13 @@ fn serve_with(
     if !aborting && let Ok(mut a) = s.approvals.lock() {
         s.input_closed.store(true, Ordering::SeqCst);
         a.clear();
+    }
+    // No `resume` can arrive either, and the join below would wait on a
+    // held run forever. Released as a question is declined: the run goes on
+    // to its end. A follow-up's run after it gets a fresh hold, which
+    // nothing can ask to hold.
+    if let Some(r) = &s.running {
+        r.current().hold.close(INPUT_ENDED);
     }
     if let Some(r) = s.running.take() {
         let _ = r.thread.join();
@@ -1336,6 +1363,55 @@ impl Server {
         }
     }
 
+    /// `pause`: answered from another thread once the loop holds, with the
+    /// turn of the model call it holds before, or, if the run ends first or
+    /// a `resume` withdraws it, with why it did not. On this thread only the
+    /// request is made, as `abort`'s is, so `approve` and `abort` are still
+    /// read while the loop finishes its turn (ADR 0058 §1).
+    fn pause(&mut self, id: Option<&str>) {
+        if !self.in_flight() {
+            self.respond(id, "pause", Err("no run in flight".into()));
+            return;
+        }
+        let Some(r) = &self.running else {
+            return;
+        };
+        let answer = match r.current().hold.pause() {
+            Ok(a) => a,
+            Err(e) => {
+                self.respond(id, "pause", Err(e.to_string()));
+                return;
+            }
+        };
+        let (sink, id) = (self.sink.clone(), id.map(str::to_string));
+        self.waiters.push(std::thread::spawn(move || {
+            let result = match answer.blocking_recv() {
+                Ok(Ok(turn)) => Ok(json!({"turn": turn})),
+                Ok(Err(e)) => Err(e),
+                // The hold answers every pause it holds before it is
+                // dropped; this is the hold gone some other way.
+                Err(_) => Err(HOLD_ENDED.into()),
+            };
+            respond_on(&sink, id.as_deref(), "pause", result);
+        }));
+    }
+
+    /// `resume`: answered at once. The loop says how long it was held in
+    /// the `resumed` event it sends as it goes on.
+    fn resume(&mut self) -> Result<Value, String> {
+        if !self.in_flight() {
+            return Err("no run in flight".into());
+        }
+        let Some(r) = &self.running else {
+            return Err("no run in flight".into());
+        };
+        r.current()
+            .hold
+            .resume()
+            .map(|()| Value::Null)
+            .map_err(|e| e.to_string())
+    }
+
     /// `abort`: answered once the run has ended, with everything sent on
     /// the steering channel and never delivered, in the order received.
     ///
@@ -1457,6 +1533,11 @@ impl Server {
                 self.respond(id, kind, r.map(|()| Value::Null));
             }
             "abort" => self.abort(id),
+            "pause" => self.pause(id),
+            "resume" => {
+                let r = self.resume();
+                self.respond(id, kind, r);
+            }
             "steer" | "follow_up" => self.steer(cmd, id, kind),
             "get_state" => {
                 let running = self.in_flight();
@@ -2183,6 +2264,7 @@ impl Chain {
             tier: Some(self.tier.clone()),
             // Fresh per run, for this run's `run_end` `elapsed_ms` (#799).
             spent: trellis_loop::SpentSlot::default(),
+            hold: Some(cur.hold.clone()),
         };
         // Cleared first, so a run that stops before it decides a tier
         // leaves none, rather than the last run's for another model.
@@ -2223,6 +2305,9 @@ impl Chain {
         // A `compact` still waiting will get no model request to act on.
         cur.compact
             .close("the run ended before its next model request; nothing was compacted");
+        // After `run_end`, which `cmd_run_with` framed: a pause the run never
+        // reached is answered after the frame that says how it ended.
+        cur.hold.close(HOLD_ENDED);
         // Questions still open when the run ended are dropped, which the
         // gate reads as a no; none can be answered now.
         if let Ok(mut a) = self.approvals.lock() {
