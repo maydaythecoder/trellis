@@ -1,5 +1,6 @@
 // The page's levels and the keys that move between them (#826; ADR 0048
-// section 5 as amended 2026-10-26).
+// section 5 as amended 2026-10-26). The Trail and the rail are the design
+// system's (ds.css's .cd-trail and .cd-shell-rail, #909).
 //
 // The page is one overview a person burrows into, with no tabs. The Trail
 // along the top says where they are ("Overview ⟩ Run", "L2 / 4"), and each
@@ -102,16 +103,16 @@ function drawTrail(doc) {
     const li = el(doc, "li");
     // The separator is drawn, not read: the list already says the order.
     if (i > 0) {
-      const sep = el(doc, "span", "⟩", "trail-sep");
+      const sep = el(doc, "span", "⟩", "cd-trail-sep");
       sep.setAttribute("aria-hidden", "true");
       li.append(sep);
     }
     if (i === path.length - 1) {
-      const current = el(doc, "span", title(doc, id), "trail-current");
+      const current = el(doc, "span", title(doc, id), "cd-trail-current");
       current.setAttribute("aria-current", "location");
       li.append(current);
     } else {
-      const back = el(doc, "button", title(doc, id), "trail-seg");
+      const back = el(doc, "button", title(doc, id), "cd-trail-seg");
       back.type = "button";
       back.addEventListener("click", () => go(doc, i), { signal });
       li.append(back);
@@ -119,7 +120,7 @@ function drawTrail(doc) {
     return li;
   });
   doc.getElementById("trail-path").replaceChildren(...items);
-  [...doc.getElementById("trail-ticks").children].forEach((t, i) => t.classList.toggle("on", i < path.length));
+  [...doc.getElementById("trail-ticks").children].forEach((t, i) => t.classList.toggle("cd-trail-tick-on", i < path.length));
   doc.getElementById("trail-level").textContent = `L${path.length} / ${LEVELS}`;
 }
 
@@ -134,7 +135,7 @@ function drawSiblings(doc) {
   const { signal } = levelScope();
   const here = path[path.length - 1];
   const items = sections(doc).map((id) => {
-    const b = el(doc, "button", title(doc, id), "sibling");
+    const b = el(doc, "button", title(doc, id));
     b.type = "button";
     if (id === here) b.setAttribute("aria-current", "location");
     b.addEventListener("click", () => enter(doc, id), { signal });

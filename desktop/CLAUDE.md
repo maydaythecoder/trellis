@@ -66,6 +66,12 @@ holder is a wish, so none is written here without one.
   `page_has_no_style_attribute` in `src/lockdown.rs`).
 - The page has no key field and no endpoint field (ADR 0010, ADR 0024 §3;
   held by `page_has_no_key_or_endpoint_field` in `src/lockdown.rs`).
+- The page draws the design system's components: `ui/ds.css` is
+  `docs/design/system/components/bundle.css` byte for byte below its
+  header, and `ui/ds.js` alone writes a component's markup (DESIGN.md §2.1,
+  #909; held by `ds_css_is_the_design_systems_bundle` and
+  `ds_components_draw_the_bundles_markup` in `src/lockdown.rs`). A change to
+  the system reaches the page by copying the file again.
 - Nothing is added without amending ADR 0048: no Tauri plugin (the
   `desktop-plugin` rule in `desktop-guards.sh`); no capability permission,
   CSP source or navigation target (`main_capability_grants_only_listen_unlisten_and_the_apps_commands`,
