@@ -78,6 +78,63 @@ func TestBudgetLineAtEightyColumnsEndsWithAWholeSegment(t *testing.T) {
 	}
 }
 
+// wideState puts text two cells wide per character in every place the
+// screen draws served or typed text: the bar's model and tier, the
+// transcript (one line a single word wider than its pane), the outcome on
+// its border, an edit's path, a check's name, a tool and its target, the
+// typed line and the @ paths offered under it.
+func wideState() State {
+	s := populated()
+	s.Model = "通义千问-编码器-三十二B-指令版-量化四位-中文" // a long spec, cut to the room left
+	s.Tier = "2, 工具已探测"
+	s.Transcript = []string{
+		"> 修复 应用/计算.py 中的类型错误，然后运行所有检查",
+		"· read_file 应用/计算.py 🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂",
+		strings.Repeat("中", 90),
+		"combining marks take no cell: " + strings.Repeat("e\u0301", 40),
+	}
+	s.Outcome = "failed: 无法解析模块 应用/计算.py，类型检查没有通过"
+	s.Input = "修复 @应用/计"
+	s.Offered = []string{"应用/计算.py", "应用/计算/很长的目录名称/另一个很长的目录名称/模块.py"}
+	s.Edits = []Edit{{Path: "应用/计算/很长的目录名称/另一个很长的目录名称/模块.py", Status: Proposed}}
+	s.Checks = []Check{{Name: "类型检查：所有的模块和所有的测试文件", Passed: true}}
+	s.Actions = []Action{
+		{Tool: "read_file", Target: "应用/计算.py"},
+		{Tool: "整理导入", Target: "应用/" + strings.Repeat("目录/", 20) + "模块.py", Wrote: true},
+	}
+	return s
+}
+
+// #839: widths were counted in runes, and a character two cells wide
+// counts one, so a row of them ran past the screen's edge and the terminal
+// lost the right border and the panes beside it (on the rune-counted code
+// this state drew a 90-cell bar at 80 columns). Measured in cells, every
+// row of the screen and of the approval modal is exactly the screen's
+// width: none runs past the edge, and each right border is in the last
+// column.
+func TestViewWideTextKeepsEveryRowWithinTheWidth(t *testing.T) {
+	diff := "--- a/应用/计算.py\n+++ b/应用/计算.py\n@@ -1,3 +1,3 @@\n-def 计算(数值):\n+def 计算(数值: int) -> int:\n" +
+		"     return " + strings.Repeat("数值 + ", 40) + "1"
+	for _, size := range [][2]int{{80, 24}, {120, 40}} {
+		w, h := size[0], size[1]
+		screens := map[string]string{
+			"render": Render(wideState(), w, h),
+			"modal":  Modal("edit 应用/计算.py 把所有的类型错误都修复好并且保留原来的行为", diff, 0, w, h),
+		}
+		for name, screen := range screens {
+			rows := strings.Split(screen, "\n")
+			if len(rows) != h {
+				t.Fatalf("%s at %dx%d: %d rows, want %d", name, w, h, len(rows), h)
+			}
+			for i, r := range rows {
+				if got := Width(r); got != w {
+					t.Fatalf("%s at %dx%d: row %d is %d cells, want %d:\n%s", name, w, h, i, got, w, screen)
+				}
+			}
+		}
+	}
+}
+
 // #641: at launch the line read "iteration 0 · 0 B prompt · 0s elapsed",
 // three figures nothing had reported. Each is named as unreported; the
 // ceiling is drawn without inventing a count against it; and the time
