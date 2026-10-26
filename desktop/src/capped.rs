@@ -9,9 +9,11 @@
 //! so it never holds an item past either cap, or grows its allocation for
 //! one.
 //!
-//! Who uses it: `state.rs`, for the transcript, the trellis messages pane
-//! (stderr) and the one alert; and `web.rs`, for each web-mode event
-//! stream's unsent events. `child.rs` cuts a line past its read cap with
+//! Who uses it: `state.rs`, for the one alert; `feed.rs`, for the
+//! transcript's rows and the trellis messages pane (stderr), each numbered
+//! so a page is sent only what it has not drawn (#827); and `web.rs`, for
+//! each web-mode event stream's unsent events. It holds text by default,
+//! and anything else that says its size and can be cut to fit ([`Item`]). `child.rs` cuts a line past its read cap with
 //! [`cut`] as it reads it, so every cut says so in the same words.
 //!
 //! An item past the whole byte cap is cut rather than dropped: its start is
@@ -26,40 +28,70 @@ use std::collections::VecDeque;
 /// at most 20 digits each. A byte cap below this could not hold a cut item.
 const MARKER_MAX: usize = 96;
 
-/// Text kept oldest first, held to `MAX_LEN` items and `MAX_BYTES` bytes.
-#[derive(Debug, Default)]
-pub struct Capped<const MAX_LEN: usize, const MAX_BYTES: usize> {
-    items: VecDeque<String>,
-    /// The items' lengths added up as they come and go, so a push never
-    /// walks the store to learn whether the next item fits.
+/// What a [`Capped`] store holds: something with a size in bytes, which the
+/// store's byte cap counts, that can be cut to fit that cap with [`cut`]'s
+/// marker saying so.
+pub trait Item {
+    /// Its size in bytes, as the byte cap counts it.
+    fn bytes(&self) -> usize;
+    /// Itself, cut to at most `max` bytes when it is longer.
+    fn fit(self, max: usize) -> Self;
+}
+
+impl Item for String {
+    fn bytes(&self) -> usize {
+        self.len()
+    }
+
+    fn fit(self, max: usize) -> Self {
+        let total = self.len();
+        cut(self, total, max)
+    }
+}
+
+/// Items kept oldest first, held to `MAX_LEN` items and `MAX_BYTES` bytes:
+/// text unless another [`Item`] is named.
+#[derive(Debug)]
+pub struct Capped<const MAX_LEN: usize, const MAX_BYTES: usize, T = String> {
+    items: VecDeque<T>,
+    /// The items' sizes added up as they come and go, so a push never walks
+    /// the store to learn whether the next item fits.
     bytes: usize,
 }
 
-impl<const MAX_LEN: usize, const MAX_BYTES: usize> Capped<MAX_LEN, MAX_BYTES> {
+impl<const MAX_LEN: usize, const MAX_BYTES: usize, T> Default for Capped<MAX_LEN, MAX_BYTES, T> {
+    fn default() -> Self {
+        Self {
+            items: VecDeque::new(),
+            bytes: 0,
+        }
+    }
+}
+
+impl<const MAX_LEN: usize, const MAX_BYTES: usize, T: Item> Capped<MAX_LEN, MAX_BYTES, T> {
     /// Adds `item` as the newest, cut to `MAX_BYTES` first if it is longer.
     /// The oldest items go before it comes in, so the store never holds an
     /// item past `MAX_LEN`, even for a moment, and the deque never grows its
     /// allocation after the first time it was full.
-    pub fn push(&mut self, item: String) {
+    pub fn push(&mut self, item: T) {
         // Checked when the store's type is built: a cap of no items has no
         // room for the new one, and a byte cap under the marker has none for
         // a cut one.
         const { assert!(MAX_LEN > 0 && MAX_BYTES >= MARKER_MAX) };
-        let total = item.len();
-        let item = cut(item, total, MAX_BYTES);
-        while self.items.len() >= MAX_LEN || self.bytes + item.len() > MAX_BYTES {
+        let item = item.fit(MAX_BYTES);
+        while self.items.len() >= MAX_LEN || self.bytes + item.bytes() > MAX_BYTES {
             if self.pop_front().is_none() {
                 break;
             }
         }
-        self.bytes += item.len();
+        self.bytes += item.bytes();
         self.items.push_back(item);
     }
 
     /// Takes out the oldest item.
-    pub fn pop_front(&mut self) -> Option<String> {
+    pub fn pop_front(&mut self) -> Option<T> {
         let item = self.items.pop_front()?;
-        self.bytes -= item.len();
+        self.bytes -= item.bytes();
         Some(item)
     }
 
@@ -70,13 +102,21 @@ impl<const MAX_LEN: usize, const MAX_BYTES: usize> Capped<MAX_LEN, MAX_BYTES> {
     }
 
     /// The items, oldest first.
-    pub fn iter(&self) -> impl Iterator<Item = &str> {
-        self.items.iter().map(String::as_str)
+    pub fn items(&self) -> impl DoubleEndedIterator<Item = &T> {
+        self.items.iter()
     }
 
-    /// The newest item.
-    pub fn back(&self) -> Option<&str> {
-        self.items.back().map(String::as_str)
+    /// Changes the newest item `pick` chooses with `change`, which must
+    /// leave its size as it was: what the byte cap counts cannot move
+    /// behind the store's back. Answers whether one was chosen.
+    pub fn change(&mut self, pick: impl Fn(&T) -> bool, change: impl FnOnce(&mut T)) -> bool {
+        let Some(item) = self.items.iter_mut().rev().find(|i| pick(i)) else {
+            return false;
+        };
+        let before = item.bytes();
+        change(item);
+        assert_eq!(item.bytes(), before, "a change moved an item's size");
+        true
     }
 
     pub fn is_empty(&self) -> bool {
@@ -96,6 +136,20 @@ impl<const MAX_LEN: usize, const MAX_BYTES: usize> Capped<MAX_LEN, MAX_BYTES> {
     #[cfg(test)]
     pub fn capacity(&self) -> usize {
         self.items.capacity()
+    }
+}
+
+/// A store of text reads as text.
+impl<const MAX_LEN: usize, const MAX_BYTES: usize> Capped<MAX_LEN, MAX_BYTES> {
+    /// The items, oldest first.
+    #[cfg(test)]
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        self.items.iter().map(String::as_str)
+    }
+
+    /// The newest item.
+    pub fn back(&self) -> Option<&str> {
+        self.items.back().map(String::as_str)
     }
 }
 

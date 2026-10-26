@@ -305,6 +305,17 @@ its writer gave it (`tui/internal/model/rows.go`, #849): what a tool
 returned is `ink-secondary` under its call and an error or a refusal is
 `down`; no role is read from a row's words.
 
+The design system's components are drawn in one place,
+`tui/internal/view/components.go` (#911), and every region draws them from
+there. A Meter is a fixed number of cells, `█` filled and `░` empty, then
+its two figures (`████░░░░ 3/40`): its cells are `cool`, `signal` past 70%
+of the ceiling and `down` past 90% (§2.1), its empty cells `line-strong`,
+and it never says a percentage. A Status is a dot and its word in one tone
+(`● 1 pending`), and a keycap is the key in brackets (`[TAB] select`). A
+figure trellis did not report is drawn `—`, which `/help` names as
+unreported (rule 2), and the clock this view keeps for itself is marked
+`*` until trellis reports its own (#906).
+
 The table gives 256- and 16-colour values for dark terminals. A light
 terminal (owner decision, 2026-10-25) takes the light hex values of §3.1 at
 truecolor; below truecolor, `ink`, `ink-secondary` and `ink-muted` take the

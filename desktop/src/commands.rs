@@ -72,7 +72,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 pub const LINE_CAP: usize = 65_536;
 
 /// The `type`s `rpc_send` forwards: `rpc.rs`'s `COMMANDS` as #296 lists
-/// them, `list_models` (#564) and the read-only `get_session_stats` (#313),
+/// them, `list_models` (#564), the read-only `get_session_stats` (#313) and
+/// `get_last_assistant_text`, which the summary level reads (#825),
 /// without `quit`, which only the core sends, and with each read-only
 /// command a desktop view reads through (ADR 0048 section 10) as that view
 /// is built: `get_codebase` (#307), `get_radius` (#308), `vault_search` and
@@ -81,7 +82,7 @@ pub const LINE_CAP: usize = 65_536;
 /// write is among them: rpc has none, every vault write stays a `trellis
 /// vault` command the person runs (#70), and the queue's writes are
 /// `trellis queue` and `trellis work` (ADR 0020 section 5).
-pub const FORWARDED: [&str; 21] = [
+pub const FORWARDED: [&str; 22] = [
     "prompt",
     "abort",
     "get_state",
@@ -95,6 +96,7 @@ pub const FORWARDED: [&str; 21] = [
     "compact",
     "get_commands",
     "get_session_stats",
+    "get_last_assistant_text",
     "get_codebase",
     "get_radius",
     "vault_search",
@@ -430,6 +432,10 @@ impl Core {
     /// whether a run is in flight, then forwards it to the child.
     pub fn send(&self, line: &Value) -> Result<(), String> {
         check_line(line)?;
+        // A steer's row is found again by its line id when rpc answers.
+        let steer_id = (line.get("type").and_then(Value::as_str) == Some("steer"))
+            .then(|| line.get("id").and_then(Value::as_str).map(str::to_string))
+            .flatten();
         let writer = {
             let mut s = self.lock();
             check_model(line, s.view.configured())?;
@@ -447,6 +453,15 @@ impl Core {
             // thread may feed as soon as it is written, finds it set.
             match line.get("type").and_then(Value::as_str) {
                 Some("get_state") => s.resend = true,
+                // A steer's row, pending until rpc's answer to its id
+                // (#827), drawn at once so the person sees it was taken.
+                Some("steer") => {
+                    if let Some(id) = &steer_id {
+                        let text = line.get("message").and_then(Value::as_str).unwrap_or("");
+                        let c = s.view.steer_sent(id, text);
+                        self.sink.emit("view", s.view.view(c));
+                    }
+                }
                 // The child may start a run from here on, before its
                 // `run_start` is read (#815).
                 Some("prompt") => s.view.prompt_forwarded(),
@@ -464,9 +479,19 @@ impl Core {
         };
         // Outside the lock: the readers take it for every line the child
         // prints, and a child blocked on a full stdout reads no stdin.
-        writer
+        let sent = writer
             .send(line)
-            .map_err(|e| format!("rpc_send: cannot write to trellis rpc: {e}"))
+            .map_err(|e| format!("rpc_send: cannot write to trellis rpc: {e}"));
+        // A steer that never reached the child will never be answered: its
+        // row says so rather than waiting.
+        if let (Err(why), Some(id)) = (&sent, &steer_id) {
+            let mut s = self.lock();
+            let c = s.view.steer_unsent(id, why);
+            if !c.is_empty() {
+                self.sink.emit("view", s.view.view(c));
+            }
+        }
+        sent
     }
 
     /// `get_trails`: the log list once, each stdout line a trails-view row
@@ -674,9 +699,10 @@ fn check_arguments(o: &serde_json::Map<String, Value>) -> Result<(), String> {
 
 /// The composer's rule (#301), from the view's own record of whether a run
 /// is in flight (`run_start` to `run_end`, or the child's exit): a `prompt`
-/// only while none is, and a `steer` or `abort` only while one is. `rpc.rs`
-/// refuses the same lines itself; the page draws the composer from the same
-/// view, and this holds the rule when the page is wrong.
+/// only while none is, and a `steer`, a `follow_up` (#825) or an `abort`
+/// only while one is. `rpc.rs` refuses the same lines itself; the page
+/// draws the composer from the same view, and this holds the rule when the
+/// page is wrong.
 fn check_run_state(line: &Value, running: bool) -> Result<(), String> {
     match (line.get("type").and_then(Value::as_str), running) {
         (Some("prompt"), true) => Err(
@@ -687,6 +713,13 @@ fn check_run_state(line: &Value, running: bool) -> Result<(), String> {
         (Some(ty @ ("steer" | "abort")), false) => Err(format!(
             "rpc_send: no run is in flight, so there is nothing to {ty}; send a prompt to start one"
         )),
+        // A follow_up runs after the run it is sent during; with none in
+        // flight there is nothing for it to follow.
+        (Some("follow_up"), false) => Err(
+            "rpc_send: no run is in flight, so there is nothing to follow; send a prompt to start \
+             one"
+            .into(),
+        ),
         _ => Ok(()),
     }
 }
@@ -974,6 +1007,53 @@ mod tests {
             .send(&json!({"id": "x", "type": "get_session_totals"}))
             .unwrap_err();
         assert!(err.contains("is not one rpc_send forwards"), "{err}");
+        finish(&core).unwrap();
+        for d in &dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn follow_up_is_refused_with_no_run_in_flight() {
+        // The risk (#825): a follow_up the page sends while nothing runs is
+        // forwarded as if a run would pick it up, and the person's words
+        // wait behind a run that is not there.
+        let (core, _rec, dirs) = with_child("follow-idle");
+        let l = json!({"id": "f", "type": "follow_up", "message": "then rename it"});
+        let err = core.send(&l).unwrap_err();
+        assert!(err.contains("no run is in flight"), "{err}");
+        assert!(err.contains("nothing to follow"), "{err}");
+        // While one runs it is forwarded; once it has ended it is refused.
+        run_started(&core);
+        assert_eq!(core.send(&l), Ok(()));
+        run_ended(&core);
+        let err = core.send(&l).unwrap_err();
+        assert!(err.contains("no run is in flight"), "after run_end: {err}");
+        finish(&core).unwrap();
+        for d in &dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn rpc_send_forwards_get_last_assistant_text() {
+        // The risk (#825): the summary level asks for the run's closing
+        // words and rpc_send refuses the line, so the summary says nothing;
+        // or the core answers it itself. The child answers, and its text is
+        // model output, null until a run ends on done.
+        let (core, rec, dirs) = with_child("last-text");
+        assert_eq!(
+            core.send(&json!({"id": "desktop-last", "type": "get_last_assistant_text"})),
+            Ok(())
+        );
+        let answer = rec.wait_for("rpc-frame", |f| f["id"] == "desktop-last");
+        assert_eq!(answer["command"], "get_last_assistant_text", "{answer}");
+        assert_eq!(answer["success"], true, "{answer}");
+        assert_eq!(
+            answer["data"],
+            json!({"text": null}),
+            "no run yet: {answer}"
+        );
         finish(&core).unwrap();
         for d in &dirs {
             let _ = std::fs::remove_dir_all(d);
@@ -1763,13 +1843,22 @@ mod tests {
                 .find_map(|(_, v)| v.get(key).cloned())
                 .unwrap_or_else(|| panic!("no view carried {key}"))
         };
+        // Each view carries the rows it adds (#827): every text row, in order.
+        let texts = |key: &str| -> Vec<Value> {
+            views
+                .iter()
+                .filter_map(|(_, v)| v.get(key))
+                .flat_map(|f| f["rows"].as_array().cloned().unwrap_or_default())
+                .map(|r| r["text"].clone())
+                .collect()
+        };
         assert_eq!(
-            last("transcript"),
-            json!(["<b>not json</b>", "[1,2]"]),
+            texts("transcript"),
+            [json!("<b>not json</b>"), json!("[1,2]")],
             "a bad line is shown as it came"
         );
         assert!(last("alert").as_str().is_some_and(|a| a.ends_with("[1,2]")));
-        assert_eq!(last("stderr"), json!(["warning: <i>human</i>"]));
+        assert_eq!(texts("stderr"), [json!("warning: <i>human</i>")]);
         // A line from a child already replaced reaches nothing.
         core.stdout_line(g + 1, "late");
         assert!(rec.take().is_empty());
@@ -1808,10 +1897,10 @@ mod tests {
         let mut keys: Vec<&String> = v[0].as_object().unwrap().keys().collect();
         keys.sort();
         assert_eq!(keys, ["alert", "transcript"], "{v:?}");
-        assert_eq!(
-            v[0]["transcript"].as_array().unwrap().last().unwrap(),
-            "plain text"
-        );
+        // Only the new row: the turn's went in the view before (#827).
+        let rows = v[0]["transcript"]["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{v:?}");
+        assert_eq!(rows[0]["text"], "plain text");
 
         // stderr has its own pane, apart from the transcript (#302).
         core.stderr_line(g, "trellis: a human line".into());
@@ -1819,7 +1908,7 @@ mod tests {
         assert_eq!(v.len(), 1, "{v:?}");
         assert_eq!(v[0].as_object().unwrap().len(), 1, "{v:?}");
         assert_eq!(
-            v[0]["stderr"].as_array().unwrap().last().unwrap(),
+            v[0]["stderr"]["rows"].as_array().unwrap().last().unwrap()["text"],
             "trellis: a human line"
         );
 
@@ -1883,12 +1972,16 @@ mod tests {
                 "vault"
             ]
         );
+        assert_eq!(
+            full["stderr"]["whole"], true,
+            "the page replaces what it drew"
+        );
         assert!(
-            full["stderr"]
+            full["stderr"]["rows"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|l| l == "before"),
+                .any(|l| l["text"] == "before"),
             "the run so far, not only what is new: {full}"
         );
         rec.wait_for("rpc-frame", |f| f["id"] == "desktop-1");

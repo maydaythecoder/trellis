@@ -49,8 +49,14 @@ called.
    at any point of the run. One request is not the page's: the browser asks
    for `/favicon.ico` on its own while the page names no icon (until #835),
    and the server's refusal of it is ignored.
-3. After a warm-up (one task, one walk), it counts documents, nodes and
-   listeners (`Memory.getDOMCounters`, after `HeapProfiler.collectGarbage`).
+3. After a warm-up (one task, then two walks, the first to all its
+   answers), it counts documents, nodes and listeners
+   (`Memory.getDOMCounters`, after `HeapProfiler.collectGarbage`), each
+   time once every call the page made to the core has finished and the
+   child has answered every rpc line the core accepted (*amended
+   2026-10-26, #797:* on CI's runner one walk left the overview drawn from
+   before the codebase view's first answer saved the index it reads, and
+   the next walk's nodes were taken for a leak).
    It walks into every level of the page and out again, five times, and
    all three counts must be where they were. It then runs five tasks to
    their `run_end` with `scripted-done-only.json`, and the document and
@@ -59,11 +65,11 @@ called.
    page keeps up to its cap (#814 holds the cap). *Amended 2026-10-26
    (#826):* the walk goes into each of the overview's panels and out with
    ESC, then across the sibling rail, since the levels replaced the
-   section rail it first walked; and the warm-up walks until a walk leaves
-   the counts where the one before left them (at most four walks), since a
-   section asks for what it shows only while it is shown, the Atlas in
-   steps, and on a slow machine one walk can end before the page has drawn
-   all it will.
+   section rail it first walked; and after its two walks the warm-up walks
+   again while a walk still changes the counts (at most four walks in
+   all), since a section asks for what it shows only while it is shown,
+   the Atlas in steps, so a walk can end before the page has asked for all
+   it will.
 4. The JS heap (`Runtime.getHeapUsage`) is printed as a trend and not
    judged: the protocol marks it experimental.
 5. `--self-test` runs the same checks over three pages the script serves
