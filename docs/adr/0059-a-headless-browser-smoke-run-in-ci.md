@@ -59,7 +59,11 @@ called.
    page keeps up to its cap (#814 holds the cap). *Amended 2026-10-26
    (#826):* the walk goes into each of the overview's panels and out with
    ESC, then across the sibling rail, since the levels replaced the
-   section rail it first walked.
+   section rail it first walked; and the warm-up walks until a walk leaves
+   the counts where the one before left them (at most four walks), since a
+   section asks for what it shows only while it is shown, the Atlas in
+   steps, and on a slow machine one walk can end before the page has drawn
+   all it will.
 4. The JS heap (`Runtime.getHeapUsage`) is printed as a trend and not
    judged: the protocol marks it experimental.
 5. `--self-test` runs the same checks over three pages the script serves
