@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/maydaythecoder/trellis/tui/internal/rpc"
+	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
 // numbered is a model at 80x24 whose transcript is n numbered lines,
@@ -19,7 +20,7 @@ func numbered(t *testing.T, n int) *Model {
 	m.Update(windowSize(80, 24))
 	m.Transcript = nil
 	for i := 0; i < n; i++ {
-		m.pushLine(fmt.Sprintf("line %03d", i))
+		m.push(view.RoleText, fmt.Sprintf("line %03d", i))
 	}
 	return m
 }
@@ -60,7 +61,7 @@ func TestPanesHomeShowsTheFirstLineAndPageUpStopsThere(t *testing.T) {
 	m.Update(windowSize(80, 24))
 	m.Transcript = nil
 	for i := 0; i < 120; i++ {
-		m.pushLine(fmt.Sprintf("line %03d %s", i, strings.Repeat("wrapped words ", 5)))
+		m.push(view.RoleText, fmt.Sprintf("line %03d %s", i, strings.Repeat("wrapped words ", 5)))
 	}
 	if strings.Contains(m.View(), "line 000") {
 		t.Fatal("it does not start at the end")
@@ -87,7 +88,7 @@ func TestPanesEndFollowsTheEndAgain(t *testing.T) {
 	if m.ScrollBack != 0 {
 		t.Fatalf("scroll back %d after End", m.ScrollBack)
 	}
-	m.pushLine("THE NEWEST")
+	m.push(view.RoleText, "THE NEWEST")
 	if !strings.Contains(m.View(), "THE NEWEST") {
 		t.Fatalf("not following:\n%s", m.View())
 	}
@@ -114,7 +115,7 @@ func TestPanesClockKeepsElapsedCurrentWhileRunning(t *testing.T) {
 		t.Fatalf("elapsed %v, want 75", m.Budget.ElapsedSecs)
 	}
 	m.Update(windowSize(120, 24))
-	if v := m.View(); !strings.Contains(v, "1:15 elapsed") || !strings.Contains(v, "no iteration yet of 40") {
+	if v := m.View(); !strings.Contains(v, "TIME 1:15*") || !strings.Contains(v, "TURNS —/40") {
 		t.Fatalf("view:\n%s", v)
 	}
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
@@ -149,7 +150,7 @@ func TestPanesClockTicksOnceASecond(t *testing.T) {
 }
 
 // A turn that did not report its prompt size is not a 0-byte prompt: the
-// figure stays unreported, and the line says so.
+// figure stays unreported, and the line draws it — (#911).
 func TestPanesTurnWithoutAPromptSizeLeavesItUnreported(t *testing.T) {
 	m := running(t)
 	feed(m, turn(3, "read_file a.py", map[string]any{"observation": "..."}))
@@ -157,7 +158,54 @@ func TestPanesTurnWithoutAPromptSizeLeavesItUnreported(t *testing.T) {
 		t.Fatalf("budget %+v", m.Budget)
 	}
 	m.Update(windowSize(120, 24))
-	if v := m.View(); !strings.Contains(v, "prompt not reported") || strings.Contains(v, "0 B prompt") {
+	if v := m.View(); !strings.Contains(v, "PROMPT —") || strings.Contains(v, "PROMPT 0") {
 		t.Fatalf("view:\n%s", v)
 	}
+}
+
+// #904: scrolled to the top with completions on offer, closing the offer
+// makes the transcript pane taller, so its top is lower than the scroll
+// back held. The first Down then moves the view by a row, and the first
+// PgDn by a page, rather than spending presses above the first row.
+func TestPagesDownMovesAtOnceAfterThePaneGrows(t *testing.T) {
+	for _, c := range []struct {
+		key  tea.KeyType
+		want string
+	}{{tea.KeyDown, "line 001"}, {tea.KeyPgDown, "line 010"}} {
+		m := numbered(t, 200)
+		typeLine(m, "fix @m")
+		tab(m)
+		var paths []any
+		for i := 0; i < 8; i++ {
+			paths = append(paths, fmt.Sprintf("app/m%d.py", i))
+		}
+		respond(m, m.TakeOutbox()[0].Cmd["id"], "list_paths", map[string]any{"paths": paths})
+		m.Update(keyType(tea.KeyHome))
+		held := m.ScrollBack
+		typeLine(m, " ")
+		if len(m.Offered) != 0 {
+			t.Fatalf("a space did not close the offer: %v", m.Offered)
+		}
+		if top := m.transcriptTop(); top >= held {
+			t.Fatalf("closing the offer did not grow the pane: top %d, held %d", top, held)
+		}
+		if first := firstLine(t, m); first != "line 000" {
+			t.Fatalf("the top is not drawn after the pane grew: first %q", first)
+		}
+		m.Update(keyType(c.key))
+		if first := firstLine(t, m); first != c.want {
+			t.Fatalf("after one %v the first line is %q, want %q", c.key, first, c.want)
+		}
+	}
+}
+
+// firstLine is the first "line NNN" the transcript pane draws.
+func firstLine(t *testing.T, m *Model) string {
+	t.Helper()
+	v := m.View()
+	i := strings.Index(v, "line ")
+	if i < 0 || i+8 > len(v) {
+		t.Fatalf("no numbered line on screen:\n%s", v)
+	}
+	return v[i : i+8]
 }

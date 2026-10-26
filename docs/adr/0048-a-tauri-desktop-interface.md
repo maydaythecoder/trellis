@@ -150,6 +150,30 @@ answers, the map's layout included. The page uses no library and loads
 nothing from a network, writes text through `textContent` only, reads its
 colours from `style.css` at draw time, and takes no animated flight under
 `prefers-reduced-motion` (the `atlas_` tests in `src/lockdown.rs`).
+*Amended 2026-10-26 (#795), owner-directed (the owner's decision of
+2026-10-25, about 22:50 New York time, recorded on story #790: replace the
+desktop's tabs with the Trail and burrowing levels):* the section rail of
+2026-10-11 is replaced by the shell of the owner's brand book
+(`docs/design/system/components/Shell.md` and `Trail.md`;
+`docs/design/DESIGN.md` §1). The page is one overview a person burrows into,
+with no tabs anywhere. Across the top, the Trail: the path from the overview
+to where the person is, each earlier segment a way back, the current one
+marked, then the depth as `L n/4` and an `ESC out` keycap. On the left, the
+sibling rail: the panels of the level the person came from, collapsed, each
+still a way in. In the middle, the stage, which holds the level entered.
+Along the bottom, the status bar: the keys that work at that level as
+keycaps, then the model and the time. `⏎` on a focused panel or row, or a
+panel head's `⤢`, goes in; `ESC` goes out one level and keeps the scroll and
+selection of the level it leaves. The seven sections (overview, run, trails,
+codebase, atlas, board and vault) become panels of the overview, and each
+keeps its fetch-on-show: what a section asks the core for when it is shown,
+its panel asks when it is entered. One module owns the level keys, and
+typing in a field is never taken as navigation. What a level registers (its
+DOM listeners and its Tauri subscriptions) ends when the person leaves it.
+The fonts, the focus ring and the order of stop-and-send that the shell
+needs are rows in `docs/design/DESIGN.md` §2.1. Accepted, not built: #826
+builds the shell and rewrites `page_rail_buttons_control_sections_that_exist`
+for levels.
 
 ### 6. The client contract
 
@@ -166,6 +190,35 @@ only for an endpoint identified as colibri, and stays out of the trail.
 Held by `rpc_runtime_identified_carries_every_field_the_contract_lists_once_per_run`
 and `rpc_runtime_identified_leaves_unreported_counts_absent_never_0` in
 `tests/modes.rs`. The desktop pane that draws it is #628.
+*Added 2026-10-26 (#796):* fields trellis already emitted are listed; listing
+them changes no output. They are `approval_request`'s `request_id`; the
+`level` beside every event's fields; the turn's `duration_ms` and
+`summarised`; the `compacted` and `compacted on request` events; the answers
+of `steer`, `abort`, `approve`, `compact`, `get_commands`,
+`get_session_stats`, `get_available_models`, `get_last_assistant_text`,
+`vault_search`, `vault_graph` and `vault_check`; `run_end`'s outcome words
+and the turn's check kinds as `outcome_values` and `check_kind_values`;
+`prompt`, `follow_up` and `quit` as the commands that answer with no data;
+and `log --json`'s `trail.base_commit`, `ended_at`, `factual.radius`,
+`context`, `actions` and `steering`, for the summary level. Some were read
+before: the TUI reads the `level`, a steer's `after_step` and `abort`'s
+ids; the desktop reads `abort`'s text, `get_commands`' prompts, the
+`get_session_stats`, `get_available_models` and vault answers, and
+`run_end`'s outcome words. The rest (`request_id`, `duration_ms`,
+`summarised`, both compaction events, the `approve`, `compact` and
+`get_last_assistant_text` answers and the trail paths) no client reads yet;
+they are listed for the levels story #790 plans. `get_state`'s answer moves
+from `rpc.commands` to `rpc.responses` beside the others. What not every
+client reads yet is under `rpc.not_every_client`, and the trail paths under
+`log_json.not_every_client`, with `read_by` naming the clients that read
+each field, because both clients' contract tests require their parsers to
+keep every field of `rpc.events` and `rpc.framing`, and the desktop's
+`every_trail_field_in_the_log_contract_is_read` (`src/trails.rs`) every
+path of `log_json`'s `always` and `optional`. Held by
+`rpc_stream_carries_every_field_the_desktop_reads`,
+`log_json_carries_every_trail_field_the_desktop_reads` and
+`rpc_steer_abort_compact_answers_carry_what_the_contract_lists` in
+`tests/modes.rs`, with the `rpc_vault_` tests there for the vault answers.
 
 ### 7. Auditing Tauri's tree
 
