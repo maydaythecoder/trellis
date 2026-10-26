@@ -105,7 +105,7 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `view.rs` | `below_eighty_by_twentyfour_it_says_so_instead_of_laying_out` | below eighty by twentyfour it says so instead of laying out | T4 (#510) | `TestViewTooSmallSaysSoInsteadOfLayingOut` |
 | `view.rs` | `the_modal_covers_what_is_under_it` | the modal covers what is under it | T3 (#509) | `TestApproveModalCoversTheScreen` |
 | `view.rs` | `the_task_line_shows_what_is_typed_and_how_to_send_it` | the task line shows what is typed and how to send it | T4 (#510) | `TestViewTaskLineShowsWhatIsTypedAndHowToSendIt` |
-| `view.rs` | `at_file_candidates_are_drawn_under_the_input_line` | at file candidates are drawn under the input line | T5 (#511) | `TestCompleteCandidatesAreDrawnUnderTheInput` |
+| `view.rs` | `at_file_candidates_are_drawn_under_the_input_line` | at file candidates are drawn under the input line | T5 (#511) / #842 | `TestCompleteCandidatesAreDrawnUnderTheInput`; in at most the rows the body can spare, the last saying how many more there are (`TestViewManyCompletionsNeverPanic`) |
 | `view.rs` | `at_file_candidates_are_not_drawn_while_a_run_holds_the_input` | at file candidates are not drawn while a run holds the input | T5 (#511) | `TestCompleteNothingOfferedOrStaleChangesNothing` |
 | `view.rs` | `while_running_the_task_line_shows_the_steer_being_typed` | while running the task line shows the steer being typed | T3 (#509) | `TestSteerLineIsShownWhileRunning` |
 | `view.rs` | `every_tool_is_a_node_before_any_of_them_is_called` | every tool is a node before any of them is called | T4 (#510) | `TestViewEveryToolIsANodeBeforeAnyIsCalled` |
