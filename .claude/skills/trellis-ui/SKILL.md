@@ -66,8 +66,8 @@ The wireframe's regions, in the order a person reads them:
   `paused`, `stopping`, `ended · <outcome>`), elapsed, an activity line in
   `-ing` form from the last event, `turn n / max`, the queued count, and the
   controls `Stop` (confirmed), `Pause`/`Resume` (rpc `pause`/`resume`, #806; in
-  the desktop, #837, `paused` drawn from the engine's `paused` event; not yet in
-  the TUI), `Summary so far`.
+  the desktop, #837, and the TUI, #857, as `^P`, `paused` drawn from the
+  engine's `paused` event), `Summary so far`.
 - **Action log**: rows typed by role. `you · task` / `you · steer` (signal
   colour, left bar), `model said — its words, not a verdict`, tool calls as one
   sentence with the raw call and observation on demand, check rows with the
@@ -78,19 +78,21 @@ The wireframe's regions, in the order a person reads them:
   `Queue` (after this run; `follow_up`), `Stop and send` (abort, then prompt).
   The queue lists each item with its state; take-back and cancel (rpc
   `withdraw`, #808; in the desktop, #838, the text back in the composer only
-  once trellis answers that it withdrew the message; not yet in the TUI);
+  once trellis answers that it withdrew the message; in the TUI, #857, `^T`
+  on the newest item still queued);
   reorder only among follow-ups.
 - **Plan**: the model's latest plan, its steps as the model's words with
   their states, never counted; a person's edit goes back as a `steer` (rpc
   `plan` event, #810, sent only where the repository enables the tool; in the
-  desktop, #838; not yet in the TUI).
+  desktop, #838; in the TUI, #857, the plan level, `^E` editing it a step a
+  line).
 - **Where it is**: phase, tool and target, turn, last call, prompt bytes
   against the context budget, compactions, model, tier, runtime, control, root.
 - **Budget**: two numbers per row (used / ceiling); wall clock excludes time
   waiting on a person; `raise a limit` sends `set_budget` (rpc `set_budget`,
   #807; in the desktop, #837, as Raise beside the turns, wall-clock and
   completion-token rows, the ceiling redrawn from the next `run budget`, never
-  from the input or the answer; not yet in the TUI).
+  from the input or the answer; in the TUI, #857, as `^R` on the budget box).
 - **Code**: files touched with two line counts and a state (`in the worktree`,
   `awaiting your approval`, `left in the tree`, `rolled back`); `diff` and
   `whole file` line by line (rpc `read_file`, #809; in the desktop, #838, read

@@ -63,6 +63,9 @@ const (
 	FateDelivered
 	// FateNot is never delivered, for Why.
 	FateNot
+	// FateWithdrawn is taken back: trellis answered the withdraw with
+	// success, and will never deliver it (#857).
+	FateWithdrawn
 )
 
 // Queued is one item of the composer's list: a steer or a follow_up that
@@ -75,6 +78,9 @@ type Queued struct {
 	Fate  Fate
 	After int
 	Why   string
+	// Withdrawing is set while a withdraw for it waits on trellis's
+	// answer; it is still queued until that answer says otherwise.
+	Withdrawing bool
 }
 
 // Compose is what the task box draws of the composer.
@@ -91,6 +97,9 @@ type Compose struct {
 	Holding bool
 	// Queue is the list, oldest first.
 	Queue []Queued
+	// TakeBack is set while ^T would take an item back: a run is in
+	// flight and a steer or follow-up of its is still queued (#857).
+	TakeBack bool
 }
 
 // state is the item's state words, as the desktop's queue words them.
@@ -105,6 +114,11 @@ func (q Queued) state() (string, Role) {
 			return "not delivered", RoleNote
 		}
 		return "not delivered (" + Plain(FirstLine(q.Why)) + ")", RoleNote
+	case FateWithdrawn:
+		return "withdrawn", RoleLabel
+	}
+	if q.Withdrawing {
+		return "queued, taking back", RoleLabel
 	}
 	return "queued", RoleLabel
 }
@@ -120,6 +134,12 @@ func (q Queued) row() Row {
 // composeTitle is the task box's title: what ⏎ does with the line now.
 func composeTitle(s State) string {
 	switch {
+	case s.Raise != "":
+		// The line is the new ceiling (#857).
+		return "raise " + string(s.Raise) + ", in " + s.Raise.Unit() + "  " + keyRow(key{"⏎", "send"}, key{"ESC", "cancel"})
+	case s.Plan.Edit != nil:
+		e := s.Plan.Edit
+		return fmt.Sprintf("plan step %d of %d  ", e.At+1, len(e.Lines)) + keyRow(key{"⏎", "send as a steer"}, key{"ESC", "cancel"})
 	case s.Running:
 		v := s.Compose.Verb
 		return v.Word() + "  " + keyRow(key{"⏎", v.does()})
@@ -132,12 +152,20 @@ func composeTitle(s State) string {
 }
 
 // composeBottom is the task box's bottom border: the verb Tab changes to,
-// when it would.
+// when it would, and ^T while an item can be taken back (#857), which
+// takes back the newest one still queued.
 func composeBottom(s State) string {
-	if !s.Running || !s.Compose.Cycles {
+	if !s.Running || s.Raise != "" || s.Plan.Edit != nil {
 		return ""
 	}
-	return keyRow(key{"TAB", s.Compose.Next.Word()})
+	var keys []key
+	if s.Compose.Cycles {
+		keys = append(keys, key{"TAB", s.Compose.Next.Word()})
+	}
+	if s.Compose.TakeBack {
+		keys = append(keys, key{"^T", "take back the newest queued"})
+	}
+	return keyRow(keys...)
 }
 
 // queueRows is the list in at most room rows: oldest first, and when they

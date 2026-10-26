@@ -67,7 +67,7 @@ func (m *Model) delivered(nth, turn int) {
 	s := &m.steers[nth]
 	s.turn = turn
 	s.told = true
-	m.push(view.RoleNote, fmt.Sprintf("· delivered at turn %d: %s", turn, view.Plain(s.text)))
+	m.push(view.RoleNote, fmt.Sprintf("· delivered at turn %d: %s", turn, view.Plain(oneLine(s.text))))
 	// The queue says it as "after" the turn the request followed.
 	m.settle(kindSteer, s.id, view.FateAfter, turn-1, "")
 }
@@ -80,7 +80,7 @@ func (m *Model) notDelivered(nth int, why string) {
 	}
 	s := &m.steers[nth]
 	s.told, s.why = true, why
-	m.push(view.RoleNote, "· not delivered: "+view.Plain(s.text))
+	m.push(view.RoleNote, "· not delivered: "+view.Plain(oneLine(s.text)))
 	m.settle(kindSteer, s.id, view.FateNot, 0, why)
 }
 
@@ -171,7 +171,7 @@ func (m *Model) steersNotDelivered() {
 func (m *Model) steerItems() []view.Queued {
 	var out []view.Queued
 	for _, s := range m.steers {
-		q := view.Queued{Kind: kindSteer, Text: capLine(view.Plain(s.text))}
+		q := view.Queued{Kind: kindSteer, Text: capLine(view.Plain(oneLine(s.text)))}
 		switch {
 		case s.told && s.turn > 0:
 			q.Fate, q.After = view.FateAfter, s.turn-1

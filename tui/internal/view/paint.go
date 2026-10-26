@@ -63,6 +63,9 @@ const (
 	RoleDiffAdd
 	RoleDiffDel
 	RoleDiffHunk
+	// RolePlay is the playful register's one Ascii face and its copy
+	// (#857): play. Never a status, an action or a figure.
+	RolePlay
 
 	// roles is how many roles there are; every one below it has a colour.
 	roles
@@ -142,6 +145,8 @@ func style(th theme.Theme, r Role) lipgloss.Style {
 		return th.DiffDel
 	case RoleDiffHunk:
 		return th.DiffHunk
+	case RolePlay:
+		return th.Play
 	default:
 		return th.Ink
 	}
