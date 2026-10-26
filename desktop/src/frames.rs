@@ -54,11 +54,18 @@ pub enum Frame {
 }
 
 /// A `turn` event. `turn` and `call` are what make an event a turn, the
-/// test `tui_bridge.rs` and `rpc.rs` apply, so both are required.
+/// test `rpc.rs` applies, so both are required.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Turn {
     pub turn: u64,
     pub call: String,
+    /// What the trail records for the turn (#800), from the engine's own
+    /// reading of the call and its whole observation, so the desktop never
+    /// splits `call` or searches `observation` for them.
+    pub tool: Option<String>,
+    pub target: Option<String>,
+    /// True only for an edit that applied or a file `write_file` created.
+    pub wrote: Option<bool>,
     /// The loop's Debug rendering: `"Some(true)"`, `"Some(false)"` or
     /// `"None"`, kept as sent.
     pub verdict: Option<String>,
@@ -189,6 +196,9 @@ pub fn parse_stdout(line: &str) -> Frame {
             (Some(turn), Some(call)) => Frame::Turn(Turn {
                 turn,
                 call,
+                tool: json::string(f, "tool"),
+                target: json::string(f, "target"),
+                wrote: json::bool(f, "wrote"),
                 verdict: json::string(f, "verdict"),
                 check_kind: json::string(f, "check_kind"),
                 observation: json::string(f, "observation"),

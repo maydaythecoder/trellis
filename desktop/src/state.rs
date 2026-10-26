@@ -4,8 +4,9 @@
 //! its tests run without a terminal; `DesktopState::update` is the same for
 //! the desktop: a [`Frame`] in, the panes it changed out, and nothing read
 //! or written anywhere else. It follows what `crates/trellis-cli/src/rpc.rs`
-//! serves as a turn (the rule `tui_bridge.rs` held until the ratatui TUI was
-//! retired, #516), so the desktop and the Go TUI draw one run the same way.
+//! serves as a turn, and takes a turn's tool, target and whether it wrote
+//! from the event (#800), so the panes and the trail agree on what a turn
+//! touched.
 //!
 //! What it shows is what trellis reported (ADR 0048 §8): radius is three
 //! counts and never a ratio (CLAUDE.md rule 3); the budget is iterations,
@@ -267,7 +268,7 @@ enum Phase {
     Checks { turn: u64 },
 }
 
-/// One turn, whatever it was and however it went (tui_bridge.rs).
+/// One turn, whatever it was and however it went.
 #[derive(Debug, Clone, PartialEq)]
 struct Action {
     tool: String,
@@ -1442,7 +1443,7 @@ impl DesktopState {
         }
     }
 
-    /// A turn, as `tui_bridge.rs` maps it.
+    /// A turn, as the `turn` event reports it.
     fn turn(&mut self, t: Turn) -> Changed {
         let mut c = Changed::of(&[
             Pane::Transcript,
@@ -1476,13 +1477,14 @@ impl DesktopState {
         self.transcript.push(tool);
 
         // Only an applied edit, or a file `write_file` created, changed the
-        // tree; the observation is the only place that says so. A refused
-        // edit is still an action, but not an edit.
-        let obs = t.observation.as_deref().unwrap_or_default();
-        let wrote = (t.call.starts_with("edit ") && obs.contains("applied: true"))
-            || (t.call.starts_with("write_file ") && obs.starts_with("created "));
-        let mut parts = t.call.splitn(2, ' ');
-        let tool = parts.next().unwrap_or_default().to_string();
+        // tree, and the event's `wrote` says which, as the trail records it
+        // (#800). Read from the observation instead, the live view and the
+        // trail could disagree about what a turn touched. A refused edit is
+        // still an action, but not an edit; a turn whose event carried no
+        // `wrote` is not counted as one.
+        let wrote = t.wrote == Some(true);
+        let tool = t.tool.unwrap_or_default();
+        let target = t.target.unwrap_or_default();
         // The call's tool is what the turn ran; `run_checks` is the checks
         // phase, by the call and not the verdict, so the governance audit
         // (a `run_checks` the loop ran itself) reads as checks too.
@@ -1494,17 +1496,19 @@ impl DesktopState {
                 tool: tool.clone(),
             }
         });
+        // Only an edit or a write_file sets `wrote`, and both target the
+        // path they wrote.
+        if wrote {
+            self.edits.push(target.clone());
+            c = c.with(Pane::Edits);
+        }
         self.actions.push(Action {
             tool,
-            target: parts.next().unwrap_or_default().to_string(),
+            target,
             wrote,
             prompt_bytes: t.prompt_bytes,
             completion_tokens: t.completion_tokens,
         });
-        if wrote && let Some(path) = t.call.split_whitespace().nth(1) {
-            self.edits.push(path.to_string());
-            c = c.with(Pane::Edits);
-        }
 
         if let Some(passed) = passed {
             let kind = t
@@ -1656,7 +1660,8 @@ mod tests {
             &mut s,
             &turn(
                 json!({"turn": 1, "call": "read_file app/core.py", "verdict": "None",
-                         "check_kind": "", "observation": "def f():\n    return 1"}),
+                         "check_kind": "", "observation": "def f():\n    return 1",
+                         "tool": "read_file", "target": "app/core.py", "wrote": false}),
             ),
         );
         assert!(c.has(Pane::Actions) && c.has(Pane::Transcript), "{c:?}");
@@ -1678,7 +1683,7 @@ mod tests {
 
     #[test]
     fn refused_edit_is_an_action_but_not_an_edit() {
-        // The risk (tui_bridge.rs): a refused edit listed as pending makes
+        // The risk: a refused edit listed as pending makes
         // the edits pane contradict the action graph a user checks before
         // accepting.
         let mut s = DesktopState::default();
@@ -1686,14 +1691,16 @@ mod tests {
             &mut s,
             &turn(
                 json!({"turn": 1, "call": "edit a.py", "verdict": "None", "check_kind": "",
-                         "observation": "error: old text not found"}),
+                         "observation": "error: old text not found",
+                         "tool": "edit", "target": "a.py", "wrote": false}),
             ),
         );
         feed(
             &mut s,
             &turn(
                 json!({"turn": 2, "call": "edit a.py", "verdict": "None", "check_kind": "",
-                         "observation": "applied: false"}),
+                         "observation": "applied: false",
+                         "tool": "edit", "target": "a.py", "wrote": false}),
             ),
         );
         let v = all(&mut s);
@@ -1705,13 +1712,67 @@ mod tests {
             &mut s,
             &turn(
                 json!({"turn": 3, "call": "edit a.py", "verdict": "None", "check_kind": "",
-                         "observation": "applied: true (+1 -1)"}),
+                         "observation": "applied: true (+1 -1)",
+                         "tool": "edit", "target": "a.py", "wrote": true}),
             ),
         );
         let v = all(&mut s);
         assert_eq!(v["actions"].as_array().unwrap().len(), 3);
         assert_eq!(v["actions"][2]["wrote"], true);
         assert_eq!(v["edits"], json!(["a.py"]));
+    }
+
+    #[test]
+    fn a_turn_s_edits_come_from_wrote_not_from_its_observation() {
+        // The risk (#834): the desktop reads what a turn touched from its
+        // call label and observation text while the trail reads it from
+        // `wrote` (#800), so the edits pane lists a file the trail says no
+        // turn wrote, or misses one it did. A file the model read can hold
+        // the text `applied: true`; an edit's observation tail need not.
+        let mut s = DesktopState::default();
+        let c = feed(
+            &mut s,
+            &turn(
+                json!({"turn": 1, "call": "read_file notes.txt", "verdict": "None",
+                         "check_kind": "", "observation": "edit notes.txt\napplied: true (+1 -1)",
+                         "tool": "read_file", "target": "notes.txt", "wrote": false}),
+            ),
+        );
+        assert!(!c.has(Pane::Edits), "{c:?}");
+        let v = all(&mut s);
+        assert_eq!(v["edits"], json!([]), "{v}");
+        assert_eq!(v["actions"][0]["wrote"], false, "{v}");
+
+        // An applied edit whose kept observation tail does not say so.
+        let c = feed(
+            &mut s,
+            &turn(
+                json!({"turn": 2, "call": "edit a.py", "verdict": "None", "check_kind": "",
+                         "observation": "    return 2",
+                         "tool": "edit", "target": "a.py", "wrote": true}),
+            ),
+        );
+        assert!(c.has(Pane::Edits), "{c:?}");
+        let v = all(&mut s);
+        assert_eq!(v["edits"], json!(["a.py"]), "{v}");
+        assert_eq!(
+            (&v["actions"][1]["tool"], &v["actions"][1]["target"]),
+            (&json!("edit"), &json!("a.py")),
+            "{v}"
+        );
+
+        // A turn whose event carried no `wrote` is not counted as an edit,
+        // whatever its call and observation say.
+        feed(
+            &mut s,
+            &turn(
+                json!({"turn": 3, "call": "edit b.py", "verdict": "None", "check_kind": "",
+                         "observation": "applied: true (+1 -1)"}),
+            ),
+        );
+        let v = all(&mut s);
+        assert_eq!(v["edits"], json!(["a.py"]), "{v}");
+        assert_eq!(v["actions"][2]["wrote"], false, "{v}");
     }
 
     #[test]
@@ -1835,7 +1896,8 @@ mod tests {
             &mut s,
             &turn(
                 json!({"turn": 1, "call": "edit app/core.py", "verdict": "None",
-                         "check_kind": "", "observation": "applied: true (+1 -1)"}),
+                         "check_kind": "", "observation": "applied: true (+1 -1)",
+                         "tool": "edit", "target": "app/core.py", "wrote": true}),
             ),
         );
         assert!(c.has(Pane::Phase), "{c:?}");
@@ -1848,7 +1910,9 @@ mod tests {
             &mut s,
             &turn(
                 json!({"turn": 2, "call": "run_checks app/core.py", "verdict": "Some(true)",
-                         "check_kind": "Tests", "observation": "3 passed"}),
+                         "check_kind": "Tests", "observation": "3 passed",
+                         "tool": "run_checks", "target": "Tests on app/core.py",
+                         "wrote": false}),
             ),
         );
         assert_eq!(all(&mut s)["phase"], json!({"phase": "checks", "turn": 2}));
@@ -1858,7 +1922,9 @@ mod tests {
             &mut s,
             &turn(
                 json!({"turn": 2, "call": "run_checks", "verdict": "Some(false)",
-                         "check_kind": "Governance", "observation": "VIOLATION"}),
+                         "check_kind": "Governance", "observation": "VIOLATION",
+                         "tool": "run_checks", "target": "Governance on whole repository",
+                         "wrote": false}),
             ),
         );
         assert_eq!(all(&mut s)["phase"], json!({"phase": "checks", "turn": 2}));
@@ -2222,6 +2288,7 @@ mod tests {
             &turn(
                 json!({"turn": 1, "call": "edit a.py", "verdict": "Some(true)",
                          "check_kind": "Tests", "observation": "applied: true",
+                         "tool": "edit", "target": "a.py", "wrote": true,
                          "resolved": 1, "candidates": 0, "unresolved": 0,
                          "prompt_bytes": 100}),
             ),
@@ -2237,6 +2304,7 @@ mod tests {
             &json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p1"}).to_string(),
         );
         let before = rows(&all(&mut s)["transcript"]).len();
+        assert_eq!(all(&mut s)["edits"], json!(["a.py"]), "an edit to reset");
 
         let c = feed(&mut s, &run_start("p2"));
         for p in RUN_PANES {
@@ -3379,7 +3447,7 @@ mod tests {
     }
 
     /// Fields whose value is a boolean on the wire.
-    const BOOLEANS: [&str; 2] = ["success", "restored"];
+    const BOOLEANS: [&str; 3] = ["success", "restored", "wrote"];
 
     /// `run_start` as the frame's Debug spells its variant, `RunStart`.
     fn camel(ty: &str) -> String {
@@ -3424,9 +3492,30 @@ mod tests {
 
         // (what, the record's fields with their values, how to wrap it)
         let mut build: Vec<(String, Map<String, Value>, bool)> = Vec::new();
+        let later = rpc["not_every_client"]["events"]
+            .as_object()
+            .expect("rpc.not_every_client.events");
         for (name, spec) in rpc["events"].as_object().expect("rpc.events") {
+            // The fields not every client reads yet, but whose `read_by`
+            // names the desktop: a claim the contract makes for this parser,
+            // held here as the rest are. They go on the same record, since
+            // without its `always` fields the line is no event at all.
+            let mut fields: Vec<(String, &Value)> =
+                fields_of(spec).into_iter().map(|f| (f, spec)).collect();
+            if let Some(extra) = later.get(name) {
+                fields.extend(
+                    fields_of(extra)
+                        .into_iter()
+                        .filter(|f| {
+                            extra["read_by"][f.as_str()]
+                                .as_array()
+                                .is_some_and(|by| by.contains(&json!("desktop")))
+                        })
+                        .map(|f| (f, extra)),
+                );
+            }
             let mut m = Map::new();
-            for f in fields_of(spec) {
+            for (f, spec) in fields {
                 let v = if BOOLEANS.contains(&f.as_str()) {
                     json!(true)
                 } else {
