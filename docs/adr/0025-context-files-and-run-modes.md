@@ -1225,7 +1225,8 @@ Each item is tested unless it says otherwise.
   runtime whose probe could not run was `?`. `client_contract.json`'s
   `commands.get_state.data.tier_label` lists the heads and the separator;
   evidence: the `tier_label_vocabulary_` tests in
-  `crates/trellis-cli/src/tui_run.rs`.*
+  `crates/trellis-cli/src/hosted.rs` (they were in `tui_run.rs`, which no
+  longer exists).*
 - **Key order in a record is not part of the format.** `serde_json` writes
   keys in insertion order in one build and alphabetically in another,
   depending on which features cargo unifies (a test build differs from a

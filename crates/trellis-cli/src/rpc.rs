@@ -7,6 +7,16 @@
 //! run is in flight. One run at a time; the clean-worktree rule is
 //! `cmd_run`'s and is unchanged. A follow-up is the one way a run starts
 //! other than `prompt`: after the run it was sent during ends.
+//!
+//! Stdout carries two layers. This file writes the framing (`run_start`,
+//! `run_end`, `response`, `approval_request`) through `output::Sink`; the
+//! run's events (`turn`, `model call`, `steer delivered`, …) are `tracing`
+//! events that `main.rs`'s stdout JSON layer writes, one per line, with
+//! `TurnCapture` beside it here. The fields a client may rely on, in both
+//! layers and in each command's answer, are listed in
+//! `crates/trellis-cli/tests/client_contract.json` (ADR 0048 section 6),
+//! which the tests hold this file to. Where each program starts and where
+//! the flow goes next: docs/ENTRY_POINTS.md.
 
 use crate::output::{self, Sink, frame};
 use crate::{Human, RunControl, RunExit, RunSeeding, config};
@@ -616,6 +626,10 @@ struct Classifying {
     cancel: tokio::sync::oneshot::Sender<()>,
 }
 
+/// One `trellis rpc` session: the state every command reads or changes
+/// between lines, kept on the main thread. `serve_with` reads a line, and
+/// `dispatch_command` answers it from here; a run in flight is `running`,
+/// its own thread, and the model it uses is `model` or `confirmed`.
 struct Server {
     root: PathBuf,
     sink: Sink,
