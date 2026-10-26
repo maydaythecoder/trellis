@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/maydaythecoder/trellis/tui/internal/frames"
+	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
 // A steer is a line typed while a run is in flight: text for that run's
@@ -42,7 +43,7 @@ func (m *Model) steer(text string) {
 		return
 	}
 	m.Input = ""
-	m.pushLine("· queued: " + Plain(text))
+	m.pushLine("· queued: " + view.Plain(text))
 	id := m.send("steer", map[string]any{"message": text})
 	m.steers = append(m.steers, steer{text: text, id: id})
 }
@@ -55,7 +56,7 @@ func (m *Model) delivered(nth, turn int) {
 	s := &m.steers[nth]
 	s.turn = turn
 	s.told = true
-	m.pushLine(fmt.Sprintf("· delivered at turn %d: %s", turn, Plain(s.text)))
+	m.pushLine(fmt.Sprintf("· delivered at turn %d: %s", turn, view.Plain(s.text)))
 }
 
 // notDelivered says, once, that the nth steer never reached the model.
@@ -64,7 +65,7 @@ func (m *Model) notDelivered(nth int) {
 		return
 	}
 	m.steers[nth].told = true
-	m.pushLine("· not delivered: " + Plain(m.steers[nth].text))
+	m.pushLine("· not delivered: " + view.Plain(m.steers[nth].text))
 }
 
 // steerDeliveredEvent is the loop's "steer delivered" event. It carries no
