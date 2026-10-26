@@ -255,7 +255,10 @@ export function nowStrip(doc, { tone, word, clock, turn, where, wait, model, con
 // chooses it from nothing a figure, a state word or a check row says
 // differently. The caption is read as written.
 export function asciiFace(doc, { face, caption }) {
+  // Play is never a status (DESIGN.md §3.1), and the strip around it is a
+  // live region: hidden whole, so the dial never re-announces the strip.
   const root = el(doc, "pre", null, "cd-ascii cd-ascii-play");
+  root.setAttribute("aria-hidden", "true");
   const glyphs = el(doc, "span", face);
   glyphs.setAttribute("aria-hidden", "true");
   root.append(glyphs);
