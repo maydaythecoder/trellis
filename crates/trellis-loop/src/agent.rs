@@ -747,6 +747,15 @@ pub trait Model {
         None
     }
 
+    /// The prompt's ceiling in bytes, `[model] context_bytes` as the driver
+    /// enforces it (ADR 0024 §5), for the `run budget` event (#799).
+    ///
+    /// `None` for a driver that elides nothing, the scripted one: it has no
+    /// ceiling, and a 0 would read as one.
+    fn context_bytes(&self) -> Option<usize> {
+        None
+    }
+
     /// Every compaction so far (ADR 0024 §5), for the trail and the run's
     /// output. Empty for a driver that never elides: a local driver with no
     /// `[model] context_bytes` (a hosted one defaults to a budget, #152) and
@@ -817,7 +826,17 @@ pub struct Seed {
     /// Steering and follow-up input sent while the run is in progress. See
     /// [`Transcript::steering`]. `None` is a run exactly as before #113.
     pub steering: Option<SteeringRx>,
+    /// Where the loop leaves its wall-clock spend when it returns, for a
+    /// caller that reports the run after it (`run_end`'s `elapsed_ms`,
+    /// #799). Written only on return, so a run whose future was dropped
+    /// (an interrupt) leaves it empty rather than holding part of the run
+    /// presented as all of it. `None` records nothing.
+    pub spent: Option<SpentSlot>,
 }
+
+/// The cell [`Seed::spent`] writes into: the budget's own elapsed figure,
+/// with time waiting on a person taken out.
+pub type SpentSlot = std::sync::Arc<std::sync::Mutex<Option<Duration>>>;
 
 /// As [`run`], but seeded with prior context and the repository's own rules.
 #[tracing::instrument(
@@ -832,10 +851,20 @@ pub async fn run_seeded<M: Model>(
     seed: Seed,
 ) -> (Outcome, Transcript) {
     let started = Instant::now();
-    // The ceiling this run enforces, once, for an interface that draws
-    // progress against it (#243): a constant there drew "3/4" for a run
-    // budgeted at 40.
-    tracing::info!(max_iterations = budget.max_iterations, "run budget");
+    // The ceilings this run enforces, once, for an interface that draws
+    // progress against them (#243): a constant there drew "3/4" for a run
+    // budgeted at 40. Every ceiling, not the iterations alone (#799), so a
+    // client draws the wall clock and tokens against the figures the budget
+    // checks and not ones it read from a config the run may not have used.
+    // `max_tokens` is checked against `completion_tokens_used` on each
+    // turn; `context_bytes` is the driver's, left off when it has none.
+    tracing::info!(
+        max_iterations = budget.max_iterations,
+        max_wall_clock_ms = millis(budget.max_wall_clock),
+        max_tokens = budget.max_tokens,
+        context_bytes = model.context_bytes(),
+        "run budget"
+    );
     // Time spent waiting on a person in approve mode. Not charged to the
     // wall-clock budget: a diff read carefully should not be what ends a run.
     let mut waited_on_human = std::time::Duration::ZERO;
@@ -848,6 +877,7 @@ pub async fn run_seeded<M: Model>(
         repo: seed.repo,
     };
     let mut steering = seed.steering;
+    let spent = seed.spent;
     let mut iterations: u32 = 0;
     let mut checks_passed: u32 = 0;
     // The one extra turn the budget grants on exhaustion, so the model can
@@ -885,7 +915,15 @@ pub async fn run_seeded<M: Model>(
         // builds the prompt inside `next_step`, so here its size is not
         // yet measured, and `prompt_bytes()` would be the previous call's
         // (ADR 0025 §4).
-        tracing::info!(turn = iterations + 1, "model call");
+        //
+        // `elapsed_ms` is the budget's own figure, the one just checked
+        // (#799): a client clock counts time a person spent reading a diff,
+        // which the budget does not charge.
+        tracing::info!(
+            turn = iterations + 1,
+            elapsed_ms = millis(spend.elapsed),
+            "model call"
+        );
         // `Instant`, not the wall clock: a host's clock can step mid-call,
         // and a model time that went backwards would be an invented figure.
         let asked = Instant::now();
@@ -954,6 +992,11 @@ pub async fn run_seeded<M: Model>(
                             verdict = ?Some(v.passed()),
                             check_kind = %format!("{:?}", detail.kind),
                             observation = %tail(&detail.stdout, 6),
+                            // As on every turn (#799), so a field a client
+                            // reads on each turn is not missing on this one.
+                            elapsed_ms =
+                                millis(started.elapsed().saturating_sub(waited_on_human)),
+                            completion_tokens_used = model.tokens_used(),
                             "turn"
                         );
                         t.turns.push(Turn {
@@ -1130,6 +1173,14 @@ pub async fn run_seeded<M: Model>(
                     completion_tokens = usage.completion_tokens,
                     queue_wait_ms = usage.queue_wait_ms,
                     duration_ms = duration_ms,
+                    // The budget's own spend after this turn (#799): its
+                    // monotonic elapsed time with any wait on a person taken
+                    // out, and the counter `max_tokens` is checked against.
+                    // That counter is completion tokens only (`tokens_used`),
+                    // so it is named as such and never summed with prompt
+                    // tokens into one figure.
+                    elapsed_ms = millis(started.elapsed().saturating_sub(waited_on_human)),
+                    completion_tokens_used = model.tokens_used(),
                     "turn"
                 );
 
@@ -1166,6 +1217,7 @@ pub async fn run_seeded<M: Model>(
                     (&call, &result)
                 {
                     tracing::info!("the model asked a person a question; stopping");
+                    leave_spent(&spent, started.elapsed().saturating_sub(waited_on_human));
                     return (
                         Outcome::NotConverged {
                             reason: NotConverged::AskedHuman {
@@ -1198,7 +1250,18 @@ pub async fn run_seeded<M: Model>(
     // Whatever arrived after the last request, whichever way the run ended,
     // goes back to the caller rather than being dropped with the receiver.
     t.steering.drain(&mut steering, t.turns.len(), true);
+    leave_spent(&spent, started.elapsed().saturating_sub(waited_on_human));
     (outcome, t)
+}
+
+/// Writes the run's final spend into the caller's slot, when it gave one.
+///
+/// A poisoned lock still takes the figure: the slot holds a plain value,
+/// and a panic elsewhere while it was held cannot have left it half-written.
+fn leave_spent(slot: &Option<SpentSlot>, elapsed: Duration) {
+    if let Some(s) = slot {
+        *s.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(elapsed);
+    }
 }
 
 /// The byte ceiling on one rendered radius observation: coverage header,

@@ -134,6 +134,10 @@ impl<M: trellis_loop::Model + Send> trellis_loop::Model for SeesDone<'_, M> {
         self.inner.prompt_bytes()
     }
 
+    fn context_bytes(&self) -> Option<usize> {
+        self.inner.context_bytes()
+    }
+
     fn compactions(&self) -> &[trellis_loop::Compacted] {
         self.inner.compactions()
     }
@@ -1254,6 +1258,8 @@ fn run_body(
         // terminal (#116) and `rpc` (ADR 0025 §5), and a run given `None` is
         // exactly the one before #113.
         steering: control.steering,
+        // Read by `output::framed` for `run_end`'s `elapsed_ms` (#799).
+        spent: Some(extras.spent.clone()),
     };
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -2439,6 +2445,9 @@ fn run_partitioned(p: Partitioned<'_>, out: &mut (dyn std::io::Write + Send)) ->
             prior: prior.clone(),
             repo: repo.clone(),
             steering: None,
+            // Each partition spends its own wall clock, concurrently, so no
+            // one partition's figure is the run's; `run_end` carries none.
+            spent: None,
         };
         let results = Arc::clone(&results);
         async move {

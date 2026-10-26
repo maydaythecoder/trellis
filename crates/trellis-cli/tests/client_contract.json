@@ -84,13 +84,28 @@
       },
       "events": {
         "turn": {
+          "always": ["elapsed_ms", "completion_tokens_used"],
           "model_call_only": ["duration_ms"],
           "blast_radius_only": ["summarised"],
           "absent_when": {
             "duration_ms": "the governance audit's turn event, which sends none (trellis-loop agent.rs)"
           },
-          "read_by": {"duration_ms": [], "summarised": []},
-          "about": "duration_ms is the tool call's time in milliseconds by the monotonic clock, with any wait on a person in approve mode taken out; summarised is how many of the radius's call sites its observation summarised by file instead of listing them, 0 when it listed every one"
+          "read_by": {"elapsed_ms": [], "completion_tokens_used": [], "duration_ms": [], "summarised": []},
+          "about": "duration_ms is the tool call's time in milliseconds by the monotonic clock, with any wait on a person in approve mode taken out; summarised is how many of the radius's call sites its observation summarised by file instead of listing them, 0 when it listed every one. elapsed_ms is the run's wall-clock spend after the turn as its budget measures it (#799): milliseconds by the monotonic clock since the loop started, with every wait on a person in approve mode taken out, the figure checked against run budget's max_wall_clock_ms. completion_tokens_used is the counter run budget's max_tokens is checked against: completion (output) tokens over every reply so far, format retries included, never prompt tokens and never a sum of the two; a hosted driver counts a reply that reported none at its request's max_tokens, so the ceiling trips early rather than never; 0 for a driver that reads no reply (the scripted one)."
+        },
+        "model call": {
+          "always": ["elapsed_ms"],
+          "read_by": {"elapsed_ms": []},
+          "about": "elapsed_ms is the budget's wall-clock spend as the loop checked it just before this call, measured as the turn's elapsed_ms is"
+        },
+        "run budget": {
+          "always": ["max_wall_clock_ms", "max_tokens"],
+          "context_driver_only": ["context_bytes"],
+          "absent_when": {
+            "context_bytes": "the driver elides nothing and has no ceiling: the scripted one. A runtime or hosted driver always has one ([model] context_bytes, else its default)"
+          },
+          "read_by": {"max_wall_clock_ms": [], "max_tokens": [], "context_bytes": []},
+          "about": "every ceiling the run enforces, beside rpc.events' max_iterations (#799): max_wall_clock_ms, the wall-clock ceiling in milliseconds, checked against elapsed_ms; max_tokens, the token ceiling under the budget's own name ([budget] max_tokens) and in tokens, checked against the turn's completion_tokens_used and so a ceiling on completion tokens only; context_bytes, the ceiling on one prompt in bytes ([model] context_bytes as the driver enforces it), against which older observations are elided (the compacted event)"
         },
         "compacted": {
           "always": ["turn", "elided_turns", "elided_bytes", "request_bytes", "budget"],
@@ -104,6 +119,12 @@
         }
       },
       "framing": {
+        "run_end": {
+          "optional": {
+            "elapsed_ms": "when the agent loop ran and returned: its wall-clock spend in milliseconds as the budget measured it, with every wait on a person in approve mode taken out, the figure the turn's elapsed_ms counts up to. Absent, never a partial figure, for a run the loop did not finish: an interrupt or abort, an error before the loop started, and a partitioned run, whose partitions each spend their own wall clock"
+          },
+          "read_by": {"elapsed_ms": []}
+        },
         "approval_request": {
           "always": ["request_id"],
           "null_when": {
