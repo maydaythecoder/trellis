@@ -1621,6 +1621,16 @@ mod tests {
             );
             written.insert(id.to_string());
         }
+        // The register dial (#836) sits under the form, and is settings.js's
+        // in the same way.
+        let dial = function_body(&ui["settings.js"], "wireRegister");
+        for id in ["register-dial", "register-serious", "register-playful"] {
+            assert!(
+                dial.contains(&format!("getElementById(\"{id}\")")),
+                "settings.js no longer wires #{id}"
+            );
+            written.insert(id.to_string());
+        }
         // The Open refusal's line (#659) is overview.js's too: recent()
         // makes it with each list and drawOpenRefusal writes into it. The
         // overview_placeholders_ tests hold both.

@@ -336,6 +336,34 @@ fn clock(ms: u64) -> String {
     }
 }
 
+/// The brand book's empty-state face (docs/design/system/README.md,
+/// Content and Iconography), as it writes it.
+const FACE_EMPTY: &str = "(•_•)";
+
+/// The face for a run that has ended, whatever its outcome: the brand book's
+/// `(•‿•)`, not its `\(^o^)/`, whose example is a run that passed. A face
+/// that differed by outcome would be a status, which play never is
+/// (DESIGN.md §3.1); the outcome is the strip's word beside it.
+const FACE_ENDED: &str = "(•‿•)";
+
+/// The register dial's copy and face for the Run screen (#836), in both
+/// positions; the page draws the one its dial is set to. Serious adds
+/// nothing. Playful adds one face, with a line of copy, only where the Run
+/// screen otherwise has nothing to say: before any run, and once one has
+/// ended. It is chosen from the strip's state alone and names no figure,
+/// state word or outcome, so it says nothing the strip does not.
+fn register(state: &str) -> Value {
+    let playful = match state {
+        "idle" => Some((FACE_EMPTY, "nothing here yet")),
+        "ended" => Some((FACE_ENDED, "that one is over")),
+        _ => None,
+    };
+    json!({
+        "serious": null,
+        "playful": playful.map(|(face, copy)| json!({"face": face, "copy": copy})),
+    })
+}
+
 impl Pane {
     fn key(self) -> &'static str {
         match self {
@@ -2322,6 +2350,7 @@ impl DesktopState {
             "model": self.run_model,
             "tier": self.tier,
             "can_stop": self.running && !self.stopping,
+            "register": register(state),
         })
     }
 
@@ -3591,6 +3620,197 @@ mod tests {
             "the last child's root"
         );
         assert_eq!(s.abort_unsent(), Changed::of(&[Pane::Now, Pane::Where]));
+    }
+
+    /// The view as the page draws it with the register dial at `dial`:
+    /// `now.register` resolved to that position's slot, everything else as
+    /// the reducer sent it. now.js reads the dial nowhere else, which
+    /// `register_dial_changes_copy_and_faces_only` also holds.
+    fn drawn_at(view: &Value, dial: &str) -> (Value, Value) {
+        let mut rest = view.clone();
+        let slot = rest["now"]
+            .as_object_mut()
+            .and_then(|n| n.remove("register"))
+            .map(|r| r[dial].clone())
+            .unwrap_or(Value::Null);
+        (rest, slot)
+    }
+
+    #[test]
+    fn register_dial_changes_copy_and_faces_only() {
+        // The risk (#836, DESIGN.md §3.1): the playful register moving a
+        // figure, a state word, a check row, an action or an outcome, or a
+        // face that differs by outcome and so reads as a status; or more
+        // than one face on a screen. The dial lives in the page (a Tauri
+        // command for it would be a capability ADR 0048 does not allow),
+        // so the reducer sends both positions under `now.register` and the
+        // page picks one: with that slot set aside, the view each position
+        // draws is the same, and the slot holds a face and its copy only.
+        const FACES: [&str; 5] = ["(•_•)", "(•‿•)", "(ಠ_ಠ)", "\\(^o^)/", "¯\\_(ツ)_/¯"];
+        let mut s = DesktopState::default();
+        let mut views = vec![("idle", all(&mut s))];
+        feed(&mut s, &run_start("p1"));
+        feed(&mut s, &event("run budget", json!({"max_iterations": 8})));
+        views.push(("running", all(&mut s)));
+        feed(&mut s, &event("model call", json!({"turn": 1})));
+        views.push(("model call", all(&mut s)));
+        feed(
+            &mut s,
+            &turn(
+                json!({"turn": 1, "call": "run_checks a.py", "verdict": "Some(true)",
+                         "check_kind": "Typecheck", "observation": "ok",
+                         "tool": "run_checks", "target": "a.py", "wrote": false,
+                         "elapsed_ms": 4000}),
+            ),
+        );
+        views.push(("check row", all(&mut s)));
+        s.update(Frame::ApprovalRequest(ApprovalRequest {
+            id: "q1".into(),
+            question: Some("Run bash?".into()),
+            detail: None,
+        }));
+        views.push(("needs you", all(&mut s)));
+        s.abort_sent();
+        views.push(("stopping", all(&mut s)));
+        feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p1",
+                    "elapsed_ms": 5000})
+            .to_string(),
+        );
+        let converged = all(&mut s);
+        views.push(("converged", converged.clone()));
+        feed(&mut s, &run_start("p2"));
+        feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "error", "exit": 2, "id": "p2"}).to_string(),
+        );
+        let errored = all(&mut s);
+        views.push(("error", errored.clone()));
+        s.child_exited();
+        views.push(("child gone", all(&mut s)));
+
+        // Every word the strip, the outcome and the checks can say, none of
+        // which the copy may borrow.
+        let mut words: Vec<String> = [
+            "idle",
+            "running",
+            "needs you",
+            "stopping",
+            "ended",
+            "converged",
+            "passed",
+            "failed",
+            "error",
+            "interrupted",
+            "not converged",
+            "done",
+        ]
+        .map(String::from)
+        .to_vec();
+        for (_, v) in &views {
+            for key in ["word", "outcome", "phase"] {
+                if let Some(w) = v["now"][key].as_str() {
+                    words.push(w.to_string());
+                }
+            }
+        }
+
+        for (at, v) in &views {
+            let (serious_rest, serious) = drawn_at(v, "serious");
+            let (playful_rest, playful) = drawn_at(v, "playful");
+            assert_eq!(
+                serious_rest, playful_rest,
+                "{at}: the dial moved something other than the face and its copy"
+            );
+            assert_eq!(serious, Value::Null, "{at}: serious adds a face or copy");
+            let mut faces = 0;
+            if !playful.is_null() {
+                let slot = playful.as_object().expect("a slot is an object or null");
+                let keys: Vec<&str> = slot.keys().map(String::as_str).collect();
+                assert_eq!(keys, ["copy", "face"], "{at}: the slot holds {keys:?}");
+                let face = slot["face"].as_str().expect("a face is one string");
+                assert!(
+                    FACES.contains(&face),
+                    "{at}: {face} is not the brand book's"
+                );
+                let copy = slot["copy"].as_str().expect("copy is text");
+                assert!(
+                    !copy.chars().any(|c| c.is_ascii_digit()),
+                    "{at}: the copy carries a figure: {copy}"
+                );
+                for w in &words {
+                    assert!(
+                        !copy.contains(w.as_str()),
+                        "{at}: the copy says the state word {w:?}: {copy}"
+                    );
+                }
+                faces += 1;
+            }
+            // No face anywhere else in the view: one per screen at most.
+            let rest = serde_json::to_string(&playful_rest).unwrap();
+            faces += FACES.iter().filter(|f| rest.contains(*f)).count();
+            assert!(faces <= 1, "{at}: {faces} faces on one screen");
+        }
+
+        // Where a person would otherwise see nothing: before a run, and
+        // once one has ended; never while the strip has a run to show.
+        let has_face = |at: &str| {
+            let v = &views.iter().find(|(a, _)| *a == at).unwrap().1;
+            !drawn_at(v, "playful").1.is_null()
+        };
+        for at in ["idle", "converged", "error", "child gone"] {
+            assert!(has_face(at), "{at} shows no face in the playful register");
+        }
+        for at in [
+            "running",
+            "model call",
+            "check row",
+            "needs you",
+            "stopping",
+        ] {
+            assert!(!has_face(at), "{at} shows a face over a run in flight");
+        }
+        // A face is never a status: a converged and an errored run's are one.
+        assert_eq!(
+            drawn_at(&converged, "playful").1,
+            drawn_at(&errored, "playful").1,
+            "the face differs by outcome"
+        );
+
+        // The page reads the dial in one place, the face's, and draws the
+        // face hidden from a screen reader.
+        let ui = |name: &str| {
+            std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("ui")
+                    .join(name),
+            )
+            .unwrap()
+        };
+        let now_js = ui("now.js");
+        assert_eq!(
+            now_js.matches("currentRegister(").count(),
+            1,
+            "now.js reads the dial outside the face"
+        );
+        let face_fn = now_js
+            .split("function registerFace(")
+            .nth(1)
+            .and_then(|r| r.split("\n}\n").next())
+            .expect("now.js draws the face in registerFace");
+        assert!(face_fn.contains("currentRegister()"), "{face_fn}");
+        assert!(face_fn.contains("asciiFace(doc, "), "{face_fn}");
+        let ds_js = ui("ds.js");
+        let ascii = ds_js
+            .split("export function asciiFace(")
+            .nth(1)
+            .and_then(|r| r.split("\n}\n").next())
+            .expect("ds.js draws the Ascii face");
+        assert!(
+            ascii.contains("glyphs.setAttribute(\"aria-hidden\", \"true\")"),
+            "the face is read aloud: {ascii}"
+        );
     }
 
     #[test]

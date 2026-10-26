@@ -192,6 +192,19 @@
               </div>
               <p id="repo-note" class="muted" role="status"></p>
             </form>
+            <!-- The register dial (#836): serious by default; playful adds
+            one face where a screen would otherwise show nothing, and moves
+            no figure, state word or check row. Served disabled: it does
+            nothing until settings.js has read the stored position. -->
+            <fieldset id="register-dial" class="register-dial" disabled>
+              <legend>Register</legend>
+              <div class="composer-row">
+                <input id="register-serious" name="register" type="radio" value="serious" checked>
+                <label for="register-serious">serious</label>
+                <input id="register-playful" name="register" type="radio" value="playful">
+                <label for="register-playful">playful</label>
+              </div>
+            </fieldset>
           </div>
           <div class="pane" role="region" aria-labelledby="ov-last-run-title">
             <h3 id="ov-last-run-title">Last run</h3>
