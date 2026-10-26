@@ -432,6 +432,10 @@ impl Core {
     /// whether a run is in flight, then forwards it to the child.
     pub fn send(&self, line: &Value) -> Result<(), String> {
         check_line(line)?;
+        // A steer's row is found again by its line id when rpc answers.
+        let steer_id = (line.get("type").and_then(Value::as_str) == Some("steer"))
+            .then(|| line.get("id").and_then(Value::as_str).map(str::to_string))
+            .flatten();
         let writer = {
             let mut s = self.lock();
             check_model(line, s.view.configured())?;
@@ -452,6 +456,15 @@ impl Core {
                 // The child may start a run from here on, before its
                 // `run_start` is read (#815).
                 Some("prompt") => s.view.prompt_forwarded(),
+                // A steer's row, pending until rpc's answer to its id
+                // (#827), drawn at once so the person sees it was taken.
+                Some("steer") => {
+                    if let Some(id) = &steer_id {
+                        let text = line.get("message").and_then(Value::as_str).unwrap_or("");
+                        let c = s.view.steer_sent(id, text);
+                        self.sink.emit("view", s.view.view(c));
+                    }
+                }
                 Some(t @ ("vault_search" | "vault_graph" | "vault_check")) => {
                     s.view
                         .vault_asked(t, line.get("id").and_then(Value::as_str));
@@ -466,9 +479,19 @@ impl Core {
         };
         // Outside the lock: the readers take it for every line the child
         // prints, and a child blocked on a full stdout reads no stdin.
-        writer
+        let sent = writer
             .send(line)
-            .map_err(|e| format!("rpc_send: cannot write to trellis rpc: {e}"))
+            .map_err(|e| format!("rpc_send: cannot write to trellis rpc: {e}"));
+        // A steer that never reached the child will never be answered: its
+        // row says so rather than waiting.
+        if let (Err(why), Some(id)) = (&sent, &steer_id) {
+            let mut s = self.lock();
+            let c = s.view.steer_unsent(id, why);
+            if !c.is_empty() {
+                self.sink.emit("view", s.view.view(c));
+            }
+        }
+        sent
     }
 
     /// `get_trails`: the log list once, each stdout line a trails-view row
@@ -1820,13 +1843,22 @@ mod tests {
                 .find_map(|(_, v)| v.get(key).cloned())
                 .unwrap_or_else(|| panic!("no view carried {key}"))
         };
+        // Each view carries the rows it adds (#827): every text row, in order.
+        let texts = |key: &str| -> Vec<Value> {
+            views
+                .iter()
+                .filter_map(|(_, v)| v.get(key))
+                .flat_map(|f| f["rows"].as_array().cloned().unwrap_or_default())
+                .map(|r| r["text"].clone())
+                .collect()
+        };
         assert_eq!(
-            last("transcript"),
-            json!(["<b>not json</b>", "[1,2]"]),
+            texts("transcript"),
+            [json!("<b>not json</b>"), json!("[1,2]")],
             "a bad line is shown as it came"
         );
         assert!(last("alert").as_str().is_some_and(|a| a.ends_with("[1,2]")));
-        assert_eq!(last("stderr"), json!(["warning: <i>human</i>"]));
+        assert_eq!(texts("stderr"), [json!("warning: <i>human</i>")]);
         // A line from a child already replaced reaches nothing.
         core.stdout_line(g + 1, "late");
         assert!(rec.take().is_empty());
@@ -1865,10 +1897,10 @@ mod tests {
         let mut keys: Vec<&String> = v[0].as_object().unwrap().keys().collect();
         keys.sort();
         assert_eq!(keys, ["alert", "transcript"], "{v:?}");
-        assert_eq!(
-            v[0]["transcript"].as_array().unwrap().last().unwrap(),
-            "plain text"
-        );
+        // Only the new row: the turn's went in the view before (#827).
+        let rows = v[0]["transcript"]["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{v:?}");
+        assert_eq!(rows[0]["text"], "plain text");
 
         // stderr has its own pane, apart from the transcript (#302).
         core.stderr_line(g, "trellis: a human line".into());
@@ -1876,7 +1908,7 @@ mod tests {
         assert_eq!(v.len(), 1, "{v:?}");
         assert_eq!(v[0].as_object().unwrap().len(), 1, "{v:?}");
         assert_eq!(
-            v[0]["stderr"].as_array().unwrap().last().unwrap(),
+            v[0]["stderr"]["rows"].as_array().unwrap().last().unwrap()["text"],
             "trellis: a human line"
         );
 
@@ -1940,12 +1972,16 @@ mod tests {
                 "vault"
             ]
         );
+        assert_eq!(
+            full["stderr"]["whole"], true,
+            "the page replaces what it drew"
+        );
         assert!(
-            full["stderr"]
+            full["stderr"]["rows"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|l| l == "before"),
+                .any(|l| l["text"] == "before"),
             "the run so far, not only what is new: {full}"
         );
         rec.wait_for("rpc-frame", |f| f["id"] == "desktop-1");

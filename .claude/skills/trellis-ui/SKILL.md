@@ -22,9 +22,12 @@ These come from ADRs and CLAUDE.md. A change that breaks one fails review.
    `check_kind`). The model's own text is shown as the model's words and never
    styled like a check result. → ADR 0004, ADR 0048 §8
 2. **A figure trellis did not report is `unreported`, never `0`.** Prompt
-   tokens, elapsed on the desktop, a slot count the runtime did not answer. The
-   desktop holds this with `budget_reports_prompt_bytes_not_tokens` and
-   `session_tokens_unknown_is_null_never_zero`. → desktop/CLAUDE.md
+   tokens, elapsed on the desktop, a slot count the runtime did not answer. It
+   is drawn as `—` with the reason one step away (the title and accessible
+   text on the desktop, through ds.js's `unreported`; /help in the TUI). The
+   desktop holds this with `budget_reports_prompt_bytes_not_tokens`,
+   `session_tokens_unknown_is_null_never_zero` and
+   `an_unreported_figure_is_a_dash_with_its_reason`. → desktop/CLAUDE.md
 3. **`Verified` and `Reviewed` are two rows, never one number.** No total, no
    ratio. → ADR 0003, brief §4.6, S3
 4. **Blast radius is three counts** (`reached_resolved`, `reached_ambiguous`,
@@ -91,6 +94,17 @@ The wireframe's regions, in the order a person reads them:
 The TUI shows the same regions at 120x40 and folds the right column under
 the transcript at 80 columns; same state words, same verbs, keyboard only.
 Parity between the clients is tracked in `tui/PARITY.md`.
+
+## Components
+
+Draw what the design system draws: its components and their states are
+the cards in `docs/design/system/components/` and `bundle.css`. On the
+desktop, `desktop/ui/ds.css` is that stylesheet (a byte-for-byte copy below
+its header) and `desktop/ui/ds.js` builds the components the page uses;
+add a component there, with the bundle's class names, the first time a
+level needs it. Facts are figures, not sentences (DESIGN.md §1): a Stat
+for a number, a Status (a dot and its word) for a state, a Rail for what
+happened in order.
 
 ## Tokens
 
