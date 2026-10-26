@@ -233,7 +233,8 @@ function running(doc, pane, r) {
 
 // The tone each `run_end` outcome word is drawn in: an outcome is not a
 // check, so a converged run is ok and the rest are not, each with its word.
-const OUTCOME_TONES = { converged: "ok", "not converged": "down", interrupted: "warn", error: "down" };
+// The summary level (summary.js, #832) draws the outcome in the same.
+export const OUTCOME_TONES = { converged: "ok", "not converged": "down", interrupted: "warn", error: "down" };
 
 // The last run's `run_end`, field by field as trellis sent it.
 function outcome(doc, pane, o) {

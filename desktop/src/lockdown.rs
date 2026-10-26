@@ -241,8 +241,11 @@ mod tests {
 
     /// The levels below a section (#831), after the seven in page order:
     /// each with the section it is burrowed into from, through a
-    /// `data-burrow` way in there rather than a panel of the overview.
-    const SUB_LEVELS: [(&str, &str); 2] = [("code", "run"), ("code-file", "code")];
+    /// `data-burrow` way in there rather than a panel of the overview. The
+    /// summary (#832) is the last section in page order, after the Code
+    /// levels.
+    const SUB_LEVELS: [(&str, &str); 3] =
+        [("code", "run"), ("code-file", "code"), ("summary", "run")];
 
     #[test]
     fn csp_has_no_unsafe_source_and_no_network_origin() {
@@ -3630,7 +3633,7 @@ mod tests {
     }
 
     /// The level sections #910 moved onto the design system's components.
-    const DS_LEVELS: [&str; 7] = [
+    const DS_LEVELS: [&str; 8] = [
         "trails",
         "codebase",
         "atlas",
@@ -3638,10 +3641,11 @@ mod tests {
         "vault",
         "code",
         "code-file",
+        "summary",
     ];
 
     /// The modules that draw them, each through ds.js.
-    const DS_LEVEL_MODULES: [&str; 7] = [
+    const DS_LEVEL_MODULES: [&str; 8] = [
         "trails.js",
         "codebase.js",
         "radius.js",
@@ -3649,6 +3653,7 @@ mod tests {
         "vault.js",
         "atlas.js",
         "code.js",
+        "summary.js",
     ];
 
     /// What draws a component other than through ds.js (#910): a region in
@@ -3774,6 +3779,18 @@ mod tests {
             (&ui["code.js"], "drawFile", "diff(doc, {"),
             (&ui["code.js"], "stateOf", "dsStatus(doc, "),
             (&ui["code.js"], "countsOf", "lineCounts(doc, "),
+            (&ui["summary.js"], "drawChecks", "railRows(doc, rows)"),
+            (&ui["summary.js"], "drawRadius", "stats(doc, ["),
+            (&ui["summary.js"], "drawFiles", "lineCounts(doc, "),
+            (
+                &ui["summary.js"],
+                "drawTrail",
+                "dsStatus(doc, INTEGRITY_TONES",
+            ),
+            (&ui["summary.js"], "drawSteers", "railRows(doc, rows)"),
+            (&ui["summary.js"], "drawPath", "railRows(doc, rows)"),
+            (&ui["summary.js"], "drawSummary", "budgetRows(doc, "),
+            (&ui["summary.js"], "drawClosing", "modelWords(doc, "),
             (
                 &ui["atlas.js"],
                 "renderPanel",
@@ -4587,10 +4604,11 @@ mod tests {
     fn now_strip_stop_only_opens_the_stop_confirm_dialog() {
         // The risk (#828, #637): the Now strip's Stop is a second path to
         // `abort` beside the composer's, which walks around the
-        // confirmation; or "Summary so far", which has no level yet
-        // (#832), is drawn as a button that does nothing. The strip's Stop
-        // opens the one dialog whose close sends the abort, and sends
-        // nothing itself; the summary is marked not built.
+        // confirmation; or "Summary so far" (#832) sends something, or
+        // opens anything but the summary level. The strip's Stop opens the
+        // one dialog whose close sends the abort, and sends nothing itself;
+        // Summary so far, and Summary once the run has ended, only burrows
+        // into the summary level, and no not-built mark is left for it.
         let js = code_of("now.js");
         for bad in ["abort", "send(", "invoke("] {
             assert!(!js.contains(bad), "now.js sends something: {bad}");
@@ -4603,14 +4621,82 @@ mod tests {
             r#"doc.getElementById("stop-confirm-cancel").focus();"#,
             r#"stop.setAttribute("aria-controls", "stop-confirm");"#,
             "if (v.can_stop === true) {",
-            r#"· not built`, "unbuilt")"#,
+            r#"state === "ended" ? "Summary" : "Summary so far""#,
+            r#"summary.addEventListener("click", () => burrow(doc, ["run", "summary"]));"#,
         ] {
             assert!(draw.contains(want), "drawNow lacks {want}");
         }
         assert!(
-            !draw.contains(r#"dsButton(doc, "Summary"#),
-            "Summary so far is drawn as a button"
+            !js.contains("not built") && !js.contains("unbuilt"),
+            "the summary is still marked not built"
         );
+    }
+
+    #[test]
+    fn summary_page_draws_the_model_s_words_fenced_and_the_modes_apart() {
+        // The risk (#832; CLAUDE.md rules 4 and 10): the summary level draws
+        // the model's closing words as markup, unlabelled, or in a check's
+        // tone, so they read as the desktop's or as a verdict; or draws
+        // Verified and Reviewed as one figure. The words are read only from
+        // the reducer's `{untrusted}` fence and drawn by ds.js's modelWords
+        // as text under the label saying whose they are; the two counts are
+        // two Stats on two rows; and no outcome is drawn but run_end's.
+        let js = code_of("summary.js");
+        let closing = function_body(&js, "drawClosing");
+        for want in [
+            "const words = untrusted(c.words);",
+            "modelWords(doc, str(c.label) ?? \"the model's words, not a verdict\", words)",
+        ] {
+            assert!(closing.contains(want), "drawClosing lacks {want}");
+        }
+        let fence = function_body(&js, "untrusted");
+        assert!(
+            fence.contains("typeof v.untrusted === \"string\" ? v.untrusted : null"),
+            "{fence}"
+        );
+        let ds = code_of("ds.js");
+        let words = function_body(&ds, "modelWords");
+        for want in [
+            r#"el(doc, "div", null, "cd-tx-e cd-tx-model")"#,
+            r#"el(doc, "span", label, "cd-tx-label")"#,
+            r#"el(doc, "div", text, "cd-tx-body")"#,
+        ] {
+            assert!(words.contains(want), "modelWords lacks {want}");
+        }
+        for tone in ["cd-tx-check", "cd-status", "ok", "down"] {
+            assert!(!words.contains(tone), "modelWords takes a tone: {tone}");
+        }
+        let modes = function_body(&js, "drawModes");
+        assert!(
+            modes.contains(r#"stats(doc, [{ label: "Verified", value: figure(doc, m.verified, "#)
+                && modes.contains(
+                    r#"stats(doc, [{ label: "Reviewed", value: figure(doc, m.reviewed, "#
+                ),
+            "Verified and Reviewed are not two rows of one Stat each: {modes}"
+        );
+        for joined in [
+            "m.verified +",
+            "+ m.reviewed",
+            "m.reviewed +",
+            "+ m.verified",
+            "/",
+        ] {
+            assert!(!modes.contains(joined), "drawModes joins the two: {joined}");
+        }
+        let end = function_body(&js, "drawEnd");
+        assert!(
+            end.contains("const o = s.outcome !== null && typeof s.outcome === \"object\" ? s.outcome : null;"),
+            "drawEnd draws an outcome the reducer did not send"
+        );
+        for bad in [
+            "innerHTML",
+            "insertAdjacentHTML",
+            "outerHTML",
+            "send(",
+            "invoke(",
+        ] {
+            assert!(!js.contains(bad), "summary.js uses {bad}");
+        }
     }
 
     #[test]
