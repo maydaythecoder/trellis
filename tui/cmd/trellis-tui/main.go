@@ -153,7 +153,11 @@ func run(argv []string, stdout, stderr io.Writer) int {
 	// Nothing paints with the theme yet: #841 hands it to the model and
 	// the view, and paints every row with it.
 	_ = th
-	if _, err := tea.NewProgram(app, tea.WithAltScreen()).Run(); err != nil {
+	_, err = tea.NewProgram(app, tea.WithAltScreen()).Run()
+	// The program has ended, on whatever path: what it left waiting on the
+	// child's lines and the clock ends with it (#847).
+	app.Close()
+	if err != nil {
 		fmt.Fprintln(stderr, "trellis-tui:", err)
 		// The screen failed, not trellis: still quit and wait, so a run in
 		// flight rolls back rather than being left to a killed process.
