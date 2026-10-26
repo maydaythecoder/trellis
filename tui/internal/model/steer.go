@@ -36,10 +36,16 @@ func (m *Model) newRun() {
 // steer sends a line typed mid-run as `steer {message}`. A /command is
 // refused, with the Rust TUI's wording, and nothing is sent: it is
 // addressed to this view, and sending it to the model would surprise
-// either way.
+// either way. A run that has SteersCap steers takes no more (#848): the
+// line stays on the task line, unsent, and the transcript says why, so
+// nothing the person typed is lost.
 func (m *Model) steer(text string) {
 	if text[0] == '/' {
 		m.pushLine("· a run is already in flight; wait for it to finish")
+		return
+	}
+	if len(m.steers) >= SteersCap {
+		m.pushLine(fmt.Sprintf("· not sent: this run has %d steers already; the line stays on the task line", len(m.steers)))
 		return
 	}
 	m.Input = ""

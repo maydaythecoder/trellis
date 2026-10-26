@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -35,6 +36,9 @@ type Approval struct {
 // screen: one question at a time, as the gate asks them. Once leaving has
 // been asked for, a question is not shown: the run is stopping, trellis
 // drops the question once it has, and a dropped question is a no (#634).
+// With ApprovalsCap already waiting, the question is declined at once and
+// the transcript says so (#848): dropped unanswered, it would hold the run
+// forever, and a no changes nothing in the tree.
 func (m *Model) approvalRequested(a frames.ApprovalFields) {
 	if m.Quitting {
 		return
@@ -49,6 +53,11 @@ func (m *Model) approvalRequested(a frames.ApprovalFields) {
 	ap := Approval{ID: a.ID, Question: view.Plain(q), Diff: plainLines(strings.TrimRight(d, " \t\r\n"))}
 	if m.Modal == nil {
 		m.Modal = &ap
+		return
+	}
+	if len(m.approvals) >= ApprovalsCap {
+		m.send("approve", map[string]any{"id": ap.ID, "yes": false})
+		m.pushLine(fmt.Sprintf("· %s declined unseen: %d questions were already waiting", ap.Question, len(m.approvals)+1))
 		return
 	}
 	m.approvals = append(m.approvals, ap)
