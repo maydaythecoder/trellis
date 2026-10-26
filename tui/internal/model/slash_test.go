@@ -3,6 +3,8 @@ package model
 import (
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func lines(m *Model) string { return strings.Join(m.Transcript, "\n") }
@@ -125,5 +127,24 @@ func TestSlashClearEmptiesTheTranscript(t *testing.T) {
 	enter(m)
 	if len(m.Transcript) != 1 || m.Transcript[0] != "· transcript cleared" {
 		t.Fatalf("%q", m.Transcript)
+	}
+}
+
+// #855: /clear kept the scroll back of the transcript it cleared, so the
+// pane pointed above an empty transcript and the line saying it was
+// cleared was out of view. It returns to following.
+func TestSlashClearReturnsToFollowing(t *testing.T) {
+	m := numbered(t, 200)
+	m.Update(keyType(tea.KeyHome))
+	if m.ScrollBack == 0 {
+		t.Fatal("home did not scroll back")
+	}
+	typeLine(m, "/clear")
+	enter(m)
+	if m.ScrollBack != 0 {
+		t.Fatalf("scroll back %d after /clear, want 0: following", m.ScrollBack)
+	}
+	if v := m.View(); !strings.Contains(v, "transcript cleared") || strings.Contains(v, "scrolled back") {
+		t.Fatalf("the cleared transcript is not followed:\n%s", v)
 	}
 }
