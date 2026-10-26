@@ -428,8 +428,10 @@ h2 {
   white-space: nowrap;
 }
 
-/* A region's title, as the design system's Panel heads one (.cd-panel-title). */
-h3 {
+/* A region's title, as the design system's Panel heads one (.cd-panel-title),
+   and the Atlas toolbar's field labels, in the same label caps. */
+h3,
+.at-lab {
   margin: 0;
   font: 600 11px/16px var(--font-mono);
   letter-spacing: 0.08em;
@@ -496,7 +498,8 @@ h3 {
   gap: var(--space-3) var(--space-6);
 }
 
-.stat-row .cd-stat {
+.stat-row .cd-stat,
+.qb-cell .cd-stat {
   gap: var(--space-1);
 }
 
@@ -562,8 +565,12 @@ h4:first-child {
   margin-top: 6px;
 }
 
-/* A pane's button is the design system's outline Button (.cd-btn). */
-.pane button {
+/* A button in a pane is the design system's outline Button (.cd-btn): the
+   Run level's and the overview's panes take the Panel through .pane, the
+   other levels serve the Panel's markup (#910), and their buttons sit in
+   its body. The Atlas's controls keep their own (.at-btn). */
+.pane button,
+.cd-panel-body button {
   padding: var(--space-0\.5) var(--space-2);
   border: 0;
   border-radius: var(--radius-xs);
@@ -574,13 +581,20 @@ h4:first-child {
   cursor: pointer;
 }
 
-.pane button:hover:not(:disabled) {
+.pane button:hover:not(:disabled),
+.cd-panel-body button:hover:not(:disabled) {
   background: var(--panel-raised);
 }
 
-.pane button:disabled {
+.pane button:disabled,
+.cd-panel-body button:disabled {
   color: var(--ink-muted);
   cursor: default;
+}
+
+/* What a level's Panel body holds stands a gutter apart, as a .pane's does. */
+.cd-panel-body > * + * {
+  margin-top: var(--space-3);
 }
 
 .log {
@@ -1060,9 +1074,7 @@ code {
 }
 
 .cb-bar button,
-.cb-crumbs button,
-#cb-results button,
-.cb-modules button {
+.cb-crumbs button {
   padding: 1px 8px;
   border: 1px solid var(--line);
   border-radius: 4px;
@@ -1080,7 +1092,7 @@ code {
 .cb-grid {
   display: grid;
   grid-template-columns: minmax(0, 3fr) minmax(220px, 1fr);
-  gap: 12px;
+  gap: var(--space-6);
 }
 
 #cb-graph {
@@ -1136,14 +1148,12 @@ code {
   stroke-width: 2;
 }
 
-#cb-details {
-  margin-bottom: 12px;
-}
-
 /* The graph's level as a list (#648): a package of hundreds of modules
-   scrolls here rather than pushing the radius pane off the page. */
-.cb-list {
-  margin-top: 12px;
+   scrolls here rather than pushing the radius pane off the page. The
+   level's Panels tile a gutter apart, as the design system sets them. */
+.cb-list,
+.rd-pane {
+  margin-top: var(--space-6);
 }
 
 .cb-modules {
@@ -1151,9 +1161,8 @@ code {
   overflow-y: auto;
 }
 
-#cb-details p + dl,
-#cb-details dl + p {
-  margin-top: 6px;
+#cb-details > * + * {
+  margin-top: var(--space-2);
 }
 
 #cb-search {
@@ -1170,10 +1179,6 @@ code {
 
 /* The symbol radius pane (#308): reach and doubt as two blocks, side by
    side where the window allows, never one figure. */
-.rd-pane {
-  margin-top: 12px;
-}
-
 .rd-form,
 .vt-form {
   display: flex;
@@ -1198,18 +1203,21 @@ code {
 .rd-result {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
-  margin-top: 8px;
+  gap: var(--space-3) var(--space-6);
 }
 
 .rd-result > p {
   grid-column: 1 / -1;
 }
 
-.rd-block {
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
+/* A radius block, reach or doubt, in the Codebase's pane and the Atlas's:
+   a sub-region of its Panel, set apart by a line rule, never a frame of its
+   own (the design system's Panel nests one level only). */
+.rd-block,
+.at-rd-block {
+  min-width: 0;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--line);
 }
 
 h5 {
@@ -1218,13 +1226,21 @@ h5 {
   color: var(--ink-muted);
 }
 
-/* The trails view (#304): a list of past runs and one run's record, its
+/* The trails view (#304): a Rail of past runs and one run's record, its
    factual and judgment parts apart. */
 .tr-grid {
   display: grid;
   grid-template-columns: minmax(240px, 1fr) minmax(0, 2fr);
-  gap: 12px;
-  margin-top: 8px;
+  gap: var(--space-6);
+  margin-top: var(--space-2);
+}
+
+/* Below 1000 px a run's row would leave its task a word wide beside its
+   start time, so the record goes under the runs, as the run grid stacks. */
+@media (max-width: 1000px) {
+  .tr-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 #tr-filter {
@@ -1239,33 +1255,34 @@ h5 {
   font: inherit;
 }
 
+/* The runs scroll inside their Panel, and the Rail opens on the newest, its
+   last row (trails.js). */
 .tr-list {
   max-height: 520px;
   overflow-y: auto;
-  padding-left: 0;
-  list-style: none;
 }
 
+/* A run's row is one button: its task over its outcome and integrity. */
 .tr-list button {
   display: block;
   width: 100%;
-  padding: 4px 6px;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--ink);
+  padding: 0;
+  box-shadow: none;
+  color: inherit;
   font: inherit;
   text-align: left;
-  cursor: pointer;
 }
 
 .tr-list button[aria-current="true"] {
-  border-color: var(--line);
-  background: var(--ground);
+  color: var(--ink);
 }
 
-.tr-list li.empty {
-  margin-left: 0;
+.tr-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  margin-top: var(--space-0\.5);
 }
 
 /* A past run's record: recorded text is drawn as it was written, in its
@@ -1287,16 +1304,12 @@ article.past-run section + section {
   font-style: italic;
 }
 
-.alert {
-  color: var(--down);
-}
-
 /* The vault notes view (#309): search hits beside one note's relations. */
 .vt-grid {
   display: grid;
   grid-template-columns: minmax(240px, 1fr) minmax(0, 1fr);
-  gap: 12px;
-  margin-top: 8px;
+  gap: var(--space-6);
+  margin-top: var(--space-2);
 }
 
 .vt-hits button {
@@ -1352,47 +1365,32 @@ article.past-run section + section {
 .qb-counts {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
-  gap: 8px;
+  gap: var(--space-2);
+  margin: 0;
   padding-left: 0;
   list-style: none;
 }
 
-/* Each cell is a button that filters the list (#656), drawn as the cell it
-   was rather than as the pane's small buttons. */
+/* Each cell is a button that filters the list (#656), holding its status's
+   count as a Stat; pressed, it takes the frame and fill of what the person
+   chose, as the design system's Queue marks a chosen option. */
 .qb-counts .qb-cell {
-  display: flex;
-  flex-direction: column;
+  display: block;
   width: 100%;
-  padding: 6px 8px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--ground);
-  color: var(--ink);
-  font: inherit;
+  padding: var(--space-2) var(--space-3);
   text-align: left;
-  cursor: pointer;
 }
 
 .qb-counts .qb-cell[aria-pressed="true"] {
-  border-color: var(--signal);
-  background: var(--panel);
-}
-
-.qb-counts .qb-cell:disabled {
-  color: var(--ink-muted);
-  cursor: default;
-}
-
-.qb-count {
-  font-size: 18px;
-  font-variant-numeric: tabular-nums;
+  background: var(--signal-soft);
+  box-shadow: var(--frame-signal);
 }
 
 .qb-grid {
   display: grid;
   grid-template-columns: minmax(0, 3fr) minmax(220px, 2fr);
-  gap: 12px;
-  margin-top: 12px;
+  gap: var(--space-6);
+  margin-top: var(--space-6);
 }
 
 /* The Atlas (the owner's request of 2026-10-11): one canvas map beside one
@@ -1474,11 +1472,6 @@ article.past-run section + section {
   min-width: 0;
 }
 
-.at-lab {
-  font-size: 12px;
-  color: var(--ink-muted);
-}
-
 .at-seg {
   display: inline-flex;
   flex-wrap: wrap;
@@ -1554,32 +1547,28 @@ article.past-run section + section {
 .at-work {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
-  gap: 12px;
+  gap: var(--space-6);
   height: max(520px, calc(100vh - 240px));
 }
 
+/* The map and the detail pane are the design system's Panels (#910):
+   ds.css draws their frame and head; here they only fill the work area. */
 .at-mapwrap,
 .at-panel {
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--panel);
 }
 
 .at-mapwrap {
   overflow: hidden;
 }
 
+/* The map's head holds its controls, so it wraps, a toolbar's gap apart. */
 .at-mapbar {
-  display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 8px;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--line);
+  gap: var(--space-1\.5) var(--space-2);
 }
 
 .at-crumbs {
@@ -2071,27 +2060,6 @@ article.past-run section + section {
   margin-right: 4px;
   font-size: 11px;
   color: var(--ink-muted);
-}
-
-.at-rd {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 8px;
-}
-
-.at-rd-block {
-  min-width: 0;
-  padding: 8px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-}
-
-.at-rd-block.reach {
-  border-color: var(--reach);
-}
-
-.at-rd-block.doubt {
-  border-color: var(--doubt);
 }
 
 .at-tablewrap {
