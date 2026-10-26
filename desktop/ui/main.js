@@ -18,7 +18,8 @@
 // - codebase.js, radius.js, trails.js, vault.js, queue.js and atlas.js,
 //   which each start themselves through rpc.js's start and listen for what
 //   they draw.
-// - dom.js, fmt.js and rpc.js, the shared helpers every module imports.
+// - dom.js, fmt.js and rpc.js, the shared helpers every module imports, and
+//   ds.js, the design system's components the levels draw with (#909).
 // To add a module, follow docs/ENTRY_POINTS.md, "Adding a page module".
 //
 // Every value is trellis- or model-supplied text, so it reaches the DOM only
@@ -137,7 +138,7 @@ async function main() {
     childrenStarted += 1;
     drawOverviewChild(document, true);
     const c = event.payload;
-    show("status", `${c.version ?? "trellis (version unknown)"} rpc on ${c.root}`);
+    show("status", "");
     askState(tauri);
     readOverview(tauri);
     askSessionTokens(tauri);
