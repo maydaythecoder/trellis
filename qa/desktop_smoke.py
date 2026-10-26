@@ -20,7 +20,7 @@ one JSON message per NUL byte), and fails on:
   (`Log.entryAdded`, where a Content-Security-Policy refusal shows up);
 - listeners, nodes or documents that do not come back. After a warm-up, it
   counts them (`Memory.getDOMCounters`, after `HeapProfiler.collectGarbage`),
-  then walks every section of the page and back to the first, N times,
+  then walks into every level of the page and out again, N times,
   and the three counts must be where they were; then it runs N tasks to
   their `run_end` with a scripted model (qa/fixtures/scripted-done-only.json:
   no model is called), and the listener and document counts must be where
@@ -30,8 +30,9 @@ one JSON message per NUL byte), and fails on:
 The JS heap (`Runtime.getHeapUsage`) is printed as a trend and not judged,
 since the protocol marks it experimental.
 
-Once the desktop's levels exist (the Trail, #826), the walk goes in and out
-of them; until then it is the section rail's buttons.
+The walk goes in and out of the desktop's levels (the Trail, #826): into
+each of the overview's panels and out with ESC, then across the sibling
+rail.
 
 Standard library only: no Playwright, no npm and no new crate (ADR 0059).
 Chromium only, the engine WebView2 uses; WebKitGTK is not exercised.
@@ -280,16 +281,27 @@ def judged(name, before, after, keys):
 
 # --- The desktop ------------------------------------------------------------
 
-# One walk: every section the rail switches, then back to the first. A
-# section fetches what it shows when it is shown, so the walk also runs each
-# fetch and its drawing. Answers with how many sections it walked.
+# One walk (#826): into every level the overview's panels enter and out
+# again with ESC, as a person does, then across the sibling rail from the
+# first to the last and out. A section fetches what it shows when it is
+# entered, so the walk also runs each fetch and its drawing, and each level
+# draws the Trail and the rail under a scope that leaving it ends. Answers
+# with how many levels it walked.
 WALK = """(async () => {
-  const buttons = [...document.querySelectorAll("nav.rail button[aria-controls]")];
-  if (buttons.length === 0) throw new Error("no section rail to walk");
-  for (const b of buttons) { b.click(); await new Promise((r) => setTimeout(r, 150)); }
-  buttons[0].click();
-  await new Promise((r) => setTimeout(r, 150));
-  return buttons.length;
+  const pause = () => new Promise((r) => setTimeout(r, 150));
+  const esc = () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  const panels = [...document.querySelectorAll("button[data-enter]")];
+  if (panels.length === 0) throw new Error("no overview panels to walk");
+  for (const p of panels) {
+    p.click(); await pause();
+    if (document.getElementById(p.dataset.enter).hidden) throw new Error(`${p.dataset.enter} was not entered`);
+    esc(); await pause();
+    if (document.getElementById("overview").hidden) throw new Error(`ESC did not go out of ${p.dataset.enter}`);
+  }
+  panels[0].click(); await pause();
+  for (const s of [...document.querySelectorAll("#siblings button")]) { s.click(); await pause(); }
+  esc(); await pause();
+  return panels.length;
 })()"""
 
 
@@ -385,16 +397,16 @@ def smoke(chrome_bin, desktop, trellis, prompts, cycles):
             # Warm-up: whatever the page creates once for its life is made
             # here, before anything is counted.
             task(d, 0)
-            sections = page.run(WALK)
+            levels = page.run(WALK)
             page.settle(2)
             start, heap0 = page.counts(), page.heap()
-            print(f"smoke: warm-up done; {sections} sections; counts {start}")
+            print(f"smoke: warm-up done; {levels} levels; counts {start}")
             for _ in range(cycles):
                 page.run(WALK)
             page.settle(2)
             walked = page.counts()
             print(f"smoke: after {cycles} walks: {walked}")
-            failures += judged(f"{cycles} walks through every section", start, walked,
+            failures += judged(f"{cycles} walks in and out of every level", start, walked,
                                ("documents", "nodes", "jsEventListeners"))
             for n in range(1, prompts + 1):
                 task(d, n)

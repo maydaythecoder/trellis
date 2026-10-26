@@ -51,13 +51,15 @@ called.
    and the server's refusal of it is ignored.
 3. After a warm-up (one task, one walk), it counts documents, nodes and
    listeners (`Memory.getDOMCounters`, after `HeapProfiler.collectGarbage`).
-   It walks every section of the page and back to the first, five times,
-   and all three counts must be where they were. It then runs five tasks to
+   It walks into every level of the page and out again, five times, and
+   all three counts must be where they were. It then runs five tasks to
    their `run_end` with `scripted-done-only.json`, and the document and
    listener counts must be where they were. The node count is printed and
    not judged after the tasks, since a task adds transcript rows that the
-   page keeps up to its cap (#814 holds the cap). Once the desktop's levels
-   exist (the Trail, #826), the walk goes in and out of them.
+   page keeps up to its cap (#814 holds the cap). *Amended 2026-10-26
+   (#826):* the walk goes into each of the overview's panels and out with
+   ESC, then across the sibling rail, since the levels replaced the
+   section rail it first walked.
 4. The JS heap (`Runtime.getHeapUsage`) is printed as a trend and not
    judged: the protocol marks it experimental.
 5. `--self-test` runs the same checks over three pages the script serves
