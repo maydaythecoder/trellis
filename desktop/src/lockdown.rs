@@ -1196,7 +1196,8 @@ mod tests {
                        "check_kind": "", "observation": "4 callers resolved",
                        "tool": "blast_radius", "target": "app.core.f", "wrote": false,
                        "resolved": 4, "candidates": 1, "unresolved": 2,
-                       "model_ms": 1200, "prompt_bytes": 2048, "completion_tokens": 40}),
+                       "model_ms": 1200, "prompt_bytes": 2048, "completion_tokens": 40,
+                       "elapsed_ms": 1400}),
             ),
             loop_event(
                 "turn",
@@ -1204,14 +1205,15 @@ mod tests {
                        "check_kind": "", "observation": "applied: true (+1 -1)",
                        "tool": "edit", "target": "app/core.py", "wrote": true,
                        "model_ms": 900, "prompt_bytes": 2300, "completion_tokens": 55,
-                       "queue_wait_ms": 100}),
+                       "queue_wait_ms": 100, "elapsed_ms": 2500}),
             ),
             loop_event(
                 "turn",
                 json!({"turn": 3, "call": "run_checks app/core.py", "verdict": "Some(true)",
                        "check_kind": "Tests", "observation": "3 passed",
                        "tool": "run_checks", "target": "Tests on app/core.py", "wrote": false,
-                       "model_ms": 700, "prompt_bytes": 2500, "completion_tokens": 12}),
+                       "model_ms": 700, "prompt_bytes": 2500, "completion_tokens": 12,
+                       "elapsed_ms": 3600}),
             ),
             json!({"type": "approval_request", "id": "approval-1",
                    "question": "Run bash?", "detail": "pytest -q"})
@@ -1219,7 +1221,8 @@ mod tests {
         ];
         let end = [
             json!({"type": "run_end", "outcome": "converged", "exit": 0,
-                   "id": "desktop-prompt-1", "run_id": "20261010-120000-000"})
+                   "id": "desktop-prompt-1", "run_id": "20261010-120000-000",
+                   "elapsed_ms": 61_000})
             .to_string(),
             json!({"type": "response", "command": "get_state", "success": true,
                    "id": "desktop-state",
@@ -1272,6 +1275,9 @@ mod tests {
         assert_eq!(view["budget"]["turn"], 3, "{view}");
         assert_eq!(view["outcome"]["outcome"], "converged", "{view}");
         assert_eq!(view["tier"], "scripted", "{view}");
+        assert_eq!(view["now"]["word"], "ended · converged", "{view}");
+        assert_eq!(view["now"]["elapsed"], "01:01", "{view}");
+        assert_eq!(view["where"]["root"], "/w/app", "{view}");
         assert!(view["alert"].is_string(), "{view}");
         assert_eq!(
             view["stderr"]["rows"][0]["text"], "trellis: indexed 12 modules",
@@ -4380,6 +4386,36 @@ mod tests {
             parts.contains("stopConfirm: doc.getElementById(\"stop-confirm\")")
                 && parts.contains("stopCancel: doc.getElementById(\"stop-confirm-cancel\")"),
             "composer.js looks up another dialog: {parts}"
+        );
+    }
+
+    #[test]
+    fn now_strip_stop_only_opens_the_stop_confirm_dialog() {
+        // The risk (#828, #637): the Now strip's Stop is a second path to
+        // `abort` beside the composer's, which walks around the
+        // confirmation; or "Summary so far", which has no level yet
+        // (#832), is drawn as a button that does nothing. The strip's Stop
+        // opens the one dialog whose close sends the abort, and sends
+        // nothing itself; the summary is marked not built.
+        let js = code_of("now.js");
+        for bad in ["abort", "send(", "invoke("] {
+            assert!(!js.contains(bad), "now.js sends something: {bad}");
+        }
+        let draw = function_body(&js, "drawNow");
+        for want in [
+            r#"doc.getElementById("stop-confirm")"#,
+            r#"dialog.returnValue = "";"#,
+            "dialog.showModal();",
+            r#"doc.getElementById("stop-confirm-cancel").focus();"#,
+            r#"stop.setAttribute("aria-controls", "stop-confirm");"#,
+            "if (v.can_stop === true) {",
+            r#"· not built`, "unbuilt")"#,
+        ] {
+            assert!(draw.contains(want), "drawNow lacks {want}");
+        }
+        assert!(
+            !draw.contains(r#"dsButton(doc, "Summary"#),
+            "Summary so far is drawn as a button"
         );
     }
 

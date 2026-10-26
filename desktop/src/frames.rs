@@ -27,6 +27,9 @@ pub enum Frame {
     /// the turn it names nothing, so one that lacks it is [`Frame::Ignored`].
     ModelCall {
         turn: u64,
+        /// The run's wall-clock spend as the budget checked it just before
+        /// this call (#799); `None` from a trellis that sends none.
+        elapsed_ms: Option<u64>,
     },
     /// The loop's one `run budget` event per run.
     RunBudget {
@@ -86,6 +89,9 @@ pub struct Turn {
     /// colibri's queue waits summed; absent unless every reply carried the
     /// `x-colibri-queue-wait-ms` header.
     pub queue_wait_ms: Option<u64>,
+    /// The run's wall-clock spend after the turn, by the budget's own
+    /// clock (#799), with waits on a person and pauses taken out.
+    pub elapsed_ms: Option<u64>,
 }
 
 /// colibri's self-report (client_contract.json's `runtime identified`).
@@ -125,6 +131,9 @@ pub struct RunEnd {
     pub restored: Option<bool>,
     /// Present when the outcome is `error`.
     pub error: Option<String>,
+    /// The loop's whole wall-clock spend (#799); absent, never a partial
+    /// figure, for a run the loop did not finish.
+    pub elapsed_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -169,6 +178,7 @@ pub fn parse_stdout(line: &str) -> Frame {
                 run_id: json::string(&o, "run_id"),
                 restored: json::bool(&o, "restored"),
                 error: json::string(&o, "error"),
+                elapsed_ms: json::u64(&o, "elapsed_ms"),
             }),
             Some("response") => Frame::Response(Response {
                 command: json::string(&o, "command"),
@@ -209,11 +219,15 @@ pub fn parse_stdout(line: &str) -> Frame {
                 model_ms: json::u64(f, "model_ms"),
                 completion_tokens: json::u64(f, "completion_tokens"),
                 queue_wait_ms: json::u64(f, "queue_wait_ms"),
+                elapsed_ms: json::u64(f, "elapsed_ms"),
             }),
             _ => Frame::Ignored,
         },
         Some("model call") => match json::u64(f, "turn") {
-            Some(turn) => Frame::ModelCall { turn },
+            Some(turn) => Frame::ModelCall {
+                turn,
+                elapsed_ms: json::u64(f, "elapsed_ms"),
+            },
             None => Frame::Ignored,
         },
         Some("run budget") => Frame::RunBudget {

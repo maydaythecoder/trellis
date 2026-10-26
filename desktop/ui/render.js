@@ -29,6 +29,7 @@ import { atEnd, drawFeed, el, fill, muted } from "./dom.js";
 import { dsStatus, figure, railRows, stats, txEntry, txTurn, unreported } from "./ds.js";
 import { isCount, str } from "./fmt.js";
 import { drawGraph } from "./graph.js";
+import { drawNow, drawWhere } from "./now.js";
 
 // The actions log: the transcript as the design system's Transcript
 // (#827), one entry per row the core sent, typed by what it came from, a
@@ -141,10 +142,11 @@ function radius(doc, pane, r) {
 }
 
 // The budget as Stats: the turn against its ceiling, the last turn's prompt
-// in bytes and its reply in tokens (#312), never joined. The view carries no
-// elapsed time (DESK-08's budget has none) and the page draws no clock of
-// its own, so elapsed is drawn unreported rather than as one the core did
-// not send; a turn not reported is not turn 0.
+// in bytes and its reply in tokens (#312), never joined. The budget pane
+// carries no elapsed time (trellis's elapsed_ms is the Now strip's, #828)
+// and the page draws no clock of its own, so elapsed is drawn unreported
+// here rather than as one the pane was not sent; a turn not reported is
+// not turn 0.
 function budget(doc, pane, b) {
   const v = b !== null && typeof b === "object" ? b : {};
   const list = [
@@ -155,7 +157,7 @@ function budget(doc, pane, b) {
     },
     { label: "prompt", value: figure(doc, v.prompt_bytes, "the last turn sent no prompt size"), unit: "B" },
     { label: "out", value: figure(doc, v.completion_tokens, "the last turn sent no token count"), unit: "tok" },
-    { label: "elapsed", value: unreported(doc, "trellis sends no elapsed time yet, and the desktop keeps no clock of its own") },
+    { label: "elapsed", value: unreported(doc, "the budget pane carries none: the Now strip shows trellis's elapsed time, and the desktop keeps no clock of its own") },
   ];
   const rate = str(v.tokens_per_second);
   if (rate !== null) list.push({ label: "rate", value: rate, unit: "tok/s" });
@@ -265,6 +267,7 @@ function outcome(doc, pane, o) {
 // `undelivered` by composer.js; `model`, `models` and `available` by
 // model.js; `available` by settings.js; `model`, `running` and `phase` by
 // status.js; `vault` by vault.js; `queue` by queue.js; `atlas` by atlas.js.
+// `now` and `where` are drawn here by now.js's functions (#828).
 // The view_renders_ tests in src/lockdown.rs fail when a key the reducer
 // sends is read by none of them, or when a pane in the run section is one
 // this table never names.
@@ -282,6 +285,8 @@ const PANES = {
   session_tokens: ["pane-session-tokens", sessionTokens],
   // The action graph's layout, computed by the core (`graph.rs`).
   graph: ["graph", drawGraph],
+  now: ["pane-now", drawNow],
+  where: ["pane-where", drawWhere],
 };
 
 // Draws every pane the event carries; a key this page does not know is

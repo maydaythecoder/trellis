@@ -75,6 +75,7 @@ pub const PAGE: &[(&str, &[u8])] = &[
     ("settings.js", include_bytes!("../ui/settings.js")),
     ("status.js", include_bytes!("../ui/status.js")),
     ("graph.js", include_bytes!("../ui/graph.js")),
+    ("now.js", include_bytes!("../ui/now.js")),
     ("codebase.js", include_bytes!("../ui/codebase.js")),
     ("radius.js", include_bytes!("../ui/radius.js")),
     ("trails.js", include_bytes!("../ui/trails.js")),

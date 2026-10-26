@@ -106,13 +106,21 @@ pub enum Pane {
     /// colibri's self-report for this run, as `runtime identified` carried
     /// it (#628): three separate counts, each null when unreported.
     Runtime,
+    /// The Now strip (#828): the run's state word, the engine's elapsed
+    /// time, the turn against its ceiling, what the run is on, the model
+    /// and its tier, and whether Stop applies. Derived from the panes it
+    /// reads ([`NOW_INPUTS`]), never from a clock of the desktop's own.
+    Now,
+    /// Where it is (#828): phase, tool and target, turn, last call, model,
+    /// tier, runtime and root, derived as the Now strip is.
+    Where,
 }
 
 /// Every pane the view carries. Each is a key the page must draw:
 /// `view_renders_every_pane_key` in `lockdown.rs` drives a whole run through
 /// [`DesktopState::update`] and fails naming a key here that no module the
 /// page loads reads from the `view` event (ADR 0052 section 1, #513).
-const PANES: [Pane; 24] = [
+const PANES: [Pane; 26] = [
     Pane::Transcript,
     Pane::Actions,
     Pane::Edits,
@@ -137,6 +145,8 @@ const PANES: [Pane; 24] = [
     Pane::Atlas,
     Pane::Phase,
     Pane::Runtime,
+    Pane::Now,
+    Pane::Where,
 ];
 
 /// The panes a run starts afresh: everything but the transcript, which,
@@ -147,7 +157,7 @@ const PANES: [Pane; 24] = [
 /// the last stopped run's, so a new run drops it, and so is the alert: what
 /// failed before this run started is not this run's failure. The stderr
 /// pane, as the transcript, carries on.
-const RUN_PANES: [Pane; 13] = [
+const RUN_PANES: [Pane; 15] = [
     Pane::Actions,
     Pane::Edits,
     Pane::Checks,
@@ -161,7 +171,48 @@ const RUN_PANES: [Pane; 13] = [
     Pane::Graph,
     Pane::Phase,
     Pane::Runtime,
+    Pane::Now,
+    Pane::Where,
 ];
+
+/// The panes the Now strip and Where it is are drawn from: a change to any
+/// of them changes both, so the two can never show a state the panes
+/// beside them have left (#828). One list, applied in one place
+/// ([`with_now`]), rather than a `Pane::Now` added by hand at each branch
+/// that touches one of these.
+const NOW_INPUTS: [Pane; 8] = [
+    Pane::Running,
+    Pane::Approvals,
+    Pane::Outcome,
+    Pane::Phase,
+    Pane::Budget,
+    Pane::Actions,
+    Pane::Tier,
+    Pane::Runtime,
+];
+
+/// `c`, and the Now strip and Where it is when `c` changed what they read.
+fn with_now(c: Changed) -> Changed {
+    if NOW_INPUTS.iter().any(|&p| c.has(p)) {
+        c.with(Pane::Now).with(Pane::Where)
+    } else {
+        c
+    }
+}
+
+/// Milliseconds as the Now strip's clock: `mm:ss`, or `h:mm:ss` from an
+/// hour, as the design system's NowStrip formats its seconds (`fmtClock`).
+/// Whole seconds, cut down, so the clock never shows a second trellis has
+/// not yet spent.
+fn clock(ms: u64) -> String {
+    let secs = ms / 1000;
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m:02}:{s:02}")
+    }
+}
 
 impl Pane {
     fn key(self) -> &'static str {
@@ -190,6 +241,8 @@ impl Pane {
             Pane::Atlas => "atlas",
             Pane::Phase => "phase",
             Pane::Runtime => "runtime",
+            Pane::Now => "now",
+            Pane::Where => "where",
         }
     }
 
@@ -852,15 +905,41 @@ pub struct DesktopState {
     /// sends, and from each run's start. The event stays out of the trail
     /// (ADR 0047 decision 13), so a run has no other source for it.
     runtime: Option<RuntimeIdentified>,
+    /// An `abort` was forwarded and the run it stops has not ended (#828):
+    /// the Now strip's `stopping`. Only the core's own forwarding sets it
+    /// ([`DesktopState::abort_sent`]), since no event says a stop began.
+    stopping: bool,
+    /// The run's wall-clock spend as trellis last reported it (#799): the
+    /// latest `model call` or `turn` figure, then `run_end`'s, which is
+    /// absent for a run its loop did not finish. Never a clock of the
+    /// desktop's (ADR 0048 section 8): between events it stays at the last
+    /// figure trellis sent.
+    elapsed_ms: Option<u64>,
+    /// The model the run in flight or the last one ran on, from its
+    /// `run_start`, or the session's from the last `get_state` answer.
+    run_model: Option<String>,
+    /// The repository trellis serves, from `run_start` or `get_state`.
+    root: Option<String>,
 }
 
 impl DesktopState {
     /// Applies one child frame and returns the panes it changed.
     pub fn update(&mut self, frame: Frame) -> Changed {
+        with_now(self.apply(frame))
+    }
+
+    /// [`DesktopState::update`]'s frame, without the panes derived from
+    /// the ones it changed.
+    fn apply(&mut self, frame: Frame) -> Changed {
         match frame {
             Frame::Turn(t) => self.turn(t),
-            Frame::ModelCall { turn } => {
+            Frame::ModelCall { turn, elapsed_ms } => {
                 self.phase = Some(Phase::Model { turn });
+                // A call without the figure leaves the last one standing:
+                // it is still the latest trellis reported.
+                if elapsed_ms.is_some() {
+                    self.elapsed_ms = elapsed_ms;
+                }
                 Changed::of(&[Pane::Phase])
             }
             Frame::RunBudget { max_iterations } => {
@@ -892,6 +971,8 @@ impl DesktopState {
             Frame::RunStart(s) => {
                 self.reset_run();
                 self.running = true;
+                self.run_model = s.model;
+                self.root = s.root;
                 // A forwarded prompt's run has started, and `running` says
                 // so from here on.
                 self.prompts_in_flight = self.prompts_in_flight.saturating_sub(1);
@@ -904,6 +985,12 @@ impl DesktopState {
             }
             Frame::RunEnd(e) => {
                 self.running = false;
+                self.stopping = false;
+                // The run's own figure, or none: run_end leaves it out for a
+                // run its loop did not finish, and the last turn's figure
+                // shown beside `ended` would be a partial one passed off as
+                // the run's (client_contract.json).
+                self.elapsed_ms = e.elapsed_ms;
                 // Nothing is on once the run has ended.
                 self.phase = None;
                 // Nobody is left to answer a question the run asked.
@@ -1007,6 +1094,11 @@ impl DesktopState {
                             c = c.with(Pane::Undelivered);
                         }
                     }
+                    // A refused abort stops nothing: the run goes on.
+                    (Some("abort"), Some(false)) => {
+                        self.stopping = false;
+                        c = c.with(Pane::Now).with(Pane::Where);
+                    }
                     // An `approve` is sent with the question's own id, and
                     // either answer means trellis holds it open no more: an
                     // answer taken, or a question it no longer has (#302).
@@ -1056,12 +1148,20 @@ impl DesktopState {
                         .as_deref()
                         .is_some_and(|c| VIEW_READS.contains(&c));
                 let c = if r.success == Some(true) && r.command.as_deref() == Some("get_state") {
-                    self.tier = r
-                        .data
-                        .as_ref()
-                        .and_then(|d| d.get("tier"))
-                        .and_then(Value::as_str)
-                        .map(str::to_string);
+                    let text = |k: &str| {
+                        r.data
+                            .as_ref()
+                            .and_then(|d| d.get(k))
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    };
+                    self.tier = text("tier");
+                    // The session's model and root, for Where it is before
+                    // a run has started; a run's own start says them again.
+                    self.run_model = text("model");
+                    if let Some(root) = text("root") {
+                        self.root = Some(root);
+                    }
                     c.with(Pane::Tier)
                 } else if r.success == Some(false) && !view_read {
                     let command = r.command.as_deref().unwrap_or("command");
@@ -1110,6 +1210,12 @@ impl DesktopState {
     /// asked.
     pub fn child_exited(&mut self) -> Changed {
         self.running = false;
+        self.stopping = false;
+        // The root and model were that child's; the next may serve another
+        // repository, and Where it is would name the last one's until it
+        // said its own.
+        self.run_model = None;
+        self.root = None;
         self.prompts_in_flight = 0;
         // Left set, the page read `calling the model, turn N` beside
         // `exited` (#815), a hang that is not one.
@@ -1123,7 +1229,7 @@ impl DesktopState {
         // So were the runs the totals counted (#313): a new child's start
         // empty.
         self.session_tokens = None;
-        Changed::of(&[
+        with_now(Changed::of(&[
             Pane::Running,
             Pane::Phase,
             Pane::Approvals,
@@ -1131,7 +1237,21 @@ impl DesktopState {
             Pane::Models,
             Pane::SessionTokens,
             Pane::Available,
-        ])
+        ]))
+    }
+
+    /// The core forwarded an `abort` (#828): the run is stopping until its
+    /// `run_end`. Called before the line is written, as a steer's row is,
+    /// so a `run_end` read as soon as it is written finds it set.
+    pub fn abort_sent(&mut self) -> Changed {
+        self.stopping = true;
+        Changed::of(&[Pane::Now, Pane::Where])
+    }
+
+    /// The `abort` could not be written to the child: nothing is stopping.
+    pub fn abort_unsent(&mut self) -> Changed {
+        self.stopping = false;
+        Changed::of(&[Pane::Now, Pane::Where])
     }
 
     /// Whether a run is in flight, from `run_start` to `run_end` or the
@@ -1214,12 +1334,16 @@ impl DesktopState {
     }
 
     /// Clears the whole view, transcript included: colibri's New chat and
-    /// Clear. Whether a run is in flight or a prompt is, which specs the
+    /// Clear. Whether a run is in flight, stopping, or a prompt is, the
+    /// model and root the child reported, which specs the
     /// child reported, and the model its session has and offered, are the
     /// child's facts, not the view's, so they are kept. Returns every pane,
     /// so the view event that follows carries all of them.
     pub fn clear(&mut self) -> Changed {
         let running = self.running;
+        let stopping = self.stopping;
+        let run_model = self.run_model.take();
+        let root = self.root.take();
         let prompts_in_flight = self.prompts_in_flight;
         let configured = self.configured.take();
         let catalog = std::mem::take(&mut self.catalog);
@@ -1233,6 +1357,9 @@ impl DesktopState {
         stderr.clear();
         *self = Self {
             running,
+            stopping,
+            run_model,
+            root,
             prompts_in_flight,
             configured,
             catalog,
@@ -1404,6 +1531,8 @@ impl DesktopState {
             Pane::Vault => self.vault.to_json(),
             Pane::Queue => self.queue.to_json(),
             Pane::Atlas => self.atlas.to_json(),
+            Pane::Now => self.now(),
+            Pane::Where => self.where_it_is(),
             Pane::Outcome => match &self.outcome {
                 Some(e) => json!({
                     "outcome": e.outcome.as_deref().map(outcome_words),
@@ -1441,6 +1570,136 @@ impl DesktopState {
         } else {
             None
         }
+    }
+
+    /// The run's state as the Now strip words it (#828, DESIGN.md §2.1):
+    /// `stopping` once an abort is sent, `needs you` while an approval
+    /// waits, `running`, and once a run has ended its `run_end` outcome in
+    /// that event's own words, never `done` or `failed`.
+    fn state_word(&self) -> (&'static str, String) {
+        if self.running && self.stopping {
+            ("stopping", "stopping".into())
+        } else if self.running && !self.approvals.is_empty() {
+            ("needs_you", "needs you".into())
+        } else if self.running {
+            ("running", "running".into())
+        } else if let Some(e) = &self.outcome {
+            let word = e
+                .outcome
+                .as_deref()
+                .map_or("outcome not reported", outcome_words);
+            ("ended", format!("ended · {word}"))
+        } else {
+            ("idle", "idle".into())
+        }
+    }
+
+    /// The turn counted against the run's ceiling: the one the model is
+    /// being called for, else the last one reported, as the TUI counts it.
+    fn turn_now(&self) -> Option<u64> {
+        match self.phase {
+            Some(Phase::Model { turn }) => Some(turn),
+            _ => self.budget.turn,
+        }
+    }
+
+    /// The tool and target the run is on: the last turn's, while the phase
+    /// is that turn's tool or checks; none while the model is called.
+    fn tool_now(&self) -> (Option<&str>, Option<&str>) {
+        match (&self.phase, self.actions.last()) {
+            (Some(Phase::Tool { .. } | Phase::Checks { .. }), Some(a)) => (
+                Some(a.tool.as_str()).filter(|t| !t.is_empty()),
+                Some(a.target.as_str()).filter(|t| !t.is_empty()),
+            ),
+            _ => (None, None),
+        }
+    }
+
+    /// The Now strip (#828). The clock is trellis's elapsed figure, shown
+    /// for a run in flight or ended, and with none reported it is null with
+    /// the reason: the desktop draws no clock of its own (ADR 0048 §8).
+    fn now(&self) -> Value {
+        let (state, word) = self.state_word();
+        let shows_clock = state != "idle";
+        let elapsed_why = match (shows_clock, self.elapsed_ms, state) {
+            (false, _, _) | (true, Some(_), _) => None,
+            (true, None, "ended") => Some(
+                "run_end carried no elapsed time: trellis sends none for a run its loop did not \
+                 finish",
+            ),
+            (true, None, _) => Some("trellis has sent no elapsed time for this run yet"),
+        };
+        let reason = match state {
+            "needs_you" => self.approvals.first().map(|a| {
+                a.question
+                    .clone()
+                    .unwrap_or_else(|| "trellis asks for an approval".into())
+            }),
+            _ => None,
+        };
+        let (outcome, exit) = match (state, &self.outcome) {
+            ("ended", Some(e)) => (e.outcome.as_deref().map(outcome_words), e.exit),
+            _ => (None, None),
+        };
+        let phase = match (&self.phase, self.running) {
+            (Some(Phase::Model { .. }), true) => Some("model"),
+            (Some(Phase::Tool { .. }), true) => Some("tool"),
+            (Some(Phase::Checks { .. }), true) => Some("checks"),
+            _ => None,
+        };
+        let (tool, target) = self.tool_now();
+        json!({
+            "state": state,
+            "word": word,
+            "reason": reason,
+            "outcome": outcome,
+            "exit": exit,
+            "elapsed": self.elapsed_ms.filter(|_| shows_clock).map(clock),
+            "elapsed_why": elapsed_why,
+            "turn": self.turn_now().filter(|_| self.running),
+            "max_turns": self.budget.max_turns.filter(|_| self.running),
+            "phase": phase,
+            "tool": tool,
+            "target": target,
+            "model": self.run_model,
+            "tier": self.tier,
+            "can_stop": self.running && !self.stopping,
+        })
+    }
+
+    /// Where it is (#828): each fact as trellis reported it, null where it
+    /// did not. The phase is a sentence the TUI's Where it is also uses
+    /// (`view.Activity`), so the two clients say the same thing.
+    fn where_it_is(&self) -> Value {
+        let (state, _) = self.state_word();
+        let phase = match (state, &self.phase) {
+            ("stopping", _) => "rolling back".to_string(),
+            ("needs_you", _) => "waiting on you".to_string(),
+            ("running", Some(Phase::Model { turn })) => format!("calling the model, turn {turn}"),
+            ("running", Some(Phase::Tool { turn, tool })) => format!("ran {tool}, turn {turn}"),
+            ("running", Some(Phase::Checks { turn })) => format!("ran checks, turn {turn}"),
+            // Before its first model call, as the TUI's Where it is says it.
+            ("running", None) => "none".to_string(),
+            ("ended", _) => "ended".to_string(),
+            _ => "no run in flight".to_string(),
+        };
+        let (tool, target) = self.tool_now();
+        json!({
+            "phase": phase,
+            "tool": tool,
+            "target": target,
+            "turn": self.turn_now(),
+            "max_turns": self.budget.max_turns,
+            "model_ms": self.budget.model_ms,
+            "completion_tokens": self.budget.completion_tokens,
+            "model": self.run_model,
+            "tier": self.tier,
+            "runtime": self.runtime.as_ref().map(|r| json!({
+                "runtime": r.runtime,
+                "served": r.served,
+            })),
+            "root": self.root,
+        })
     }
 
     /// A turn, as the `turn` event reports it.
@@ -1539,6 +1798,9 @@ impl DesktopState {
         self.budget.completion_tokens = t.completion_tokens;
         self.budget.model_ms = t.model_ms;
         self.budget.queue_wait_ms = t.queue_wait_ms;
+        if t.elapsed_ms.is_some() {
+            self.elapsed_ms = t.elapsed_ms;
+        }
         c
     }
 
@@ -1555,6 +1817,8 @@ impl DesktopState {
         self.alert.clear();
         self.phase = None;
         self.runtime = None;
+        self.stopping = false;
+        self.elapsed_ms = None;
     }
 
     /// The page sent a steer, `text`, with line id `id`: its row, pending
@@ -1882,6 +2146,246 @@ mod tests {
         let c = feed(&mut s, &event("model call", json!({})));
         assert!(c.is_empty(), "{c:?}");
         assert_eq!(all(&mut s)["phase"], json!({"phase": "model", "turn": 3}));
+    }
+
+    #[test]
+    fn now_state_word_follows_run_start_approval_abort_and_run_end() {
+        // The risk (#828): the Now strip says `running` while the run waits
+        // on the person, or after Stop while it rolls back, so the person
+        // reads the one row meant to answer "what is happening now" wrong;
+        // or an ended run reads `done` or `failed` rather than run_end's own
+        // words and exit code (DESIGN.md §2.1). Every change to the panes
+        // the strip reads sends the strip again, so it never lags them.
+        let mut s = DesktopState::default();
+        let now = |s: &mut DesktopState| all(s)["now"].clone();
+        assert_eq!(now(&mut s)["word"], "idle");
+        assert_eq!(now(&mut s)["can_stop"], false);
+
+        let c = feed(&mut s, &run_start("p1"));
+        assert!(c.has(Pane::Now) && c.has(Pane::Where), "{c:?}");
+        assert_eq!(now(&mut s)["state"], "running");
+        assert_eq!(now(&mut s)["word"], "running");
+        assert_eq!(now(&mut s)["model"], "scripted:x");
+        assert_eq!(now(&mut s)["can_stop"], true);
+        assert_eq!(all(&mut s)["where"]["root"], "/r");
+        assert_eq!(all(&mut s)["where"]["phase"], "none");
+
+        feed(&mut s, &event("run budget", json!({"max_iterations": 8})));
+        let c = feed(&mut s, &event("model call", json!({"turn": 2})));
+        assert!(
+            c.has(Pane::Now),
+            "a model call leaves the strip behind: {c:?}"
+        );
+        let v = now(&mut s);
+        assert_eq!(
+            (v["turn"].clone(), v["max_turns"].clone()),
+            (json!(2), json!(8))
+        );
+        assert_eq!(v["phase"], "model");
+        assert_eq!(v["tool"], Value::Null, "no tool while the model is called");
+        assert_eq!(all(&mut s)["where"]["phase"], "calling the model, turn 2");
+        feed(
+            &mut s,
+            &turn(json!({"turn": 2, "call": "edit a.py", "verdict": "None",
+                         "check_kind": "", "observation": "applied: true",
+                         "tool": "edit", "target": "a.py", "wrote": true,
+                         "model_ms": 900, "completion_tokens": 12})),
+        );
+        let v = now(&mut s);
+        assert_eq!(
+            (v["tool"].clone(), v["target"].clone()),
+            (json!("edit"), json!("a.py"))
+        );
+        let w = all(&mut s)["where"].clone();
+        assert_eq!(w["phase"], "ran edit, turn 2");
+        assert_eq!(
+            (w["model_ms"].clone(), w["completion_tokens"].clone()),
+            (json!(900), json!(12))
+        );
+
+        let c = s.update(Frame::ApprovalRequest(ApprovalRequest {
+            id: "q1".into(),
+            question: Some("Run bash?".into()),
+            detail: None,
+        }));
+        assert!(c.has(Pane::Now), "{c:?}");
+        let v = now(&mut s);
+        assert_eq!(
+            (v["state"].clone(), v["word"].clone()),
+            (json!("needs_you"), json!("needs you"))
+        );
+        assert_eq!(v["reason"], "Run bash?", "needs you says what it needs");
+        assert_eq!(all(&mut s)["where"]["phase"], "waiting on you");
+        // The answer taken, the run goes on.
+        feed(
+            &mut s,
+            &json!({"type": "response", "command": "approve", "success": true, "id": "q1",
+                    "data": {"approved": true}})
+            .to_string(),
+        );
+        assert_eq!(now(&mut s)["word"], "running");
+        assert_eq!(now(&mut s)["reason"], Value::Null);
+
+        // Stop: an abort forwarded is `stopping`, over a question waiting
+        // too, and Stop no longer applies; a refused one stops nothing.
+        s.update(Frame::ApprovalRequest(ApprovalRequest {
+            id: "q2".into(),
+            question: None,
+            detail: None,
+        }));
+        let c = s.abort_sent();
+        assert!(c.has(Pane::Now), "{c:?}");
+        assert_eq!(now(&mut s)["word"], "stopping");
+        assert_eq!(now(&mut s)["can_stop"], false);
+        assert_eq!(all(&mut s)["where"]["phase"], "rolling back");
+        let c = feed(
+            &mut s,
+            &json!({"type": "response", "command": "abort", "success": false, "id": "ab",
+                    "error": "no run in flight"})
+            .to_string(),
+        );
+        assert!(c.has(Pane::Now), "{c:?}");
+        assert_eq!(now(&mut s)["word"], "needs you");
+        s.abort_sent();
+        let c = feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "interrupted", "exit": 130,
+                    "restored": true, "id": "p1"})
+            .to_string(),
+        );
+        assert!(c.has(Pane::Now) && c.has(Pane::Where), "{c:?}");
+        let v = now(&mut s);
+        assert_eq!(v["state"], "ended");
+        assert_eq!(v["word"], "ended · interrupted");
+        assert_eq!(v["exit"], 130, "an ended run carries its exit code");
+        assert_eq!(v["can_stop"], false);
+        assert_eq!(
+            (v["turn"].clone(), v["phase"].clone()),
+            (Value::Null, Value::Null)
+        );
+        assert_eq!(all(&mut s)["where"]["phase"], "ended");
+        // run_end's word as the outcome pane spells it, never done/failed.
+        feed(&mut s, &run_start("p2"));
+        assert_eq!(now(&mut s)["word"], "running", "a new run is not stopping");
+        feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "not_converged", "exit": 1, "id": "p2"})
+                .to_string(),
+        );
+        assert_eq!(now(&mut s)["word"], "ended · not converged");
+        // A child that exits mid-run leaves no run, and nothing stopping.
+        feed(&mut s, &run_start("p3"));
+        s.abort_sent();
+        let c = s.child_exited();
+        assert!(c.has(Pane::Now), "{c:?}");
+        assert_eq!(now(&mut s)["word"], "idle");
+        assert_eq!(now(&mut s)["model"], Value::Null, "the last child's model");
+        assert_eq!(
+            all(&mut s)["where"]["root"],
+            Value::Null,
+            "the last child's root"
+        );
+        assert_eq!(s.abort_unsent(), Changed::of(&[Pane::Now, Pane::Where]));
+    }
+
+    #[test]
+    fn now_clock_is_the_engines_elapsed_or_absent() {
+        // The risk (#828, ADR 0048 §8): the strip draws a clock the desktop
+        // keeps, which counts the time a question waited on the person
+        // that trellis's own budget leaves out, and so disagrees with the
+        // budget it is shown beside; or a run its loop did not finish shows
+        // the last turn's figure as the run's (run_end leaves elapsed_ms
+        // out, "never a partial figure"). The clock is only ever the last
+        // elapsed_ms trellis sent, and null with the reason otherwise.
+        let mut s = DesktopState::default();
+        let now = |s: &mut DesktopState| all(s)["now"].clone();
+        let v = now(&mut s);
+        assert_eq!(
+            (v["elapsed"].clone(), v["elapsed_why"].clone()),
+            (Value::Null, Value::Null),
+            "idle shows no clock at all"
+        );
+
+        feed(&mut s, &run_start("p1"));
+        let v = now(&mut s);
+        assert_eq!(
+            v["elapsed"],
+            Value::Null,
+            "no figure yet is none, never 00:00"
+        );
+        assert_eq!(
+            v["elapsed_why"],
+            "trellis has sent no elapsed time for this run yet"
+        );
+
+        let c = feed(
+            &mut s,
+            &event("model call", json!({"turn": 1, "elapsed_ms": 1999})),
+        );
+        assert!(c.has(Pane::Now), "{c:?}");
+        assert_eq!(
+            now(&mut s)["elapsed"],
+            "00:01",
+            "cut down, never rounded up"
+        );
+        assert_eq!(now(&mut s)["elapsed_why"], Value::Null);
+        feed(
+            &mut s,
+            &turn(
+                json!({"turn": 1, "call": "read_file a.py", "verdict": "None",
+                         "check_kind": "", "observation": "x", "tool": "read_file",
+                         "target": "a.py", "wrote": false, "elapsed_ms": 125_000}),
+            ),
+        );
+        assert_eq!(now(&mut s)["elapsed"], "02:05");
+        // An event without the figure leaves the last one: between events
+        // the strip shows what trellis last said, and nothing ticks.
+        feed(&mut s, &event("model call", json!({"turn": 2})));
+        assert_eq!(now(&mut s)["elapsed"], "02:05");
+        assert_eq!(s.elapsed_ms, Some(125_000));
+        feed(
+            &mut s,
+            &event("model call", json!({"turn": 3, "elapsed_ms": 3_725_000})),
+        );
+        assert_eq!(now(&mut s)["elapsed"], "1:02:05");
+
+        // run_end with its figure: the run's whole spend.
+        feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p1",
+                    "elapsed_ms": 3_726_000})
+            .to_string(),
+        );
+        assert_eq!(now(&mut s)["elapsed"], "1:02:06");
+
+        // run_end without it: absent, with why, not the last turn's figure.
+        feed(&mut s, &run_start("p2"));
+        assert_eq!(
+            now(&mut s)["elapsed"],
+            Value::Null,
+            "a new run starts with none"
+        );
+        feed(
+            &mut s,
+            &event("model call", json!({"turn": 1, "elapsed_ms": 4000})),
+        );
+        assert_eq!(now(&mut s)["elapsed"], "00:04");
+        feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "interrupted", "exit": 130, "id": "p2"})
+                .to_string(),
+        );
+        let v = now(&mut s);
+        assert_eq!(
+            v["elapsed"],
+            Value::Null,
+            "a partial figure passed off as the run's"
+        );
+        assert_eq!(
+            v["elapsed_why"],
+            "run_end carried no elapsed time: trellis sends none for a run its loop did not finish"
+        );
+        assert_eq!(s.elapsed_ms, None);
     }
 
     #[test]
@@ -2461,7 +2965,8 @@ mod tests {
             .to_string()
         };
         let c = feed(&mut s, &reply(json!("2, native tool calls")));
-        assert_eq!(c, Changed::of(&[Pane::Tier]));
+        // The tier is also the Now strip's and Where it is's (#828).
+        assert_eq!(c, Changed::of(&[Pane::Tier, Pane::Now, Pane::Where]));
         assert_eq!(all(&mut s)["tier"], "2, native tool calls");
         // A run's start does not clear it: only trellis's next answer does.
         feed(&mut s, &run_start("p"));
@@ -2469,7 +2974,7 @@ mod tests {
         // null is reported as null, not as the last tier or a guess.
         assert_eq!(
             feed(&mut s, &reply(Value::Null)),
-            Changed::of(&[Pane::Tier])
+            Changed::of(&[Pane::Tier, Pane::Now, Pane::Where])
         );
         assert_eq!(all(&mut s)["tier"], Value::Null);
         // Another command's answer, or a refused get_state, is no tier.
@@ -3437,7 +3942,8 @@ mod tests {
         match field {
             "turn" | "resolved" | "candidates" | "unresolved" | "prompt_bytes" | "model_ms"
             | "completion_tokens" | "queue_wait_ms" | "max_iterations" | "after_step"
-            | "version" | "exit" | "kv_slots" | "tiers_vram" | "tiers_ram" | "tiers_disk" => {
+            | "version" | "exit" | "kv_slots" | "tiers_vram" | "tiers_ram" | "tiers_disk"
+            | "elapsed_ms" => {
                 *n += 1;
                 json!(*n)
             }
@@ -3492,27 +3998,26 @@ mod tests {
 
         // (what, the record's fields with their values, how to wrap it)
         let mut build: Vec<(String, Map<String, Value>, bool)> = Vec::new();
-        let later = rpc["not_every_client"]["events"]
-            .as_object()
-            .expect("rpc.not_every_client.events");
+        // The fields not every client reads yet, but whose `read_by` names
+        // the desktop: a claim the contract makes for this parser, held here
+        // as the rest are. They go on the same record, since without its
+        // `always` fields the line is no event or framing record at all.
+        let ours = |extra: &Value| -> Vec<String> {
+            fields_of(extra)
+                .into_iter()
+                .filter(|f| {
+                    extra["read_by"][f.as_str()]
+                        .as_array()
+                        .is_some_and(|by| by.contains(&json!("desktop")))
+                })
+                .collect()
+        };
+        let later = &rpc["not_every_client"];
         for (name, spec) in rpc["events"].as_object().expect("rpc.events") {
-            // The fields not every client reads yet, but whose `read_by`
-            // names the desktop: a claim the contract makes for this parser,
-            // held here as the rest are. They go on the same record, since
-            // without its `always` fields the line is no event at all.
             let mut fields: Vec<(String, &Value)> =
                 fields_of(spec).into_iter().map(|f| (f, spec)).collect();
-            if let Some(extra) = later.get(name) {
-                fields.extend(
-                    fields_of(extra)
-                        .into_iter()
-                        .filter(|f| {
-                            extra["read_by"][f.as_str()]
-                                .as_array()
-                                .is_some_and(|by| by.contains(&json!("desktop")))
-                        })
-                        .map(|f| (f, extra)),
-                );
+            if let Some(extra) = later["events"].get(name) {
+                fields.extend(ours(extra).into_iter().map(|f| (f, extra)));
             }
             let mut m = Map::new();
             for (f, spec) in fields {
@@ -3526,8 +4031,12 @@ mod tests {
             build.push((name.clone(), m, true));
         }
         for (ty, spec) in rpc["framing"].as_object().expect("rpc.framing") {
+            let mut fields = fields_of(spec);
+            if let Some(extra) = later["framing"].get(ty) {
+                fields.extend(ours(extra));
+            }
             let mut m = Map::new();
-            for f in fields_of(spec) {
+            for f in fields {
                 let v = if f == "type" {
                     json!(ty)
                 } else if BOOLEANS.contains(&f.as_str()) {
