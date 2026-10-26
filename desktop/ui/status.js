@@ -26,9 +26,7 @@
 // is trellis-supplied text, written through textContent only (ADR 0007,
 // S10).
 
-function str(v) {
-  return typeof v === "string" ? v : null;
-}
+import { str } from "./fmt.js";
 
 function show(doc, id, text) {
   doc.getElementById(id).textContent = text;

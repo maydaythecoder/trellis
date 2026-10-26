@@ -1315,11 +1315,14 @@ mod tests {
         drop(first);
         std::thread::sleep(Duration::from_millis(200));
         for _ in 0..3 {
-            sink.emit("rpc-human", json!("tick"));
+            sink.emit("overview-error", json!("tick"));
             std::thread::sleep(Duration::from_millis(50));
         }
         let got = until(&mut second, "data: \"tick\"\n");
-        assert!(got.contains("event: rpc-human\ndata: \"tick\"\n"), "{got}");
+        assert!(
+            got.contains("event: overview-error\ndata: \"tick\"\n"),
+            "{got}"
+        );
     }
 
     #[test]
@@ -1336,7 +1339,7 @@ mod tests {
         // fit, and a fourth does not.
         let quarter = "x".repeat(STREAM_BYTES / 4);
         for i in 0..5 {
-            sink.emit("rpc-human", json!(format!("{i} {quarter}")));
+            sink.emit("overview-error", json!(format!("{i} {quarter}")));
             let held = stalled.unsent.lock().unwrap().bytes();
             assert!(held <= STREAM_BYTES, "{held} bytes held after event {i}");
         }
@@ -1344,7 +1347,7 @@ mod tests {
         for i in 2..5 {
             let frame = stalled.next(Duration::ZERO).expect("a frame");
             assert!(
-                frame.starts_with(&format!("event: rpc-human\ndata: \"{i} x")),
+                frame.starts_with(&format!("event: overview-error\ndata: \"{i} x")),
                 "the oldest go first: {}",
                 &frame[..40]
             );
@@ -1352,7 +1355,7 @@ mod tests {
         }
         assert_eq!(stalled.next(Duration::ZERO), None);
         // Past the cap on its own: no page is sent it, cut or whole.
-        sink.emit("rpc-human", json!("y".repeat(STREAM_BYTES)));
+        sink.emit("overview-error", json!("y".repeat(STREAM_BYTES)));
         assert_eq!(stalled.next(Duration::ZERO), None);
         // The stream goes on with what comes next.
         sink.emit("view", json!({"running": true}));
@@ -1440,9 +1443,32 @@ mod tests {
         );
         // Every event name the core emits is one web.js hears from the
         // start, so an event heard before a module listens is kept for it.
+        let emitted = emitted_events();
+        let listed = code
+            .split("const EVENTS = [")
+            .nth(1)
+            .expect("web.js lists the events")
+            .split("];")
+            .next()
+            .unwrap();
+        let listed: BTreeSet<String> = listed
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            listed, emitted,
+            "web.js's EVENTS is every name the core emits"
+        );
+    }
+
+    /// Every event name an `emit(` in the core's sources names, tests
+    /// included, whether the name follows on the same line or the next.
+    fn emitted_events() -> BTreeSet<String> {
         let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut emitted = BTreeSet::new();
-        let mut files = vec![src_dir.clone()];
+        let mut files = vec![src_dir];
         while let Some(p) = files.pop() {
             if p.is_dir() {
                 files.extend(std::fs::read_dir(&p).unwrap().map(|e| e.unwrap().path()));
@@ -1464,22 +1490,34 @@ mod tests {
                 }
             }
         }
-        let listed = code
-            .split("const EVENTS = [")
-            .nth(1)
-            .expect("web.js lists the events")
-            .split("];")
-            .next()
-            .unwrap();
-        let listed: BTreeSet<String> = listed
-            .split('"')
-            .skip(1)
-            .step_by(2)
-            .map(str::to_string)
-            .collect();
-        assert_eq!(
-            listed, emitted,
-            "web.js's EVENTS is every name the core emits"
+        emitted
+    }
+
+    #[test]
+    fn every_emitted_event_has_a_listener_in_the_page() {
+        // The risk (#821): the core emits an event nothing listens for, as
+        // rpc-human and rpc-unparsed were, so the window carries it for
+        // nothing and web.js keeps a queue of it for the page's lifetime.
+        // Each name the core emits is one a page module (web.js aside, which
+        // relays every event) passes to `listen`.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
+        let mut heard = BTreeSet::new();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let p = entry.unwrap().path();
+            if p.extension().is_none_or(|x| x != "js") || p.ends_with("web.js") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&p).unwrap();
+            for part in text.split("listen(\"").skip(1) {
+                if let Some(name) = part.split('"').next() {
+                    heard.insert(name.to_string());
+                }
+            }
+        }
+        let unheard: Vec<String> = emitted_events().difference(&heard).cloned().collect();
+        assert!(
+            unheard.is_empty(),
+            "the core emits {unheard:?}, which no page module listens for"
         );
     }
 

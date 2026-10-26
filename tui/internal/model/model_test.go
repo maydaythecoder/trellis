@@ -12,6 +12,8 @@ import (
 
 	"github.com/maydaythecoder/trellis/tui/internal/frames"
 	"github.com/maydaythecoder/trellis/tui/internal/rpc"
+	"github.com/maydaythecoder/trellis/tui/internal/theme"
+	"github.com/maydaythecoder/trellis/tui/internal/theme/themetest"
 )
 
 // fresh is a model past its start-up commands, with its outbox empty.
@@ -457,5 +459,27 @@ func TestModelPasteArrivesAsOneKey(t *testing.T) {
 	k := probe.keys[0]
 	if !k.Paste || string(k.Runes) != "a\nb" {
 		t.Fatalf("got %+v", k)
+	}
+}
+
+// The theme the program built from the terminal reaches the screen and the
+// approval modal: both are painted with it, and with no theme nothing is
+// painted, as on a terminal with no colour (#841).
+func TestModelPaintsWithTheThemeItIsGiven(t *testing.T) {
+	th := theme.New(themetest.Renderer(t, "TrueColor", true))
+	m := New(Options{Theme: th})
+	m.TakeOutbox()
+	m.Update(windowSize(100, 30))
+	if v := m.View(); !strings.Contains(v, th.Line.Render("┌")) || !strings.Contains(v, th.InkSecondary.Render(" transcript ")) {
+		t.Fatalf("the screen is not painted with the theme:\n%q", v)
+	}
+	feed(m, approval("a1", "edit a.py", "+ one line"))
+	if v := m.View(); !strings.Contains(v, th.Line.Render("┌")) || !strings.Contains(v, th.Ink.Render("+ one line")) {
+		t.Fatalf("the modal is not painted with the theme:\n%q", v)
+	}
+	plain := fresh(t)
+	plain.Update(windowSize(100, 30))
+	if v := plain.View(); strings.Contains(v, "\x1b") {
+		t.Fatalf("with no theme the screen carries an escape sequence:\n%q", v)
 	}
 }

@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 	"unicode"
+
+	"github.com/maydaythecoder/trellis/tui/internal/theme"
+	"github.com/maydaythecoder/trellis/tui/internal/theme/themetest"
 )
 
 func u(n uint64) *uint64 { return &n }
@@ -325,7 +328,11 @@ func TestViewRadiusIsThreeCountsNeverARatio(t *testing.T) {
 	}
 }
 
-// No control character in served text reaches the screen, in any pane.
+// No control character in served text reaches the screen, in any pane or
+// in the approval modal: the only escape sequences drawn are the colours
+// the theme paints with (#841), at every colour depth and on either
+// background. Served text is made plain before it is painted, so what it
+// carried cannot move the cursor, clear the screen or recolour a row.
 func TestViewNoEscapeSequenceReachesTheScreen(t *testing.T) {
 	s := populated()
 	s.Transcript = append(s.Transcript, "checking\x1b[2K\x1b[Aconverged\r\x07 done")
@@ -334,13 +341,28 @@ func TestViewNoEscapeSequenceReachesTheScreen(t *testing.T) {
 	s.Actions = []Action{{Tool: "edit\x1b", Target: "\x9b2J", Wrote: true}}
 	s.Input = "typed\x1b"
 	s.Outcome = "failed: \x1b[1mbold"
-	out := Render(s, 100, 40)
-	for _, r := range out {
-		if r != '\n' && unicode.IsControl(r) {
-			t.Fatalf("control character %U reached the screen:\n%q", r, out)
+	for _, depth := range themetest.Depths {
+		for _, dark := range []bool{true, false} {
+			th := theme.New(themetest.Renderer(t, depth, dark))
+			s.Theme = th
+			screens := map[string]string{
+				"render": Render(s, 100, 40),
+				"modal":  Modal(th, "edit a\x1b[2J.py", "+ok\x1b]0;t\x07\n-\x9b2Jgone", 0, 100, 40),
+			}
+			for name, out := range screens {
+				rest := unpainted(th, out)
+				for _, r := range rest {
+					if r != '\n' && unicode.IsControl(r) {
+						t.Fatalf("%s, %s, dark %v: control character %U reached the screen:\n%q", name, depth, dark, r, out)
+					}
+				}
+				if depth == "TrueColor" && !strings.Contains(out, "\x1b[") {
+					t.Fatalf("%s, dark %v: nothing was painted at truecolor, so the check above proved nothing:\n%q", name, dark, out)
+				}
+			}
+			if !strings.Contains(unpainted(th, screens["render"]), "checking") {
+				t.Fatalf("%s, dark %v: the line's text was lost with its control characters:\n%s", depth, dark, screens["render"])
+			}
 		}
-	}
-	if !strings.Contains(out, "checking") {
-		t.Fatalf("%s", out)
 	}
 }
