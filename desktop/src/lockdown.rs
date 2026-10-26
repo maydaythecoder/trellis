@@ -1893,16 +1893,19 @@ mod tests {
         // the budget's live iteration count and the trail's measured turns.
         // The overview draws the trail's figure where it has one and says
         // "not measured" only for a null, and the mapping never fills it in.
+        // Since #909 the figure is a Stat: ds.js's figure draws it where it
+        // is a count and the dash, with the reason, where it is null.
         let overview = overview_code();
-        let turns = between(&overview, "[\"turns\",", "]");
         assert!(
-            turns.contains("isCount(t.turns) ? String(t.turns) : \"not measured\""),
-            "the turns row does not read the trail's figure: {turns}"
+            overview.contains(
+                r#"{ label: "turns", value: figure(doc, t.turns, "the trail's turns were not measured") }"#
+            ),
+            "the turns Stat does not read the trail's figure"
         );
         assert_eq!(
-            overview.matches("\"not measured\"").count(),
+            overview.matches("not measured").count(),
             1,
-            "\"not measured\" is said somewhere other than the turns row"
+            "\"not measured\" is said somewhere other than the turns Stat"
         );
         for file in ["render.js", "trails.js"] {
             assert!(
@@ -2880,9 +2883,10 @@ mod tests {
             .filter(|k| !js.contains(&format!(".{k}")))
             .collect();
         assert!(missing.is_empty(), "overview.js reads no {missing:?}");
+        // Drawn unreported, never as a figure (#909: a dash with the reason).
         for row in [
-            r#"["budget", "not reported in the overview"]"#,
-            r#"["approvals", "not reported in the overview"]"#,
+            r#"{ label: "budget", value: unreported(doc, "the overview carries no budget") }"#,
+            r#"{ label: "approvals", value: unreported(doc, "the overview carries no approvals") }"#,
         ] {
             assert!(js.contains(row), "overview.js lacks {row}");
         }
@@ -3316,6 +3320,12 @@ mod tests {
         ("start", "rpc.js"),
         ("onShown", "rpc.js"),
         ("runEnded", "rpc.js"),
+        ("dsStatus", "ds.js"),
+        ("unreported", "ds.js"),
+        ("figure", "ds.js"),
+        ("stat", "ds.js"),
+        ("stats", "ds.js"),
+        ("railRows", "ds.js"),
     ];
 
     /// The names a module defines at its top level, at the start of a
@@ -3389,6 +3399,220 @@ mod tests {
                 module == "rpc.js" || !code.contains(r#""run_end""#),
                 "{module} tests for run_end itself: use rpc.js's runEnded"
             );
+        }
+    }
+
+    /// `css` with its first `/* ... */` comment, and the line break after
+    /// it, removed: what is left of a stylesheet below its header.
+    fn below_first_comment(css: &str) -> &str {
+        let end = css.find("*/").expect("a header comment") + 2;
+        css[end..].strip_prefix('\n').unwrap_or(&css[end..])
+    }
+
+    #[test]
+    fn ds_css_is_the_design_systems_bundle() {
+        // The risk (#909): the page's copy of the design system's
+        // stylesheet drifting from the system's own, so the desktop draws a
+        // component the system no longer draws that way, or one edit lands
+        // in one copy only. Below each file's header comment the two are
+        // the same bytes, and the page loads the copy before its own rules.
+        let system = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../docs/design/system/components/bundle.css"),
+        )
+        .expect("the design system's bundle.css");
+        let copy = ui_file("ds.css");
+        assert!(
+            below_first_comment(&copy) == below_first_comment(&system),
+            "desktop/ui/ds.css differs from docs/design/system/components/bundle.css below its header: copy the file again"
+        );
+        let html = ui_file("index.html");
+        let ds = html
+            .find(r#"<link rel="stylesheet" href="ds.css">"#)
+            .expect("the page loads ds.css");
+        let own = html
+            .find(r#"<link rel="stylesheet" href="style.css">"#)
+            .expect("the page loads style.css");
+        assert!(
+            ds < own,
+            "style.css loads before ds.css, so the system's rules would win over the page's"
+        );
+        // A planted drift is caught.
+        let drifted = copy.replacen(".cd-stat {", ".cd-stat { color: red;", 1);
+        assert!(below_first_comment(&drifted) != below_first_comment(&system));
+    }
+
+    #[test]
+    fn ds_components_draw_the_bundles_markup() {
+        // The risk (#909): a component drawn with a class the system's
+        // stylesheet does not have, so it renders unstyled, or a level
+        // writing a component's markup itself, so two copies of a Stat or a
+        // Status drift apart. Every design-system class ds.js writes is one
+        // ds.css styles, and no other module writes one.
+        let ds_css = ui_file("ds.css");
+        let ui = ui_code();
+        let ds = &ui["ds.js"];
+        let mut written = BTreeSet::new();
+        for piece in ds.split(['"', '`', ' ']) {
+            // A class built from a value (`cd-status-${tone}`) ends at the
+            // `$` with a dash, and is not one name to look for.
+            let class = piece
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                .next()
+                .unwrap_or("");
+            if class.starts_with("cd-") && !class.ends_with('-') {
+                written.insert(class.to_string());
+            }
+        }
+        for want in [
+            "cd-status",
+            "cd-status-dot",
+            "cd-stat",
+            "cd-stat-label",
+            "cd-stat-value",
+            "cd-rail-row",
+            "cd-rail-meta",
+        ] {
+            assert!(written.contains(want), "ds.js no longer writes {want}");
+        }
+        for class in &written {
+            assert!(
+                ds_css.contains(&format!(".{class}")),
+                "ds.js writes {class}, which ds.css never styles"
+            );
+        }
+        for (module, code) in &ui {
+            if module == "ds.js" {
+                continue;
+            }
+            for class in [
+                "\"cd-stat",
+                "\"cd-status",
+                "\"cd-rail-row",
+                "`cd-status",
+                "`cd-stat",
+            ] {
+                assert!(
+                    !code.contains(class),
+                    "{module} writes {class} itself: draw it with ds.js"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_unreported_figure_is_a_dash_with_its_reason() {
+        // The risk (#909; DESIGN.md rule 2): a figure trellis did not report
+        // drawn as 0, or as a dash nobody can ask about, or as a dash a
+        // screen reader reads as "em dash". ds.js's unreported draws the
+        // dash hidden from assistive technology, says why as the title and
+        // as text a screen reader reads, and figure draws a count only when
+        // trellis reported one. No run pane falls back to 0.
+        let ds = code_of("ds.js");
+        let unreported = function_body(&ds, "unreported");
+        for want in [
+            "s.title = `not reported: ${why}`;",
+            r#"const dash = el(doc, "span", "—");"#,
+            r#"dash.setAttribute("aria-hidden", "true");"#,
+            r#"el(doc, "span", `not reported: ${why}`, "visually-hidden")"#,
+        ] {
+            assert!(unreported.contains(want), "unreported lacks {want}");
+        }
+        assert!(
+            function_body(&ds, "figure")
+                .contains("return isCount(v) ? String(v) : unreported(doc, why);"),
+            "figure draws something other than the count or the dash"
+        );
+        // A unit follows a figure, never a dash.
+        assert!(
+            function_body(&ds, "stat").contains(r#"if (unit && typeof value === "string")"#),
+            "a unit is drawn after a dash"
+        );
+        for name in ["render.js", "overview.js", "ds.js"] {
+            let code = code_of(name);
+            for bad in ["?? 0", "|| 0", "?? \"0\""] {
+                assert!(!code.contains(bad), "{name} falls back to 0: {bad}");
+            }
+        }
+        // The page draws no clock, so the budget's elapsed is the dash.
+        assert!(
+            function_body(&code_of("render.js"), "budget")
+                .contains(r#"{ label: "elapsed", value: unreported(doc,"#),
+            "the budget draws an elapsed time the core did not send"
+        );
+        let rules = css_rules();
+        let dash: Vec<String> = rules
+            .iter()
+            .filter(|(s, _)| s.trim() == ".unreported")
+            .map(|(_, d)| d.split_whitespace().collect())
+            .collect();
+        assert_eq!(dash.len(), 1, "one .unreported rule");
+        assert!(
+            dash[0].contains("color:var(--ink-muted)"),
+            "the dash is not muted: {}",
+            dash[0]
+        );
+    }
+
+    #[test]
+    fn model_chooser_opens_from_the_status_bar() {
+        // The risk (#909): the model chooser back on the stage, pushing
+        // every level below the fold at launch; a popover the keyboard
+        // cannot close; or one that closes for good, so a model can no
+        // longer be chosen. It is the status bar's last cell, a details
+        // served open (no model is chosen at launch), drawn over the stage
+        // and the scrim, and ESC closes it before it goes out a level.
+        let page = page();
+        let pane = index_of(&page, "model-pane");
+        assert_eq!(page[pane].tag, "details");
+        assert!(page[pane].attrs.contains_key("open"), "closed at launch");
+        let bar = (0..page.len())
+            .find(|&i| page[i].tag == "footer")
+            .expect("the status bar");
+        assert!(
+            within(&page, pane, bar),
+            "the model pane left the status bar"
+        );
+        assert!(
+            !within(&page, pane, index_of(&page, "stage")),
+            "the model pane is on the stage"
+        );
+        let summary = index_of(&page, "model-summary");
+        assert_eq!(page[summary].tag, "summary");
+        assert_eq!(page[summary].parent, Some(pane));
+        let js = code_of("model.js");
+        let close = between(&js, "onEscape(() => {", "});");
+        for want in [
+            "if (!p.pane.open) return false;",
+            "p.pane.open = false;",
+            "return true;",
+        ] {
+            assert!(close.contains(want), "model.js's ESC handler lacks {want}");
+        }
+        assert!(
+            js.contains(r#"import { onEscape } from "./keys.js";"#),
+            "model.js does not take ESC through keys.js"
+        );
+        let rules = css_rules();
+        let rule = |sel: &str| -> String {
+            rules
+                .iter()
+                .filter(|(s, _)| s.trim() == sel)
+                .map(|(_, d)| d.split_whitespace().collect::<String>())
+                .next()
+                .unwrap_or_else(|| panic!("no {sel} rule"))
+        };
+        let scrim = rule(".model-pop[open] > summary::before");
+        for want in ["position:fixed", "inset:0", "background:var(--scrim)"] {
+            assert!(scrim.contains(want), "the scrim lacks {want}: {scrim}");
+        }
+        let form = rule(".model-pop > .model-form");
+        for want in [
+            "position:fixed",
+            "background:var(--panel-raised)",
+            "box-shadow:var(--frame-strong)",
+        ] {
+            assert!(form.contains(want), "the popover lacks {want}: {form}");
         }
     }
 
@@ -3573,15 +3797,18 @@ mod tests {
                 "#{id} is not disabled as served"
             );
         }
-        // The model pane is open at launch, above every section, and holds
-        // what model.js draws into.
+        // The model pane is open at launch, in the status bar, where it
+        // opens over every level (#909), and holds what model.js draws into.
         let pane = index_of(&page, "model-pane");
         assert_eq!(page[pane].tag, "details");
         assert!(page[pane].attrs.contains_key("open"), "closed at launch");
-        let first_section = (0..page.len())
-            .find(|&i| page[i].tag == "section")
-            .expect("a section");
-        assert!(pane < first_section, "the model pane is below a section");
+        let bar = (0..page.len())
+            .find(|&i| page[i].tag == "footer")
+            .expect("the status bar");
+        assert!(
+            within(&page, pane, bar),
+            "the model pane left the status bar"
+        );
         let js = ui_file("model.js");
         for id in [
             "model-pane",
@@ -4274,20 +4501,22 @@ mod tests {
                 .expect("a labelled pane"),
         );
         assert_eq!(page[title].text.trim(), "Session tokens");
+        // Two Stats per model, never joined (#909), the model's name drawn
+        // as text.
         let render = ui_file("render.js");
         for want in [
-            "` · prompt ${notReported(m.prompt_tokens)}`",
-            "` · completion ${notReported(m.completion_tokens)}`",
-            "el(doc, \"code\", model)",
+            r#"{ label: "prompt", value: figure(doc, m.prompt_tokens, why), unit: "tok" }"#,
+            r#"{ label: "completion", value: figure(doc, m.completion_tokens, why), unit: "tok" }"#,
+            r#"el(doc, "code", model, "cut")"#,
         ] {
             assert!(render.contains(want), "render.js lacks {want}");
         }
         // A figure a run did not report is said to be, never drawn as 0:
-        // fmt.js's notReported, which render.js takes (#817).
+        // ds.js's figure draws the count, or unreported's dash (#909).
         assert!(
-            function_body(&code_of("fmt.js"), "notReported")
-                .contains("if (isCount(v)) return String(v);"),
-            "notReported draws something other than the figure"
+            function_body(&code_of("ds.js"), "figure")
+                .contains("return isCount(v) ? String(v) : unreported(doc, why);"),
+            "figure draws something other than the count or the dash"
         );
         let main = ui_file("main.js");
         for want in [
@@ -4408,7 +4637,6 @@ mod tests {
         for id in [
             "status-trellis",
             "status-root",
-            "status-model",
             "status-run",
             "status-child",
         ] {
@@ -4422,11 +4650,21 @@ mod tests {
             r#"listen("child-started""#,
             r#"listen("rpc-exited""#,
             r#"listen("no-child""#,
-            "m.source",
             "view.running === true",
             "version not reported",
         ] {
             assert!(status.contains(want), "status.js lacks {want}");
+        }
+        // The session's model and where it came from are the model pane's
+        // summary, the bar's last cell (#909), and its source is said as
+        // the view gave it or as not known, never guessed.
+        let model = ui_file("model.js");
+        for want in [
+            "const source = str(model.source);",
+            "(source not known)",
+            "(from ${source})",
+        ] {
+            assert!(model.contains(want), "model.js lacks {want}");
         }
         let settings = ui_file("settings.js");
         for want in [

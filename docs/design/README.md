@@ -8,7 +8,7 @@ a picture of the product as built; the pictures of the product are in
 | File | What it is | Ticket |
 |---|---|---|
 | `DESIGN.md` | What the interface is for (the conductor, change as the event, one view that burrows inward, lines and glyphs, two faces), the rules it keeps, where the brand book and the engine's rules differ, and the system: colour meanings and values, terminal colours, type, space, radius, regions, icons. Start here. | #786 |
-| `system/` | The owner's design system, vendored 2026-10-25: `README.md` (the brand book), `tokens.json` (the one source of every value), `faces.md` (TUI and desktop), `events.md` (event-to-mark intent), `components/<Name>.md` (one card per component; `bundle.css` is a reference neither client loads), `icons/` (31 icons) and `logos/` (the mark, wordmark, favicon and app icons). | #786 |
+| `system/` | The owner's design system, vendored 2026-10-25: `README.md` (the brand book), `tokens.json` (the one source of every value), `faces.md` (TUI and desktop), `events.md` (event-to-mark intent), `components/<Name>.md` (one card per component; `bundle.css` is the system's component stylesheet, which the desktop loads as `desktop/ui/ds.css`, #909), `icons/` (31 icons) and `logos/` (the mark, wordmark, favicon and app icons). | #786 |
 | `run-view-wireframe.html` | The run view, second pass: one self-contained page, opens from disk. Levels `run`, `code`, `summary`, `tui`; states `idle`, `running`, `waiting`, `paused`, `stopping`, `converged`, `not_converged`, `interrupted`, `error`; dark and light. | #786 |
 | `run-view-research-2026-10-25.md` | What sixteen agent harnesses and the oversight literature do for the same regions, with sources. Informs the wireframe; decides nothing on its own. | #786 |
 
