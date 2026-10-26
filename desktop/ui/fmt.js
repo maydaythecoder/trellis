@@ -1,8 +1,8 @@
 // The page's value readers and formatters, one copy each (#816). Every
 // figure here is one trellis reported; a figure it did not report is said
 // to be unreported and never drawn as 0 (ADR 0048 section 8;
-// desktop/CLAUDE.md). The copies modules still keep move here ticket by
-// ticket (#817 to #820).
+// desktop/CLAUDE.md). No other module keeps a copy of one
+// (`page_helpers_live_in_one_module_each`).
 
 // `v` when it is a string, else null: trellis- and trail-supplied fields
 // are read as data, and a field of the wrong type is treated as absent.

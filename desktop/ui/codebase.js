@@ -27,7 +27,8 @@
 // graph through `rpc_send` when the view is shown and what it holds is
 // stale: no graph yet, a new child, or a run that has ended since.
 
-import { el, svg } from "./dom.js";
+// make(doc, tag, attrs) is dom.js's svg: an SVG element with its attributes.
+import { el, svg as make } from "./dom.js";
 import { isCount, notReported, str } from "./fmt.js";
 import { send, start } from "./rpc.js";
 
@@ -50,13 +51,6 @@ const PAN = 0.1;
 // A pointer that moves less than this many pixels between down and up is a
 // click, not a drag.
 const DRAG_PX = 3;
-
-// An SVG element with `attrs` set, through dom.js's svg.
-function make(doc, tag, attrs) {
-  const e = svg(doc, tag);
-  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v));
-  return e;
-}
 
 // One string of the layout at its point, or nothing when the layout sent
 // no text or no position for it.

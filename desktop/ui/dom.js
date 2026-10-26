@@ -1,7 +1,7 @@
 // The page's DOM helpers, one copy each (#816). A module that draws imports
-// them from here; the copies modules still keep move here ticket by ticket
-// (#817 to #820), and `page_helpers_live_in_one_module_each` in
-// src/lockdown.rs names each helper's home and the copies not yet moved.
+// them from here, and `page_helpers_live_in_one_module_each` in
+// src/lockdown.rs fails on a second copy in any other module (#817 to #820
+// moved the copies modules kept).
 //
 // Every value reaches the DOM through textContent, createElement or
 // createElementNS: text that carries markup is shown as characters, never
@@ -24,10 +24,12 @@ export function muted(doc, tag, text) {
   return el(doc, tag, text, "muted");
 }
 
-// An SVG element; the caller sets its attributes with setAttribute, never
-// a style (the CSP's style-src 'self' refuses an inline one).
-export function svg(doc, tag) {
-  return doc.createElementNS(SVG, tag);
+// An SVG element with `attrs` set through setAttribute, never a style
+// (the CSP's style-src 'self' refuses an inline one).
+export function svg(doc, tag, attrs = {}) {
+  const e = doc.createElementNS(SVG, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v));
+  return e;
 }
 
 // `pane` replaced by `children`, or by one muted line saying it is empty,
