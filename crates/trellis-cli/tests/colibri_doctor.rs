@@ -555,7 +555,7 @@ fn doctor_tier_lines_on_colibri_begin_with_a_head_the_status_bar_contract_docume
     // report for colibri, by name.
     let c: serde_json::Value =
         serde_json::from_str(include_str!("client_contract.json")).expect("the contract is JSON");
-    let shape = &c["rpc"]["commands"]["get_state"]["data"]["tier_label"];
+    let shape = &c["rpc"]["responses"]["get_state"]["tier_label"];
     let sep = shape["detail_separator"]
         .as_str()
         .expect("the contract names the separator");
