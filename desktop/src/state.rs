@@ -28,7 +28,8 @@
 mod vault;
 
 use crate::atlas;
-use crate::capped::Capped;
+use crate::capped::{Capped, Item, cut};
+use crate::feed::{Feed, Row};
 use crate::frames::{ApprovalRequest, Frame, RunEnd, RuntimeIdentified, Turn};
 use crate::graph;
 use crate::queue;
@@ -227,6 +228,11 @@ impl Changed {
     pub fn everything() -> Self {
         Self::of(&PANES)
     }
+
+    /// Whether these are every pane.
+    pub fn is_everything(self) -> bool {
+        self == Self::everything()
+    }
 }
 
 /// What the run is on, from the last loop event that said (#615). Replies
@@ -263,6 +269,129 @@ struct Action {
 struct Check {
     kind: String,
     passed: bool,
+}
+
+/// What a transcript row came from (#827), as the design system's
+/// Transcript types its entries: the person's task and steers, the tools
+/// the run called, the checks trellis-checks ran, what trellis noted, and
+/// what it refused.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Kind {
+    Task,
+    Steer,
+    Tool,
+    Check,
+    Note,
+    Refusal,
+}
+
+impl Kind {
+    fn word(self) -> &'static str {
+        match self {
+            Kind::Task => "task",
+            Kind::Steer => "steer",
+            Kind::Tool => "tool",
+            Kind::Check => "check",
+            Kind::Note => "note",
+            Kind::Refusal => "refusal",
+        }
+    }
+}
+
+/// Where a steer the page sent stands (#827): sent and not yet carried by
+/// a model request; carried by the request after `after_step`, as rpc's
+/// answer to it says; or never carried, with trellis's reason.
+#[derive(Debug, Clone, PartialEq)]
+enum Delivery {
+    Pending,
+    After(u64),
+    Not(String),
+}
+
+/// The longest a steer's id or a reason it was not delivered is kept: a
+/// steer row's size is its text's, so these two are held short rather than
+/// counted (`Capped::change` refuses a change that moves a row's size).
+const STEER_FIELD_BYTES: usize = 256;
+
+/// How many lines of a tool's observation a row keeps to show on demand.
+const OBSERVATION_LINES: usize = 40;
+
+/// One row of the run's transcript (#827): its kind, the turn it belongs
+/// to, its text and what it shows on demand, sent to the page as the design
+/// system's Transcript draws an entry.
+#[derive(Debug, Clone, PartialEq)]
+struct Entry {
+    kind: Kind,
+    /// The turn it belongs to; `None` for a task, a steer, a refusal or a
+    /// note that came between turns.
+    turn: Option<u64>,
+    text: String,
+    /// A tool's observation, its first [`OBSERVATION_LINES`] lines.
+    detail: Option<String>,
+    /// A check row's verdict, from trellis-checks' `Verdict` and nothing
+    /// else (`check_row_comes_only_from_a_some_verdict`).
+    passed: Option<bool>,
+    /// A steer row's line id and where it stands.
+    steer: Option<(String, Delivery)>,
+}
+
+impl Entry {
+    fn new(kind: Kind, turn: Option<u64>, text: String) -> Self {
+        Self {
+            kind,
+            turn,
+            text,
+            detail: None,
+            passed: None,
+            steer: None,
+        }
+    }
+}
+
+impl Item for Entry {
+    fn bytes(&self) -> usize {
+        self.text.len() + self.detail.as_ref().map_or(0, String::len)
+    }
+
+    /// The text keeps half the room and the detail the rest, each cut with
+    /// the store's marker, so a long observation never pushes out the call
+    /// it belongs to.
+    fn fit(self, max: usize) -> Self {
+        if self.bytes() <= max {
+            return self;
+        }
+        let half = max / 2;
+        let text_room = match &self.detail {
+            Some(d) if d.len() < half => max - d.len(),
+            Some(_) => half,
+            None => max,
+        };
+        let text = self.text.fit(text_room);
+        let detail = self.detail.map(|d| d.fit(max - text.len()));
+        Self {
+            text,
+            detail,
+            ..self
+        }
+    }
+}
+
+impl Row for Entry {
+    fn to_json(&self) -> Map<String, Value> {
+        let mut m = Map::new();
+        m.insert("kind".into(), json!(self.kind.word()));
+        m.insert("turn".into(), json!(self.turn));
+        m.insert("text".into(), json!(self.text));
+        m.insert("detail".into(), json!(self.detail));
+        m.insert("passed".into(), json!(self.passed));
+        let delivery = self.steer.as_ref().map(|(_, d)| match d {
+            Delivery::Pending => json!({"state": "pending"}),
+            Delivery::After(n) => json!({"state": "delivered", "after_step": n}),
+            Delivery::Not(why) => json!({"state": "not_delivered", "why": why}),
+        });
+        m.insert("delivery".into(), delivery.unwrap_or(Value::Null));
+        m
+    }
 }
 
 /// The three counts a `blast_radius` turn reports. No ratio is kept or
@@ -640,8 +769,9 @@ impl SessionTokens {
 /// The desktop's run panes.
 #[derive(Debug, Default)]
 pub struct DesktopState {
-    /// The run's lines, oldest first.
-    transcript: Capped<TRANSCRIPT_CAP, TRANSCRIPT_BYTES>,
+    /// The run's typed rows, oldest first, each sent to the page once and
+    /// again only when it changes (#827).
+    transcript: Feed<TRANSCRIPT_CAP, TRANSCRIPT_BYTES, Entry>,
     actions: Vec<Action>,
     edits: Vec<String>,
     checks: Vec<Check>,
@@ -673,8 +803,8 @@ pub struct DesktopState {
     alert: Capped<1, ALERT_BYTES>,
     /// trellis's stderr lines, shown as human text and never read as data
     /// (ADR 0048 section 2, amended by ADR 0052), capped at [`STDERR_CAP`]
-    /// lines and [`STDERR_BYTES`] bytes.
-    stderr: Capped<STDERR_CAP, STDERR_BYTES>,
+    /// lines and [`STDERR_BYTES`] bytes, and sent as the transcript is.
+    stderr: Feed<STDERR_CAP, STDERR_BYTES, String>,
     /// The session's model; `None` until this child has taken one, which
     /// is what keeps prompt input shut (#564).
     model: Option<Chosen>,
@@ -715,12 +845,23 @@ impl DesktopState {
                 self.budget.max_turns = max_iterations;
                 Changed::of(&[Pane::Budget])
             }
+            // The loop's word that a model request carried a steer: the
+            // oldest steer row still pending is the one it carried. rpc's
+            // answer to that steer's id says the same, and settles it.
             Frame::SteerDelivered { after_step } => {
-                self.push_line(match after_step {
-                    Some(n) => format!("· steer delivered after step {n}"),
-                    None => "· steer delivered".to_string(),
-                });
-                Changed::of(&[Pane::Transcript])
+                let Some(after) = after_step else {
+                    return Changed::default();
+                };
+                let pending = |e: &Entry| matches!(&e.steer, Some((_, Delivery::Pending)));
+                let oldest = self
+                    .transcript
+                    .rows()
+                    .find(|e| pending(e))
+                    .map(|e| e.steer.clone());
+                match oldest.flatten() {
+                    Some((id, _)) => self.deliver(&id, Delivery::After(after)),
+                    None => Changed::default(),
+                }
             }
             Frame::RuntimeIdentified(r) => {
                 self.runtime = Some(r);
@@ -731,7 +872,7 @@ impl DesktopState {
                 self.running = true;
                 let mut c = Changed::of(&RUN_PANES);
                 if let Some(task) = s.task {
-                    self.push_line(format!("▸ {task}"));
+                    self.transcript.push(Entry::new(Kind::Task, None, task));
                     c = c.with(Pane::Transcript);
                 }
                 c
@@ -854,13 +995,36 @@ impl DesktopState {
                     }
                     _ => {}
                 }
+                // A steer's answer says where its row stands: the step whose
+                // request carried it, or why none did, which the row says.
+                let mut steer_row = false;
+                if r.command.as_deref() == Some("steer")
+                    && let Some(id) = r.id.as_deref()
+                {
+                    let delivery =
+                        match (r.success, r.data.as_ref().and_then(|d| d.get("after_step"))) {
+                            (Some(true), Some(n)) if n.as_u64().is_some() => {
+                                n.as_u64().map(Delivery::After)
+                            }
+                            (Some(false), _) => Some(Delivery::Not(
+                                r.error.clone().unwrap_or_else(|| "no reason given".into()),
+                            )),
+                            _ => None,
+                        };
+                    if let Some(d) = delivery {
+                        let changed = self.deliver(id, d);
+                        steer_row = !changed.is_empty();
+                        c = c.and(changed);
+                    }
+                }
                 // A refused command is said in the transcript, unless a view
-                // asked and shows the reason itself; a successful answer
-                // changes no run pane but the tier a `get_state` reports.
-                let view_read = r
-                    .command
-                    .as_deref()
-                    .is_some_and(|c| VIEW_READS.contains(&c));
+                // asked and shows the reason itself, or it was a steer whose
+                // row says it; a successful answer changes no run pane but
+                // the tier a `get_state` reports.
+                let view_read = steer_row
+                    || r.command
+                        .as_deref()
+                        .is_some_and(|c| VIEW_READS.contains(&c));
                 let c = if r.success == Some(true) && r.command.as_deref() == Some("get_state") {
                     self.tier = r
                         .data
@@ -875,7 +1039,8 @@ impl DesktopState {
                         Some(e) => format!("{command} refused: {e}"),
                         None => format!("{command} refused"),
                     };
-                    self.push_line(format!("· {said}"));
+                    self.transcript
+                        .push(Entry::new(Kind::Refusal, None, said.clone()));
                     self.alert.push(said);
                     c.with(Pane::Transcript).with(Pane::Alert)
                 } else {
@@ -898,7 +1063,7 @@ impl DesktopState {
                 self.alert.push(format!(
                     "trellis rpc printed a line that is not a JSON object: {line}"
                 ));
-                self.push_line(line);
+                self.transcript.push(Entry::new(Kind::Note, None, line));
                 Changed::of(&[Pane::Transcript, Pane::Alert])
             }
             // trellis's human text: its own capped pane, apart from the
@@ -998,29 +1163,46 @@ impl DesktopState {
         let catalog = std::mem::take(&mut self.catalog);
         let model = self.model.take();
         let models = self.models.take();
+        // The two feeds are emptied but go on numbering their rows, so a
+        // page never takes a new row for one it drew before the clear.
+        let mut transcript = std::mem::take(&mut self.transcript);
+        transcript.clear();
+        let mut stderr = std::mem::take(&mut self.stderr);
+        stderr.clear();
         *self = Self {
             running,
             configured,
             catalog,
             model,
             models,
+            transcript,
+            stderr,
             ..Self::default()
         };
         Changed::of(&PANES)
     }
 
-    /// The panes in `changed`, as the page receives them.
-    pub fn view(&self, changed: Changed) -> Value {
+    /// The panes in `changed`, as the page receives them. A view of every
+    /// pane is for a page that has drawn nothing, or asked for the run again
+    /// (`get_state`), so it carries the whole transcript and stderr; any
+    /// other carries only their rows not sent yet, and marks them sent.
+    pub fn view(&mut self, changed: Changed) -> Value {
+        let whole = changed.is_everything();
         let mut v = Map::new();
         for p in PANES.into_iter().filter(|&p| changed.has(p)) {
-            v.insert(p.key().to_string(), self.pane(p));
+            let value = match p {
+                Pane::Transcript => self.transcript.view(whole),
+                Pane::Stderr => self.stderr.view(whole),
+                _ => self.pane(p),
+            };
+            v.insert(p.key().to_string(), value);
         }
         Value::Object(v)
     }
 
     fn pane(&self, p: Pane) -> Value {
         match p {
-            Pane::Transcript => Value::from_iter(self.transcript.iter()),
+            Pane::Transcript | Pane::Stderr => unreachable!("a feed is drawn by view"),
             Pane::Actions => Value::Array(
                 self.actions
                     .iter()
@@ -1105,7 +1287,6 @@ impl DesktopState {
                     .collect(),
             ),
             Pane::Alert => json!(self.alert.back()),
-            Pane::Stderr => Value::from_iter(self.stderr.iter()),
             Pane::Model => match &self.model {
                 Some(m) => json!({"spec": m.spec, "configured": m.configured,
                                   "saved_to": m.saved_to, "source": self.source(m)}),
@@ -1217,18 +1398,20 @@ impl DesktopState {
             _ => None,
         };
 
-        let mut line = format!("· {}", t.call);
-        match passed {
-            Some(true) => line.push_str("  ✓ check passed"),
-            Some(false) => line.push_str("  ✗ check FAILED"),
-            None => {}
-        }
-        self.push_line(line);
-        if let Some(obs) = t.observation.as_deref() {
-            for l in obs.lines().take(6) {
-                self.push_line(format!("    {l}"));
+        // The call as a tool row, its observation shown on demand; then,
+        // only for a verdict trellis-checks produced, a check row.
+        let mut tool = Entry::new(Kind::Tool, Some(t.turn), t.call.clone());
+        tool.detail = t.observation.as_deref().map(|obs| {
+            let mut lines = obs.lines();
+            let kept: Vec<&str> = lines.by_ref().take(OBSERVATION_LINES).collect();
+            let more = lines.count();
+            let mut d = kept.join("\n");
+            if more > 0 {
+                d.push_str(&format!("\n… {more} more line(s) not kept"));
             }
-        }
+            d
+        });
+        self.transcript.push(tool);
 
         // Only an applied edit, or a file `write_file` created, changed the
         // tree; the observation is the only place that says so. A refused
@@ -1266,6 +1449,10 @@ impl DesktopState {
                 .check_kind
                 .filter(|k| !k.is_empty())
                 .unwrap_or_else(|| "check".to_string());
+            let word = if passed { "passed" } else { "failed" };
+            let mut row = Entry::new(Kind::Check, Some(t.turn), format!("{kind} {word}"));
+            row.passed = Some(passed);
+            self.transcript.push(row);
             self.checks.push(Check { kind, passed });
             c = c.with(Pane::Checks);
         }
@@ -1304,8 +1491,44 @@ impl DesktopState {
         self.runtime = None;
     }
 
-    fn push_line(&mut self, line: String) {
-        self.transcript.push(line);
+    /// The page sent a steer, `text`, with line id `id`: its row, pending
+    /// until rpc's answer to that id says which request carried it. Called
+    /// before the line is written, so the answer, which a reader thread may
+    /// feed as soon as it is written, finds the row.
+    pub fn steer_sent(&mut self, id: &str, text: &str) -> Changed {
+        let mut row = Entry::new(Kind::Steer, None, text.to_string());
+        let id = cut(id.to_string(), id.len(), STEER_FIELD_BYTES);
+        row.steer = Some((id, Delivery::Pending));
+        self.transcript.push(row);
+        Changed::of(&[Pane::Transcript])
+    }
+
+    /// The steer sent with `id` could not be written to the child, for
+    /// `why`: it will never be answered, so its row says so.
+    pub fn steer_unsent(&mut self, id: &str, why: &str) -> Changed {
+        self.deliver(id, Delivery::Not(why.to_string()))
+    }
+
+    /// The newest steer row sent with `id` now stands at `delivery`; a
+    /// steer already settled keeps where it stood.
+    fn deliver(&mut self, id: &str, delivery: Delivery) -> Changed {
+        let delivery = match delivery {
+            Delivery::Not(why) => Delivery::Not(cut(why.clone(), why.len(), STEER_FIELD_BYTES)),
+            d => d,
+        };
+        let changed = self.transcript.change(
+            |e| matches!(&e.steer, Some((i, Delivery::Pending)) if i == id),
+            |e| {
+                if let Some((_, d)) = &mut e.steer {
+                    *d = delivery;
+                }
+            },
+        );
+        if changed {
+            Changed::of(&[Pane::Transcript])
+        } else {
+            Changed::default()
+        }
     }
 }
 
@@ -1339,8 +1562,21 @@ mod tests {
         s.update(parse_stdout(line))
     }
 
-    fn all(s: &DesktopState) -> Value {
+    fn all(s: &mut DesktopState) -> Value {
         s.view(Changed::of(&PANES))
+    }
+
+    /// A feed's rows in a view (`feed.rs`), oldest first.
+    fn rows(feed: &Value) -> Vec<Value> {
+        feed["rows"].as_array().cloned().unwrap_or_default()
+    }
+
+    /// A feed's rows' text.
+    fn texts(feed: &Value) -> Vec<String> {
+        rows(feed)
+            .iter()
+            .map(|r| r["text"].as_str().unwrap_or_default().to_string())
+            .collect()
     }
 
     fn run_start(id: &str) -> String {
@@ -1362,19 +1598,18 @@ mod tests {
             ),
         );
         assert!(c.has(Pane::Actions) && c.has(Pane::Transcript), "{c:?}");
-        let v = all(&s);
+        let v = all(&mut s);
         assert_eq!(
             v["actions"],
             json!([{"tool": "read_file", "target": "app/core.py", "wrote": false,
                     "prompt_bytes": null, "completion_tokens": null}])
         );
         assert_eq!(
-            v["transcript"],
-            json!([
-                "· read_file app/core.py",
-                "    def f():",
-                "        return 1"
-            ])
+            rows(&v["transcript"]),
+            [
+                json!({"seq": 0, "kind": "tool", "turn": 1, "text": "read_file app/core.py",
+                    "detail": "def f():\n    return 1", "passed": null, "delivery": null})
+            ]
         );
         assert_eq!(v["checks"], json!([]), "verdict None ran no check");
     }
@@ -1399,7 +1634,7 @@ mod tests {
                          "observation": "applied: false"}),
             ),
         );
-        let v = all(&s);
+        let v = all(&mut s);
         assert_eq!(v["actions"].as_array().unwrap().len(), 2, "{v}");
         assert_eq!(v["actions"][0]["wrote"], false);
         assert_eq!(v["edits"], json!([]), "{v}");
@@ -1411,7 +1646,7 @@ mod tests {
                          "observation": "applied: true (+1 -1)"}),
             ),
         );
-        let v = all(&s);
+        let v = all(&mut s);
         assert_eq!(v["actions"].as_array().unwrap().len(), 3);
         assert_eq!(v["actions"][2]["wrote"], true);
         assert_eq!(v["edits"], json!(["a.py"]));
@@ -1429,17 +1664,22 @@ mod tests {
                          "check_kind": "Typecheck", "observation": "1 error"}),
             ),
         );
-        let v = all(&s);
+        let v = all(&mut s);
         assert_eq!(
             v["checks"],
             json!([{"kind": "Typecheck", "result": "failed"}])
         );
-        assert!(
-            v["transcript"][0]
-                .as_str()
-                .unwrap()
-                .ends_with("check FAILED"),
-            "{v}"
+        // The tool row, then a check row carrying the verdict.
+        let t = rows(&v["transcript"]);
+        assert_eq!(t.len(), 2, "{v}");
+        assert_eq!(
+            (&t[1]["kind"], &t[1]["text"], &t[1]["passed"], &t[1]["turn"]),
+            (
+                &json!("check"),
+                &json!("Typecheck failed"),
+                &json!(false),
+                &json!(1)
+            )
         );
 
         for verdict in [
@@ -1456,14 +1696,19 @@ mod tests {
                              "check_kind": "Tests", "observation": ""}),
                 ),
             );
-            assert_eq!(all(&s)["checks"], json!([]), "verdict {verdict}");
+            let v = all(&mut s);
+            assert_eq!(v["checks"], json!([]), "verdict {verdict}");
+            assert!(
+                rows(&v["transcript"]).iter().all(|r| r["kind"] != "check"),
+                "a check row with no verdict: {verdict}"
+            );
         }
         let mut s = DesktopState::default();
         feed(
             &mut s,
             &turn(json!({"turn": 1, "call": "run_checks a.py", "check_kind": "Tests"})),
         );
-        assert_eq!(all(&s)["checks"], json!([]), "a missing verdict");
+        assert_eq!(all(&mut s)["checks"], json!([]), "a missing verdict");
 
         let mut s = DesktopState::default();
         feed(
@@ -1474,7 +1719,7 @@ mod tests {
             ),
         );
         assert_eq!(
-            all(&s)["checks"],
+            all(&mut s)["checks"],
             json!([{"kind": "Tests", "result": "passed"}])
         );
     }
@@ -1502,14 +1747,18 @@ mod tests {
         // sent; `prompt_bytes` is never on it (client_contract.json).
         let mut s = DesktopState::default();
         feed(&mut s, &run_start("p1"));
-        assert_eq!(all(&s)["phase"], Value::Null, "nothing is on before a call");
+        assert_eq!(
+            all(&mut s)["phase"],
+            Value::Null,
+            "nothing is on before a call"
+        );
         let c = feed(&mut s, &event("model call", json!({"turn": 3})));
         assert!(c.has(Pane::Phase), "{c:?}");
-        assert_eq!(all(&s)["phase"], json!({"phase": "model", "turn": 3}));
+        assert_eq!(all(&mut s)["phase"], json!({"phase": "model", "turn": 3}));
         // Without a turn the event names nothing, and changes nothing.
         let c = feed(&mut s, &event("model call", json!({})));
         assert!(c.is_empty(), "{c:?}");
-        assert_eq!(all(&s)["phase"], json!({"phase": "model", "turn": 3}));
+        assert_eq!(all(&mut s)["phase"], json!({"phase": "model", "turn": 3}));
     }
 
     #[test]
@@ -1529,7 +1778,7 @@ mod tests {
         );
         assert!(c.has(Pane::Phase), "{c:?}");
         assert_eq!(
-            all(&s)["phase"],
+            all(&mut s)["phase"],
             json!({"phase": "tool", "turn": 1, "tool": "edit"})
         );
         feed(&mut s, &event("model call", json!({"turn": 2})));
@@ -1540,7 +1789,7 @@ mod tests {
                          "check_kind": "Tests", "observation": "3 passed"}),
             ),
         );
-        assert_eq!(all(&s)["phase"], json!({"phase": "checks", "turn": 2}));
+        assert_eq!(all(&mut s)["phase"], json!({"phase": "checks", "turn": 2}));
         // The governance audit is a run_checks the loop ran itself, under
         // the last call's number: checks too.
         feed(
@@ -1550,7 +1799,7 @@ mod tests {
                          "check_kind": "Governance", "observation": "VIOLATION"}),
             ),
         );
-        assert_eq!(all(&s)["phase"], json!({"phase": "checks", "turn": 2}));
+        assert_eq!(all(&mut s)["phase"], json!({"phase": "checks", "turn": 2}));
     }
 
     #[test]
@@ -1568,11 +1817,11 @@ mod tests {
             .to_string(),
         );
         assert!(c.has(Pane::Phase), "{c:?}");
-        assert_eq!(all(&s)["phase"], Value::Null);
+        assert_eq!(all(&mut s)["phase"], Value::Null);
         feed(&mut s, &event("model call", json!({"turn": 1})));
         let c = feed(&mut s, &run_start("p2"));
         assert!(c.has(Pane::Phase), "{c:?}");
-        assert_eq!(all(&s)["phase"], Value::Null);
+        assert_eq!(all(&mut s)["phase"], Value::Null);
     }
 
     #[test]
@@ -1582,7 +1831,11 @@ mod tests {
         // to the page, or a count carried under another number.
         let mut s = DesktopState::default();
         feed(&mut s, &run_start("p1"));
-        assert_eq!(all(&s)["runtime"], Value::Null, "nothing before the event");
+        assert_eq!(
+            all(&mut s)["runtime"],
+            Value::Null,
+            "nothing before the event"
+        );
         let c = feed(
             &mut s,
             &event(
@@ -1593,13 +1846,13 @@ mod tests {
         );
         assert!(c.has(Pane::Runtime), "{c:?}");
         assert_eq!(
-            all(&s)["runtime"],
+            all(&mut s)["runtime"],
             json!({"runtime": "colibri", "served": "glm-5.2", "kv_slots": 16,
                    "tiers_vram": 120, "tiers_ram": 2400, "tiers_disk": 17000})
         );
         // Three counts and nothing derived from them (ADR 0048 §8).
         let mut ks = Vec::new();
-        keys(&all(&s)["runtime"], &mut ks);
+        keys(&all(&mut s)["runtime"], &mut ks);
         assert!(
             !ks.iter().any(|k| {
                 let k = k.to_lowercase();
@@ -1612,7 +1865,7 @@ mod tests {
         // Without `served` the event names no runtime, and changes nothing.
         let c = feed(&mut s, &event("runtime identified", json!({"kv_slots": 1})));
         assert!(c.is_empty(), "{c:?}");
-        assert_eq!(all(&s)["runtime"]["served"], "glm-5.2");
+        assert_eq!(all(&mut s)["runtime"]["served"], "glm-5.2");
     }
 
     #[test]
@@ -1631,7 +1884,7 @@ mod tests {
         );
         assert!(c.has(Pane::Runtime), "{c:?}");
         assert_eq!(
-            all(&s)["runtime"],
+            all(&mut s)["runtime"],
             json!({"runtime": "colibri", "served": "glm-5.2", "kv_slots": null,
                    "tiers_vram": null, "tiers_ram": null, "tiers_disk": null})
         );
@@ -1644,11 +1897,11 @@ mod tests {
                        "tiers_vram": -1}),
             ),
         );
-        assert_eq!(all(&s)["runtime"]["kv_slots"], Value::Null);
-        assert_eq!(all(&s)["runtime"]["tiers_vram"], Value::Null);
+        assert_eq!(all(&mut s)["runtime"]["kv_slots"], Value::Null);
+        assert_eq!(all(&mut s)["runtime"]["tiers_vram"], Value::Null);
         let c = feed(&mut s, &run_start("p2"));
         assert!(c.has(Pane::Runtime), "{c:?}");
-        assert_eq!(all(&s)["runtime"], Value::Null);
+        assert_eq!(all(&mut s)["runtime"], Value::Null);
     }
 
     #[test]
@@ -1665,7 +1918,7 @@ mod tests {
             ),
         );
         assert!(c.has(Pane::Radius));
-        let v = all(&s);
+        let v = all(&mut s);
         assert_eq!(
             v["radius"],
             json!({"resolved": 4, "candidates": 2, "unresolved": 1})
@@ -1689,7 +1942,7 @@ mod tests {
             &mut s,
             &turn(json!({"turn": 1, "call": "blast_radius f", "resolved": 4, "candidates": 2})),
         );
-        assert_eq!(all(&s)["radius"], Value::Null);
+        assert_eq!(all(&mut s)["radius"], Value::Null);
     }
 
     #[test]
@@ -1705,7 +1958,7 @@ mod tests {
                          "check_kind": "", "observation": "", "prompt_bytes": 9800}),
             ),
         );
-        let v = all(&s);
+        let v = all(&mut s);
         assert_eq!(
             v["budget"],
             json!({"turn": 1, "max_turns": 40, "prompt_bytes": 9800,
@@ -1721,7 +1974,7 @@ mod tests {
                          "check_kind": "", "observation": ""}),
             ),
         );
-        let v = all(&s);
+        let v = all(&mut s);
         assert_eq!(v["budget"]["turn"], 2);
         assert!(
             v["budget"]["prompt_bytes"].is_null(),
@@ -1748,7 +2001,7 @@ mod tests {
             .unwrap()
             .extend(usage.as_object().unwrap().clone());
         feed(&mut s, &turn(f));
-        all(&s)["budget"].clone()
+        all(&mut s)["budget"].clone()
     }
 
     #[test]
@@ -1818,7 +2071,7 @@ mod tests {
                          "check_kind": "", "observation": "", "prompt_bytes": 1200,
                          "completion_tokens": 5, "model_ms": 1000})),
         );
-        let v = all(&s);
+        let v = all(&mut s);
         assert_eq!(v["budget"]["completion_tokens"], 5, "{v}");
         assert_eq!(v["budget"]["prompt_bytes"], 1200, "{v}");
         let per_action: Vec<(Value, Value)> = v["actions"]
@@ -1867,13 +2120,13 @@ mod tests {
             &mut s,
             &json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p1"}).to_string(),
         );
-        let before = all(&s)["transcript"].as_array().unwrap().len();
+        let before = rows(&all(&mut s)["transcript"]).len();
 
         let c = feed(&mut s, &run_start("p2"));
         for p in RUN_PANES {
             assert!(c.has(p), "{p:?} not sent");
         }
-        let v = all(&s);
+        let v = all(&mut s);
         assert_eq!(v["actions"], json!([]));
         assert_eq!(v["edits"], json!([]));
         assert_eq!(v["checks"], json!([]));
@@ -1888,15 +2141,23 @@ mod tests {
         assert_eq!(v["outcome"], Value::Null);
         assert_eq!(v["running"], true);
         // The transcript runs on across runs, as the TUI's does.
-        assert_eq!(v["transcript"].as_array().unwrap().len(), before + 1);
-        assert_eq!(v["transcript"][before], "▸ change f");
+        let t = rows(&v["transcript"]);
+        assert_eq!(t.len(), before + 1);
+        assert_eq!(
+            (&t[before]["kind"], &t[before]["text"]),
+            (&json!("task"), &json!("change f"))
+        );
 
         let c = s.clear();
         for p in PANES {
             assert!(c.has(p), "{p:?} not sent");
         }
-        let v = all(&s);
-        assert_eq!(v["transcript"], json!([]));
+        let v = all(&mut s);
+        assert_eq!(rows(&v["transcript"]), Vec::<Value>::new());
+        assert_eq!(
+            v["transcript"]["whole"], true,
+            "the page drops what it drew"
+        );
         assert_eq!(
             v["running"], true,
             "clearing the view does not end the run in flight"
@@ -1916,7 +2177,7 @@ mod tests {
             .to_string(),
         );
         assert!(c.has(Pane::Outcome) && c.has(Pane::Running));
-        let v = all(&s);
+        let v = all(&mut s);
         assert_eq!(v["running"], false);
         assert_eq!(
             v["outcome"],
@@ -1932,7 +2193,7 @@ mod tests {
                     "id": "p2"})
             .to_string(),
         );
-        let v = all(&s);
+        let v = all(&mut s);
         assert_eq!(v["outcome"]["run_id"], Value::Null);
         assert_eq!(v["outcome"]["restored"], Value::Null);
         assert_eq!(v["outcome"]["error"], "boom");
@@ -1952,7 +2213,7 @@ mod tests {
         let c = feed(&mut s, &ask);
         assert!(c.has(Pane::Approvals));
         assert!(feed(&mut s, &ask).is_empty(), "a repeat opens nothing");
-        let v = all(&s);
+        let v = all(&mut s);
         assert_eq!(
             v["approvals"],
             json!([{"id": "approval-1", "question": "edit a.py (+1 -1)",
@@ -1975,7 +2236,7 @@ mod tests {
             .to_string(),
         );
         assert!(c.has(Pane::Approvals));
-        assert_eq!(all(&s)["approvals"], json!([]));
+        assert_eq!(all(&mut s)["approvals"], json!([]));
     }
 
     #[test]
@@ -1990,16 +2251,16 @@ mod tests {
         };
         let c = feed(&mut s, &reply(json!("2, native tool calls")));
         assert_eq!(c, Changed::of(&[Pane::Tier]));
-        assert_eq!(all(&s)["tier"], "2, native tool calls");
+        assert_eq!(all(&mut s)["tier"], "2, native tool calls");
         // A run's start does not clear it: only trellis's next answer does.
         feed(&mut s, &run_start("p"));
-        assert_eq!(all(&s)["tier"], "2, native tool calls");
+        assert_eq!(all(&mut s)["tier"], "2, native tool calls");
         // null is reported as null, not as the last tier or a guess.
         assert_eq!(
             feed(&mut s, &reply(Value::Null)),
             Changed::of(&[Pane::Tier])
         );
-        assert_eq!(all(&s)["tier"], Value::Null);
+        assert_eq!(all(&mut s)["tier"], Value::Null);
         // Another command's answer, or a refused get_state, is no tier.
         feed(&mut s, &reply(json!("scripted")));
         let other = json!({"type": "response", "command": "get_messages", "success": true,
@@ -2010,7 +2271,7 @@ mod tests {
                              "id": "x", "error": "busy"})
         .to_string();
         assert!(!feed(&mut s, &refused).has(Pane::Tier));
-        assert_eq!(all(&s)["tier"], "scripted");
+        assert_eq!(all(&mut s)["tier"], "scripted");
     }
 
     #[test]
@@ -2029,19 +2290,24 @@ mod tests {
         .to_string();
         let c = feed(&mut s, &refusal);
         assert_eq!(c, Changed::of(&[Pane::Atlas]), "{c:?}");
-        assert_eq!(all(&s)["atlas"]["history"]["error"], "unknown command");
-        assert_eq!(all(&s)["alert"], Value::Null);
+        assert_eq!(all(&mut s)["atlas"]["history"]["error"], "unknown command");
+        assert_eq!(all(&mut s)["alert"], Value::Null);
         // What `start` does for a new child.
         assert!(s.clear().has(Pane::Atlas));
-        assert_eq!(all(&s)["atlas"], atlas::Atlas::default().to_json());
-        assert_eq!(all(&s)["atlas"]["history"], Value::Null);
+        assert_eq!(all(&mut s)["atlas"], atlas::Atlas::default().to_json());
+        assert_eq!(all(&mut s)["atlas"]["history"], Value::Null);
         // The old child's question is not the new one's.
         assert!(!feed(&mut s, &refusal).has(Pane::Atlas));
     }
 
     fn response(command: &str, success: bool, data: Value) -> String {
+        response_to(command, "desktop-x", success, data)
+    }
+
+    /// `response` to the line sent with `id`.
+    fn response_to(command: &str, id: &str, success: bool, data: Value) -> String {
         let mut r = json!({"type": "response", "command": command, "success": success,
-                           "id": "desktop-x"});
+                           "id": id});
         if success {
             r["data"] = data;
         } else {
@@ -2072,7 +2338,7 @@ mod tests {
         );
         assert!(c.has(Pane::Undelivered), "{c:?}");
         assert_eq!(
-            all(&s)["undelivered"],
+            all(&mut s)["undelivered"],
             json!([
                 {"type": "follow_up", "message": "first"},
                 {"type": "steer", "message": "<b>second</b>"}
@@ -2085,7 +2351,7 @@ mod tests {
             &json!({"type": "run_end", "outcome": "interrupted", "exit": 130, "id": "p"})
                 .to_string(),
         );
-        assert_eq!(all(&s)["undelivered"].as_array().unwrap().len(), 2);
+        assert_eq!(all(&mut s)["undelivered"].as_array().unwrap().len(), 2);
         // A refused abort, or an answer with no list, keeps it as it was.
         assert!(
             !feed(
@@ -2095,11 +2361,11 @@ mod tests {
             .has(Pane::Undelivered)
         );
         assert!(!feed(&mut s, &response("abort", true, json!({}))).has(Pane::Undelivered));
-        assert_eq!(all(&s)["undelivered"].as_array().unwrap().len(), 2);
+        assert_eq!(all(&mut s)["undelivered"].as_array().unwrap().len(), 2);
         // The next run starts with none.
         let c = feed(&mut s, &run_start("p2"));
         assert!(c.has(Pane::Undelivered));
-        assert_eq!(all(&s)["undelivered"], json!([]));
+        assert_eq!(all(&mut s)["undelivered"], json!([]));
     }
 
     #[test]
@@ -2108,7 +2374,11 @@ mod tests {
         // listed, or a repository's template text is drawn as markup; or a
         // refused get_commands leaves the last repository's starters up.
         let mut s = DesktopState::default();
-        assert_eq!(all(&s)["starters"], Value::Null, "none before an answer");
+        assert_eq!(
+            all(&mut s)["starters"],
+            Value::Null,
+            "none before an answer"
+        );
         let c = feed(
             &mut s,
             &response(
@@ -2127,7 +2397,7 @@ mod tests {
         );
         assert!(c.has(Pane::Starters), "{c:?}");
         assert_eq!(
-            all(&s)["starters"],
+            all(&mut s)["starters"],
             json!([
                 {"name": "fix", "description": "Fix <i>it</i>"},
                 {"name": "review", "description": null}
@@ -2136,24 +2406,24 @@ mod tests {
         );
         // A run does not touch them: they are the repository's.
         feed(&mut s, &run_start("p"));
-        assert_eq!(all(&s)["starters"].as_array().unwrap().len(), 2);
+        assert_eq!(all(&mut s)["starters"].as_array().unwrap().len(), 2);
         // An answer with no prompts list offers none; a refused one too.
         feed(
             &mut s,
             &response("get_commands", true, json!({"commands": []})),
         );
-        assert_eq!(all(&s)["starters"], Value::Null);
+        assert_eq!(all(&mut s)["starters"], Value::Null);
         feed(
             &mut s,
             &response("get_commands", true, json!({"prompts": []})),
         );
-        assert_eq!(all(&s)["starters"], json!([]));
+        assert_eq!(all(&mut s)["starters"], json!([]));
         let c = feed(
             &mut s,
             &response("get_commands", false, json!("manifest unreadable")),
         );
         assert!(c.has(Pane::Starters) && c.has(Pane::Transcript), "{c:?}");
-        assert_eq!(all(&s)["starters"], Value::Null);
+        assert_eq!(all(&mut s)["starters"], Value::Null);
     }
 
     #[test]
@@ -2162,23 +2432,23 @@ mod tests {
         // a stdout line nothing could parse goes by with no sign on the
         // page, so the user waits on something that already failed.
         let mut s = DesktopState::default();
-        assert_eq!(all(&s)["alert"], Value::Null, "nothing failed yet");
+        assert_eq!(all(&mut s)["alert"], Value::Null, "nothing failed yet");
         let c = feed(
             &mut s,
             &response("set_model", false, json!("<b>bad</b> spec")),
         );
         assert!(c.has(Pane::Alert), "{c:?}");
-        assert_eq!(all(&s)["alert"], "set_model refused: <b>bad</b> spec");
+        assert_eq!(all(&mut s)["alert"], "set_model refused: <b>bad</b> spec");
         // A success says nothing, and leaves the last failure up.
         assert!(
             !feed(&mut s, &response("get_state", true, json!({"tier": null}))).has(Pane::Alert)
         );
-        assert_eq!(all(&s)["alert"], "set_model refused: <b>bad</b> spec");
+        assert_eq!(all(&mut s)["alert"], "set_model refused: <b>bad</b> spec");
 
         // A run's start is a fresh attempt: its failures are its own.
         let c = feed(&mut s, &run_start("p"));
         assert!(c.has(Pane::Alert));
-        assert_eq!(all(&s)["alert"], Value::Null);
+        assert_eq!(all(&mut s)["alert"], Value::Null);
         let c = feed(
             &mut s,
             &json!({"type": "run_end", "outcome": "error", "exit": 1,
@@ -2187,7 +2457,7 @@ mod tests {
         );
         assert!(c.has(Pane::Alert), "{c:?}");
         assert_eq!(
-            all(&s)["alert"],
+            all(&mut s)["alert"],
             "The run ended in error: a clean git worktree is required"
         );
         // A run that ended without an error raises none.
@@ -2197,18 +2467,18 @@ mod tests {
             &json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p2"}).to_string(),
         );
         assert!(!c.has(Pane::Alert));
-        assert_eq!(all(&s)["alert"], Value::Null);
+        assert_eq!(all(&mut s)["alert"], Value::Null);
 
         let c = feed(&mut s, "<script>not json</script>");
         assert!(c.has(Pane::Alert) && c.has(Pane::Transcript), "{c:?}");
         assert_eq!(
-            all(&s)["alert"],
+            all(&mut s)["alert"],
             "trellis rpc printed a line that is not a JSON object: <script>not json</script>"
         );
         // A frame of a type the desktop does not read is not a failure.
         feed(&mut s, &run_start("p3"));
         assert!(feed(&mut s, r#"{"type":"something_new"}"#).is_empty());
-        assert_eq!(all(&s)["alert"], Value::Null);
+        assert_eq!(all(&mut s)["alert"], Value::Null);
     }
 
     #[test]
@@ -2241,8 +2511,8 @@ mod tests {
                 if let Some(p) = own {
                     assert!(c.has(p), "{command}: its own view is told: {c:?}");
                 }
-                let v = all(&s);
-                assert_eq!(v["transcript"], json!([]), "{command}");
+                let v = all(&mut s);
+                assert_eq!(rows(&v["transcript"]), Vec::<Value>::new(), "{command}");
                 assert_eq!(v["alert"], Value::Null, "{command}");
             }
         }
@@ -2260,20 +2530,24 @@ mod tests {
         let mut s = DesktopState::default();
         let c = s.update(Frame::Human("warning: <i>human</i>".into()));
         assert_eq!(c, Changed::of(&[Pane::Stderr]));
-        let v = all(&s);
-        assert_eq!(v["stderr"], json!(["warning: <i>human</i>"]));
-        assert_eq!(v["transcript"], json!([]), "not in the transcript");
+        let v = all(&mut s);
+        assert_eq!(texts(&v["stderr"]), ["warning: <i>human</i>"]);
+        assert_eq!(
+            rows(&v["transcript"]),
+            Vec::<Value>::new(),
+            "not in the transcript"
+        );
         assert_eq!(v["alert"], Value::Null, "human text is not a failure");
         for i in 0..STDERR_CAP + 5 {
             s.update(Frame::Human(format!("line {i}")));
         }
-        let lines = all(&s)["stderr"].as_array().unwrap().clone();
+        let lines = texts(&all(&mut s)["stderr"]);
         assert_eq!(lines.len(), STDERR_CAP);
         assert_eq!(STDERR_CAP, 500);
         assert_eq!(lines[0], "line 5", "the oldest go first");
         // A run's start leaves it: it is the process's text, not the run's.
         feed(&mut s, &run_start("p"));
-        assert_eq!(all(&s)["stderr"].as_array().unwrap().len(), STDERR_CAP);
+        assert_eq!(rows(&all(&mut s)["stderr"]).len(), STDERR_CAP);
     }
 
     #[test]
@@ -2285,7 +2559,7 @@ mod tests {
         // enables the composer on the view's `model` alone, so it must stay
         // null until this child has taken a `set_model`.
         let mut s = DesktopState::default();
-        assert_eq!(all(&s)["model"], Value::Null, "shut at launch");
+        assert_eq!(all(&mut s)["model"], Value::Null, "shut at launch");
         assert!(!s.model_chosen());
         // What there is to choose from opens nothing.
         let c = feed(
@@ -2305,7 +2579,7 @@ mod tests {
         );
         assert_eq!(c, Changed::of(&[Pane::Models]));
         assert_eq!(
-            all(&s)["models"],
+            all(&mut s)["models"],
             json!({"configured": "vllm:http://127.0.0.1:8000#<b>q</b>",
                    "local": ["vllm:http://127.0.0.1:11434#qwen3:8b"],
                    "probed": [{"runtime": "Ollama",
@@ -2314,7 +2588,7 @@ mod tests {
                    "providers": [{"name": "mine", "key_variable": "TRELLIS_TEST_VAR"}]}),
             "text as text, and nothing it did not send whole"
         );
-        assert_eq!(all(&s)["model"], Value::Null, "a list is not a choice");
+        assert_eq!(all(&mut s)["model"], Value::Null, "a list is not a choice");
         // A refused choice, or an answer naming no spec, opens nothing.
         feed(
             &mut s,
@@ -2324,7 +2598,7 @@ mod tests {
             &mut s,
             &response("set_model", true, json!({"configured": true})),
         );
-        assert_eq!(all(&s)["model"], Value::Null);
+        assert_eq!(all(&mut s)["model"], Value::Null);
         assert!(!s.model_chosen());
         // The child's own yes opens it.
         let c = feed(
@@ -2339,7 +2613,7 @@ mod tests {
         assert!(c.has(Pane::Model), "{c:?}");
         assert!(s.model_chosen());
         assert_eq!(
-            all(&s)["model"],
+            all(&mut s)["model"],
             json!({"spec": "vllm:http://127.0.0.1:11434#qwen3:8b", "configured": false,
                    "saved_to": "/home/u/.config/trellis/config.toml", "source": "session"})
         );
@@ -2351,8 +2625,8 @@ mod tests {
         // The child's exit shuts it, and so does a new child's start.
         let c = s.child_exited();
         assert!(c.has(Pane::Model) && c.has(Pane::Models), "{c:?}");
-        assert_eq!(all(&s)["model"], Value::Null);
-        assert_eq!(all(&s)["models"], Value::Null);
+        assert_eq!(all(&mut s)["model"], Value::Null);
+        assert_eq!(all(&mut s)["models"], Value::Null);
         feed(
             &mut s,
             &response(
@@ -2362,7 +2636,7 @@ mod tests {
             ),
         );
         assert_eq!(
-            all(&s)["model"],
+            all(&mut s)["model"],
             json!({"spec": "scripted:x", "configured": true, "saved_to": null,
                    "source": null}),
             "no configured answer to name its source by"
@@ -2371,7 +2645,7 @@ mod tests {
         assert!(!s.model_chosen());
         // A refused list says why, in place of the list.
         feed(&mut s, &response("list_models", false, json!("bad config")));
-        assert_eq!(all(&s)["models"], json!({"error": "bad config"}));
+        assert_eq!(all(&mut s)["models"], json!({"error": "bad config"}));
     }
 
     #[test]
@@ -2394,7 +2668,7 @@ mod tests {
                 json!({"model": spec, "configured": configured, "saved_to": null}),
             )
         };
-        let source = |s: &DesktopState| all(s)["model"]["source"].clone();
+        let source = |s: &mut DesktopState| all(s)["model"]["source"].clone();
         for (repository, user, spec, want) in [
             (json!("r:x"), json!("u:y"), "r:x", json!("repository")),
             (Value::Null, json!("u:y"), "u:y", json!("user")),
@@ -2411,7 +2685,7 @@ mod tests {
             let mut s = DesktopState::default();
             feed(&mut s, &models(repository, user));
             feed(&mut s, &chose(spec, true));
-            assert_eq!(source(&s), want, "{spec:?}");
+            assert_eq!(source(&mut s), want, "{spec:?}");
         }
         // A spec set_model named is the session's, even the repository's,
         // which rpc then counts as the user's choice; the user's own spec
@@ -2419,11 +2693,11 @@ mod tests {
         let mut s = DesktopState::default();
         feed(&mut s, &models(json!("r:x"), json!("u:y")));
         feed(&mut s, &chose("r:x", false));
-        assert_eq!(source(&s), json!("session"));
+        assert_eq!(source(&mut s), json!("session"));
         feed(&mut s, &chose("u:y", false));
-        assert_eq!(source(&s), json!("user"));
+        assert_eq!(source(&mut s), json!("user"));
         feed(&mut s, &chose("u:y ", false));
-        assert_eq!(source(&s), json!("session"), "byte for byte");
+        assert_eq!(source(&mut s), json!("session"), "byte for byte");
     }
 
     #[test]
@@ -2432,7 +2706,7 @@ mod tests {
         // reported as the user's, or a catalogue figure trellis did not
         // send, or keeps the last child's list for a new repository.
         let mut s = DesktopState::default();
-        assert_eq!(all(&s)["available"], Value::Null);
+        assert_eq!(all(&mut s)["available"], Value::Null);
         let answer = |id: &str| {
             json!({"type": "response", "command": "get_available_models", "id": id,
                    "success": true,
@@ -2447,11 +2721,11 @@ mod tests {
         };
         // The page's own ask is not the core's: it changes nothing.
         assert!(!feed(&mut s, &answer("page")).has(Pane::Available));
-        assert_eq!(all(&s)["available"], Value::Null);
+        assert_eq!(all(&mut s)["available"], Value::Null);
         let c = feed(&mut s, &answer(MODELS_ID));
         assert!(c.has(Pane::Available), "{c:?}");
         assert_eq!(
-            all(&s)["available"],
+            all(&mut s)["available"],
             json!({"configured": {"repository": "r:x", "user": "u:y", "session": null},
                    "catalog": [
                        {"name": "bonsai-2-27b", "license": "Apache-2.0", "download_gib": 5.3,
@@ -2461,10 +2735,10 @@ mod tests {
         );
         // The child's exit, or a new child, empties it.
         s.child_exited();
-        assert_eq!(all(&s)["available"], Value::Null);
+        assert_eq!(all(&mut s)["available"], Value::Null);
         feed(&mut s, &answer(MODELS_ID));
         s.forget_models();
-        assert_eq!(all(&s)["available"], Value::Null);
+        assert_eq!(all(&mut s)["available"], Value::Null);
     }
 
     /// A `get_session_stats` answer as `rpc.rs` writes it, in the shape
@@ -2484,7 +2758,7 @@ mod tests {
         // model's prompt and completion joined into one figure, or a row
         // the answer did not send.
         let mut s = DesktopState::default();
-        assert_eq!(all(&s)["session_tokens"], Value::Null, "none asked yet");
+        assert_eq!(all(&mut s)["session_tokens"], Value::Null, "none asked yet");
         let c = feed(
             &mut s,
             &session_stats(json!([
@@ -2496,7 +2770,7 @@ mod tests {
         );
         assert_eq!(c, Changed::of(&[Pane::SessionTokens]));
         assert_eq!(
-            all(&s)["session_tokens"],
+            all(&mut s)["session_tokens"],
             json!({"models": [
                        {"model": "vllm:http://127.0.0.1:8000#qwen", "prompt_tokens": 2750,
                         "completion_tokens": 77},
@@ -2520,7 +2794,7 @@ mod tests {
                 {"model": "n"},
             ])),
         );
-        let rows = all(&s)["session_tokens"]["models"].clone();
+        let rows = all(&mut s)["session_tokens"]["models"].clone();
         for r in rows.as_array().unwrap() {
             assert_eq!(r["prompt_tokens"], Value::Null, "{rows}");
             assert_eq!(r["completion_tokens"], Value::Null, "{rows}");
@@ -2572,7 +2846,7 @@ mod tests {
             &session_stats(json!([{"model": "m", "prompt_tokens": 100,
                                     "completion_tokens": 3}])),
         );
-        let before = all(&s)["session_tokens"].clone();
+        let before = all(&mut s)["session_tokens"].clone();
         for line in [
             run_start("p"),
             turn(
@@ -2585,13 +2859,16 @@ mod tests {
         ] {
             assert!(!feed(&mut s, &line).has(Pane::SessionTokens), "{line}");
         }
-        assert_eq!(all(&s)["session_tokens"], before);
+        assert_eq!(all(&mut s)["session_tokens"], before);
         feed(
             &mut s,
             &session_stats(json!([{"model": "m", "prompt_tokens": 200,
                                     "completion_tokens": 6}])),
         );
-        assert_eq!(all(&s)["session_tokens"]["models"][0]["prompt_tokens"], 200);
+        assert_eq!(
+            all(&mut s)["session_tokens"]["models"][0]["prompt_tokens"],
+            200
+        );
     }
 
     #[test]
@@ -2606,7 +2883,7 @@ mod tests {
         );
         let c = s.child_exited();
         assert!(c.has(Pane::SessionTokens), "{c:?}");
-        assert_eq!(all(&s)["session_tokens"], Value::Null, "no rows");
+        assert_eq!(all(&mut s)["session_tokens"], Value::Null, "no rows");
         // A new child's view starts with none too.
         feed(
             &mut s,
@@ -2614,7 +2891,7 @@ mod tests {
                                     "completion_tokens": 1}])),
         );
         s.clear();
-        assert_eq!(all(&s)["session_tokens"], Value::Null);
+        assert_eq!(all(&mut s)["session_tokens"], Value::Null);
     }
 
     #[test]
@@ -2634,7 +2911,7 @@ mod tests {
         // Its pane says why; the run's alert does not (#308 review).
         assert!(c.has(Pane::SessionTokens) && !c.has(Pane::Alert), "{c:?}");
         assert_eq!(
-            all(&s)["session_tokens"],
+            all(&mut s)["session_tokens"],
             json!({"models": [], "runs_not_counted": null,
                    "error": "<i>trail</i> unreadable"})
         );
@@ -2643,7 +2920,7 @@ mod tests {
             &mut s,
             &response("get_session_stats", true, json!({"x": 1})),
         );
-        let v = all(&s)["session_tokens"].clone();
+        let v = all(&mut s)["session_tokens"].clone();
         assert_eq!(v["models"], json!([]), "{v}");
         assert!(
             v["error"].as_str().unwrap().contains("does not read"),
@@ -2670,13 +2947,13 @@ mod tests {
         .to_string();
         assert!(feed(&mut s, &answer).has(Pane::Approvals));
         assert!(!s.approval_open("approval-1"));
-        assert_eq!(all(&s)["approvals"].as_array().unwrap().len(), 1);
+        assert_eq!(all(&mut s)["approvals"].as_array().unwrap().len(), 1);
         // Refused (trellis no longer has it): closed too.
         let gone = json!({"type": "response", "command": "approve", "success": false,
                           "id": "approval-2", "error": "no open approval request"})
         .to_string();
         assert!(feed(&mut s, &gone).has(Pane::Approvals));
-        assert_eq!(all(&s)["approvals"], json!([]));
+        assert_eq!(all(&mut s)["approvals"], json!([]));
     }
 
     #[test]
@@ -2700,7 +2977,11 @@ mod tests {
         let text = Changed::of(&[Pane::Transcript, Pane::Alert]);
         let c = feed(&mut s, "<b>not json</b>\r\n");
         assert_eq!(c, text);
-        assert_eq!(all(&s)["transcript"], json!(["<b>not json</b>"]));
+        let t = rows(&all(&mut s)["transcript"]);
+        assert_eq!(
+            (&t[0]["kind"], &t[0]["text"]),
+            (&json!("note"), &json!("<b>not json</b>"))
+        );
         assert_eq!(feed(&mut s, "[1,2]"), text);
     }
 
@@ -2711,9 +2992,162 @@ mod tests {
         for i in 0..TRANSCRIPT_CAP + 5 {
             feed(&mut s, &format!("line {i}"));
         }
-        let t = all(&s)["transcript"].as_array().unwrap().clone();
+        let t = texts(&all(&mut s)["transcript"]);
         assert_eq!(t.len(), TRANSCRIPT_CAP);
         assert_eq!(t[0], "line 5", "the oldest go first");
+    }
+
+    #[test]
+    fn transcript_view_carries_only_new_entries_past_the_cap() {
+        // The risk (#827): every view carried the whole transcript, so once
+        // the cap was full each new line redrew two thousand rows on the
+        // page, and every view was a megabyte. Past the cap, a view that is
+        // not a full resend carries only the rows it adds, numbered on.
+        let mut s = DesktopState::default();
+        for i in 0..TRANSCRIPT_CAP + 5 {
+            feed(&mut s, &format!("line {i}"));
+        }
+        let full = all(&mut s);
+        assert_eq!(full["transcript"]["whole"], true);
+        assert_eq!(rows(&full["transcript"]).len(), TRANSCRIPT_CAP);
+        assert_eq!(full["transcript"]["keep"], TRANSCRIPT_CAP);
+        let c = feed(
+            &mut s,
+            &turn(
+                json!({"turn": 7, "call": "run_checks a.py", "verdict": "Some(true)",
+                         "check_kind": "Tests", "observation": "ok"}),
+            ),
+        );
+        let v = s.view(c);
+        let new = rows(&v["transcript"]);
+        assert_eq!(v["transcript"]["whole"], false);
+        assert_eq!(
+            new.len(),
+            2,
+            "the tool row and its check row, nothing older: {v}"
+        );
+        let first = TRANSCRIPT_CAP as u64 + 5;
+        assert_eq!(
+            (&new[0]["seq"], &new[1]["seq"]),
+            (&json!(first), &json!(first + 1))
+        );
+        assert_eq!(
+            (&new[0]["kind"], &new[1]["kind"]),
+            (&json!("tool"), &json!("check"))
+        );
+        // A view with nothing new carries no row.
+        let c = s.update(Frame::Human("aside".into()));
+        assert!(!c.has(Pane::Transcript));
+    }
+
+    #[test]
+    fn a_steer_row_carries_its_text_and_delivery_turn() {
+        // The risk (#827): a steer the person sent shown nowhere, or as
+        // "steer delivered" with neither its words nor which turn it
+        // followed; or one the run ended before delivering left pending, or
+        // said as a failure in the alert.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p"));
+        let c = s.steer_sent("composer-steer-1", "<b>keep</b> tokens.py");
+        assert_eq!(c, Changed::of(&[Pane::Transcript]));
+        let v = s.view(c);
+        let row = rows(&v["transcript"]).pop().unwrap();
+        assert_eq!(
+            (&row["kind"], &row["text"], &row["delivery"]),
+            (
+                &json!("steer"),
+                &json!("<b>keep</b> tokens.py"),
+                &json!({"state": "pending"})
+            )
+        );
+        let seq = row["seq"].clone();
+        // rpc's answer to its id: the step whose request carried it. The
+        // row is sent again, changed, under its own number.
+        let c = feed(
+            &mut s,
+            &response_to("steer", "composer-steer-1", true, json!({"after_step": 3})),
+        );
+        let v = s.view(c);
+        let row = rows(&v["transcript"]).pop().unwrap();
+        assert_eq!(row["seq"], seq, "the same row, changed");
+        assert_eq!(
+            row["delivery"],
+            json!({"state": "delivered", "after_step": 3})
+        );
+        // A steer the run ended before delivering: its row says so, with
+        // trellis's reason, and nothing else does.
+        s.steer_sent("composer-steer-2", "also run the benchmark");
+        let c = feed(
+            &mut s,
+            &response_to("steer", "composer-steer-2", false, json!("the run ended")),
+        );
+        assert!(!c.has(Pane::Alert), "{c:?}");
+        let v = all(&mut s);
+        let t = rows(&v["transcript"]);
+        assert_eq!(
+            t.iter().filter(|r| r["kind"] == "refusal").count(),
+            0,
+            "{v}"
+        );
+        let last = t.last().unwrap();
+        assert_eq!(
+            last["delivery"],
+            json!({"state": "not_delivered", "why": "the run ended"})
+        );
+        // The loop's own event marks the oldest steer still pending, and a
+        // settled one keeps where it stood.
+        s.steer_sent("composer-steer-3", "third");
+        s.steer_sent("composer-steer-4", "fourth");
+        feed(&mut s, &event("steer delivered", json!({"after_step": 5})));
+        let t = rows(&all(&mut s)["transcript"]);
+        let by = |text: &str| t.iter().find(|r| r["text"] == text).unwrap()["delivery"].clone();
+        assert_eq!(by("third"), json!({"state": "delivered", "after_step": 5}));
+        assert_eq!(by("fourth"), json!({"state": "pending"}));
+        assert_eq!(
+            by("<b>keep</b> tokens.py"),
+            json!({"state": "delivered", "after_step": 3})
+        );
+        // A steer the child never received says why, and is never answered.
+        s.steer_sent("composer-steer-5", "fifth");
+        s.steer_unsent(
+            "composer-steer-5",
+            "rpc_send: cannot write to trellis rpc: broken pipe",
+        );
+        let t = rows(&all(&mut s)["transcript"]);
+        assert_eq!(t.last().unwrap()["delivery"]["state"], "not_delivered");
+    }
+
+    #[test]
+    fn a_check_row_comes_only_from_a_verdict() {
+        // The risk (#827; ADR 0004): the typed transcript drawing a check
+        // row for a turn trellis-checks gave no verdict on, so the model's
+        // own claim, or a tool that merely ran, reads as a check result.
+        for (verdict, want) in [
+            (json!("Some(true)"), Some(true)),
+            (json!("Some(false)"), Some(false)),
+            (json!("None"), None),
+            (json!("Some(maybe)"), None),
+            (json!(true), None),
+            (Value::Null, None),
+        ] {
+            let mut s = DesktopState::default();
+            let mut fields = json!({"turn": 2, "call": "run_checks a.py", "check_kind": "Tests"});
+            if !verdict.is_null() {
+                fields["verdict"] = verdict.clone();
+            }
+            feed(&mut s, &turn(fields));
+            let checks: Vec<Value> = rows(&all(&mut s)["transcript"])
+                .into_iter()
+                .filter(|r| r["kind"] == "check")
+                .collect();
+            match want {
+                Some(passed) => {
+                    assert_eq!(checks.len(), 1, "{verdict}");
+                    assert_eq!(checks[0]["passed"], passed, "{verdict}");
+                }
+                None => assert!(checks.is_empty(), "a check row from {verdict}"),
+            }
+        }
     }
 
     #[test]
@@ -2730,10 +3164,20 @@ mod tests {
         let mut s = DesktopState::default();
         feed(&mut s, &line);
         s.update(Frame::Human(line.clone()));
-        let v = all(&s);
+        let v = all(&mut s);
         for (pane, kept, whole, cap) in [
-            ("transcript", &v["transcript"][0], &line, TRANSCRIPT_BYTES),
-            ("stderr", &v["stderr"][0], &line, STDERR_BYTES),
+            (
+                "transcript",
+                &v["transcript"]["rows"][0]["text"],
+                &line,
+                TRANSCRIPT_BYTES,
+            ),
+            (
+                "stderr",
+                &v["stderr"]["rows"][0]["text"],
+                &line,
+                STDERR_BYTES,
+            ),
             ("alert", &v["alert"], &alert, ALERT_BYTES),
         ] {
             let kept = kept.as_str().unwrap_or_else(|| panic!("{pane}: {kept}"));
@@ -2759,8 +3203,8 @@ mod tests {
         // The cut line fills the transcript's bytes, so the next line,
         // however short, pushes it out; a line within the caps is whole.
         feed(&mut s, "<b>short</b>");
-        let v = all(&s);
-        assert_eq!(v["transcript"], json!(["<b>short</b>"]));
+        let v = all(&mut s);
+        assert_eq!(texts(&v["transcript"]), ["<b>short</b>"]);
         assert_eq!(
             v["alert"],
             "trellis rpc printed a line that is not a JSON object: <b>short</b>"

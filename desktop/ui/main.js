@@ -119,13 +119,23 @@ async function main() {
   await wireModelPane(document, tauri);
   await wireStatus(document, tauri);
   wireRepositorySwitch(document, tauri);
+  // A feed that finds rows missing: this page fell behind its event stream
+  // and lost views (#827), so it asks once for the whole run again.
+  let resend = false;
+  const missing = () => {
+    resend = true;
+  };
   await tauri.event.listen("view", (event) => {
-    drawView(document, event.payload);
+    drawView(document, event.payload, missing);
     drawComposer(document, event.payload);
     drawModelPane(document, event.payload);
     drawSettings(document, event.payload);
     drawStatus(document, event.payload);
-    drawDialogs(document, event.payload);
+    drawDialogs(document, event.payload, missing);
+    if (resend) {
+      resend = false;
+      askState(tauri);
+    }
     // A run's end is a new newest trail, so the last run pane is stale. A
     // get_state reply resends the same outcome, which changes nothing.
     const o = event.payload && event.payload.outcome;
