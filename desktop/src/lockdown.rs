@@ -1668,7 +1668,7 @@ mod tests {
         let css = css_rules();
         assert!(
             css.iter()
-                .any(|(s, d)| s.trim() == ".failed" && d.contains("var(--failed)")),
+                .any(|(s, d)| s.trim() == ".failed" && d.contains("var(--down)")),
             "style.css has no .failed rule in the failed colour"
         );
     }
@@ -3758,8 +3758,8 @@ mod tests {
         );
         let decls: String = danger[0].1.split_whitespace().collect();
         assert!(
-            decls.contains("color:var(--failed)"),
-            ".composer button.danger {{ {} }} does not use var(--failed)",
+            decls.contains("color:var(--down)"),
+            ".composer button.danger {{ {} }} does not use var(--down)",
             danger[0].1
         );
         let apart = rules
@@ -4864,34 +4864,51 @@ mod tests {
         text
     }
 
-    /// The colour tokens of one theme: the custom properties of the `:root`
-    /// block at `text[from..]`, by name without the leading `--`.
-    fn css_tokens(text: &str, from: usize) -> BTreeMap<String, String> {
-        let block = &text[from..];
-        let start = block.find(":root").expect("a :root block");
-        let open = block[start..].find('{').expect(":root opens") + start;
-        let close = block[open..].find('}').expect(":root closes") + open;
-        block[open + 1..close]
-            .split(';')
-            .filter_map(|d| d.split_once(':'))
-            .filter_map(|(k, v)| {
-                k.trim()
-                    .strip_prefix("--")
-                    .map(|k| (k.to_string(), v.trim().to_string()))
-            })
-            .collect()
+    /// The custom properties of every rule whose selector, spaces dropped,
+    /// is `selector`, by name without the leading `--`; a later rule's value
+    /// wins, as in the cascade. The generated block and the desktop's own
+    /// tokens each write a rule per theme (#813).
+    fn css_tokens(text: &str, selector: &str) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        let mut rest = text;
+        while let Some(open) = rest.find('{') {
+            let head: String = rest[..open]
+                .rsplit(['}', '/'])
+                .next()
+                .unwrap_or("")
+                .split_whitespace()
+                .collect();
+            let close = rest[open..].find('}').expect("a rule closes") + open;
+            if head == selector {
+                for (k, v) in rest[open + 1..close]
+                    .split(';')
+                    .filter_map(|d| d.split_once(':'))
+                {
+                    if let Some(k) = k.trim().strip_prefix("--") {
+                        out.insert(k.to_string(), v.trim().to_string());
+                    }
+                }
+            }
+            rest = &rest[open + 1..];
+        }
+        out
     }
 
-    /// The light and dark token tables: the first `:root` block, and the one
-    /// inside the dark `@media` block.
+    /// The Daylight and Dark token tables. Dark is the default
+    /// (`:root,[data-theme=dark]`); Daylight is written twice, under
+    /// `[data-theme=light]` and the light colour-scheme query, and the two
+    /// must agree.
     fn css_themes() -> [(&'static str, BTreeMap<String, String>); 2] {
         let text = css_text();
-        let dark = text
-            .find("@media (prefers-color-scheme: dark)")
-            .expect("a dark theme block");
+        let light = css_tokens(&text, ":root:not([data-theme=dark])");
+        assert_eq!(
+            light,
+            css_tokens(&text, "[data-theme=light]"),
+            "Daylight under the query differs from [data-theme=light]"
+        );
         [
-            ("light", css_tokens(&text, 0)),
-            ("dark", css_tokens(&text, dark)),
+            ("light", light),
+            ("dark", css_tokens(&text, ":root,[data-theme=dark]")),
         ]
     }
 
@@ -4927,8 +4944,70 @@ mod tests {
     }
 
     #[test]
+    fn page_css_colours_come_from_the_tokens() {
+        // The risk (#813): a colour written into a rule, which a theme cannot
+        // change and tokens.json does not hold, so the two themes and the
+        // design system drift apart; and a drop shadow, which the brand book
+        // forbids (depth is a 1px frame). Outside the rules that define the
+        // tokens, no declaration names a colour of its own but the
+        // ::backdrop's commented var() fallback, and every box-shadow is an
+        // inset line or a frame token.
+        let named = [
+            "white", "black", "red", "green", "blue", "gray", "grey", "orange", "yellow", "silver",
+            "purple", "pink", "brown",
+        ];
+        let colour = |d: &str| {
+            let hex = d.char_indices().any(|(i, c)| {
+                c == '#'
+                    && d[i + 1..]
+                        .chars()
+                        .take_while(char::is_ascii_hexdigit)
+                        .count()
+                        >= 3
+            });
+            let function = [
+                "rgb(", "rgba(", "hsl(", "hsla(", "hwb(", "lab(", "lch(", "oklab(", "oklch(",
+                "color(",
+            ]
+            .iter()
+            .any(|f| d.contains(f));
+            let word = d
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+                .any(|w| named.contains(&w));
+            hex || function || word
+        };
+        let mut shadows = 0;
+        for (selector, decls) in css_rules() {
+            for d in decls.split(';').map(str::trim).filter(|d| !d.is_empty()) {
+                if d.starts_with("--") {
+                    continue;
+                }
+                if colour(d) {
+                    assert!(
+                        selector == ".approval::backdrop"
+                            && d == "background: var(--scrim, #000000b3)",
+                        "{selector} {{ {d} }} names a colour of its own"
+                    );
+                }
+                if let Some(v) = d.strip_prefix("box-shadow:") {
+                    shadows += 1;
+                    let v = v.trim();
+                    assert!(
+                        v.starts_with("inset ") || v == "none" || v.starts_with("var(--frame"),
+                        "{selector} {{ {d} }} draws a drop shadow"
+                    );
+                }
+            }
+        }
+        assert!(
+            shadows > 0,
+            "the scan found no box-shadow at all; it reads nothing"
+        );
+    }
+
+    #[test]
     fn field_contrast_token_meets_three_to_one_in_both_themes() {
-        // The risk (#647, UX-13): `--border` is a pane divider that measures
+        // The risk (#647, UX-13): `--line` is a pane divider that measures
         // 1.4:1 against the pane, so a field drawn with it is nearly
         // invisible when empty. Fields take `--control-border`, which must
         // clear WCAG's 3:1 non-text floor against both backgrounds a field
@@ -4944,7 +5023,7 @@ mod tests {
                     .as_str()
             };
             let control = token("control-border");
-            for bg in ["pane-bg", "bg"] {
+            for bg in ["panel", "ground"] {
                 let ratio = contrast(control, token(bg));
                 assert!(
                     ratio >= 3.0,
@@ -4955,8 +5034,8 @@ mod tests {
             // The case this fixes is still the case: the divider token alone
             // would fail, so a field that falls back to it is caught below.
             assert!(
-                contrast(token("border"), token("pane-bg")) < 3.0,
-                "{theme}: --border now clears 3:1; the field rule below may be redundant"
+                contrast(token("line"), token("panel")) < 3.0,
+                "{theme}: --line now clears 3:1; the field rule below may be redundant"
             );
         }
     }
@@ -4975,11 +5054,11 @@ mod tests {
 
     #[test]
     fn field_contrast_every_field_border_uses_the_control_token() {
-        // The risk: a field rule added later takes `--border` by habit (every
+        // The risk: a field rule added later takes `--line` by habit (every
         // other bordered box does) and ships a 1.4:1 field. Each rule whose
         // selector names a field and whose declarations set a border must
         // draw it with the control token; a rule shared with a non-field
-        // (the composer's select and button) may keep `--border` only if a
+        // (the composer's select and button) may keep `--line` only if a
         // field-only rule after it overrides the colour.
         let page = page();
         let field_ids: BTreeSet<String> = page
@@ -5011,7 +5090,7 @@ mod tests {
                 continue;
             }
             assert!(
-                decls_s.contains("var(--border)"),
+                decls_s.contains("var(--line)"),
                 "{selectors} draws a field border in a colour this test cannot measure: {decls}"
             );
             // The one allowed shape: the rule is shared with a non-field and a
@@ -5039,7 +5118,7 @@ mod tests {
         // The risk: `button:focus-visible` is the page's ring, but a field or
         // a `<summary>` it does not name falls back to the engine's own,
         // which differs between WebView2 and WebKitGTK. One rule names the
-        // four element types and draws the same `--focus` outline.
+        // four element types and draws the same `--signal-ring` outline.
         let rules = css_rules();
         for element in ["input", "select", "textarea", "summary"] {
             let want = format!("{element}:focus-visible");
@@ -5050,7 +5129,7 @@ mod tests {
             assert_eq!(matching.len(), 1, "one bare {want} rule: {matching:?}");
             let decls: String = matching[0].1.split_whitespace().collect();
             assert!(
-                decls.contains("outline:2pxsolidvar(--focus)"),
+                decls.contains("outline:2pxsolidvar(--signal-ring)"),
                 "{want} {{ {} }} is not the page's focus ring",
                 matching[0].1
             );
