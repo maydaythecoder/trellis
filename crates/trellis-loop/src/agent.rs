@@ -1261,6 +1261,13 @@ pub async fn run_seeded<M: Model>(
                 // function and the whole observation (#800), so a client
                 // need not parse `call` or search `observation` for it.
                 let action = turn_action(&call, &observation);
+                // What an applied edit changed (#802), from the write itself.
+                // Absent on every other turn, bash's included: what a command
+                // changed is carried back, not diffed here.
+                let edit = match &result {
+                    ToolResult::Edit(e) if e.applied => Some(&e.change),
+                    _ => None,
+                };
                 tracing::info!(
                     turn = iterations,
                     call = %turn_event_label(&call),
@@ -1270,6 +1277,10 @@ pub async fn run_seeded<M: Model>(
                     tool = %action.tool,
                     target = %action.target,
                     wrote = action.wrote,
+                    lines_added = edit.map(|e| e.lines_added),
+                    lines_removed = edit.map(|e| e.lines_removed),
+                    start_line = edit.map(|e| e.start_line),
+                    diff = edit.map(|e| e.diff.as_str()),
                     resolved = rad_resolved,
                     candidates = rad_candidates,
                     unresolved = rad_unresolved,

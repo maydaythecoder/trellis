@@ -257,6 +257,29 @@ fields are under `rpc.not_every_client` with empty `read_by`. Held by
 which compares every turn event of a scripted, governed run with the
 trail's actions, and by
 `rpc_every_turn_through_the_governance_audit_keeps_the_contract`.
+*Added 2026-10-26 (#802):* the `turn` of an edit that applied carries
+`lines_added`, `lines_removed`, `start_line` and `diff`, in every control
+mode. Until now a client learned what an edit changed only from
+`approval_request.detail`, which exists in approve mode alone and has no
+`@@` header or line numbers. The figures come from the text `apply_edit`
+read and wrote, not a second read of the file, through the hunk
+`preview_edit` also uses, so the counts on an approval question and on the
+turn agree; `EditOutcome` carries them in a field that is not serialized,
+so a `post_tool` hook's input is unchanged. `start_line` is the 1-based
+line, in the file before the edit, of the first line removed or replaced
+(found with `line_of`, which moved into trellis-loop for this). `diff` is a
+unified diff of that one hunk with a line of context either side, cut at a
+line past 8192 bytes (the cap a command's output is kept to) with a last
+line saying how many diff lines were cut; the counts stay the whole edit's.
+It is repository text and model output, and a client shows it as text and
+never interprets it (CLAUDE.md rule 10). The four fields are absent on
+every other turn, bash's included, since nothing diffs what a command
+changed. `approval_request.detail` is unchanged, and the trail records no
+line counts here; that is its own ticket. The fields are under
+`rpc.not_every_client` with empty `read_by`. Held by
+`edit_turn_carries_line_counts_and_a_unified_diff` in trellis-loop, and in
+`tests/modes.rs` by `rpc_stream_carries_every_field_the_desktop_reads` (auto
+mode) and `rpc_elapsed_excludes_time_waiting_on_an_approval` (approve mode).
 
 ### 7. Auditing Tauri's tree
 

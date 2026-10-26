@@ -2338,3 +2338,62 @@ async fn hook_payload_read_only_is_absent_for_a_custom_tool() {
         );
     }
 }
+
+#[tokio::test]
+async fn edit_turn_carries_line_counts_and_a_unified_diff() {
+    // The risk (#802): a client learned what an edit changed only from the
+    // approval question, so in auto mode, where nobody is asked, it had no
+    // line counts and no diff, and a diff it did see had no line numbers.
+    // The turn that applied the edit carries both, numbered from where the
+    // edit was. And a bash turn that changed a file carries none of them:
+    // nothing diffed what a command did, so a diff there would be invented.
+    let d = git_repo();
+    let tools = with_bash(&[], true, Duration::from_secs(30));
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_tools(tools.clone())
+        .with_gate(Box::new(BashPolicyGate::new(Vec::new(), true)))
+        .spawn();
+    let steps = serde_json::json!({"steps": [
+        {"tool": "edit", "path": "app/util.py",
+         "old": "    return 1", "new": "    x = 2\n    return x"},
+        {"tool": "bash", "command": "echo y >> app/util.py"},
+        {"tool": "done", "summary": "done"}
+    ]});
+    let mut m = script(&tools, &steps.to_string());
+    let events = crate::testutil::TurnEvents::default();
+    let guard = events.install();
+    let (_, t) = run("change it", &mut m, &orch, &budget()).await;
+    drop(guard);
+    let got = events.taken();
+    assert_eq!(got.len(), 2, "{got:?}");
+
+    let edit = &got[0];
+    let field = |name: &str| edit.get(name).map(String::as_str);
+    assert_eq!(field("wrote"), Some("true"), "{edit:?}");
+    assert_eq!(field("lines_added"), Some("2"), "{edit:?}");
+    assert_eq!(field("lines_removed"), Some("1"), "{edit:?}");
+    assert_eq!(field("start_line"), Some("2"), "{edit:?}");
+    // The header's old range opens a line above start_line: the context.
+    assert_eq!(
+        field("diff"),
+        Some(
+            "--- app/util.py\n+++ app/util.py\n@@ -1,2 +1,3 @@\n def helper():\n\
+             -    return 1\n+    x = 2\n+    return x\n"
+        ),
+        "{edit:?}"
+    );
+
+    // The bash turn ran and changed the file, and says nothing of lines.
+    assert!(
+        t.turns[1].changed.iter().any(|p| p == "app/util.py"),
+        "the command changed a file: {:?}",
+        t.turns[1]
+    );
+    for name in ["lines_added", "lines_removed", "start_line", "diff"] {
+        assert!(
+            !got[1].contains_key(name),
+            "bash turn has {name}: {:?}",
+            got[1]
+        );
+    }
+}
