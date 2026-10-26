@@ -71,7 +71,7 @@ func TestBudgetLineAtEightyColumnsEndsWithAWholeSegment(t *testing.T) {
 	s.Budget = Budget{Iteration: 4, MaxIterations: u(40), PromptBytes: u(16800), ElapsedSecs: u(36),
 		CompletionTokens: u(85), ModelMs: u(9600), QueueWaitMs: u(2100)}
 	b := strings.Join(paneRows(t, s, "budget", 80, 24), "\n")
-	for _, want := range []string{"iteration 4/40", "16800 B prompt", "0:36 elapsed", "queued 2.1 s"} {
+	for _, want := range []string{"TURNS █░░░░░░░░░░░░░░░ 4/40", "PROMPT 16.8 kB", "TIME 0:36*", "queued 2.1 s"} {
 		if !strings.Contains(b, want) {
 			t.Fatalf("%q missing: %s", want, b)
 		}
@@ -155,25 +155,26 @@ func TestViewWideTextKeepsEveryRowWithinTheWidth(t *testing.T) {
 }
 
 // #641: at launch the line read "iteration 0 · 0 B prompt · 0s elapsed",
-// three figures nothing had reported. Each is named as unreported; the
-// ceiling is drawn without inventing a count against it; and the time
-// elapsed is a clock, 75 s as 1:15.
+// three figures nothing had reported. Each is drawn as unreported, Dash,
+// which /help names (#911); the ceiling is drawn without inventing a count
+// against it, and with no count there are no Meter cells to read as 0; and
+// the time elapsed is a clock, 75 s as 1:15.
 func TestBudgetLineUnreportedFiguresAreNamedNotDrawnAsZero(t *testing.T) {
 	out := Render(State{}, 100, 24)
-	for _, bad := range []string{"0 B prompt", "iteration 0", "0s elapsed", "0:00 elapsed"} {
+	for _, bad := range []string{"0 B", "0.0 kB", "0/", "/0", "0s elapsed", "0:00"} {
 		if strings.Contains(out, bad) {
 			t.Fatalf("%q drawn:\n%s", bad, out)
 		}
 	}
-	if !strings.Contains(out, "not reported") || !strings.Contains(out, "no iteration yet") {
-		t.Fatalf("unreported figures are not named:\n%s", out)
+	if !strings.Contains(out, "TURNS —/—") || !strings.Contains(out, "PROMPT —") || !strings.Contains(out, "TIME —") {
+		t.Fatalf("unreported figures are not drawn as —:\n%s", out)
 	}
 	s := State{Running: true, Budget: Budget{Iteration: 2, MaxIterations: u(40), ElapsedSecs: u(18)}}
-	if out := Render(s, 120, 24); !strings.Contains(out, "prompt not reported") || !strings.Contains(out, "iteration 2/40") {
+	if out := Render(s, 120, 24); !strings.Contains(out, "PROMPT —") || !strings.Contains(out, "TURNS █░░░░░░░░░░░░░░░ 2/40") {
 		t.Fatalf("%s", out)
 	}
 	s = State{Running: true, Budget: Budget{MaxIterations: u(40), ElapsedSecs: u(75)}}
-	if out := Render(s, 120, 24); !strings.Contains(out, "1:15 elapsed") || !strings.Contains(out, "no iteration yet of 40") {
+	if out := Render(s, 120, 24); !strings.Contains(out, "TIME 1:15*") || !strings.Contains(out, "TURNS —/40") || strings.Contains(out, "░") {
 		t.Fatalf("%s", out)
 	}
 }

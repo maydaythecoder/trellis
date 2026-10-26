@@ -146,7 +146,7 @@ func TestSteerLineIsShownWhileRunning(t *testing.T) {
 	m := running(t)
 	typeLine(m, "half typed")
 	v := m.View()
-	if !strings.Contains(v, "half typed█") || !strings.Contains(v, "running — enter queues a steer") {
+	if !strings.Contains(v, "half typed█") || !strings.Contains(v, "steer  [⏎] queue for the next turn") {
 		t.Fatalf("view:\n%s", v)
 	}
 }

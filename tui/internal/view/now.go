@@ -6,10 +6,10 @@ import (
 )
 
 // The Now strip, Where it is and the messages row (#850): the one row under
-// the status bar that says what is happening right now, the pane that says
-// where the run is, and trellis's newest stderr line. Every figure is one
-// trellis reported or this view's own clock, labelled as its own; one that
-// was not reported is said to be, never drawn as 0 or guessed.
+// the Trail that says what is happening right now, the pane that says where
+// the run is, and trellis's newest stderr line. Every figure is one trellis
+// reported or this view's own clock, marked * as its own; one that was not
+// reported is Dash, never 0 or a guess (#911).
 
 // Phase is what a run is on, as its last event said: the model being
 // called for a turn, or the tool the last turn ran.
@@ -83,14 +83,17 @@ func Activity(p Phase) string {
 	return "none"
 }
 
-// nowStrip is the Now strip's one row: the state word, the elapsed time
-// with whose clock it is, the turn against its ceiling, and what the run
-// is on, the last turn's tool → target when it ran one.
-func nowStrip(s State, w int) string {
-	parts := []string{" " + stateWord(s)}
+// nowStrip is the Now strip's row as spans (#911, the NowStrip card): the
+// state as a Status, the time by this view's clock, the turn as a Meter
+// against the run's ceiling, what the run is on (the last turn's tool →
+// target when it ran one), and while a question waits the keys that
+// answer it.
+func nowStrip(s State) []Span {
+	gap := Span{Text: "  "}
+	out := []Span{{Text: " "}, statusSpan(stateWord(s), nowRole(s))}
 	if s.Running || s.Now.Outcome != "" {
-		parts = append(parts, clockText(s))
-		parts = append(parts, turnText(s))
+		out = append(out, gap, Span{Text: clockText(s)}, gap)
+		out = append(out, meter("", turnUsed(s), s.Budget.MaxIterations, meterCellsShort)...)
 	}
 	// Before its first model call a run is on nothing yet, and the strip
 	// says nothing for it rather than "none".
@@ -99,58 +102,59 @@ func nowStrip(s State, w int) string {
 		if p.Kind == "tool" && p.Target != "" {
 			on += " → " + Plain(p.Target)
 		}
-		parts = append(parts, on)
+		out = append(out, gap, Span{Text: on, Role: RoleTool})
 	}
 	if s.Running && s.Now.Waiting {
-		parts = append(parts, "y or n answers it")
+		out = append(out, gap, Span{Text: keyRow(key{"y", "accept"}, key{"n", "reject"}), Role: RoleYou})
 	}
-	return Cut(strings.Join(parts, "  "), w)
+	return out
 }
 
-// clockText is the elapsed time and whose clock measured it. trellis does
-// not report its own yet (#906), so it is this view's, paused while a
-// question waited on the person.
+// clockText is the run's time by this view's clock, marked * as its own:
+// trellis does not report its own yet (#906), and this one pauses while a
+// question waits on the person. A run in flight reads 0:00* until the
+// clock's first second; a run whose time this view never measured, Dash.
 func clockText(s State) string {
-	if s.Budget.ElapsedSecs == nil {
-		return "0:00 by this view's clock"
+	switch {
+	case s.Budget.ElapsedSecs != nil:
+		return Clock(*s.Budget.ElapsedSecs) + "*"
+	case s.Running:
+		return Clock(0) + "*"
 	}
-	return Clock(*s.Budget.ElapsedSecs) + " by this view's clock"
+	return Dash
 }
 
-// turnText is the turn against the run's own ceiling: the turn the model
-// is being called for, or the last one reported.
-func turnText(s State) string {
+// turnUsed is the turn the strip and the budget count against the run's
+// ceiling: the turn the model is being called for, or the last one
+// reported. Turns count from 1, so before trellis has numbered one there is
+// no figure, and nil says so.
+func turnUsed(s State) *uint64 {
 	n := s.Budget.Iteration
 	if s.Now.Phase.Kind == "model" && s.Now.Phase.Turn > n {
 		n = s.Now.Phase.Turn
 	}
-	switch {
-	case n == 0 && s.Budget.MaxIterations == nil:
-		return "no turn yet"
-	case n == 0:
-		return fmt.Sprintf("no turn yet of %d", *s.Budget.MaxIterations)
-	case s.Budget.MaxIterations == nil:
-		return fmt.Sprintf("turn %d", n)
+	if n == 0 {
+		return nil
 	}
-	return fmt.Sprintf("turn %d/%d", n, *s.Budget.MaxIterations)
+	return &n
 }
 
 // where is the Where it is pane: the run's phase, the runtime, the control
 // mode and the repository. trellis reports no control mode to a client
-// yet, so it is said to be unreported.
+// yet, so it is Dash, as anything trellis has not said is.
 func where(s State, w, h int) []string {
 	runtime := Plain(s.Now.Runtime)
 	if runtime == "" {
-		runtime = "not reported"
+		runtime = Dash
 	}
-	root := "not reported"
+	root := Dash
 	if r := Plain(s.Now.Root); r != "" {
 		root = baseName(r)
 	}
 	rows := []Row{
 		{Text: "  phase    " + Activity(s.Now.Phase)},
 		{Text: "  runtime  " + runtime},
-		{Text: "  control  not reported", Role: RoleLabel},
+		{Text: "  control  " + Dash, Role: RoleLabel},
 		{Text: "  root     " + root},
 	}
 	return paneBox(s, PanelWhere, "where", "", rows, w, h)
@@ -196,8 +200,8 @@ func Asking(s State, question, diff string, scroll, w, h int) string {
 	if !fits(w, h) {
 		return Modal(s.Theme, question, diff, scroll, w, h)
 	}
-	top := fill(s.Theme, RoleLabel, trail(s, w), w) + "\n" + fill(s.Theme, nowRole(s), nowStrip(s, w), w)
-	return top + "\n" + Modal(s.Theme, question, diff, scroll, w, h-askingRows) + "\n" + fill(s.Theme, RoleLabel, statusBar(s, w), w)
+	top := line(s.Theme, trail(s, w), w) + "\n" + line(s.Theme, nowStrip(s), w)
+	return top + "\n" + Modal(s.Theme, question, diff, scroll, w, h-askingRows) + "\n" + line(s.Theme, statusBar(s, w), w)
 }
 
 // AskingLastFrom is ModalLastFrom for the box Asking draws at w by h: the

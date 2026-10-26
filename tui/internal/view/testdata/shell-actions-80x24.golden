@@ -1,13 +1,13 @@
- Run ⟩ actions                                         L2 / 4  ESC out  TRELLIS 
- RUNNING  1:23 by this view's clock  turn 3/40  ran edit, turn 3 → src/parser.py
+ Run ⟩ actions                                       L2 / 4  [ESC] out  TRELLIS 
+ ● RUNNING  1:23*  █░░░░░░░ 3/40  ran edit, turn 3 → src/parser.py              
  w ┌ actions ──────────────────────────────────────────────────────────────────┐
  h │  blast_radius           1 ●─┐                                             │
    │  read_file                ○─┤                                             │
  a │  edit         1 · 1 wrote ●─┤──◆ 3 actions                                │
  c │  run_checks             1 ●─┘                                             │
-   │  1 wrote to the tree                                                      │
+   │  ✎ 1                                                                      │
  e │  · blast_radius parse_expr                                                │
- d │  * edit src/parser.py                                                     │
+ d │  ✎ edit src/parser.py                                                     │
    │  · run_checks                                                             │
  c │                                                                           │
  h │                                                                           │
@@ -16,9 +16,9 @@
  a │                                                                           │
    └───────────────────────────────────────────────────────────────────────────┘
 ┌ budget ──────────────────────────────────────────────────────────────────────┐
-│iteration 3/40  ·  24100 B prompt  ·  1:23 elapsed                            │
+│TURNS █░░░░░░░░░░░░░░░ 3/40  ·  PROMPT 24.1 kB  ·  TIME 1:23*                 │
 └──────────────────────────────────────────────────────────────────────────────┘
-┌ running — enter queues a steer for its next turn  ·  ^c stops it ────────────┐
+┌ steer  [⏎] queue for the next turn ──────────────────────────────────────────┐
 │█                                                                             │
 └──────────────────────────────────────────────────────────────────────────────┘
- ^C stop worktree 1 edit(s) pending  model ollama:q…  tier 2, native tool calls 
+ [ESC] out  [^C] stop  ● 1 pending  model ollama:qw…  tier 2, native tool calls 

@@ -95,7 +95,7 @@ func TestCompleteCandidatesAreDrawnUnderTheInput(t *testing.T) {
 		return -1
 	}
 	typed, first, second := at("fix @models"), at("app/models.py"), at("src/models.py")
-	if !(typed < first && first < second) || !strings.Contains(rows[first], "tab") || at("budget") < 0 || len(rows) != 24 {
+	if !(typed < first && first < second) || !strings.Contains(rows[first], "[TAB]") || at("budget") < 0 || len(rows) != 24 {
 		t.Fatalf("%s", strings.Join(rows, "\n"))
 	}
 }
