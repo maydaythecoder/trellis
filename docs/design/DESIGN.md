@@ -113,18 +113,25 @@ read-only `get_*`, `list_*`, `classify` and `vault_*` queries
 | Components ship as React on `window.Trellis` with `components/bundle.css` (README, "Components"). | The desktop is plain ES modules with no bundler and a CSP without `'unsafe-inline'`; the TUI is Go (`desktop/CLAUDE.md`, ADR 0052). | The cards and `components/bundle.css` are references. Each client builds the component in its own code. |
 | Meter widths and Sparkline paths are drawn per value (Meter, Sparkline cards). | No `style` attribute and no `.style` from script on the desktop (`desktop/CLAUDE.md`). | Meters are block characters in text (`█░`), the same in both faces; anything else that varies takes a class, never an inline style. |
 | Event names `session.start`, `tool.call`, `context.update`, … (`events.md`). | A client reads only the contract's names (`run_start`, `turn`, `run budget`, `steer delivered`, …) and fields (rule 7). | `system/events.md` is intent. The mapping from the contract's names to each mark is not written yet (open); when it is, it is its own document, `docs/design/events.md`. |
+| JetBrains Mono for numerals, labels, keycaps and code, IBM Plex Sans for headings and prose, both from Google Fonts (README, "Type"). | The desktop loads nothing from a network, and its CSP (`default-src 'none'`, no `font-src`) changes only by amending ADR 0048 (`desktop/CLAUDE.md`); the TUI draws in the terminal's font. | Fonts come from the machine. The stacks in `tokens.json` (`type.families`) name the two faces first and fall back to the system's (`ui-monospace`, `system-ui`, …), so each face shows where it is installed. Nothing is bundled, and the CSP keeps its directives. |
+| Focus is a 1px `signal-ring` outline, offset 1px; on a panel the whole frame turns `signal` (README, "States and motion"). | The desktop draws one 2px `--focus` outline on every button, field and summary, so WebView2 and WebKitGTK show the same ring (`field_contrast_focus_ring_covers_every_field_and_summary` in `desktop/src/lockdown.rs`). | The desktop's focus ring stays 2px wide, a deliberate difference from the brand book: WCAG 2.2's focus-appearance criterion (2.4.13) asks for at least the area of a 2px perimeter, which a 1px ring does not give. |
+| The composer's third verb, `Stop and send` (§3.3, from the run-view wireframe): stop this run, then run the message. | `trellis rpc` refuses a `prompt` while a run is in flight ("one at a time"), answers `abort` only once the run has ended and rolled back, and an abort also drops the follow-ups queued behind the run (`crates/trellis-cli/src/rpc.rs`). | The client sends `abort`, holds the message, and sends it as a `prompt` once that run's `run_end` arrives. Where the client keeps its state sequences it (the desktop's core, the TUI's model), on the event and never on a timer. |
+
+The fonts, focus-ring and stop-and-send rows were taken on 2026-10-25 by the
+session under the owner's instruction to work unattended (#795); each is
+reversible.
 
 ## 3. The system
 
 The source of truth for every value below is `system/tokens.json`, the owner's
-design system as vendored on 2026-10-25. Two copies are checked against it by
-`scripts/checks/design-tokens.py`: the tables in this section, which
+design system as vendored on 2026-10-25. Three copies are checked against it
+by `scripts/checks/design-tokens.py`: the tables in this section and the TUI's
+theme table (`tui/internal/theme/tokens_gen.go`, §3.4), which
 `scripts/checks/design-tokens.py --write` regenerates, and the token block at
 the top of `run-view-wireframe.html`, which a person edits. A client that
-keeps its own copy (`desktop/ui/style.css`, the TUI's theme table) joins that
-check in the change that creates the copy. To change a value: edit
-`tokens.json`, edit the wireframe's block to match, run `--write`, commit all
-three.
+keeps its own copy (`desktop/ui/style.css`) joins that check in the change
+that creates the copy. To change a value: edit `tokens.json`, edit the
+wireframe's block to match, run `--write`, commit all four.
 
 ### 3.1 Colour
 
@@ -259,14 +266,33 @@ for most terminals and, in each row's text, the 16-colour fallback for a
 terminal that reports no more. A truecolor terminal uses the hex values in
 §3.1. Frames are box-drawing characters, meters `█` and `░`, sparklines
 `▁▂▃▄▅▆▇█`; `system/faces.md` has the full list of what the terminal draws
-with less. The TUI draws no colour today (no Lip Gloss style anywhere in
-`tui/`). The theme table that maps these rows into Lip Gloss gives every
-value explicitly as a `CompleteAdaptiveColor`, because Lip Gloss's own
-downgrading picks different colours from this table (at 16 colours `line`
-becomes black and `play` the same yellow as `signal`); it joins
-`design-tokens.py` when it is written, with its parity row in
-`tui/PARITY.md`. The table gives 256- and 16-colour values for dark
-terminals only; what a light terminal gets below truecolor is open.
+with less.
+
+The theme table that maps these rows into Lip Gloss,
+`tui/internal/theme/tokens_gen.go`, is generated by
+`scripts/checks/design-tokens.py --write`, and the check fails when it is
+stale; its parity row is in `tui/PARITY.md`. It gives every value explicitly
+as a `CompleteAdaptiveColor`, because Lip Gloss's own downgrading picks different
+colours from this table (at 16 colours `line` becomes black and `play` the
+same yellow as `signal`). A row's 16-colour value is read from its text: the
+index beside its colour's name (the one marked for dark terminals where a
+row gives two), no colour for `default background` or `reverse video`, and
+the named row's for `Same as`; a row the check cannot read fails it.
+`tui/internal/theme/theme.go` builds every style once from one renderer; a
+raised row with no fill at the terminal's depth is drawn in reverse video.
+`trellis-tui` reads the terminal's colour depth and background once, before
+its program starts, and `--theme dark|light` replaces the background the
+terminal answers (Windows always answers dark). Nothing is painted with the
+theme yet (#841).
+
+The table gives 256- and 16-colour values for dark terminals. A light
+terminal (owner decision, 2026-10-25) takes the light hex values of §3.1 at
+truecolor; below truecolor, `ink`, `ink-secondary` and `ink-muted` take the
+terminal's own foreground and every other role its 16-colour value, at both
+depths. The soft fills and `ink-inverse` have no terminal value: below
+truecolor a soft fill is not painted and `ink-inverse` is reverse video.
+Neither is in the theme yet; the change that first paints one adds it
+through `design-tokens.py`.
 
 <!-- tokens:terminal -->
 | Token | 256-colour index | Usage, with the 16-colour fallback |
