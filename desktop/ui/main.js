@@ -1,7 +1,7 @@
 // The TRELLIS desktop page's entry module (ADR 0048 section 5).
 //
-// It switches the rail's sections and hands what the desktop's Rust core
-// emits to render.js, overview.js, composer.js, model.js, settings.js,
+// It starts the shell's levels (keys.js) and hands what the desktop's Rust
+// core emits to render.js, overview.js, composer.js, model.js, settings.js,
 // status.js and dialogs.js, and computes
 // nothing: the run panes the core's reducer sends as `view` events, which
 // child started or why none did, and the overview object trellis printed.
@@ -12,8 +12,9 @@
 // - web.js, first: with `trellis --web` it stands in for window.__TAURI__
 //   over HTTP; in the window it does nothing.
 // - main.js, this module, which starts the page and the modules it imports:
-//   render.js (and graph.js, which render.js imports), overview.js,
-//   composer.js, dialogs.js, model.js, settings.js and status.js.
+//   keys.js (the levels and the keys between them), render.js (and
+//   graph.js, which render.js imports), overview.js, composer.js,
+//   dialogs.js, model.js, settings.js and status.js.
 // - codebase.js, radius.js, trails.js, vault.js, queue.js and atlas.js,
 //   which each start themselves through rpc.js's start and listen for what
 //   they draw.
@@ -24,6 +25,7 @@
 // through textContent (ADR 0007, S10): text that carries markup is shown as
 // characters, never parsed.
 
+import { wireKeys } from "./keys.js";
 import { drawView, wireLog } from "./render.js";
 import { runEnded, send, start } from "./rpc.js";
 import { drawOpenRefusal, drawOverview, drawOverviewChild } from "./overview.js";
@@ -39,32 +41,6 @@ function show(id, text) {
 
 function json(value) {
   return JSON.stringify(value);
-}
-
-// The rail: each button names its section with aria-controls, and showing
-// one hides the rest through the hidden attribute, never a style. A press
-// moves focus to the shown section's heading, the one its aria-labelledby
-// names, so Tab goes on from inside the section rather than from the rail
-// (#646).
-function wireRail() {
-  const buttons = [...document.querySelectorAll("nav.rail button[aria-controls]")];
-  const select = (chosen) => {
-    for (const b of buttons) {
-      const section = document.getElementById(b.getAttribute("aria-controls"));
-      const on = b === chosen;
-      if (section) section.hidden = !on;
-      if (on) b.setAttribute("aria-current", "page");
-      else b.removeAttribute("aria-current");
-    }
-  };
-  for (const b of buttons) {
-    b.addEventListener("click", () => {
-      select(b);
-      const section = document.getElementById(b.getAttribute("aria-controls"));
-      const heading = section && document.getElementById(section.getAttribute("aria-labelledby"));
-      if (heading) heading.focus();
-    });
-  }
 }
 
 // How many `child-started` events this page has heard, so a refusal that
@@ -131,7 +107,7 @@ function askSessionTokens(tauri) {
 }
 
 async function main() {
-  wireRail();
+  wireKeys(document);
   wireLog(document);
   const tauri = window.__TAURI__;
 
