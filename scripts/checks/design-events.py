@@ -39,6 +39,7 @@ PAGE = os.path.join(ROOT, "docs", "design", "events.md")
 
 KINDS = ("frame", "event", "line", "answer")
 # | kind | `name` | desktop | tui |, the cells kept whole for the empty test.
+# Cells are split on "|", so a cell may not hold one, escaped or not.
 ROW = re.compile(r"^\|\s*(%s)\s*\|\s*`([^`]+)`\s*\|(.*)\|\s*$" % "|".join(KINDS))
 
 
