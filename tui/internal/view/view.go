@@ -28,6 +28,14 @@ const (
 // the ratatui TUI's RIGHT_MIN_WIDTH).
 const RightMinWidth = 36
 
+// MinTranscriptWidth is the transcript's floor: the right column never
+// takes more than the width less this, so a custom tool's long name is cut
+// in its node instead of pushing the column off the screen (#875). It is
+// two fifths of MinWidth: at 80 columns the four built-in tools' rows need
+// up to 48 cells in a run of under a hundred actions, and every built-in
+// label stays whole there.
+const MinTranscriptWidth = MinWidth * 2 / 5
+
 // TranscriptPage is how many rows PgUp and PgDn move the transcript
 // (#660): the arrows move one, and the start of a long run was hundreds of
 // presses away.
@@ -113,15 +121,25 @@ type State struct {
 	Restored *bool
 }
 
+// radiusH is the radius pane's height: its three counts, the line that
+// says what they are a floor on, and two borders.
+const radiusH = 6
+
+// MinBodyRows is the fewest rows the body between the status bar and the
+// budget keeps, whatever the task box below it holds: the radius pane's,
+// so its three counts are never cut, and the transcript keeps four rows.
+// The @ completion list takes what is left above it, and no more (#842):
+// sixteen completions at 80x24 left the body one row, and the transcript
+// sliced past its own end.
+const MinBodyRows = radiusH
+
 // Render draws the whole screen at width by height.
 func Render(s State, w, h int) string {
 	if w < MinWidth || h < MinHeight {
 		return tooSmall(w, h)
 	}
-	entry := entryLines(s, w)
-	bodyH := h - 1 - 3 - len(entry)
+	entry, bodyH := layout(s, w, h)
 	leftW, rightW := columns(s, w)
-	const radiusH = 6
 	rest := bodyH - radiusH
 	actionsH := rest / 2
 	editsH := rest / 4
@@ -144,6 +162,17 @@ func Render(s State, w, h int) string {
 	return strings.Join(out, "\n")
 }
 
+// layout is the task box's rows and the body's height at w by h, for
+// Render and for the scroll limits the model keeps (TranscriptTop), so
+// the two cannot disagree about how tall the transcript is (#843). The
+// status bar, the budget box, and the task box's two borders and its
+// input row are always drawn; the completions get what is left of the
+// rest once the body has its floor.
+func layout(s State, w, h int) (entry []string, bodyH int) {
+	entry = entryLines(s, w, h-1-3-3-MinBodyRows)
+	return entry, h - 1 - 3 - len(entry)
+}
+
 // columns splits the width between the transcript and the right column.
 // The right column takes two fifths, and never less than its widest row
 // needs: at 80 columns two fifths were 32, and the panes read "0 ac",
@@ -152,6 +181,7 @@ func Render(s State, w, h int) string {
 // worse than a narrower transcript that wraps.
 func columns(s State, w int) (left, right int) {
 	right = max(w*2/5, RightMinWidth, actionsWidth(s)+2)
+	right = min(right, w-MinTranscriptWidth)
 	return w - right, right
 }
 
@@ -167,6 +197,17 @@ func TranscriptRows(s State, w int) int {
 		n += len(WrapWords(Plain(l), left-2))
 	}
 	return n
+}
+
+// TranscriptTop is the scroll back that shows the transcript's first row
+// at the top of its pane, in the layout drawn at w by h: the most Home, PgUp
+// and Up go to. The pane shows a page of rows, so the top is the rows less
+// that page; counted as all the rows, as it was, the first PgDn after Home
+// spent itself on rows above the first and moved nothing (#843).
+func TranscriptTop(s State, w, h int) int {
+	w, h = max(w, MinWidth), max(h, MinHeight)
+	_, bodyH := layout(s, w, h)
+	return max(TranscriptRows(s, w)-max(bodyH-2, 0), 0)
 }
 
 func tooSmall(w, h int) string {
@@ -227,7 +268,9 @@ func transcript(s State, w, h int) []string {
 	for _, l := range s.Transcript {
 		rows = append(rows, WrapWords(Plain(l), inner)...)
 	}
-	innerH := h - 2
+	// A pane too short for an inside shows no rows: h-2 below zero made
+	// start pass end and the slice panicked (#842).
+	innerH := max(h-2, 0)
 	// Scrolled back past the first row, the first page is shown: the view
 	// stops at the top rather than drawing an empty pane.
 	end := max(len(rows)-s.ScrollBack, min(innerH, len(rows)))
@@ -363,11 +406,17 @@ func widths(ns []node) (labelW, countW int) {
 }
 
 // actionsWidth is the cells the graph's widest row takes, so the layout
-// can give the pane that much (#655): indent, label, the count between two
-// spaces, glyph, edge, and the focus.
+// can give the pane that much (#655).
 func actionsWidth(s State) int {
 	labelW, countW := widths(nodes(s))
-	return 2 + labelW + 1 + countW + 1 + 1 + 2 + Width(focus(s))
+	return labelW + besideLabel(s, countW)
+}
+
+// besideLabel is the cells a node's row takes besides its label: the
+// indent, the count between two spaces, glyph, edge, and the focus that
+// the middle row carries.
+func besideLabel(s State, countW int) int {
+	return 2 + 1 + countW + 1 + 1 + 2 + Width(focus(s))
 }
 
 // actions draws the action graph: every tool a node, filled once called,
@@ -382,6 +431,10 @@ func actions(s State, w, h int) []string {
 	}
 	ns := nodes(s)
 	labelW, countW := widths(ns)
+	// A label that does not fit is cut, so a long name costs its own tail
+	// and the counts, the edge column and the focus keep their places
+	// (#875).
+	labelW = min(labelW, max(1, inner-besideLabel(s, countW)))
 	mid := len(ns) / 2
 	var lines []string
 	for i, n := range ns {
@@ -395,7 +448,7 @@ func actions(s State, w, h int) []string {
 		if n.calls > 0 {
 			glyph = "●"
 		}
-		l := "  " + Pad(n.name, labelW) + " " + strings.Repeat(" ", countW-Width(n.count)) + n.count + " " + glyph + "─" + join
+		l := "  " + Pad(Cut(n.name, labelW), labelW) + " " + strings.Repeat(" ", countW-Width(n.count)) + n.count + " " + glyph + "─" + join
 		if i == mid {
 			l += focus(s)
 		}
@@ -532,21 +585,40 @@ func turnRate(b Budget) (rate, queued *string) {
 	return rate, queued
 }
 
-// entryLines is the task entry: the typed line with a block cursor, the @
-// candidates under it (none while a run holds the input: what is typed then
-// is a steer), and what Enter does now.
-func entryLines(s State, w int) []string {
-	lines := []string{Plain(s.Input) + "█"}
+// entryLines is the task box: the typed line with a block cursor, the @
+// candidates under it in at most room rows (none while a run holds the
+// input: what is typed then is a steer), and what Enter does now, on its
+// top border.
+//
+// The line keeps its end in view, where the cursor is: wider than the box,
+// it was cut at the right and the cursor went with it (#842). What scrolled
+// off the left is marked "…".
+//
+// The completions take at most room rows. When there are more, the last
+// row says how many are not shown, so a short list is never read as all
+// there is.
+func entryLines(s State, w, room int) []string {
+	lines := []string{CutLeft(Plain(s.Input)+"█", w-2)}
 	title := "task  ·  enter to run  ·  /help  ·  esc to clear, esc again to quit"
 	if s.Running {
 		title = "running — enter queues a steer for its next turn  ·  ^c stops it"
 	} else {
-		for i, p := range s.Offered {
+		offered := s.Offered
+		hidden := 0
+		if len(offered) > room {
+			shown := max(room-1, 0)
+			hidden = len(offered) - shown
+			offered = offered[:shown]
+		}
+		for i, p := range offered {
 			mark := "    "
 			if i == 0 {
 				mark = "tab "
 			}
 			lines = append(lines, mark+Plain(p))
+		}
+		if hidden > 0 && room > 0 {
+			lines = append(lines, fmt.Sprintf("    … %d more", hidden))
 		}
 	}
 	return Box(title, "", lines, w, 2+len(lines))

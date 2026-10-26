@@ -3261,7 +3261,12 @@ mod tests {
                 if let Some(v) = value.strip_prefix('=') {
                     let v = v.trim_start();
                     let v = v.strip_prefix("async").map_or(v, str::trim_start);
-                    if v.starts_with("function") || v.starts_with('(') {
+                    // An arrow's one parameter may go without parentheses
+                    // (`v => ...`), and is a definition all the same.
+                    let param = ident(v);
+                    let bare_arrow =
+                        !param.is_empty() && v[param.len()..].trim_start().starts_with("=>");
+                    if v.starts_with("function") || v.starts_with('(') || bare_arrow {
                         out.insert(name);
                     }
                 }
@@ -3306,6 +3311,10 @@ mod tests {
         // passes unseen, or counts a nested one, so a local helper of the
         // same name fails a module for nothing.
         let code = "function el(doc) {}\nexport async function send(t) {}\nconst str = (v) => v;\nlet plural = async (k) => k;\nconst fill = function (p) {};\nconst SIZE = 3;\n  function start() {}\nexport function atEnd(p) {}\n";
+        // An arrow whose one parameter has no parentheses is read too, and
+        // a value that only names another binding is not a definition.
+        let bare = top_level_definitions("const isCount = v => v;\nconst muted = el;\n");
+        assert_eq!(bare.into_iter().collect::<Vec<_>>(), ["isCount"]);
         let got: Vec<String> = top_level_definitions(code).into_iter().collect();
         assert_eq!(got, ["atEnd", "el", "fill", "plural", "send", "str"]);
     }
@@ -4074,10 +4083,16 @@ mod tests {
         for want in [
             r#"type: "get_session_stats""#,
             r#"listen("rpc-frame""#,
-            r#"f.type === "run_end") askSessionTokens(tauri)"#,
+            "if (runEnded(event.payload)) askSessionTokens(tauri);",
         ] {
             assert!(main.contains(want), "main.js lacks {want}");
         }
+        // rpc.js's runEnded is the one way the page knows a run ended
+        // (#816): the child's run_end frame.
+        assert!(
+            function_body(&code_of("rpc.js"), "runEnded").contains(r#"frame.type === "run_end""#),
+            "runEnded reads something other than the run_end frame"
+        );
         let started = main
             .split(r#"listen("child-started""#)
             .nth(1)
