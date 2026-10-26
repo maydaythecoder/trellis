@@ -1,11 +1,19 @@
-//! What the main window may load and open (ADR 0048 section 5).
+//! What the main window may load and open (ADR 0048 section 5), and the
+//! page's tests.
 //!
 //! The page's one channel is Tauri IPC to the core: it fetches nothing and
 //! links nowhere. So the window may navigate only within the app's own
 //! origin, and may open no second window at all. `main.rs` installs both
-//! predicates on the main window. The tests below also hold the lines
-//! `tauri.conf.json` draws (the CSP, the capability, no dev server or build
-//! hook, a frozen prototype), so an edit that widens one fails here.
+//! predicates on the main window.
+//!
+//! Most of this file is its tests, which hold the page itself, read as text,
+//! since no JavaScript runs under cargo test (`qa/desktop_smoke.py` runs the
+//! page in a headless browser in CI): the lines `tauri.conf.json` draws (the
+//! CSP, the capability, no dev server or build hook); `ui/index.html`'s
+//! elements and every `ui/*.js` module's source (what each draws, sends and
+//! listens for, the helpers that live in one module each, the icons and
+//! their labels); and `ui/style.css`'s rules (the tokens, field contrast,
+//! the minimum window). An edit that widens one of these fails here.
 
 use tauri::Url;
 
@@ -214,11 +222,12 @@ mod tests {
         found[0]
     }
 
-    /// The seven sections the rail switches, in rail order (#300 as amended
-    /// 2026-10-07; overview is the landing section). The seventh, atlas,
-    /// sits after codebase: the owner asked on 2026-10-11 for the Atlas
-    /// "without removing the other ones", so it is added beside them and
-    /// every other section keeps its place.
+    /// The seven sections, in page order (#300 as amended 2026-10-07;
+    /// overview is the landing level, and the other six are its panels, the
+    /// levels below it, #826). The seventh, atlas, sits after codebase: the
+    /// owner asked on 2026-10-11 for the Atlas "without removing the other
+    /// ones", so it is added beside them and every other section keeps its
+    /// place.
     const SECTIONS: [&str; 7] = [
         "overview", "run", "trails", "codebase", "atlas", "board", "vault",
     ];
@@ -354,31 +363,59 @@ mod tests {
     }
 
     #[test]
-    fn page_rail_buttons_control_sections_that_exist() {
-        // The risk: a rail button that shows nothing, or a section no
-        // button reaches; a later view shown before it is built, or a run
-        // section that says it is not built. Seven sections (#300 as amended
-        // 2026-10-07, and the Atlas the owner asked for on 2026-10-11),
-        // overview first and the one shown at load; the ones in BUILT are
-        // built.
+    fn page_levels_enter_sections_that_exist() {
+        // The risk (#826): a panel of the overview that enters nothing, or
+        // a section no panel reaches; a tab rail left beside the Trail (the
+        // brand book has no tabs); a later view shown before it is built,
+        // or a run section that says it is not built. Seven sections (#300
+        // as amended 2026-10-07, and the Atlas the owner asked for on
+        // 2026-10-11): the overview first and the one shown at load, and a
+        // panel on it for each of the other six; the ones in BUILT are built.
         let page = page();
-        let navs: Vec<usize> = (0..page.len()).filter(|&i| page[i].tag == "nav").collect();
-        assert_eq!(navs.len(), 1, "one nav");
-        let buttons: Vec<&Element> = (0..page.len())
-            .filter(|&i| page[i].tag == "button" && within(&page, i, navs[0]))
-            .map(|i| &page[i])
-            .collect();
-        let controls: Vec<&str> = buttons
+        let navs: Vec<&str> = page
             .iter()
-            .map(|b| {
-                b.attr("aria-controls")
-                    .expect("a rail button with no aria-controls")
+            .filter(|e| e.tag == "nav")
+            .map(|e| e.attr("id").expect("a nav with an id"))
+            .collect();
+        assert_eq!(
+            navs,
+            ["trail", "siblings"],
+            "the Trail and the sibling rail, and no tabs"
+        );
+        assert!(
+            page[index_of(&page, "siblings")]
+                .attrs
+                .contains_key("hidden"),
+            "the sibling rail is drawn below the overview only"
+        );
+        let overview = index_of(&page, "overview");
+        let panels: Vec<&str> = (0..page.len())
+            .filter(|&i| page[i].attr("data-enter").is_some())
+            .map(|i| {
+                assert_eq!(page[i].tag, "button", "a panel is a button, so ⏎ enters it");
+                assert!(within(&page, i, overview), "a way in outside the overview");
+                page[i].attr("data-enter").unwrap()
             })
             .collect();
-        assert_eq!(controls, SECTIONS, "the rail's buttons, in order");
+        assert_eq!(
+            panels,
+            SECTIONS[1..],
+            "the overview's panels, in page order"
+        );
         let sections: Vec<&Element> = page.iter().filter(|e| e.tag == "section").collect();
         let ids: Vec<&str> = sections.iter().filter_map(|s| s.attr("id")).collect();
-        assert_eq!(ids, SECTIONS, "every section, each with a rail button");
+        assert_eq!(ids, SECTIONS, "every section, each with a way in");
+        let stage = index_of(&page, "stage");
+        for &i in &(0..page.len())
+            .filter(|&i| page[i].tag == "section")
+            .collect::<Vec<_>>()
+        {
+            assert_eq!(
+                page[i].parent,
+                Some(stage),
+                "a section is a level of the stage"
+            );
+        }
         for id in SECTIONS {
             let found = by_id(&page, id);
             assert_eq!(found.len(), 1, "one element with id {id}");
@@ -395,6 +432,45 @@ mod tests {
                 "#{id} and \"Not built yet\""
             );
         }
+    }
+
+    #[test]
+    fn page_levels_read_what_they_show_when_entered() {
+        // The risk (#826): a section that read what it shows when its rail
+        // button was pressed, left looking for the rail the levels replaced,
+        // so entering it shows a stale or empty view and nothing fails. Each
+        // section that reads on show does so through rpc.js's onShown, which
+        // watches the section's hidden attribute whatever shows it, and no
+        // module looks for the rail.
+        for (module, section) in [
+            ("atlas.js", "atlas"),
+            ("codebase.js", "codebase"),
+            ("trails.js", "trails"),
+            ("queue.js", "board"),
+        ] {
+            assert!(
+                code_of(module).contains(&format!("onShown(doc, \"{section}\", ")),
+                "{module} does not read when {section} is entered"
+            );
+        }
+        for (module, code) in ui_code() {
+            assert!(
+                !code.contains("nav.rail"),
+                "{module} looks for the rail the levels replaced"
+            );
+        }
+        // onShown follows the hidden attribute, which keys.js sets on every
+        // section when a level is shown.
+        let rpc = code_of("rpc.js");
+        let on_shown = function_body(&rpc, "onShown");
+        assert!(
+            on_shown.contains(r#"attributeFilter: ["hidden"]"#),
+            "{on_shown}"
+        );
+        assert!(
+            function_body(&code_of("keys.js"), "show").contains("s.hidden = s.id !== here;"),
+            "keys.js shows a level some other way"
+        );
     }
 
     #[test]
@@ -1668,7 +1744,7 @@ mod tests {
         let css = css_rules();
         assert!(
             css.iter()
-                .any(|(s, d)| s.trim() == ".failed" && d.contains("var(--failed)")),
+                .any(|(s, d)| s.trim() == ".failed" && d.contains("var(--down)")),
             "style.css has no .failed rule in the failed colour"
         );
     }
@@ -2429,11 +2505,12 @@ mod tests {
         // carries PR and CI state, is the core's own command.
         assert_eq!(invoked, ["get_overview"], "{invoked:?}");
         assert!(
-            js.contains(r#"import { runEnded, send, start } from "./rpc.js";"#),
+            js.contains(r#"import { onShown, runEnded, send, start } from "./rpc.js";"#),
             "queue.js reaches the core some other way"
         );
-        // When it asks: on opening, on Refresh, and after each run_end.
-        assert!(js.contains(r#"aria-controls="board""#), "{js}");
+        // When it asks: on entering the Board's level, on Refresh, and after
+        // each run_end.
+        assert!(js.contains(r#"onShown(doc, "board", refresh);"#), "{js}");
         assert!(js.contains(r#"getElementById("qb-refresh").addEventListener("click""#));
         assert!(js.contains("if (runEnded(event.payload)) askQueue(doc, tauri);"));
     }
@@ -2716,16 +2793,17 @@ mod tests {
     }
 
     #[test]
-    fn eagle_eye_overview_is_the_first_rail_button() {
+    fn eagle_eye_overview_is_the_first_level() {
         // The risk: the window landing on another section, or an overview
         // section nothing draws, so bare `trellis` opens on an empty page.
+        // The Trail as served says Overview, L1 (#826).
         let page = page();
-        let first = page
+        let current = page
             .iter()
-            .find(|e| e.tag == "button" && e.attr("aria-controls").is_some())
-            .expect("a rail button");
-        assert_eq!(first.attr("aria-controls"), Some("overview"));
-        assert_eq!(first.attr("aria-current"), Some("page"));
+            .find(|e| e.attr("aria-current") == Some("location"))
+            .expect("the Trail marks the level shown");
+        assert_eq!(current.text.trim(), "Overview");
+        assert_eq!(page[index_of(&page, "trail-level")].text.trim(), "L1 / 4");
         assert!(
             !page[index_of(&page, "overview")]
                 .attrs
@@ -2942,7 +3020,8 @@ mod tests {
         // It reaches the core only through rpc.js's send (#819), which
         // calls only rpc_send (model_gate_model_js_parses_no_html).
         assert!(
-            !js.contains("invoke(") && js.contains(r#"import { send, start } from "./rpc.js";"#),
+            !js.contains("invoke(")
+                && js.contains(r#"import { onShown, send, start } from "./rpc.js";"#),
             "atlas.js reaches the core some other way"
         );
         // Every question carries an Atlas id, so the core keeps its
@@ -3078,14 +3157,14 @@ mod tests {
         // Showing the Atlas folds it; the user can open it again, and every
         // other section leaves it to model.js, as before.
         let js = code_of("atlas.js");
-        let rail = js
-            .split(r#"button[aria-controls="atlas"]"#)
+        let shown = js
+            .split(r#"onShown(doc, "atlas", () => {"#)
             .nth(1)
-            .and_then(|r| r.split("\n  }\n").next())
-            .expect("atlas.js listens to its rail button");
+            .and_then(|r| r.split("\n  });\n").next())
+            .expect("atlas.js acts when its section is shown");
         assert!(
-            rail.contains(r#"getElementById("model-pane")"#) && rail.contains(".open = false"),
-            "showing the Atlas leaves the model pane open: {rail}"
+            shown.contains(r#"getElementById("model-pane")"#) && shown.contains(".open = false"),
+            "showing the Atlas leaves the model pane open: {shown}"
         );
         for (name, code) in ui_code() {
             if name != "model.js" && name != "atlas.js" {
@@ -3328,6 +3407,130 @@ mod tests {
     }
 
     #[test]
+    fn page_icons_are_inline_symbols_and_each_has_a_label() {
+        // The risk (#835): an icon drawn as the only carrier of a meaning,
+        // which a screen reader or a reader who does not know the glyph
+        // cannot read; an icon pointing at a symbol the page lacks, drawn as
+        // nothing; the set drifting from the design system's; or an icon
+        // fetched as an <img>, which draws in black rather than the label's
+        // colour. The set is one hidden <svg> of <symbol>s, each the design
+        // system's file's drawing, and every <use> sits in an aria-hidden
+        // icon beside a label with words of its own.
+        let page = page();
+        let sprites: Vec<usize> = (0..page.len())
+            .filter(|&i| page[i].attr("class") == Some("icon-sprite"))
+            .collect();
+        assert_eq!(sprites.len(), 1, "one icon sprite");
+        let sprite = sprites[0];
+        assert_eq!(page[sprite].tag, "svg");
+        assert_eq!(page[sprite].attr("aria-hidden"), Some("true"));
+        let symbols: BTreeMap<&str, usize> = (0..page.len())
+            .filter(|&i| page[i].tag == "symbol")
+            .map(|i| {
+                assert_eq!(page[i].parent, Some(sprite), "a symbol outside the sprite");
+                assert_eq!(page[i].attr("viewbox"), Some("0 0 16 16"));
+                (page[i].attr("id").expect("a symbol has an id"), i)
+            })
+            .collect();
+        let set = Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/design/system/icons");
+        let html = ui_file("index.html");
+        let mut files = 0;
+        for entry in std::fs::read_dir(&set).unwrap() {
+            let p = entry.unwrap().path();
+            if p.extension().is_none_or(|x| x != "svg") {
+                continue;
+            }
+            files += 1;
+            let name = p.file_stem().unwrap().to_string_lossy().to_string();
+            assert!(symbols.contains_key(name.as_str()), "no symbol for {name}");
+            // The drawing inside the file's root, as the symbol holds it.
+            let file = std::fs::read_to_string(&p).unwrap();
+            let inner = file
+                .trim()
+                .split_once('>')
+                .and_then(|(_, r)| r.strip_suffix("</svg>"))
+                .unwrap_or_else(|| panic!("{name} is not one <svg>"));
+            let symbol = format!(
+                r#"<symbol id="{name}" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">{inner}</g></symbol>"#
+            );
+            assert!(
+                html.contains(&symbol),
+                "{name}'s symbol is not the design system's drawing"
+            );
+        }
+        assert_eq!(
+            symbols.len(),
+            files,
+            "a symbol the design system has no file for"
+        );
+        let mut uses = 0;
+        for (i, e) in page.iter().enumerate() {
+            if e.tag == "img" {
+                assert!(
+                    !e.attr("src").unwrap_or("").contains("icon"),
+                    "an icon drawn as an <img>"
+                );
+            }
+            if e.tag != "use" {
+                continue;
+            }
+            uses += 1;
+            let href = e.attr("href").expect("a <use> has an href");
+            let id = href
+                .strip_prefix('#')
+                .expect("a <use> names a symbol in the page");
+            assert!(symbols.contains_key(id), "{href} names no symbol");
+            let icon = e.parent.expect("a <use> sits in an icon");
+            assert_eq!(page[icon].tag, "svg");
+            assert_eq!(page[icon].attr("class"), Some("icon"));
+            assert_eq!(page[icon].attr("aria-hidden"), Some("true"), "{href}");
+            assert!(!within(&page, i, sprite), "a <use> inside the sprite");
+            let label = page[icon].parent.expect("an icon sits in a label");
+            assert!(
+                page[label].text.chars().any(char::is_alphabetic),
+                "{href} is the only carrier of its label's meaning"
+            );
+        }
+        assert!(uses > 0, "the page draws no icon");
+        // The mark is the page's icon too, served as a file of its own.
+        let icon_link = page
+            .iter()
+            .find(|e| e.tag == "link" && e.attr("rel") == Some("icon"))
+            .expect("a <link rel=icon>");
+        assert_eq!(icon_link.attr("href"), Some("favicon.svg"));
+        assert!(
+            !ui_file("favicon.svg").contains("style="),
+            "favicon.svg has a style"
+        );
+    }
+
+    #[test]
+    fn page_icons_app_icon_is_the_design_system_s_mark() {
+        // The risk (#835): the window and the bundle keep an icon that is
+        // not the TRELLIS mark, or an .ico missing the title-bar sizes. The
+        // PNG is the 512px app icon byte for byte, and the .ico holds the
+        // 16, 32, 128 and 256px images (an .ico entry's width byte is 0 for
+        // 256).
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let logos = dir.join("../docs/design/system/logos");
+        assert_eq!(
+            std::fs::read(dir.join("icons/icon.png")).unwrap(),
+            std::fs::read(logos.join("app-icon-512.png")).unwrap(),
+            "icons/icon.png is not app-icon-512.png"
+        );
+        let ico = std::fs::read(dir.join("icons/icon.ico")).unwrap();
+        assert_eq!(&ico[..4], &[0, 0, 1, 0], "not an .ico");
+        let count = usize::from(u16::from_le_bytes([ico[4], ico[5]]));
+        let sizes: BTreeSet<u32> = (0..count)
+            .map(|k| match ico[6 + 16 * k] {
+                0 => 256,
+                w => u32::from(w),
+            })
+            .collect();
+        assert_eq!(sizes, BTreeSet::from([16, 32, 128, 256]));
+    }
+
+    #[test]
     fn page_has_no_style_attribute() {
         // The risk: an inline style, which the CSP's `style-src 'self'`
         // refuses (so the page draws wrongly) or which a later CSP edit
@@ -3502,21 +3705,20 @@ mod tests {
         );
         assert_eq!(js.matches("p.follow.hidden = false;").count(), 1);
         let follow = click_handler(&js, "p.follow");
-        assert!(
-            follow.contains(r#"doc.querySelector('nav.rail button[aria-controls="run"]')"#)
-                && follow.contains("run.click()"),
-            "{follow}"
-        );
+        assert!(follow.contains(r#"enter(doc, "run")"#), "{follow}");
         let page = page();
         let button = index_of(&page, "composer-follow");
         assert!(within(&page, button, index_of(&page, "composer")));
         assert!(page[button].attrs.contains_key("hidden"), "shown as served");
         assert!(page[button].text.contains("Run"), "{}", page[button].text);
         assert!(
-            page.iter().any(|e| e.tag == "button"
-                && e.attr("aria-controls") == Some("run")
-                && page[e.parent.expect("in the rail")].tag == "nav"),
-            "the rail has no Run button for it to press"
+            page.iter()
+                .any(|e| e.tag == "button" && e.attr("data-enter") == Some("run")),
+            "the overview has no Run panel for it to enter as"
+        );
+        assert!(
+            js.contains(r#"import { enter } from "./keys.js";"#),
+            "composer.js enters Run some other way than the overview's panel does"
         );
     }
 
@@ -3634,8 +3836,8 @@ mod tests {
         );
         let decls: String = danger[0].1.split_whitespace().collect();
         assert!(
-            decls.contains("color:var(--failed)"),
-            ".composer button.danger {{ {} }} does not use var(--failed)",
+            decls.contains("color:var(--down)"),
+            ".composer button.danger {{ {} }} does not use var(--down)",
             danger[0].1
         );
         let apart = rules
@@ -4471,35 +4673,126 @@ mod tests {
     }
 
     #[test]
-    fn focus_section_rail_press_focuses_the_shown_section_s_heading() {
-        // The risk (#646): showing a section and leaving focus on the rail
-        // button, or focusing something other than the heading the section
-        // is labelled by. No JavaScript runs under cargo test, so this holds
-        // the text; a node smoke script with a fake DOM pressed each rail
-        // button (see the commit).
-        let main = code_of("main.js");
-        let rail = function_body(&main, "wireRail");
-        let click = rail
-            .split("b.addEventListener(\"click\", () => {")
-            .nth(1)
-            .and_then(|r| r.split("});").next())
-            .expect("each rail button has a click handler");
-        let shown = click
-            .find("select(b);")
-            .expect("the press shows its section");
-        let section = click
-            .find("document.getElementById(b.getAttribute(\"aria-controls\"))")
-            .expect("the press finds its section");
-        let heading = click
-            .find("document.getElementById(section.getAttribute(\"aria-labelledby\"))")
-            .expect("the press finds the section's heading");
-        let focused = click
-            .find("heading.focus();")
-            .expect("the press focuses it");
+    fn focus_section_entering_a_level_focuses_its_heading() {
+        // The risk (#646, #826): entering a level and leaving focus on the
+        // panel that entered it, or focusing something other than the
+        // heading the section is labelled by; and going out a level with
+        // focus nowhere. No JavaScript runs under cargo test, so this holds
+        // the text; the CI smoke run walks in and out of every level.
+        let keys = code_of("keys.js");
+        let enter = function_body(&keys, "enter");
+        let shown = enter.find("show(doc);").expect("entering shows the level");
+        let heading = enter
+            .find("doc.getElementById(section.getAttribute(\"aria-labelledby\"))")
+            .expect("entering finds the section's heading");
+        let focused = enter.find("heading.focus();").expect("entering focuses it");
         assert!(
-            shown < section && section < heading && heading < focused,
-            "the heading is focused before its section is shown: {click}"
+            shown < heading && heading < focused,
+            "the heading is focused before its section is shown: {enter}"
         );
+        let go = function_body(&keys, "go");
+        assert!(
+            go.contains("button[data-enter=") && go.contains("panel.focus();"),
+            "going out leaves the focus nowhere: {go}"
+        );
+    }
+
+    #[test]
+    fn escape_goes_out_one_level() {
+        // The risk (#826): ESC claimed by more than one module, so one key
+        // does two things (the Atlas held it for the whole document); ESC
+        // taken from a person typing in a field or answering a dialog; or
+        // ESC that goes nowhere. keys.js is the one document-wide owner: a
+        // dialog keeps its own ESC, a field is left rather than navigated
+        // from, a module that uses ESC is asked first through onEscape, an
+        // element that used it calls preventDefault, and otherwise ESC goes
+        // out one level.
+        let keys = code_of("keys.js");
+        let wire = function_body(&keys, "wireKeys");
+        let order: Vec<usize> = [
+            "if (e.key !== \"Escape\" || e.defaultPrevented) return;",
+            "if (doc.querySelector(\"dialog[open]\")) return;",
+            "if (typing(e.target)) {",
+            "for (const handler of [...escapes].reverse()) {",
+            "if (out(doc)) e.preventDefault();",
+        ]
+        .iter()
+        .map(|want| {
+            wire.find(want)
+                .unwrap_or_else(|| panic!("wireKeys lacks {want}: {wire}"))
+        })
+        .collect();
+        assert!(
+            order.windows(2).all(|w| w[0] < w[1]),
+            "ESC is decided in another order: {wire}"
+        );
+        let out = function_body(&keys, "out");
+        assert!(
+            out.contains("if (path.length < 2) return false;")
+                && out.contains("go(doc, path.length - 2);"),
+            "out does not go up exactly one level: {out}"
+        );
+        // No other module listens for ESC on the whole document.
+        for (module, code) in ui_code() {
+            if module == "keys.js" {
+                continue;
+            }
+            for listener in code.split("doc.addEventListener(\"keydown\"").skip(1) {
+                let body = listener.split("\n  });").next().unwrap_or("");
+                assert!(
+                    !body.contains("\"Escape\""),
+                    "{module} takes ESC for the whole document; register it with onEscape"
+                );
+            }
+        }
+        assert!(
+            code_of("atlas.js").contains("onEscape((ev) => {"),
+            "the Atlas's ESC is not keys.js's"
+        );
+    }
+
+    #[test]
+    fn leaving_a_level_removes_every_listener_it_added() {
+        // The risk (#826): a level's listeners outliving it, so each visit
+        // adds another and the page's listener count grows with every walk
+        // in and out. What keys.js draws for a level adds each listener
+        // with the level's AbortController signal, and leaving the level
+        // aborts it, calls every unlisten the level registered and starts
+        // a new scope; what it drew is replaced, never appended to. The CI
+        // smoke run counts the page's listeners across those walks.
+        let keys = code_of("keys.js");
+        for drawer in ["drawTrail", "drawSiblings"] {
+            let body = function_body(&keys, drawer);
+            let adds = body.matches("addEventListener(").count();
+            assert!(
+                adds > 0,
+                "{drawer} adds no listener, so this test reads nothing"
+            );
+            assert_eq!(
+                body.matches("{ signal });").count(),
+                adds,
+                "{drawer} adds a listener without the level's signal: {body}"
+            );
+            assert!(
+                body.contains("replaceChildren("),
+                "{drawer} appends to what it drew: {body}"
+            );
+        }
+        let end = function_body(&keys, "endScope");
+        for want in [
+            "scope.controller.abort();",
+            "for (const unlisten of scope.unlisten.splice(0)) unlisten();",
+            "scope = newScope();",
+        ] {
+            assert!(end.contains(want), "endScope lacks {want}: {end}");
+        }
+        for caller in ["go", "enter"] {
+            assert!(
+                function_body(&keys, caller).contains("leave(doc);"),
+                "{caller} changes the level without ending the last one's scope"
+            );
+        }
+        assert!(function_body(&keys, "leave").contains("endScope();"));
     }
 
     #[test]
@@ -4740,34 +5033,51 @@ mod tests {
         text
     }
 
-    /// The colour tokens of one theme: the custom properties of the `:root`
-    /// block at `text[from..]`, by name without the leading `--`.
-    fn css_tokens(text: &str, from: usize) -> BTreeMap<String, String> {
-        let block = &text[from..];
-        let start = block.find(":root").expect("a :root block");
-        let open = block[start..].find('{').expect(":root opens") + start;
-        let close = block[open..].find('}').expect(":root closes") + open;
-        block[open + 1..close]
-            .split(';')
-            .filter_map(|d| d.split_once(':'))
-            .filter_map(|(k, v)| {
-                k.trim()
-                    .strip_prefix("--")
-                    .map(|k| (k.to_string(), v.trim().to_string()))
-            })
-            .collect()
+    /// The custom properties of every rule whose selector, spaces dropped,
+    /// is `selector`, by name without the leading `--`; a later rule's value
+    /// wins, as in the cascade. The generated block and the desktop's own
+    /// tokens each write a rule per theme (#813).
+    fn css_tokens(text: &str, selector: &str) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        let mut rest = text;
+        while let Some(open) = rest.find('{') {
+            let head: String = rest[..open]
+                .rsplit(['}', '/'])
+                .next()
+                .unwrap_or("")
+                .split_whitespace()
+                .collect();
+            let close = rest[open..].find('}').expect("a rule closes") + open;
+            if head == selector {
+                for (k, v) in rest[open + 1..close]
+                    .split(';')
+                    .filter_map(|d| d.split_once(':'))
+                {
+                    if let Some(k) = k.trim().strip_prefix("--") {
+                        out.insert(k.to_string(), v.trim().to_string());
+                    }
+                }
+            }
+            rest = &rest[open + 1..];
+        }
+        out
     }
 
-    /// The light and dark token tables: the first `:root` block, and the one
-    /// inside the dark `@media` block.
+    /// The Daylight and Dark token tables. Dark is the default
+    /// (`:root,[data-theme=dark]`); Daylight is written twice, under
+    /// `[data-theme=light]` and the light colour-scheme query, and the two
+    /// must agree.
     fn css_themes() -> [(&'static str, BTreeMap<String, String>); 2] {
         let text = css_text();
-        let dark = text
-            .find("@media (prefers-color-scheme: dark)")
-            .expect("a dark theme block");
+        let light = css_tokens(&text, ":root:not([data-theme=dark])");
+        assert_eq!(
+            light,
+            css_tokens(&text, "[data-theme=light]"),
+            "Daylight under the query differs from [data-theme=light]"
+        );
         [
-            ("light", css_tokens(&text, 0)),
-            ("dark", css_tokens(&text, dark)),
+            ("light", light),
+            ("dark", css_tokens(&text, ":root,[data-theme=dark]")),
         ]
     }
 
@@ -4803,8 +5113,70 @@ mod tests {
     }
 
     #[test]
+    fn page_css_colours_come_from_the_tokens() {
+        // The risk (#813): a colour written into a rule, which a theme cannot
+        // change and tokens.json does not hold, so the two themes and the
+        // design system drift apart; and a drop shadow, which the brand book
+        // forbids (depth is a 1px frame). Outside the rules that define the
+        // tokens, no declaration names a colour of its own but the
+        // ::backdrop's commented var() fallback, and every box-shadow is an
+        // inset line or a frame token.
+        let named = [
+            "white", "black", "red", "green", "blue", "gray", "grey", "orange", "yellow", "silver",
+            "purple", "pink", "brown",
+        ];
+        let colour = |d: &str| {
+            let hex = d.char_indices().any(|(i, c)| {
+                c == '#'
+                    && d[i + 1..]
+                        .chars()
+                        .take_while(char::is_ascii_hexdigit)
+                        .count()
+                        >= 3
+            });
+            let function = [
+                "rgb(", "rgba(", "hsl(", "hsla(", "hwb(", "lab(", "lch(", "oklab(", "oklch(",
+                "color(",
+            ]
+            .iter()
+            .any(|f| d.contains(f));
+            let word = d
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+                .any(|w| named.contains(&w));
+            hex || function || word
+        };
+        let mut shadows = 0;
+        for (selector, decls) in css_rules() {
+            for d in decls.split(';').map(str::trim).filter(|d| !d.is_empty()) {
+                if d.starts_with("--") {
+                    continue;
+                }
+                if colour(d) {
+                    assert!(
+                        selector == ".approval::backdrop"
+                            && d == "background: var(--scrim, #000000b3)",
+                        "{selector} {{ {d} }} names a colour of its own"
+                    );
+                }
+                if let Some(v) = d.strip_prefix("box-shadow:") {
+                    shadows += 1;
+                    let v = v.trim();
+                    assert!(
+                        v.starts_with("inset ") || v == "none" || v.starts_with("var(--frame"),
+                        "{selector} {{ {d} }} draws a drop shadow"
+                    );
+                }
+            }
+        }
+        assert!(
+            shadows > 0,
+            "the scan found no box-shadow at all; it reads nothing"
+        );
+    }
+
+    #[test]
     fn field_contrast_token_meets_three_to_one_in_both_themes() {
-        // The risk (#647, UX-13): `--border` is a pane divider that measures
+        // The risk (#647, UX-13): `--line` is a pane divider that measures
         // 1.4:1 against the pane, so a field drawn with it is nearly
         // invisible when empty. Fields take `--control-border`, which must
         // clear WCAG's 3:1 non-text floor against both backgrounds a field
@@ -4820,7 +5192,7 @@ mod tests {
                     .as_str()
             };
             let control = token("control-border");
-            for bg in ["pane-bg", "bg"] {
+            for bg in ["panel", "ground"] {
                 let ratio = contrast(control, token(bg));
                 assert!(
                     ratio >= 3.0,
@@ -4831,8 +5203,8 @@ mod tests {
             // The case this fixes is still the case: the divider token alone
             // would fail, so a field that falls back to it is caught below.
             assert!(
-                contrast(token("border"), token("pane-bg")) < 3.0,
-                "{theme}: --border now clears 3:1; the field rule below may be redundant"
+                contrast(token("line"), token("panel")) < 3.0,
+                "{theme}: --line now clears 3:1; the field rule below may be redundant"
             );
         }
     }
@@ -4851,11 +5223,11 @@ mod tests {
 
     #[test]
     fn field_contrast_every_field_border_uses_the_control_token() {
-        // The risk: a field rule added later takes `--border` by habit (every
+        // The risk: a field rule added later takes `--line` by habit (every
         // other bordered box does) and ships a 1.4:1 field. Each rule whose
         // selector names a field and whose declarations set a border must
         // draw it with the control token; a rule shared with a non-field
-        // (the composer's select and button) may keep `--border` only if a
+        // (the composer's select and button) may keep `--line` only if a
         // field-only rule after it overrides the colour.
         let page = page();
         let field_ids: BTreeSet<String> = page
@@ -4887,7 +5259,7 @@ mod tests {
                 continue;
             }
             assert!(
-                decls_s.contains("var(--border)"),
+                decls_s.contains("var(--line)"),
                 "{selectors} draws a field border in a colour this test cannot measure: {decls}"
             );
             // The one allowed shape: the rule is shared with a non-field and a
@@ -4915,7 +5287,7 @@ mod tests {
         // The risk: `button:focus-visible` is the page's ring, but a field or
         // a `<summary>` it does not name falls back to the engine's own,
         // which differs between WebView2 and WebKitGTK. One rule names the
-        // four element types and draws the same `--focus` outline.
+        // four element types and draws the same `--signal-ring` outline.
         let rules = css_rules();
         for element in ["input", "select", "textarea", "summary"] {
             let want = format!("{element}:focus-visible");
@@ -4926,7 +5298,7 @@ mod tests {
             assert_eq!(matching.len(), 1, "one bare {want} rule: {matching:?}");
             let decls: String = matching[0].1.split_whitespace().collect();
             assert!(
-                decls.contains("outline:2pxsolidvar(--focus)"),
+                decls.contains("outline:2pxsolidvar(--signal-ring)"),
                 "{want} {{ {} }} is not the page's focus ring",
                 matching[0].1
             );
