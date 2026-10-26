@@ -40,6 +40,6 @@ own `<style>` or `<script>` block in that order. Edit the last two. Keep every
 colour, length and radius a token. A token's value changes in
 `system/tokens.json` first, then in the wireframe's token block, then
 `scripts/checks/design-tokens.py --write` regenerates the tables in
-`DESIGN.md`; CI fails when any copy drifts from `tokens.json`. The rules an
-agent follows when touching the clients are in
-`.claude/skills/trellis-ui/SKILL.md`.
+`DESIGN.md` and the TUI's `tui/internal/theme/tokens_gen.go`; CI fails when
+any copy drifts from `tokens.json`. The rules an agent follows when touching
+the clients are in `.claude/skills/trellis-ui/SKILL.md`.
