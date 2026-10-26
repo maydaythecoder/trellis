@@ -1226,7 +1226,8 @@ Each item is tested unless it says otherwise.
   It never begins with the word `tier`, which the bar writes before it;
   hosted labels began `tier 1` (the bar read `tier tier 1, …`) and a
   runtime whose probe could not run was `?`. `client_contract.json`'s
-  `commands.get_state.data.tier_label` lists the heads and the separator;
+  `responses.get_state.tier_label` (moved from `commands.get_state.data`
+  on 2026-10-26, #796) lists the heads and the separator;
   evidence: the `tier_label_vocabulary_` tests in
   `crates/trellis-cli/src/hosted.rs` (they were in `tui_run.rs`, which no
   longer exists).*
