@@ -715,11 +715,10 @@ impl Hold {
 
     /// Lets a held loop go on, or withdraws a pause it has not reached, so a
     /// person who changes their mind does not wait out a model request.
+    /// Once closed nothing is held or asked for, so it is refused as not
+    /// paused; the close's reason is about a pause, not a resume.
     pub fn resume(&self) -> Result<(), HoldRefused> {
         let mut s = self.state();
-        if let Some(why) = &s.closed {
-            return Err(HoldRefused::Closed(why.clone()));
-        }
         match std::mem::take(&mut s.phase) {
             HoldPhase::Running => Err(HoldRefused::NotPaused),
             HoldPhase::Requested(tx) => {
@@ -4374,6 +4373,7 @@ rank = \"non-negotiable\"
             hold.pause().unwrap_err(),
             HoldRefused::Closed("the run ended".into())
         );
+        assert_eq!(hold.resume().unwrap_err(), HoldRefused::NotPaused);
     }
 
     #[tokio::test]
