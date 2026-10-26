@@ -4270,6 +4270,61 @@ mod tests {
     }
 
     #[test]
+    fn composer_queue_draws_pending_through_ds_and_sends_its_prompt_only_with_the_abort() {
+        // The risk (#830): the queue drawn by composer.js's own markup,
+        // drifting from the Queue card; a take-back or cancel control that
+        // sends `withdraw`, which is #838's; or Stop and send writing its
+        // prompt from the page, on a timer or before the run has ended,
+        // rather than as the abort's `then` the core sequences. The queue
+        // is ds.js's queueItems over the view's `pending`, take back is
+        // marked not built, and the Stop and send branch of Send only opens
+        // the Stop dialog.
+        let js = code_of("composer.js");
+        assert!(
+            function_body(&js, "drawPending").contains("queueItems(doc, items)"),
+            "the queue is not drawn through ds.js"
+        );
+        assert!(
+            js.contains(r#"if ("pending" in view) drawPending(doc, view.pending);"#),
+            "the queue is not the view's pending"
+        );
+        for bad in ["withdraw", "setTimeout", "setInterval"] {
+            assert!(!js.contains(bad), "composer.js holds {bad}");
+        }
+        let submit = composer_submit(&js);
+        let stop = submit
+            .split("if (running && verb === \"stop\") {")
+            .nth(1)
+            .and_then(|r| r.split("\n    }\n").next())
+            .expect("Send has a Stop and send branch");
+        for bad in ["forward(", "send(", "invoke("] {
+            assert!(!stop.contains(bad), "Stop and send sends from Send: {stop}");
+        }
+        for want in ["p.stopConfirm.showModal();", "p.stopCancel.focus();"] {
+            assert!(stop.contains(want), "Stop and send lacks {want}: {stop}");
+        }
+        let close = js
+            .split("p.stopConfirm.addEventListener(\"close\"")
+            .nth(1)
+            .and_then(|r| r.split("});").next())
+            .expect("composer.js listens for the dialog's close");
+        assert!(
+            close.contains("if (then !== null) line.then = then;"),
+            "{close}"
+        );
+        let page = page();
+        let queue = index_of(&page, "composer-queue");
+        assert!(within(&page, queue, index_of(&page, "composer")));
+        assert!(page[queue].attrs.contains_key("hidden"), "shown as served");
+        assert!(
+            (0..page.len()).any(|i| within(&page, i, queue)
+                && page[i].attr("class") == Some("unbuilt")
+                && page[i].text.contains("not built")),
+            "take back is not marked not built"
+        );
+    }
+
+    #[test]
     fn stop_confirm_dialog_has_named_cancel_and_stop_buttons() {
         // The risk (#637): the confirmation is a dialog whose buttons a
         // screen reader names only as "button", or whose text does not say
