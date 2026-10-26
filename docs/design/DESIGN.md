@@ -275,8 +275,14 @@ the named row's for `Same as`; a row the check cannot read fails it.
 raised row with no fill at the terminal's depth is drawn in reverse video.
 `trellis-tui` reads the terminal's colour depth and background once, before
 its program starts, and `--theme dark|light` replaces the background the
-terminal answers (Windows always answers dark). Nothing is painted with the
-theme yet (#841).
+terminal answers (Windows always answers dark). The view paints each row by
+its role, after every cut and pad is made on the plain text
+(`tui/internal/view/paint.go`, #841): what the person typed in `signal`,
+the model's words in `ink`, tool calls in `cool`, a check in `ok` or `down`
+from its verdict only, notes in `warn`, titles and captions in
+`ink-secondary`, and frames in `line`. The transcript's rows are drawn as
+text until each carries its role (#849); the view does not guess one from a
+row's words.
 
 The table gives 256- and 16-colour values for dark terminals. A light
 terminal (owner decision, 2026-10-25) takes the light hex values of §3.1 at
