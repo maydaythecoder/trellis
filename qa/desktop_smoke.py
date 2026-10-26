@@ -290,6 +290,15 @@ def judged(name, before, after, keys):
 WALK = """(async () => {
   const pause = () => new Promise((r) => setTimeout(r, 150));
   const esc = () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  // The model chooser opens over the stage at launch (#909); a person
+  // closes it with ESC before walking, and ESC closes it before it leaves
+  // a level.
+  const chooser = document.getElementById("model-pane");
+  if (chooser.open) {
+    esc(); await pause();
+    if (chooser.open) throw new Error("ESC did not close the model chooser");
+    if (document.getElementById("overview").hidden) throw new Error("ESC left the overview with the chooser open");
+  }
   const panels = [...document.querySelectorAll("button[data-enter]")];
   if (panels.length === 0) throw new Error("no overview panels to walk");
   for (const p of panels) {
