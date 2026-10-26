@@ -144,6 +144,13 @@ function resetView(ctx) {
   applyView(ctx);
 }
 
+// Whether the view is the whole picture, as resetView leaves it.
+function atBase(ctx) {
+  const v = ctx.view;
+  const b = ctx.base;
+  return !b || (v.x === b.x && v.y === b.y && v.w === b.w && v.h === b.h);
+}
+
 // The view's centre stays over the picture, so it cannot be panned away.
 function clampView(ctx) {
   const v = ctx.view;
@@ -547,6 +554,9 @@ function wirePanZoom(doc, ctx) {
         zoom(ctx, 1 / ZOOM);
         break;
       case "Escape":
+        // A view already reset leaves ESC to the page, which goes out a
+        // level (keys.js); otherwise ESC resets it first.
+        if (atBase(ctx)) return;
         resetView(ctx);
         break;
       default:
