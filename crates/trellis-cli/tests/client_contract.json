@@ -126,12 +126,12 @@
         },
         "paused": {
           "always": ["turn"],
-          "read_by": {"turn": []},
+          "read_by": {"turn": ["desktop"]},
           "about": "the run is held (ADR 0058 section 1, #806): sent once, when the loop reaches the hold a client's pause asked for, at the top of an iteration after the model request in flight and the tool call it chose have finished, and before the pause is answered. turn is the model call it holds before, numbered as the model call event numbers it. While held the run asks the model nothing; steer and follow_up are accepted and wait, so a steer sent now is in the first request after resumed; approve, abort and quit are read as always, and an abort ends the held run with its rollback and no resumed event. Held time is not charged to the wall clock (elapsed_ms)"
         },
         "resumed": {
           "always": ["turn", "paused_ms"],
-          "read_by": {"turn": [], "paused_ms": []},
+          "read_by": {"turn": ["desktop"], "paused_ms": ["desktop"]},
           "about": "the held run goes on (#806): sent by the loop as it leaves the hold, after a client's resume or when rpc's input ends, since nothing could resume it then. turn is the paused event's; paused_ms is how long it was held, in milliseconds by the monotonic clock, the time left out of elapsed_ms and so of the wall-clock budget"
         }
       },

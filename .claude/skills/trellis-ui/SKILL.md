@@ -65,8 +65,9 @@ The wireframe's regions, in the order a person reads them:
 - **Now strip**: the state word (`idle`, `running`, `needs you` + reason,
   `paused`, `stopping`, `ended · <outcome>`), elapsed, an activity line in
   `-ing` form from the last event, `turn n / max`, the queued count, and the
-  controls `Stop` (confirmed), `Pause` (rpc `pause`/`resume` built, #806; not yet in
-  either client), `Summary so far`.
+  controls `Stop` (confirmed), `Pause`/`Resume` (rpc `pause`/`resume`, #806; in
+  the desktop, #837, `paused` drawn from the engine's `paused` event; not yet in
+  the TUI), `Summary so far`.
 - **Action log**: rows typed by role. `you · task` / `you · steer` (signal
   colour, left bar), `model said — its words, not a verdict`, tool calls as one
   sentence with the raw call and observation on demand, check rows with the
@@ -80,8 +81,10 @@ The wireframe's regions, in the order a person reads them:
 - **Where it is**: phase, tool and target, turn, last call, prompt bytes
   against the context budget, compactions, model, tier, runtime, control, root.
 - **Budget**: two numbers per row (used / ceiling); wall clock excludes time
-  waiting on a person; `raise a limit` sends `set_budget` (rpc built, #807; not
-  yet in either client).
+  waiting on a person; `raise a limit` sends `set_budget` (rpc `set_budget`,
+  #807; in the desktop, #837, as Raise beside the turns, wall-clock and
+  completion-token rows, the ceiling redrawn from the next `run budget`, never
+  from the input or the answer; not yet in the TUI).
 - **Code**: files touched with two line counts and a state (`in the worktree`,
   `awaiting your approval`, `left in the tree`, `rolled back`); `diff` and
   `whole file` line by line; approve/reject only while the run waits on that
