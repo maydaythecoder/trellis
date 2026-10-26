@@ -774,6 +774,16 @@ pull request.
   chat interface already streams from local runtimes
   (`qa/REPORT-2026-09-21.md`). Revisit when a hosted turn's wait is
   measured as a problem.
+  *Note 2026-10-12 (#280, ahead of COL-18):* a streaming client exists
+  but no run turns it on. `HostedClient::with_streaming` accepts only an
+  openai-chat endpoint on this machine and refuses every other; streamed,
+  `[model] timeout_s` bounds the server's silence, the call's deadline (the
+  larger of the run's wall-clock budget left and `timeout_s`, handed over
+  by `Model::budget_left`) bounds the whole call and its retries, and the
+  32 MiB cap holds. The remote path above is unchanged. Whether any run
+  streams is still COL-18's answer under ADR 0047's tenth decision, from
+  the colibri floor run's model-call time (#277, #278); until then this
+  entry stands for every run.
 - `Retry-After` given as an obsolete HTTP date (RFC 850 or asctime form);
   it falls back to the fixed backoff. IMF-fixdate is honoured (§4).
 - OAuth, Bedrock, Vertex and Azure request signing.
