@@ -1311,6 +1311,18 @@ impl DesktopState {
                     // reaches the transcript and the alert below.
                     (Some("prompt"), Some(false)) => {
                         self.prompts_in_flight = self.prompts_in_flight.saturating_sub(1);
+                        // A Stop and send's prompt the core sent and trellis
+                        // refused starts no run: it was never delivered.
+                        let why = r.error.as_deref().unwrap_or("no reason given");
+                        let why = cut(why.to_string(), why.len(), QUEUED_TEXT_BYTES);
+                        if let Some(q) = self.queued.iter_mut().find(|q| {
+                            q.kind == QueuedKind::Prompt
+                                && Some(q.id.as_str()) == r.id.as_deref()
+                                && q.fate == Fate::Started
+                        }) {
+                            q.fate = Fate::Not(why);
+                            c = c.with(Pane::Pending);
+                        }
                     }
                     _ => {}
                 }
@@ -4726,6 +4738,25 @@ mod tests {
             assert!(s.held_sent("p2", Ok(())).has(Pane::Pending));
             assert_eq!(queue_of(&mut s)[0].1, "delivered");
         }
+        // Sent, and refused by trellis: no run comes, so it was never
+        // delivered, whatever the core's forwarding said.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p"));
+        s.stop_and_send("ab", prompt.clone());
+        feed(&mut s, &ended);
+        feed(&mut s, &stopped);
+        s.held_ready().unwrap();
+        s.held_sent("p2", Ok(()));
+        let c = feed(
+            &mut s,
+            &response_to("prompt", "p2", false, json!("one at a time")),
+        );
+        assert!(c.has(Pane::Pending), "{c:?}");
+        let q = all(&mut s)["pending"][0].clone();
+        assert_eq!(
+            (&q["state"], &q["why"]),
+            (&json!("not_delivered"), &json!("one at a time"))
+        );
         // Another abort's answer is not this one's.
         let mut s = DesktopState::default();
         feed(&mut s, &run_start("p"));
