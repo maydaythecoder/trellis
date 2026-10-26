@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
 // worked feeds three writes to two files, and a check, a radius and a
@@ -94,7 +96,7 @@ func TestStatusWorktreeIsWholeAtEightyColumnsWithALongSpec(t *testing.T) {
 	if !strings.Contains(bar, "worktree clean") || !strings.Contains(bar, "tier unknown, probing…") {
 		t.Fatalf("%q", bar)
 	}
-	if !strings.Contains(bar, "…") || strings.Contains(bar, spec) || len([]rune(bar)) > 80 {
+	if !strings.Contains(bar, "…") || strings.Contains(bar, spec) || view.Width(bar) > 80 {
 		t.Fatalf("the model is not the span cut: %q", bar)
 	}
 	// The longest state the bar can say, after a converged run.

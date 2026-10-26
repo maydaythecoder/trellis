@@ -6,6 +6,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/maydaythecoder/trellis/tui/internal/frames"
+	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
 // ModalPage is how far PgUp and PgDn move the approval modal's diff: the
@@ -45,7 +46,7 @@ func (m *Model) approvalRequested(a frames.ApprovalFields) {
 	if a.Detail != nil {
 		d = *a.Detail
 	}
-	ap := Approval{ID: a.ID, Question: Plain(q), Diff: plainLines(strings.TrimRight(d, " \t\r\n"))}
+	ap := Approval{ID: a.ID, Question: view.Plain(q), Diff: plainLines(strings.TrimRight(d, " \t\r\n"))}
 	if m.Modal == nil {
 		m.Modal = &ap
 		return
@@ -119,7 +120,7 @@ func (m *Model) answer(yes bool) {
 func plainLines(s string) string {
 	lines := strings.Split(s, "\n")
 	for i, l := range lines {
-		lines[i] = Plain(l)
+		lines[i] = view.Plain(l)
 	}
 	return strings.Join(lines, "\n")
 }
