@@ -160,7 +160,7 @@ func TestPauseAndResumeFollowTheEnginesEvents(t *testing.T) {
 // again.
 func TestRaiseSendsSetBudgetAndDrawsOnlyTheRunBudget(t *testing.T) {
 	m := running(t)
-	feed(m, event("run budget", map[string]any{"max_iterations": 10, "max_wall_clock_ms": 300000, "max_tokens": 5000}))
+	feed(m, event("run budget", map[string]any{"max_iterations": 10, "max_wall_clock_ms": 300000, "max_completion_tokens": 5000}))
 	feed(m, turn(3, "read_file a.py", map[string]any{"tool": "read_file", "target": "a.py", "elapsed_ms": 60000, "completion_tokens_used": 400}))
 	typeLine(m, "keep this")
 	if v := screen(m); !strings.Contains(v, "budget  [^R] raise") {
@@ -188,11 +188,11 @@ func TestRaiseSendsSetBudgetAndDrawsOnlyTheRunBudget(t *testing.T) {
 	if m.Input != "keep this" || m.raising != "" {
 		t.Fatalf("the line was not given back: %q, raising %q", m.Input, m.raising)
 	}
-	respond(m, out[0].Cmd["id"], "set_budget", map[string]any{"max_iterations": 30, "max_wall_clock_ms": 300000, "max_tokens": 5000})
+	respond(m, out[0].Cmd["id"], "set_budget", map[string]any{"max_iterations": 30, "max_wall_clock_ms": 300000, "max_completion_tokens": 5000})
 	if v := screen(m); !strings.Contains(v, "TURNS ████░░░░░░░░░░░░ 3/10") || strings.Contains(v, "/30") {
 		t.Fatalf("the ceiling moved before the run budget said so:\n%s", v)
 	}
-	feed(m, event("run budget", map[string]any{"max_iterations": 30, "max_wall_clock_ms": 300000, "max_tokens": 5000}))
+	feed(m, event("run budget", map[string]any{"max_iterations": 30, "max_wall_clock_ms": 300000, "max_completion_tokens": 5000}))
 	if v := screen(m); !strings.Contains(v, "TURNS █░░░░░░░░░░░░░░░ 3/30") || !strings.Contains(v, "TIME 1:00") {
 		t.Fatalf("the run budget sent again did not move the ceiling, or emptied what was counted:\n%s", v)
 	}

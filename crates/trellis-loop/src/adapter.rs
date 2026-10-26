@@ -1196,12 +1196,8 @@ impl Model for RuntimeModel {
         ))
     }
 
-    fn tokens_used(&self) -> u64 {
-        self.tokens
-    }
-
-    fn context_bytes(&self) -> Option<usize> {
-        self.compaction.budget
+    fn tokens_used(&self) -> Option<u64> {
+        Some(self.tokens)
     }
 
     fn prompt_tokens(&self) -> Option<u64> {
@@ -1210,6 +1206,10 @@ impl Model for RuntimeModel {
 
     fn prompt_bytes(&self) -> Option<usize> {
         self.last_prompt_bytes
+    }
+
+    fn context_bytes(&self) -> Option<usize> {
+        self.compaction.budget
     }
 
     fn compactions(&self) -> &[Compacted] {
@@ -1675,13 +1675,11 @@ impl Model for HostedModel {
     /// For the in-run ceiling: what was reported, plus each unreported
     /// reply at its request's `max_tokens`, so a silent provider trips the
     /// budget early rather than never.
-    fn tokens_used(&self) -> u64 {
-        self.tokens
-            .saturating_add(self.unreported.saturating_mul(u64::from(self.max_tokens)))
-    }
-
-    fn context_bytes(&self) -> Option<usize> {
-        self.compaction.budget
+    fn tokens_used(&self) -> Option<u64> {
+        Some(
+            self.tokens
+                .saturating_add(self.unreported.saturating_mul(u64::from(self.max_tokens))),
+        )
     }
 
     fn prompt_tokens(&self) -> Option<u64> {
@@ -1690,6 +1688,12 @@ impl Model for HostedModel {
 
     fn prompt_bytes(&self) -> Option<usize> {
         self.last_prompt_bytes
+    }
+
+    /// The budget in force: as built, until a provider's context-overflow
+    /// refusal lowers it, which the `compacted` event's `budget` reports.
+    fn context_bytes(&self) -> Option<usize> {
+        self.compaction.budget
     }
 
     fn compactions(&self) -> &[Compacted] {
@@ -2137,7 +2141,7 @@ mod tests {
         let c = RuntimeClient::new(&base, Dialect::LlamaCpp, None).unwrap();
         let mut m = RuntimeModel::unconstrained(c);
         m.next_step(&one_turn("t")).await.expect("a valid call");
-        assert_eq!((m.prompt_tokens(), m.tokens_used()), (Some(130), 9));
+        assert_eq!((m.prompt_tokens(), m.tokens_used()), (Some(130), Some(9)));
 
         // The first reply without the figure: unknown, not 70.
         let prose = r#"{"content":"I will read it.","tokens_predicted":4}"#;
@@ -2145,7 +2149,7 @@ mod tests {
         let c = RuntimeClient::new(&base, Dialect::LlamaCpp, None).unwrap();
         let mut m = RuntimeModel::unconstrained(c);
         m.next_step(&one_turn("t")).await.expect("a valid call");
-        assert_eq!((m.prompt_tokens(), m.tokens_used()), (None, 9));
+        assert_eq!((m.prompt_tokens(), m.tokens_used()), (None, Some(9)));
     }
 
     #[test]
@@ -2981,7 +2985,7 @@ mod compaction_and_hosted_tests {
         let client = HostedClient::with_key(Protocol::OpenAiChat, &base, "m", "K", None).unwrap();
         let mut m = HostedModel::new(client).with_max_tokens(500);
         m.next_step(&transcript(Vec::new())).await.unwrap();
-        assert_eq!(m.tokens_used(), 500, "the upper bound, not zero");
+        assert_eq!(m.tokens_used(), Some(500), "the upper bound, not zero");
         // The trail gets no number: an estimate is not a measurement.
         assert_eq!(m.tokens_measured(), None);
     }
@@ -3048,7 +3052,7 @@ mod compaction_and_hosted_tests {
         let mut m = HostedModel::new(client);
         m.require_usage(true);
         m.next_step(&transcript(Vec::new())).await.unwrap();
-        assert_eq!((m.tokens_used(), m.tokens_measured()), (7, Some(7)));
+        assert_eq!((m.tokens_used(), m.tokens_measured()), (Some(7), Some(7)));
     }
 
     /// Anthropic's rule, as its 400 states it: with thinking enabled, an

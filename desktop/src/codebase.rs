@@ -844,14 +844,16 @@ mod tests {
             .expect("main.js listens for codebase");
         assert!(listener.contains("index_saved === true"), "{listener}");
         assert!(listener.contains("readOverview(tauri)"), "{listener}");
+        // codebase.js draws whether it saved, as trellis said it, beside the
+        // answer's figures (drawFigures, #910).
         let status = ui_file("codebase.js");
-        let summary = status
-            .split("function summary(d)")
+        let figures = status
+            .split("function drawFigures(doc, d)")
             .nth(1)
             .and_then(|r| r.split("\n}").next())
-            .expect("codebase.js has summary");
+            .expect("codebase.js has drawFigures");
         for want in ["d.index_saved === true", "d.index_not_saved"] {
-            assert!(summary.contains(want), "summary does not read {want}");
+            assert!(figures.contains(want), "drawFigures does not read {want}");
         }
     }
 

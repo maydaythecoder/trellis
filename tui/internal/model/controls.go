@@ -240,7 +240,7 @@ func raiseValue(l view.Limit, text string, b view.Budget) (field string, value u
 		}
 		field, ceiling, per = "max_wall_clock_ms", b.MaxWallClockMs, 1000
 	default:
-		field, ceiling = "max_tokens", b.MaxTokens
+		field, ceiling = "max_completion_tokens", b.MaxCompletionTokens
 	}
 	value = n * per
 	if ceiling != nil && value <= *ceiling {

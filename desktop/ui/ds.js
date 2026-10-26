@@ -64,28 +64,20 @@ export function figure(doc, v, why) {
 
 // Stat: an uppercase label, a numeral and its unit. `value` is text or an
 // element (unreported's dash); a unit follows a figure, never a dash.
-// `meta` is text or an element (where the figure came from). `size` "sm"
-// is the 36px numeral. `inline` builds it from spans, for a Stat inside a
-// button, which holds phrasing content only; ds.css sets each part's
-// display, so it draws the same.
-export function stat(doc, { label, meta, value, unit, footnote, size, title, inline }) {
-  const box = inline ? "span" : "div";
-  const root = el(doc, box, null, cx("cd-stat", size === "sm" && "cd-stat-sm"));
-  const head = el(doc, box, null, "cd-stat-label");
+// `size` "sm" is the 36px numeral.
+export function stat(doc, { label, meta, value, unit, footnote, size, title }) {
+  const root = el(doc, "div", null, cx("cd-stat", size === "sm" && "cd-stat-sm"));
+  const head = el(doc, "div", null, "cd-stat-label");
   head.append(el(doc, "span", label));
-  if (meta) {
-    const m = el(doc, "span", null, "cd-stat-unit");
-    m.append(part(doc, meta));
-    head.append(m);
-  }
+  if (meta) head.append(el(doc, "span", meta, "cd-stat-unit"));
   const value_ = el(doc, "span", null, "cd-stat-value");
   value_.append(part(doc, value));
   if (unit && typeof value === "string") value_.append(el(doc, "span", unit, "cd-stat-unit"));
-  const row = el(doc, box, null, "cd-stat-value-row");
+  const row = el(doc, "div", null, "cd-stat-value-row");
   row.append(value_);
   root.append(head, row);
   if (footnote) {
-    const foot = el(doc, box, null, "cd-stat-foot");
+    const foot = el(doc, "div", null, "cd-stat-foot");
     foot.append(el(doc, "span"), el(doc, "span", footnote));
     root.append(foot);
   }
@@ -118,6 +110,26 @@ export function railRows(doc, rows) {
     if (r.title) li.title = r.title;
     return li;
   });
+}
+
+// Rail: `rows` (railRows's) in a timeline of their own, oldest first, for a
+// Rail a level makes inside a pane rather than one index.html serves.
+export function rail(doc, rows) {
+  const ol = el(doc, "ol", null, "cd-rail");
+  ol.append(...railRows(doc, rows));
+  return ol;
+}
+
+// Panel meta: what the design system's Panel draws at the right of its head
+// beside the title (a count, a time, a Status). index.html serves every
+// level's Panels with their heads, so a level writes only this, into the
+// head's `.cd-panel-meta` named `id`, and never a head of its own
+// (every_level_draws_through_ds). Each part is text or an element; an empty
+// one is left out, so `panelMeta(doc, id)` empties it.
+export function panelMeta(doc, id, ...parts) {
+  doc.getElementById(id).replaceChildren(
+    ...parts.filter((p) => p !== null && p !== undefined && p !== "").map((p) => (typeof p === "object" ? p : el(doc, "span", String(p)))),
+  );
 }
 
 // A glyph that marks a row's kind: drawn, and not read, since the row's

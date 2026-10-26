@@ -743,7 +743,7 @@ struct Budget {
     /// effect.
     ceilings: RunBudget,
     /// The run's completion tokens so far, as the latest turn reported the
-    /// counter `max_tokens` is checked against (#799). trellis's figure:
+    /// counter `max_completion_tokens` is checked against (#799). trellis's figure:
     /// the desktop sums no turns into it.
     completion_tokens_used: Option<u64>,
     /// The latest turn's prompt size; `None` for a turn that reported none
@@ -2789,9 +2789,9 @@ impl DesktopState {
 
     /// The budget's rows (#829), one per ceiling the run enforces: the
     /// turn against max_iterations, trellis's elapsed time against
-    /// max_wall_clock_ms, its completion-token counter against max_tokens
+    /// max_wall_clock_ms, its completion-token counter against max_completion_tokens
     /// (never prompt tokens, never a sum of the two), and the last prompt's
-    /// bytes against context_bytes. Each figure is trellis's; the desktop
+    /// bytes against max_context_bytes. Each figure is trellis's; the desktop
     /// keeps no clock and sums no turns.
     fn limits(&self) -> Value {
         let c = &self.budget.ceilings;
@@ -2824,7 +2824,7 @@ impl DesktopState {
                     self.budget.completion_tokens_used,
                     "no turn has reported completion_tokens_used",
                 ),
-                (c.max_tokens, not_sent),
+                (c.max_completion_tokens, not_sent),
                 count,
             ),
             limit_row(
@@ -2835,11 +2835,11 @@ impl DesktopState {
                     "the last turn sent no prompt size"
                 ),
                 (
-                    c.context_bytes,
+                    c.max_context_bytes,
                     if *c == RunBudget::default() {
                         not_sent
                     } else {
-                        "the run budget carried no context_bytes: a driver that elides \
+                        "the run budget carried no max_context_bytes: a driver that elides \
                          nothing, the scripted one, has no context ceiling"
                     },
                 ),
@@ -2864,7 +2864,7 @@ impl DesktopState {
         json!({
             "turns": {"field": "max_iterations", "unit": "turns", "per_unit": 1},
             "wall clock": {"field": "max_wall_clock_ms", "unit": "s", "per_unit": 1000},
-            "completion tokens": {"field": "max_tokens", "unit": "tok", "per_unit": 1},
+            "completion tokens": {"field": "max_completion_tokens", "unit": "tok", "per_unit": 1},
         })
     }
 
@@ -4165,7 +4165,7 @@ mod tests {
             &event(
                 "run budget",
                 json!({"max_iterations": 8, "max_wall_clock_ms": 60_000,
-                       "max_tokens": 1000, "context_bytes": 10_000}),
+                       "max_completion_tokens": 1000, "max_context_bytes": 10_000}),
             ),
         );
         let v = all(&mut s);
@@ -4177,7 +4177,7 @@ mod tests {
         rows.sort();
         assert_eq!(rows, ["completion tokens", "turns", "wall clock"]);
         assert_eq!(raise["turns"]["field"], "max_iterations");
-        assert_eq!(raise["completion tokens"]["field"], "max_tokens");
+        assert_eq!(raise["completion tokens"]["field"], "max_completion_tokens");
         // Typed in seconds, sent in the milliseconds run budget carries.
         assert_eq!(
             raise["wall clock"],
@@ -4199,7 +4199,7 @@ mod tests {
             &response(
                 "set_budget",
                 true,
-                json!({"max_iterations": 20, "max_wall_clock_ms": 60_000, "max_tokens": 1000}),
+                json!({"max_iterations": 20, "max_wall_clock_ms": 60_000, "max_completion_tokens": 1000}),
             ),
         );
         assert!(!c.has(Pane::Budget), "the answer redrew the budget: {c:?}");
@@ -4218,7 +4218,7 @@ mod tests {
             &event(
                 "run budget",
                 json!({"max_iterations": 20, "max_wall_clock_ms": 60_000,
-                       "max_tokens": 1000, "context_bytes": 10_000}),
+                       "max_completion_tokens": 1000, "max_context_bytes": 10_000}),
             ),
         );
         assert!(c.has(Pane::Budget) && c.has(Pane::Now), "{c:?}");
@@ -4992,7 +4992,7 @@ mod tests {
                  "why_ceiling": not_sent, "cells": 16, "filled": null, "tone": null},
                 {"limit": "context", "unit": "B", "used": 9800, "ceiling": null,
                  "used_text": "9800", "ceiling_text": null, "why_used": null,
-                 "why_ceiling": "the run budget carried no context_bytes: a driver \
+                 "why_ceiling": "the run budget carried no max_context_bytes: a driver \
                                  that elides nothing, the scripted one, has no \
                                  context ceiling",
                  "cells": 16, "filled": null, "tone": null},
@@ -5162,7 +5162,7 @@ mod tests {
             &event(
                 "run budget",
                 json!({"max_iterations": 10, "max_wall_clock_ms": 100_000,
-                       "max_tokens": 1000, "context_bytes": 10_000}),
+                       "max_completion_tokens": 1000, "max_context_bytes": 10_000}),
             ),
         );
         assert!(c.has(Pane::Budget), "{c:?}");
@@ -5215,7 +5215,7 @@ mod tests {
             &event(
                 "run budget",
                 json!({"max_iterations": 10, "max_wall_clock_ms": 100_000,
-                       "max_tokens": 2000, "context_bytes": 10_000}),
+                       "max_completion_tokens": 2000, "max_context_bytes": 10_000}),
             ),
         );
         let v = all(&mut s);
@@ -5231,7 +5231,7 @@ mod tests {
             &mut s,
             &event(
                 "run budget",
-                json!({"max_iterations": 3, "max_wall_clock_ms": 1000, "max_tokens": 5}),
+                json!({"max_iterations": 3, "max_wall_clock_ms": 1000, "max_completion_tokens": 5}),
             ),
         );
         feed(
@@ -5266,7 +5266,7 @@ mod tests {
         assert!(
             context["why_ceiling"]
                 .as_str()
-                .is_some_and(|w| w.contains("context_bytes")),
+                .is_some_and(|w| w.contains("max_context_bytes")),
             "{context}"
         );
         assert!(context["why_used"].as_str().is_some_and(|w| !w.is_empty()));
@@ -7123,8 +7123,8 @@ mod tests {
             | "elapsed_ms"
             | "completion_tokens_used"
             | "max_wall_clock_ms"
-            | "max_tokens"
-            | "context_bytes"
+            | "max_completion_tokens"
+            | "max_context_bytes"
             | "lines_added"
             | "lines_removed"
             | "start_line"

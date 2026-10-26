@@ -141,7 +141,7 @@ func TestNavCodeLevelCursorAndDiff(t *testing.T) {
 func TestSummaryReachedMidRunScrollsAndKeepsTheRunsSteers(t *testing.T) {
 	m := running(t)
 	feed(m, jsonLine(map[string]any{"level": "INFO", "fields": map[string]any{"message": "run budget",
-		"max_iterations": 9, "max_wall_clock_ms": 321000, "max_tokens": 54321, "context_bytes": 123456}}))
+		"max_iterations": 9, "max_wall_clock_ms": 321000, "max_completion_tokens": 54321, "max_context_bytes": 123456}}))
 	feed(m, turn(1, "run_checks", map[string]any{"verdict": "Some(true)", "check_kind": "Typecheck",
 		"duration_ms": 120, "completion_tokens_used": 77, "prompt_bytes": 2000}))
 	typeLine(m, "use the helper")

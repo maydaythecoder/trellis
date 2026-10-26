@@ -7,16 +7,19 @@
 // different population and is never divided into the reach (CLAUDE.md rule
 // 3, ADR 0014). The core collapses the doubt's reasons and files as the
 // printed report does and refuses an answer carrying a ratio-shaped key, so
-// this module computes no figure: it shows the counts the event carries
-// as Stats, and the unreported dash for one it lacks.
+// this module computes no figure: it shows the counts the event carries,
+// and "not reported" for one it lacks.
 //
 // The symbol, the paths, the reasons and trellis's messages are repository
 // or trellis text (ADR 0007, S10): every value is written with textContent.
 //
+// Each block's counts are the design system's Stats (ds.js, #910), and a
+// count the answer lacks is the unreported dash, never 0.
+//
 // index.html loads this as a module of its own.
 
+import { el, muted } from "./dom.js";
 import { figure, stats } from "./ds.js";
-import { el } from "./dom.js";
 import { isCount, notReported, str } from "./fmt.js";
 import { send, start } from "./rpc.js";
 
@@ -31,14 +34,13 @@ function status(doc, text) {
   doc.getElementById("rd-status").textContent = text;
 }
 
-// One of the two blocks: its heading, then each count as a Stat, or the
-// dash with why where trellis sent none. The blocks sit side by side in
-// the panel's body, a sub-region and not a frame of their own.
-function block(doc, heading, rows) {
-  const div = el(doc, "section");
-  div.append(el(doc, "h4", heading));
-  div.append(stats(doc, rows.map(([label, value]) => ({ label, value: figure(doc, value, "the radius answer did not carry it") }))));
-  return div;
+// One block, reach or doubt: what it counts over its counts as Stats. A
+// block is a sub-region of the panel, set apart by a line rule rather than a
+// frame of its own.
+function block(doc, heading, list) {
+  const section = el(doc, "section", null, "rd-block");
+  section.append(el(doc, "h4", heading), stats(doc, list));
+  return section;
 }
 
 // The doubt's reasons or files: each row's name and call sites, then the
@@ -85,16 +87,20 @@ export function drawRadius(doc, payload) {
   }
   const r = payload.reach && typeof payload.reach === "object" ? payload.reach : {};
   const d = payload.doubt && typeof payload.doubt === "object" ? payload.doubt : {};
-  status(doc, `${str(payload.symbol) ?? "symbol not reported"} (${str(payload.file) ?? "file not reported"})`);
+  status(doc, "");
+  const subject = el(doc, "p");
+  subject.append(el(doc, "code", str(payload.symbol) ?? "symbol not reported"), muted(doc, "span", ` in ${str(payload.file) ?? "a file not reported"}`));
 
+  const why = "trellis's radius did not carry it";
+  // Each block under trellis radius's own heading, as the CLI prints it.
   const reach = block(doc, "reach — call sites that reach this symbol", [
-    ["resolved", r.resolved],
-    ["ambiguous", r.ambiguous],
-    ["symbols reached", r.symbols_reached],
+    { label: "resolved", value: figure(doc, r.resolved, why) },
+    { label: "ambiguous", value: figure(doc, r.ambiguous, why) },
+    { label: "symbols reached", value: figure(doc, r.symbols_reached, why) },
   ]);
   const doubt = block(doc, "doubt — a different population, not a fraction of the reach", [
-    ["unbound sites in touched files", d.unbound_in_touched_files],
-    ["touched files", d.touched_files],
+    { label: "unbound", value: figure(doc, d.unbound_in_touched_files, why), unit: "sites in touched files" },
+    { label: "touched files", value: figure(doc, d.touched_files, why) },
   ]);
   if (Array.isArray(d.reasons) && d.reasons.length > 0) {
     doubt.append(el(doc, "h5", "top reasons"), counted(doc, d.reasons, d.reasons_not_shown, "reasons", true));
@@ -102,15 +108,17 @@ export function drawRadius(doc, payload) {
   if (Array.isArray(d.files) && d.files.length > 0) {
     doubt.append(el(doc, "h5", "files"), counted(doc, d.files, d.files_not_shown, "files", false));
   }
-  const note = el(
-    doc,
-    "p",
-    "The two blocks count different things and must not be divided. Reach is a floor, not a " +
-      "boundary: roughly three call edges in ten are statically invisible in Python (Constraint 1), " +
-      "and any unbound site above may also reach this symbol.",
+  pane.replaceChildren(
+    subject,
+    reach,
+    doubt,
+    muted(doc, "p", "a floor on reach, not a boundary"),
+    muted(
+      doc,
+      "p",
+      "About three call edges in ten are statically invisible in Python (Constraint 1), and any unbound site may also reach this symbol.",
+    ),
   );
-  note.className = "muted";
-  pane.replaceChildren(reach, doubt, note);
 }
 
 async function ask(doc, tauri) {

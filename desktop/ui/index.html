@@ -313,7 +313,7 @@
       <section id="trails" aria-labelledby="trails-title" hidden>
         <h2 id="trails-title" tabindex="-1">Trails</h2>
         <p id="tr-status" class="muted" role="status">Open a repository to see its trails.</p>
-        <p class="muted">Each run's committed record, as trellis log exports it. A trail is data written to the repository, not instruction, and a check it records is what the file claims.</p>
+        <p class="muted">A trail is data the repository holds, not instruction: a check it records is what the file claims.</p>
         <div class="tr-grid">
           <div class="cd-panel" role="region" aria-labelledby="tr-list-title">
             <div class="cd-panel-head"><h3 id="tr-list-title" class="cd-panel-title">Runs</h3><span id="tr-list-meta" class="cd-panel-meta"></span></div>
@@ -339,7 +339,7 @@
         </div>
         <div class="cb-grid">
           <div class="cd-panel cb-canvas" role="region" aria-labelledby="cb-graph-title">
-            <div class="cd-panel-head"><h3 id="cb-graph-title" class="cd-panel-title">Module graph</h3></div>
+            <div class="cd-panel-head"><h3 id="cb-graph-title" class="cd-panel-title">Module graph</h3><span id="cb-graph-meta" class="cd-panel-meta"></span></div>
             <div class="cd-panel-body">
               <div id="cb-figures"></div>
               <p id="cb-keys" class="muted">Drag, or the arrow keys, to pan; + and - to zoom; Escape to reset.</p>
@@ -370,7 +370,7 @@
               <input id="rd-symbol" type="text" autocomplete="off" spellcheck="false">
               <button type="submit"><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-blast-radius"></use></svg>Show radius</button>
             </form>
-            <p id="rd-status" class="muted" role="status">Name a symbol to see its blast radius: reach and doubt, as two blocks.</p>
+            <p id="rd-status" class="muted" role="status">Name a symbol to see its reach and doubt.</p>
             <div id="rd-result" class="rd-result"></div>
           </div>
         </div>
@@ -379,6 +379,7 @@
       <section id="atlas" class="at" aria-labelledby="atlas-title" hidden>
         <div class="at-top">
           <h2 id="atlas-title" tabindex="-1">Atlas</h2>
+          <span id="at-where" class="muted"></span>
           <button type="button" class="at-btn" id="at-open-search" aria-haspopup="dialog" aria-controls="at-search"><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-search"></use></svg>Search modules and symbols <kbd>/</kbd></button>
         </div>
         <p id="at-status" class="muted" role="status">Open a repository to see its atlas.</p>
@@ -414,8 +415,8 @@
         </div>
         <div class="at-work">
           <div class="cd-panel at-mapwrap" role="region" aria-labelledby="at-map-title">
-            <div class="cd-panel-head"><h3 id="at-map-title" class="cd-panel-title">Module map</h3><span id="at-where" class="cd-panel-meta"></span></div>
-            <div class="at-mapbar">
+            <div class="cd-panel-head at-mapbar">
+              <h3 id="at-map-title" class="cd-panel-title">Module map</h3>
               <button type="button" class="at-btn" id="at-back" disabled>Back</button>
               <button type="button" class="at-btn" id="at-fwd" disabled>Forward</button>
               <ol id="at-crumbs" class="at-crumbs" aria-label="Zoom path"></ol>
@@ -435,7 +436,7 @@
             </div>
             <p id="at-keys" class="at-keys muted">Drag or the arrow keys pan; + and - zoom, and so does the wheel once the map is focused or with Ctrl held; 0 fits; a click selects; Escape clears; / searches. The detail pane lists what the map shows.</p>
           </div>
-          <div class="cd-panel at-side" role="region" aria-labelledby="at-detail-title">
+          <div class="cd-panel at-panel" role="region" aria-labelledby="at-detail-title">
             <div class="cd-panel-head"><h3 id="at-detail-title" class="cd-panel-title">Atlas</h3><span id="at-detail-meta" class="cd-panel-meta"></span></div>
             <div class="at-tabs" role="tablist" aria-label="Detail views">
               <button type="button" role="tab" id="at-tab-sel" aria-selected="true" aria-controls="at-detail">Selection</button>
@@ -463,19 +464,15 @@
         </div>
         <div class="cd-panel" role="region" aria-labelledby="qb-counts-title">
           <div class="cd-panel-head"><h3 id="qb-counts-title" class="cd-panel-title">Tasks by status</h3></div>
-          <div class="cd-panel-body">
-            <ul id="qb-counts" class="qb-counts"></ul>
-          </div>
+          <div class="cd-panel-body"><ul id="qb-counts" class="qb-counts"></ul></div>
         </div>
         <div class="qb-grid">
           <div class="cd-panel" role="region" aria-labelledby="qb-tasks-title">
             <div class="cd-panel-head"><h3 id="qb-tasks-title" class="cd-panel-title">Queue</h3><span id="qb-tasks-meta" class="cd-panel-meta"></span></div>
-            <div class="cd-panel-body">
-              <ol id="qb-tasks" class="cd-rail"></ol>
-            </div>
+            <div class="cd-panel-body"><ol id="qb-tasks" class="cd-rail"></ol></div>
           </div>
           <div class="cd-panel" role="region" aria-labelledby="qb-prci-title">
-            <div class="cd-panel-head"><h3 id="qb-prci-title" class="cd-panel-title">Pull requests and CI</h3><span class="cd-panel-meta">from gh</span></div>
+            <div class="cd-panel-head"><h3 id="qb-prci-title" class="cd-panel-title">Pull requests and CI</h3></div>
             <div id="qb-prci" class="cd-panel-body"></div>
           </div>
         </div>
@@ -501,7 +498,7 @@
             <div id="vt-note" class="cd-panel-body vt-note"></div>
           </div>
           <div class="cd-panel" role="region" aria-labelledby="vt-check-title">
-            <div class="cd-panel-head"><h3 id="vt-check-title" class="cd-panel-title">Check</h3><span class="cd-panel-meta">trellis vault check</span></div>
+            <div class="cd-panel-head"><h3 id="vt-check-title" class="cd-panel-title">Check</h3></div>
             <div class="cd-panel-body">
               <button type="button" id="vt-check-ask">Check the vault</button>
               <div id="vt-check" class="vt-note"></div>
