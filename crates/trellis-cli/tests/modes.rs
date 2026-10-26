@@ -5034,3 +5034,331 @@ fn rpc_model_select_replies_carry_every_field_the_contract_lists() {
     );
     assert_eq!(s["data"]["saved_to"], Value::Null, "no save asked: {s}");
 }
+
+/// An approve-mode `trellis rpc` on the provider stub, with `prompt` sent and
+/// read up to the edit's approval question: the loop is then mid-turn, so a
+/// `pause` sent now is held at the top of the next iteration, after the
+/// first model request and before the second. `replies` start with that
+/// edit. `key_env` is a variable nobody sets, so the loopback endpoint is
+/// used with no key and no key of this machine's reaches the stub.
+fn at_the_edit_s_question(
+    f: &Fixture,
+    key_env: &str,
+    replies: Vec<String>,
+) -> (Rpc, std::thread::JoinHandle<Vec<String>>, Value) {
+    let (base, server) = provider_stub(replies);
+    std::fs::write(
+        f.user.join("config.toml"),
+        format!(
+            "[control]\nmode = \"approve\"\n\n[[providers]]\nname = \"stub\"\n\
+             protocol = \"openai\"\nbase_url = \"{base}\"\nkey_env = \"{key_env}\"\n"
+        ),
+    )
+    .unwrap();
+    let mut cmd = trellis(f);
+    cmd.env_remove(key_env);
+    let mut rpc = Rpc::start(cmd);
+    rpc.choose("provider:stub#m");
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                           "model": "provider:stub#m"}),
+    );
+    let q = rpc.next(|v| v["type"] == "approval_request");
+    (rpc, server, q)
+}
+
+fn edit_a() -> String {
+    openai_call(
+        "c1",
+        "edit",
+        serde_json::json!({"path": "a.py", "old": "return 1", "new": "return 2"}),
+    )
+}
+
+/// The index of the first record matching `pred`, naming `what` if none does.
+fn first(records: &[Value], what: &str, pred: impl Fn(&Value) -> bool) -> usize {
+    records
+        .iter()
+        .position(pred)
+        .unwrap_or_else(|| panic!("no {what}: {records:?}"))
+}
+
+/// A loop event's fields by its message and turn.
+fn event_at(message: &'static str, turn: u64) -> impl Fn(&Value) -> bool {
+    move |r: &Value| r["fields"]["message"] == message && r["fields"]["turn"] == turn
+}
+
+#[test]
+fn rpc_pause_holds_before_the_next_model_request() {
+    // The risks (ADR 0058 §1): a pause answered while the loop goes on to
+    // ask the model, so a person reads a run that is still moving; a pause
+    // that holds somewhere a steer cannot follow it into the next request;
+    // and refusals that leave a client unsure whether it paused. That the
+    // second request was made only after the pause was answered is shown by
+    // what it carries, not by a clock: a steer sent after the answer is in
+    // it.
+    let c = contract();
+    let later = &c["rpc"]["not_every_client"];
+    let f = fixture("rpc-pause-holds");
+    let (mut rpc, server, q) = at_the_edit_s_question(
+        &f,
+        "TRELLIS_TEST_RPC_PAUSE_HOLDS_KEY",
+        vec![
+            edit_a(),
+            openai_call("c2", "done", serde_json::json!({"summary": "changed it"})),
+        ],
+    );
+    // Mid-turn, nothing paused: there is nothing to resume.
+    rpc.send(serde_json::json!({"id": "r0", "type": "resume"}));
+    let r0 = rpc.next(|v| v["type"] == "response" && v["id"] == "r0");
+    assert_eq!(r0["success"], false, "{r0}");
+    assert_eq!(r0["error"], "not paused", "{r0}");
+    // Read in order: the pause is asked for before the yes that lets the
+    // turn end and the loop reach its hold.
+    rpc.send(serde_json::json!({"id": "h", "type": "pause"}));
+    rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": true}));
+    let held = rpc.next(|v| v["type"] == "response" && v["id"] == "h");
+    assert_eq!(held["command"], "pause");
+    assert_eq!(held["success"], true, "{held}");
+    assert_eq!(
+        held["data"]["turn"], 2,
+        "held before the second model call: {held}"
+    );
+    rpc.send(serde_json::json!({"id": "h2", "type": "pause"}));
+    let h2 = rpc.next(|v| v["type"] == "response" && v["id"] == "h2");
+    assert_eq!(h2["success"], false, "{h2}");
+    assert_eq!(h2["error"], "already paused", "{h2}");
+    let steer = "STEER-5d2 sent while paused";
+    rpc.send(serde_json::json!({"id": "s", "type": "steer", "message": steer}));
+    rpc.send(serde_json::json!({"id": "r", "type": "resume"}));
+    let r = rpc.next(|v| v["type"] == "response" && v["id"] == "r");
+    assert_eq!(r["success"], true, "{r}");
+    let s = rpc.next(|v| v["type"] == "response" && v["id"] == "s");
+    assert_eq!(s["data"]["after_step"], 1, "{s}");
+    let end = rpc.next(|v| v["type"] == "run_end");
+    assert_eq!(end["id"], "p", "{end}");
+    let records = rpc.finish();
+
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert!(!requests[0].contains("STEER-5d2"), "{}", requests[0]);
+    assert!(
+        requests[1].contains(steer),
+        "the request after the hold was made before the pause was answered: {}",
+        requests[1]
+    );
+    let turn_1 = first(&records, "turn 1", event_at("turn", 1));
+    let paused = first(&records, "paused event", |r| {
+        r["fields"]["message"] == "paused"
+    });
+    let answered = first(&records, "pause answer", |r| {
+        r["type"] == "response" && r["id"] == "h"
+    });
+    let resumed = first(&records, "resumed event", |r| {
+        r["fields"]["message"] == "resumed"
+    });
+    let call_2 = first(&records, "model call 2", event_at("model call", 2));
+    assert!(
+        turn_1 < paused && paused < answered && answered < resumed && resumed < call_2,
+        "turn 1 {turn_1}, paused {paused}, answered {answered}, resumed {resumed}, \
+         model call 2 {call_2}: {records:?}"
+    );
+    assert_eq!(records[paused]["fields"]["turn"], 2, "{}", records[paused]);
+    assert_eq!(
+        records[resumed]["fields"]["turn"], 2,
+        "{}",
+        records[resumed]
+    );
+    let mut gaps = missing(
+        &held["data"],
+        &c["rpc"]["responses"]["pause"]["always"],
+        "pause",
+    );
+    for (i, what) in [(paused, "paused"), (resumed, "resumed")] {
+        gaps.extend(missing(
+            &records[i]["fields"],
+            &later["events"][what]["always"],
+            what,
+        ));
+    }
+    assert!(
+        gaps.is_empty(),
+        "the stream lacks what tests/client_contract.json lists: {gaps:?}\n{records:?}"
+    );
+}
+
+#[test]
+fn rpc_pause_is_not_charged_to_the_wall_clock() {
+    // The risk (ADR 0058 §1): a run a person paused to read ends on its
+    // wall-clock budget because they read it, or reports an elapsed time
+    // that counts the hold, so the meter and the budget disagree. The hold
+    // is kept well past what the rest of the run takes; the `turn` before
+    // it and the `model call` after it are then the hold apart if it is
+    // charged and milliseconds apart if it is not. A slow host lengthens
+    // the hold, never the gap.
+    const HOLD_MS: u64 = 3000;
+    let f = fixture("rpc-pause-clock");
+    let (mut rpc, server, q) = at_the_edit_s_question(
+        &f,
+        "TRELLIS_TEST_RPC_PAUSE_CLOCK_KEY",
+        vec![
+            edit_a(),
+            openai_call("c2", "done", serde_json::json!({"summary": "changed it"})),
+        ],
+    );
+    rpc.send(serde_json::json!({"id": "h", "type": "pause"}));
+    rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": true}));
+    let held = rpc.next(|v| v["type"] == "response" && v["id"] == "h");
+    assert_eq!(held["success"], true, "{held}");
+    std::thread::sleep(std::time::Duration::from_millis(HOLD_MS));
+    rpc.send(serde_json::json!({"id": "r", "type": "resume"}));
+    let records = rpc.finish();
+    assert_eq!(server.join().unwrap().len(), 2, "{records:?}");
+
+    let ms = |r: &Value, at: &str| -> u64 {
+        r.as_u64()
+            .unwrap_or_else(|| panic!("{at} is not a count: {records:?}"))
+    };
+    let resumed = &records[first(&records, "resumed event", |r| {
+        r["fields"]["message"] == "resumed"
+    })];
+    let paused_ms = ms(&resumed["fields"]["paused_ms"], "paused_ms");
+    assert!(
+        paused_ms >= HOLD_MS,
+        "held {HOLD_MS} ms and more, reported {paused_ms}: {resumed}"
+    );
+    let before = ms(
+        &records[first(&records, "turn 1", event_at("turn", 1))]["fields"]["elapsed_ms"],
+        "turn 1's elapsed_ms",
+    );
+    let after = ms(
+        &records[first(&records, "model call 2", event_at("model call", 2))]["fields"]["elapsed_ms"],
+        "model call 2's elapsed_ms",
+    );
+    assert!(
+        after - before < HOLD_MS,
+        "the {paused_ms} ms hold was charged: {} ms between turn 1 and the model call \
+         after the hold\n{records:?}",
+        after - before
+    );
+    let end = &records[first(&records, "run_end", |r| r["type"] == "run_end")];
+    let total = ms(&end["elapsed_ms"], "run_end's elapsed_ms");
+    assert!(
+        total - before < HOLD_MS,
+        "run_end's elapsed_ms counts the {paused_ms} ms hold: {} ms past turn 1\n{end}",
+        total - before
+    );
+}
+
+#[test]
+fn rpc_resume_continues_the_same_run() {
+    // The risk (ADR 0058 §1): a resume that starts a new run, or one that
+    // goes on with the turn count or the run's request id reset, so a
+    // client draws two runs where the person paused one, and the checks
+    // that converge it are not the same run's. The run converges across
+    // the hold, with one run_start and one run_end, and its turns count on.
+    let f = fixture("rpc-resume-same");
+    commit_passing_checks(&f);
+    let (mut rpc, server, q) = at_the_edit_s_question(
+        &f,
+        "TRELLIS_TEST_RPC_RESUME_SAME_KEY",
+        vec![
+            edit_a(),
+            openai_call(
+                "c2",
+                "run_checks",
+                serde_json::json!({"paths": ["a.py"], "kinds": ["typecheck", "tests"]}),
+            ),
+            openai_call("c3", "done", serde_json::json!({"summary": "changed it"})),
+        ],
+    );
+    rpc.send(serde_json::json!({"id": "h", "type": "pause"}));
+    rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": true}));
+    let held = rpc.next(|v| v["type"] == "response" && v["id"] == "h");
+    assert_eq!(held["data"]["turn"], 2, "{held}");
+    rpc.send(serde_json::json!({"id": "r", "type": "resume"}));
+    let r = rpc.next(|v| v["type"] == "response" && v["id"] == "r");
+    assert_eq!(r["command"], "resume");
+    assert_eq!(r["success"], true, "{r}");
+    let end = rpc.next(|v| v["type"] == "run_end");
+    assert_eq!(end["id"], "p", "{end}");
+    assert_eq!(end["outcome"], "converged", "{end}");
+    rpc.wait_idle();
+    rpc.send(serde_json::json!({"id": "after", "type": "resume"}));
+    let after = rpc.next(|v| v["type"] == "response" && v["id"] == "after");
+    assert_eq!(after["error"], "no run in flight", "{after}");
+    rpc.send(serde_json::json!({"id": "after-p", "type": "pause"}));
+    let after_p = rpc.next(|v| v["type"] == "response" && v["id"] == "after-p");
+    assert_eq!(after_p["error"], "no run in flight", "{after_p}");
+    let records = rpc.finish();
+    assert_eq!(server.join().unwrap().len(), 3, "{records:?}");
+
+    let frames: Vec<(&str, &str)> = records
+        .iter()
+        .filter(|r| r["type"] == "run_start" || r["type"] == "run_end")
+        .map(|r| (r["type"].as_str().unwrap(), r["id"].as_str().unwrap_or("")))
+        .collect();
+    assert_eq!(
+        frames,
+        [("run_start", "p"), ("run_end", "p")],
+        "{records:?}"
+    );
+    let calls: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["fields"]["message"] == "model call")
+        .map(|r| &r["fields"]["turn"])
+        .collect();
+    assert_eq!(
+        calls,
+        [1, 2, 3],
+        "the turns count on across the hold: {records:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.root.join("a.py")).unwrap(),
+        "def f():\n    return 2\n",
+        "the converged run's edit is left for review"
+    );
+}
+
+#[test]
+fn rpc_abort_while_paused_rolls_back_and_hands_back_the_held_steer() {
+    // The risk (ADR 0058 §1): a held run that `abort` cannot reach, so the
+    // only way out of a pause is to resume work the person wanted stopped,
+    // or an abort that leaves the run's edit in the tree. A steer sent
+    // while held never reached a request, so abort hands it back.
+    let f = fixture("rpc-pause-abort");
+    let (mut rpc, server, q) = at_the_edit_s_question(
+        &f,
+        "TRELLIS_TEST_RPC_PAUSE_ABORT_KEY",
+        // One reply, so the stub stops after the one request the run makes
+        // before it holds; a second would find no listener and fail the run
+        // rather than leave it interrupted.
+        vec![edit_a()],
+    );
+    rpc.send(serde_json::json!({"id": "h", "type": "pause"}));
+    rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": true}));
+    let held = rpc.next(|v| v["type"] == "response" && v["id"] == "h");
+    assert_eq!(held["success"], true, "{held}");
+    rpc.send(serde_json::json!({"id": "s", "type": "steer", "message": "STEER-held"}));
+    rpc.send(serde_json::json!({"id": "x", "type": "abort"}));
+    let end = rpc.next(|v| v["type"] == "run_end");
+    assert_eq!(end["outcome"], "interrupted", "{end}");
+    assert_eq!(end["restored"], true, "{end}");
+    let x = rpc.next(|v| v["type"] == "response" && v["id"] == "x");
+    assert_eq!(
+        x["data"]["undelivered"],
+        serde_json::json!([{"id": "s", "type": "steer", "message": "STEER-held"}]),
+        "{x}"
+    );
+    let records = rpc.finish();
+    // Only the first request: the held run never asked again.
+    assert_eq!(server.join().unwrap().len(), 1, "{records:?}");
+    assert!(
+        !records.iter().any(|r| r["fields"]["message"] == "resumed"),
+        "an aborted hold is not a resume: {records:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.root.join("a.py")).unwrap(),
+        "def f():\n    return 1\n"
+    );
+}

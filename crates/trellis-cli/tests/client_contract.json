@@ -95,7 +95,7 @@
             "diff": "as lines_added"
           },
           "read_by": {"elapsed_ms": [], "completion_tokens_used": [], "duration_ms": [], "summarised": [], "tool": [], "target": [], "wrote": [], "lines_added": [], "lines_removed": [], "start_line": [], "diff": []},
-          "about": "lines_added and lines_removed are the whole lines an applied edit added and removed, in every control mode, computed from the text the edit read and wrote, the same hunk an approve-mode question counts (#802); start_line is the 1-based line, in the file before the edit, of the first line it removed or replaced, or with nothing removed the line the added lines went before; diff is a unified diff of that one hunk (--- and +++ naming the path, one @@ -a,b +c,d @@ header, a line of context either side), cut at a line once it passes 8192 bytes with a last line saying how many diff lines were cut, while the counts stay the whole edit's. diff is repository text and model output: a client shows it as text and never interprets it (CLAUDE.md rule 10). duration_ms is the tool call's time in milliseconds by the monotonic clock, with any wait on a person in approve mode taken out, and on the governance audit's turn the audit's own time (#800); tool, target and wrote are the trail's record of the turn, from the function the trail's action uses (#800): tool is the tool's name, target what it was pointed at, and wrote is true only for an edit that applied or a file write_file created, so a bash or custom tool's changes are not counted in it; summarised is how many of the radius's call sites its observation summarised by file instead of listing them, 0 when it listed every one. elapsed_ms is the run's wall-clock spend after the turn as its budget measures it (#799): milliseconds by the monotonic clock since the loop started, with every wait on a person in approve mode taken out, the figure checked against run budget's max_wall_clock_ms. completion_tokens_used is the counter run budget's max_tokens is checked against: completion (output) tokens over every reply so far, format retries included, never prompt tokens and never a sum of the two; a hosted driver counts a reply that reported none at its request's max_tokens, so the ceiling trips early rather than never; 0 for a driver that reads no reply (the scripted one)."
+          "about": "lines_added and lines_removed are the whole lines an applied edit added and removed, in every control mode, computed from the text the edit read and wrote, the same hunk an approve-mode question counts (#802); start_line is the 1-based line, in the file before the edit, of the first line it removed or replaced, or with nothing removed the line the added lines went before; diff is a unified diff of that one hunk (--- and +++ naming the path, one @@ -a,b +c,d @@ header, a line of context either side), cut at a line once it passes 8192 bytes with a last line saying how many diff lines were cut, while the counts stay the whole edit's. diff is repository text and model output: a client shows it as text and never interprets it (CLAUDE.md rule 10). duration_ms is the tool call's time in milliseconds by the monotonic clock, with any wait on a person in approve mode taken out, and on the governance audit's turn the audit's own time (#800); tool, target and wrote are the trail's record of the turn, from the function the trail's action uses (#800): tool is the tool's name, target what it was pointed at, and wrote is true only for an edit that applied or a file write_file created, so a bash or custom tool's changes are not counted in it; summarised is how many of the radius's call sites its observation summarised by file instead of listing them, 0 when it listed every one. elapsed_ms is the run's wall-clock spend after the turn as its budget measures it (#799): milliseconds by the monotonic clock since the loop started, with every wait on a person in approve mode and every pause (the paused and resumed events) taken out, the figure checked against run budget's max_wall_clock_ms. completion_tokens_used is the counter run budget's max_tokens is checked against: completion (output) tokens over every reply so far, format retries included, never prompt tokens and never a sum of the two; a hosted driver counts a reply that reported none at its request's max_tokens, so the ceiling trips early rather than never; 0 for a driver that reads no reply (the scripted one)."
         },
         "model call": {
           "always": ["elapsed_ms"],
@@ -125,12 +125,22 @@
           "always": ["turn", "steps", "steps_cut", "texts_cut"],
           "read_by": {"turn": [], "steps": [], "steps_cut": [], "texts_cut": []},
           "about": "the model's plan (ADR 0058 section 5, #810), sent after the turn of a plan call the gates let through, and only in a run whose repository enables the tool ([tools] enable = [\"plan\"]); a disabled or declined plan call sends none. turn is that turn's number. steps is the plan as kept, a JSON array in one string, since an event's fields are flat: each element {\"text\", \"state\"}, state one of todo, current and done, in the model's order. At most eight are kept, each text at most 200 characters: steps_cut is how many steps past the eighth were dropped and texts_cut how many kept texts were shortened, so a client can say the plan was cut. The text and the state are the model's words (rule 1): a client shows them as text, never interprets them (CLAUDE.md rule 10), and makes no count of done steps. A later plan event replaces the earlier one. A person's edit to the plan goes back as a steer; nothing edits this plan but the model's next plan call"
+        },
+        "paused": {
+          "always": ["turn"],
+          "read_by": {"turn": []},
+          "about": "the run is held (ADR 0058 section 1, #806): sent once, when the loop reaches the hold a client's pause asked for, at the top of an iteration after the model request in flight and the tool call it chose have finished, and before the pause is answered. turn is the model call it holds before, numbered as the model call event numbers it. While held the run asks the model nothing; steer and follow_up are accepted and wait, so a steer sent now is in the first request after resumed; approve, abort and quit are read as always, and an abort ends the held run with its rollback and no resumed event. Held time is not charged to the wall clock (elapsed_ms)"
+        },
+        "resumed": {
+          "always": ["turn", "paused_ms"],
+          "read_by": {"turn": [], "paused_ms": []},
+          "about": "the held run goes on (#806): sent by the loop as it leaves the hold, after a client's resume or when rpc's input ends, since nothing could resume it then. turn is the paused event's; paused_ms is how long it was held, in milliseconds by the monotonic clock, the time left out of elapsed_ms and so of the wall-clock budget"
         }
       },
       "framing": {
         "run_end": {
           "optional": {
-            "elapsed_ms": "when the agent loop ran and returned: its wall-clock spend in milliseconds as the budget measured it, with every wait on a person in approve mode taken out, the figure the turn's elapsed_ms counts up to. Absent, never a partial figure, for a run the loop did not finish: an interrupt or abort, an error before the loop started, and a partitioned run, whose partitions each spend their own wall clock"
+            "elapsed_ms": "when the agent loop ran and returned: its wall-clock spend in milliseconds as the budget measured it, with every wait on a person in approve mode and every pause taken out, the figure the turn's elapsed_ms counts up to. Absent, never a partial figure, for a run the loop did not finish: an interrupt or abort, an error before the loop started, and a partitioned run, whose partitions each spend their own wall clock"
           },
           "read_by": {"elapsed_ms": []}
         },
@@ -152,6 +162,14 @@
       },
       "list_paths": {
         "always": ["paths"]
+      },
+      "pause": {
+        "always": ["turn"],
+        "about": "takes no fields (ADR 0058 section 1, #806) and is answered once the loop holds, after the paused event: turn is the model call it holds before. Refused with no run in flight; already paused while a pause is held or still asked for; and, after the run's run_end, with the run ended before it reached the hold when the run ended first. A resume before the hold is reached withdraws the pause, which is then refused saying so. When rpc's input ends a pause still waiting is refused and a held run goes on."
+      },
+      "resume": {
+        "always": [],
+        "about": "takes no fields and has no data (#806): answered at once, and the loop's resumed event says how long the run was held. Refused with no run in flight, and not paused when no pause is held or asked for. Before the hold is reached it withdraws the pause, and the run goes on without holding."
       },
       "read_file": {
         "always": ["path", "text", "bytes", "cut"],

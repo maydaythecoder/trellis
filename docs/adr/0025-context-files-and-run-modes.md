@@ -254,6 +254,8 @@ on stderr.
     "list_paths" below*)
   - `read_file {path}` (*added 2026-10-26, #809; ADR 0058 §4 holds its
     rules*)
+  - `pause` and `resume` (*added 2026-10-26, #806; ADR 0058 §1 holds
+    their rules*)
   - `vault_search {query, limit?}` and `vault_graph {note}` (*added
     2026-10-06, #295; see "vault_search and vault_graph" below*)
   - `vault_check` (*added 2026-10-12, #631; see "vault_check" below*)
@@ -279,7 +281,8 @@ on stderr.
   `list_paths`, trellis's own, adds one more to what `get_commands` lists
   (#502), and `list_models`, trellis's own, one more again (#564);
   `get_symbols` and `get_history`, trellis's own, two more (the Atlas,
-  2026-10-11); `read_file`, trellis's own, one more (ADR 0058, #809).)
+  2026-10-11); `read_file`, trellis's own, one more (ADR 0058, #809);
+  `pause` and `resume`, trellis's own, two more (ADR 0058, #806).)
   - `steer`, `follow_up` and `clear_queue` need mid-run input (ADR 0021
     1.2, deferred). *Amended 2026-09-29 (#114): `steer` and `follow_up`
     are built, on the owner's decision of 2026-09-28 recorded there; see
