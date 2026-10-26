@@ -540,6 +540,57 @@ fn agents_one_with_targets_runs_each_partition_through_the_partitioned_path() {
 }
 
 #[test]
+fn a_multi_agent_run_end_carries_no_elapsed_and_each_partition_sends_its_share() {
+    // The risk (#799): a multi-agent run's `run_end` given one partition's
+    // spend, or a sum over partitions that ran at once, as the run's
+    // elapsed. No one clock is the run's, so `run_end` carries none. Each
+    // partition's loop sends its own `run budget` with its share (ADR
+    // 0008), which is what its events' `elapsed_ms` is read against.
+    let script = serde_json::json!({"targets": {
+        "fa": section("a.py", "A_NEW"),
+        "fb": section("b.py", "B_NEW"),
+    }});
+    let config = format!("{CHECKS_PASS}\n[budget]\nmax_iterations = 9\nmax_tokens = 1001\n");
+    let f = fixture_with("json-elapsed", Some(&config), &script.to_string());
+    let o = run(
+        &f,
+        &[
+            "run",
+            "change fa and fb",
+            "--model",
+            &f.spec,
+            "--agents",
+            "1",
+            "--target",
+            "fa",
+            "--target",
+            "fb",
+            "--json",
+        ],
+    );
+    assert_eq!(o.status.code(), Some(0), "{}", said(&o));
+    let lines: Vec<serde_json::Value> = String::from_utf8_lossy(&o.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("stdout is JSONL"))
+        .collect();
+    let end = lines
+        .iter()
+        .find(|l| l["type"] == "run_end")
+        .unwrap_or_else(|| panic!("no run_end: {lines:?}"));
+    assert_eq!(end["outcome"], "converged", "{end}");
+    assert!(end.get("elapsed_ms").is_none(), "{end}");
+    let budgets: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|l| l["fields"]["message"] == "run budget")
+        .map(|l| &l["fields"])
+        .collect();
+    assert_eq!(budgets.len(), 2, "one per partition: {lines:?}");
+    let total = |k: &str| -> u64 { budgets.iter().map(|b| b[k].as_u64().unwrap()).sum() };
+    assert_eq!(total("max_iterations"), 9, "{budgets:?}");
+    assert_eq!(total("max_completion_tokens"), 1001, "{budgets:?}");
+}
+
+#[test]
 fn agents_explicit_on_a_non_batching_backend_runs_at_width_one_and_says_why() {
     // Exit gate item 10 (#483): `--agents 3` on a backend not measured to
     // batch would put three agents on a runtime that serves one request at

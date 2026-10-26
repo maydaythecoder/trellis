@@ -84,13 +84,26 @@
       },
       "events": {
         "turn": {
+          "always": ["elapsed_ms"],
           "model_call_only": ["duration_ms"],
           "blast_radius_only": ["summarised"],
+          "prompt_driver_only": ["completion_tokens_used"],
           "absent_when": {
             "duration_ms": "the governance audit's turn event, which sends none (trellis-loop agent.rs)"
           },
-          "read_by": {"duration_ms": [], "summarised": []},
-          "about": "duration_ms is the tool call's time in milliseconds by the monotonic clock, with any wait on a person in approve mode taken out; summarised is how many of the radius's call sites its observation summarised by file instead of listing them, 0 when it listed every one"
+          "read_by": {"elapsed_ms": [], "duration_ms": [], "summarised": [], "completion_tokens_used": []},
+          "about": "duration_ms is the tool call's time in milliseconds by the monotonic clock, with any wait on a person in approve mode taken out; summarised is how many of the radius's call sites its observation summarised by file instead of listing them, 0 when it listed every one. elapsed_ms is the run budget's wall clock after the turn: monotonic milliseconds since the loop sent run budget, with every wait on a person in approve mode taken out, the figure run budget's max_wall_clock_ms is checked against. completion_tokens_used is the count max_completion_tokens is checked against, over the run so far: the completion tokens the replies reported, a hosted reply that reported none counted at its request's max_tokens. It is not this turn's completion_tokens, and prompt tokens are never in it. A scripted run calls no model and has no count."
+        },
+        "model call": {
+          "always": ["elapsed_ms"],
+          "read_by": {"elapsed_ms": []},
+          "about": "elapsed_ms is the run budget's wall clock as the call is made, by the clock the turn's elapsed_ms reads"
+        },
+        "run budget": {
+          "always": ["max_wall_clock_ms", "max_completion_tokens"],
+          "prompt_driver_only": ["max_context_bytes"],
+          "read_by": {"max_wall_clock_ms": [], "max_completion_tokens": [], "max_context_bytes": []},
+          "about": "the ceilings beside max_iterations, each in the unit of the figure checked against it: max_wall_clock_ms against elapsed_ms ([budget] max_wall_clock_s); max_completion_tokens against completion_tokens_used ([budget] max_tokens, which counts completion tokens only); max_context_bytes, the byte budget each request is held to ([model] context_bytes, or the endpoint's default; ADR 0024 section 5, ADR 0033), against a turn's prompt_bytes. max_context_bytes is the budget as the run starts: a hosted provider's context-overflow refusal lowers it, which a later compacted event's budget shows. A scripted run sends no prompt and holds none to a size. A multi-agent run sends one run budget per partition with that partition's share (ADR 0008), and each partition's elapsed_ms reads its own clock."
         },
         "compacted": {
           "always": ["turn", "elided_turns", "elided_bytes", "request_bytes", "budget"],
@@ -104,6 +117,13 @@
         }
       },
       "framing": {
+        "run_end": {
+          "optional": {
+            "elapsed_ms": "the run's agent loop returned. Absent when the run was refused before its loop, was interrupted (the loop was stopped, and a wait on a person still open then was never measured), or ran its agents by partition, each with its own clock"
+          },
+          "read_by": {"elapsed_ms": []},
+          "about": "elapsed_ms is the run budget's wall clock when the loop returned, by the clock its events' elapsed_ms read; the rollback and the trail after the loop are not in it"
+        },
         "approval_request": {
           "always": ["request_id"],
           "null_when": {
@@ -298,7 +318,7 @@
           "pending_approvals",
           "tier"
         ],
-        "last_run": "the last run's run_end framing fields, without type",
+        "last_run": "the last run's run_end framing fields, without type, run_id and elapsed_ms",
         "null_when": {
           "run_request_id": "no run is in flight, or the one in flight was started by a command sent with no id",
           "model": "neither set_model nor the configuration's [model] spec names one",
