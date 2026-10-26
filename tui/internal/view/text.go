@@ -79,6 +79,45 @@ func Cut(s string, w int) string {
 	return kept + tail
 }
 
+// CutLeft keeps the end of s to at most w cells, as Cut keeps its start:
+// for a line whose end matters most, as the task line's end is where the
+// cursor is. A cut string begins with "…"; at one cell there is no room
+// to say so.
+func CutLeft(s string, w int) string {
+	if Width(s) <= w {
+		return s
+	}
+	if w <= 0 {
+		return ""
+	}
+	head := "…"
+	if w == 1 {
+		head = ""
+	}
+	room := w - Width(head)
+	var cs []string
+	for c := range chars(s) {
+		cs = append(cs, c)
+	}
+	start, used := len(s), 0
+	for i := len(cs) - 1; i >= 0; i-- {
+		cw := Width(cs[i])
+		if used+cw > room {
+			break
+		}
+		start -= len(cs[i])
+		used += cw
+	}
+	kept := s[start:]
+	// As in Cut: the whole is measured again, so at most w cells holds for
+	// a sequence whose characters' widths do not sum to the whole's.
+	for kept != "" && Width(head+kept) > w {
+		_, size := utf8.DecodeRuneInString(kept)
+		kept = kept[size:]
+	}
+	return head + kept
+}
+
 // Pad cuts s to w cells and fills it with spaces to exactly w, so a row
 // ends where the next column or the border begins.
 func Pad(s string, w int) string {

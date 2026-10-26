@@ -29,7 +29,7 @@ func TestModelStopMidRunEscOnAnEmptyLineStopsAsCtrlCDoes(t *testing.T) {
 	if got := kinds(m.TakeOutbox()); strings.Join(got, ",") != "abort,QUIT" {
 		t.Fatalf("esc on an empty line mid-run sent %v, want abort then quit", got)
 	}
-	if last := m.Transcript[len(m.Transcript)-1]; !strings.HasPrefix(last, "· stopping:") {
+	if last := texts(m)[len(m.Transcript)-1]; !strings.HasPrefix(last, "· stopping:") {
 		t.Fatalf("the stop is not said: %q", last)
 	}
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
@@ -55,7 +55,7 @@ func TestModelStopMidRunNoLongerAppliesAfterTheRunEnded(t *testing.T) {
 	if got := kinds(m.TakeOutbox()); strings.Join(got, ",") != "QUIT" {
 		t.Fatalf("sent %v, want quit alone", got)
 	}
-	for _, l := range m.Transcript {
+	for _, l := range texts(m) {
 		if strings.HasPrefix(l, "· stopping:") {
 			t.Fatalf("a stop was said with no run: %q", l)
 		}
@@ -119,7 +119,7 @@ func TestModelStopWithNoChildToStopStillEnds(t *testing.T) {
 	if !a.M.Done {
 		t.Fatal("the program did not end with no child to stop the run")
 	}
-	said := strings.Join(a.M.Transcript, "\n")
+	said := strings.Join(texts(a.M), "\n")
 	if !strings.Contains(said, "could not write to trellis rpc") {
 		t.Fatalf("the failed stop was not said:\n%s", said)
 	}
