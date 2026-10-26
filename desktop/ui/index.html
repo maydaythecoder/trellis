@@ -12,8 +12,8 @@
   render.js, overview.js and main.js through textContent or createElement,
   never parsed as HTML (ADR 0007, S10). The run section's action graph is
   SVG that graph.js builds with createElementNS from the layout the core
-  computes (#303); render.js imports it, and the page loads it as a module
-  of its own, which the browser evaluates once either way. The codebase
+  computes (#303); render.js imports it, so it has no script tag of its
+  own (#833). The codebase
   section is drawn by codebase.js from the layout the core computes from a
   get_codebase answer (#307), and its symbol radius pane by radius.js from
   a get_radius answer the core types into reach and doubt (#308). The
