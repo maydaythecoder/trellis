@@ -189,10 +189,12 @@ const askingRows = 3
 // Asking is the screen while a question waits on the person: the Trail
 // and the Now strip, the approval box (Modal) over the stage, which covers
 // the panes so the keys on screen are the ones that act, and the status
-// bar.
+// bar. Below the minimum size the box is drawn alone over the whole
+// screen: "terminal too small" in its place would leave a question
+// waiting unseen while y and n still answer it.
 func Asking(s State, question, diff string, scroll, w, h int) string {
-	if w < MinWidth || h < MinHeight {
-		return tooSmall(w, h)
+	if !fits(w, h) {
+		return Modal(s.Theme, question, diff, scroll, w, h)
 	}
 	top := fill(s.Theme, RoleLabel, trail(s, w), w) + "\n" + fill(s.Theme, nowRole(s), nowStrip(s, w), w)
 	return top + "\n" + Modal(s.Theme, question, diff, scroll, w, h-askingRows) + "\n" + fill(s.Theme, RoleLabel, statusBar(s, w), w)
@@ -201,5 +203,8 @@ func Asking(s State, question, diff string, scroll, w, h int) string {
 // AskingLastFrom is ModalLastFrom for the box Asking draws at w by h: the
 // furthest line the model scrolls the question's diff to.
 func AskingLastFrom(diff string, w, h int) int {
-	return ModalLastFrom(diff, w, max(h-askingRows, 1))
+	if !fits(w, h) {
+		return ModalLastFrom(diff, w, h)
+	}
+	return ModalLastFrom(diff, w, h-askingRows)
 }
