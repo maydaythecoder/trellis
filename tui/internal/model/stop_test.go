@@ -11,25 +11,28 @@ import (
 )
 
 // #634: leaving mid-run used to leave the run editing the tree with nobody
-// watching. Esc on an empty line now stops it as ^c does: abort, which
-// rolls the run back, then quit, once, said on screen; Esc with text only
-// clears the line; and the program ends only when the child has exited,
-// after the rollback.
-func TestModelStopMidRunEscOnAnEmptyLineStopsAsCtrlCDoes(t *testing.T) {
+// watching; ^c stops it: abort, which rolls the run back, then quit, once,
+// said on screen; and the program ends only when the child has exited,
+// after the rollback. Since #851 ^c is the only key that stops a run (owner
+// decision, 2026-10-25): Esc with text clears the line, and Esc on an
+// empty line, which goes out one level, has nothing to leave at the top
+// and stops nothing.
+func TestModelStopMidRunOnlyCtrlCStops(t *testing.T) {
 	m := running(t)
 	typeLine(m, "half a steer")
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if m.Input != "" || m.Quitting {
 		t.Fatalf("esc with text: input %q quitting %v", m.Input, m.Quitting)
 	}
-	if out := m.TakeOutbox(); len(out) != 0 {
-		t.Fatalf("esc with text sent %v", kinds(out))
-	}
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if got := kinds(m.TakeOutbox()); strings.Join(got, ",") != "abort,QUIT" {
-		t.Fatalf("esc on an empty line mid-run sent %v, want abort then quit", got)
+	if out := m.TakeOutbox(); len(out) != 0 || m.Quitting {
+		t.Fatalf("esc mid-run sent %v, quitting %v; only ^c stops a run", kinds(out), m.Quitting)
 	}
-	if last := m.Transcript[len(m.Transcript)-1]; !strings.HasPrefix(last, "· stopping:") {
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if got := kinds(m.TakeOutbox()); strings.Join(got, ",") != "abort,QUIT" {
+		t.Fatalf("^c mid-run sent %v, want abort then quit", got)
+	}
+	if last := texts(m)[len(m.Transcript)-1]; !strings.HasPrefix(last, "· stopping:") {
 		t.Fatalf("the stop is not said: %q", last)
 	}
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
@@ -55,7 +58,7 @@ func TestModelStopMidRunNoLongerAppliesAfterTheRunEnded(t *testing.T) {
 	if got := kinds(m.TakeOutbox()); strings.Join(got, ",") != "QUIT" {
 		t.Fatalf("sent %v, want quit alone", got)
 	}
-	for _, l := range m.Transcript {
+	for _, l := range texts(m) {
 		if strings.HasPrefix(l, "· stopping:") {
 			t.Fatalf("a stop was said with no run: %q", l)
 		}
@@ -119,7 +122,7 @@ func TestModelStopWithNoChildToStopStillEnds(t *testing.T) {
 	if !a.M.Done {
 		t.Fatal("the program did not end with no child to stop the run")
 	}
-	said := strings.Join(a.M.Transcript, "\n")
+	said := strings.Join(texts(a.M), "\n")
 	if !strings.Contains(said, "could not write to trellis rpc") {
 		t.Fatalf("the failed stop was not said:\n%s", said)
 	}

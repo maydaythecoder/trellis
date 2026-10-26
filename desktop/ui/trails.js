@@ -13,7 +13,7 @@
 
 import { el } from "./dom.js";
 import { isCount } from "./fmt.js";
-import { start } from "./rpc.js";
+import { onShown, start } from "./rpc.js";
 
 // How many runs the view asks for: the core's own cap.
 const LIMIT = 200;
@@ -245,12 +245,11 @@ export async function wireTrails(doc, tauri) {
       if (shown()) refresh();
     }
   });
-  const button = doc.querySelector('nav.rail button[aria-controls="trails"]');
-  if (button) {
-    button.addEventListener("click", () => {
-      if (stale) refresh();
-    });
-  }
+  // Entering the Trails level shows the section (keys.js): a stale list is
+  // read then (#826).
+  onShown(doc, "trails", () => {
+    if (stale) refresh();
+  });
 }
 
 if (typeof window !== "undefined" && window.__TAURI__) {

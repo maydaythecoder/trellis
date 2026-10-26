@@ -12,8 +12,8 @@
   render.js, overview.js and main.js through textContent or createElement,
   never parsed as HTML (ADR 0007, S10). The run section's action graph is
   SVG that graph.js builds with createElementNS from the layout the core
-  computes (#303); render.js imports it, and the page loads it as a module
-  of its own, which the browser evaluates once either way. The codebase
+  computes (#303); render.js imports it, so it has no script tag of its
+  own (#833). The codebase
   section is drawn by codebase.js from the layout the core computes from a
   get_codebase answer (#307), and its symbol radius pane by radius.js from
   a get_radius answer the core types into reach and doubt (#308). The
@@ -29,12 +29,14 @@
   map's layout included (atlas.rs); the owner asked for it on 2026-10-11,
   beside the other sections. It only reads.
 
-  The rail's buttons each name, with aria-controls, the one section they
-  show; the others carry the hidden attribute. Pressing one moves focus to
-  the shown section's heading, which takes focus (tabindex -1) without
-  joining the tab order, so a keyboard user lands on what they chose; the
-  page's one h1 is drawn for screen readers only (#646). The overview section is the
-  landing section: its four panes (recent repositories, last run, codebase,
+  The overview's panels (button[data-enter]) are the ways into the other
+  sections, one level each (#826): keys.js shows the level's section and
+  hides the others with the hidden attribute, and a section's module reads
+  what it shows when its section is shown (rpc.js's onShown). Entering
+  moves focus to the shown section's heading, which takes focus (tabindex
+  -1) without joining the tab order, so a keyboard user lands on what they
+  chose; the page's one h1 is drawn for screen readers only (#646). The
+  overview section is the landing level: its four panes (recent repositories, last run, codebase,
   board) are drawn by overview.js from trellis's overview object (#562).
   A pane added to the run or overview section that nothing writes to fails
   view_renders_every_run_section or view_renders_every_overview_pane in

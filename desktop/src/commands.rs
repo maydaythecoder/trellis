@@ -72,7 +72,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 pub const LINE_CAP: usize = 65_536;
 
 /// The `type`s `rpc_send` forwards: `rpc.rs`'s `COMMANDS` as #296 lists
-/// them, `list_models` (#564) and the read-only `get_session_stats` (#313),
+/// them, `list_models` (#564), the read-only `get_session_stats` (#313) and
+/// `get_last_assistant_text`, which the summary level reads (#825),
 /// without `quit`, which only the core sends, and with each read-only
 /// command a desktop view reads through (ADR 0048 section 10) as that view
 /// is built: `get_codebase` (#307), `get_radius` (#308), `vault_search` and
@@ -81,7 +82,7 @@ pub const LINE_CAP: usize = 65_536;
 /// write is among them: rpc has none, every vault write stays a `trellis
 /// vault` command the person runs (#70), and the queue's writes are
 /// `trellis queue` and `trellis work` (ADR 0020 section 5).
-pub const FORWARDED: [&str; 21] = [
+pub const FORWARDED: [&str; 22] = [
     "prompt",
     "abort",
     "get_state",
@@ -95,6 +96,7 @@ pub const FORWARDED: [&str; 21] = [
     "compact",
     "get_commands",
     "get_session_stats",
+    "get_last_assistant_text",
     "get_codebase",
     "get_radius",
     "vault_search",
@@ -148,6 +150,35 @@ struct Session {
     view: DesktopState,
     /// Set by a forwarded `get_state`: the next `view` carries every pane.
     resend: bool,
+    /// Set while a close request's child is sent `quit` and waited for: a
+    /// close in that time is held (#815). The child is out of `child` by
+    /// then, so without this a second close found nothing to wait for and
+    /// ended the process under the wait.
+    closing: bool,
+}
+
+impl Session {
+    /// Takes the child out, so it can be shut down outside the lock; `why`
+    /// is what `rpc_send` says meanwhile.
+    fn take_child(&mut self, why: &str) -> Option<(u64, Child)> {
+        let taken = self.child.take();
+        if taken.is_some() {
+            self.why_none = why.to_string();
+        }
+        taken
+    }
+}
+
+/// What a close request on the window comes to (#815).
+pub enum Close {
+    /// No child runs: the window closes.
+    Now,
+    /// The child, taken out to be sent `quit` and waited for with
+    /// [`Core::shut_down`]; the window closes once that returns.
+    AfterShutDown((u64, Child)),
+    /// An earlier close still waits for the child to exit: this one is
+    /// held, and the page has been told why the window stays.
+    Held,
 }
 
 impl Core {
@@ -162,6 +193,7 @@ impl Core {
                 generation: 0,
                 view: DesktopState::default(),
                 resend: false,
+                closing: false,
             })),
         }
     }
@@ -356,12 +388,27 @@ impl Core {
 
     /// Takes the child out, so it can be shut down outside the lock.
     pub fn take_child(&self, why: &str) -> Option<(u64, Child)> {
+        self.lock().take_child(why)
+    }
+
+    /// A close request on the window (main.rs). The first takes the child
+    /// out to be shut down; one that comes while that shutdown waits is
+    /// held, and the page told, since letting it through would end the
+    /// process before the child has rolled back a run in flight (#815).
+    pub fn close_requested(&self) -> Close {
         let mut s = self.lock();
-        let taken = s.child.take();
-        if taken.is_some() {
-            s.why_none = why.to_string();
+        if s.closing {
+            let c = s.view.close_held();
+            self.sink.emit("view", s.view.view(c));
+            return Close::Held;
         }
-        taken
+        match s.take_child("the desktop is closing") {
+            Some(taken) => {
+                s.closing = true;
+                Close::AfterShutDown(taken)
+            }
+            None => Close::Now,
+        }
     }
 
     /// Sends a child taken out `quit`, waits, and says it exited. Never a
@@ -374,6 +421,9 @@ impl Core {
             Err(e) => Err(io::Error::new(e.kind(), e.to_string())),
         };
         self.exited(generation, report);
+        // Nothing is waited for now, so the window's own close after this
+        // goes through.
+        self.lock().closing = false;
         status
     }
 
@@ -412,6 +462,9 @@ impl Core {
                         self.sink.emit("view", s.view.view(c));
                     }
                 }
+                // The child may start a run from here on, before its
+                // `run_start` is read (#815).
+                Some("prompt") => s.view.prompt_forwarded(),
                 Some(t @ ("vault_search" | "vault_graph" | "vault_check")) => {
                     s.view
                         .vault_asked(t, line.get("id").and_then(Value::as_str));
@@ -468,9 +521,9 @@ impl Core {
             .map_err(|e| format!("get_overview: {e}"))
     }
 
-    /// `open_repository`: refused for a path with no `.git` entry and while
-    /// a run is in flight; otherwise the current child is shut down and one
-    /// started on `path`.
+    /// `open_repository`: refused for a path with no `.git` entry, while a
+    /// run or a prompt is in flight, and while the window is closing;
+    /// otherwise the current child is shut down and one started on `path`.
     pub fn open(&self, path: &Path) -> Result<(), String> {
         if !path.join(".git").exists() {
             return Err(format!(
@@ -478,14 +531,31 @@ impl Core {
                 path.display()
             ));
         }
-        if self.lock().view.running() {
-            return Err(
-                "open_repository: a run is in flight; it must end before another repository \
-                 is opened"
-                    .into(),
-            );
-        }
-        if let Some(taken) = self.take_child("trellis-desktop is opening another repository")
+        // Checked and taken under one lock (#815): a prompt forwarded
+        // between the two was quit with the child, and its run rolled back.
+        let taken = {
+            let mut s = self.lock();
+            if s.view.running() {
+                return Err(
+                    "open_repository: a run is in flight; it must end before another \
+                     repository is opened"
+                        .into(),
+                );
+            }
+            if s.view.prompt_in_flight() {
+                return Err(
+                    "open_repository: a prompt is in flight: trellis rpc has not yet started \
+                     its run or refused it, and the run must end before another repository is \
+                     opened"
+                        .into(),
+                );
+            }
+            if s.closing {
+                return Err("open_repository: the desktop is closing".into());
+            }
+            s.take_child("trellis-desktop is opening another repository")
+        };
+        if let Some(taken) = taken
             && let Err(e) = self.shut_down(taken)
         {
             return Err(format!("open_repository: shutting down trellis rpc: {e}"));
@@ -629,9 +699,10 @@ fn check_arguments(o: &serde_json::Map<String, Value>) -> Result<(), String> {
 
 /// The composer's rule (#301), from the view's own record of whether a run
 /// is in flight (`run_start` to `run_end`, or the child's exit): a `prompt`
-/// only while none is, and a `steer` or `abort` only while one is. `rpc.rs`
-/// refuses the same lines itself; the page draws the composer from the same
-/// view, and this holds the rule when the page is wrong.
+/// only while none is, and a `steer`, a `follow_up` (#825) or an `abort`
+/// only while one is. `rpc.rs` refuses the same lines itself; the page
+/// draws the composer from the same view, and this holds the rule when the
+/// page is wrong.
 fn check_run_state(line: &Value, running: bool) -> Result<(), String> {
     match (line.get("type").and_then(Value::as_str), running) {
         (Some("prompt"), true) => Err(
@@ -642,6 +713,13 @@ fn check_run_state(line: &Value, running: bool) -> Result<(), String> {
         (Some(ty @ ("steer" | "abort")), false) => Err(format!(
             "rpc_send: no run is in flight, so there is nothing to {ty}; send a prompt to start one"
         )),
+        // A follow_up runs after the run it is sent during; with none in
+        // flight there is nothing for it to follow.
+        (Some("follow_up"), false) => Err(
+            "rpc_send: no run is in flight, so there is nothing to follow; send a prompt to start \
+             one"
+            .into(),
+        ),
         _ => Ok(()),
     }
 }
@@ -929,6 +1007,53 @@ mod tests {
             .send(&json!({"id": "x", "type": "get_session_totals"}))
             .unwrap_err();
         assert!(err.contains("is not one rpc_send forwards"), "{err}");
+        finish(&core).unwrap();
+        for d in &dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn follow_up_is_refused_with_no_run_in_flight() {
+        // The risk (#825): a follow_up the page sends while nothing runs is
+        // forwarded as if a run would pick it up, and the person's words
+        // wait behind a run that is not there.
+        let (core, _rec, dirs) = with_child("follow-idle");
+        let l = json!({"id": "f", "type": "follow_up", "message": "then rename it"});
+        let err = core.send(&l).unwrap_err();
+        assert!(err.contains("no run is in flight"), "{err}");
+        assert!(err.contains("nothing to follow"), "{err}");
+        // While one runs it is forwarded; once it has ended it is refused.
+        run_started(&core);
+        assert_eq!(core.send(&l), Ok(()));
+        run_ended(&core);
+        let err = core.send(&l).unwrap_err();
+        assert!(err.contains("no run is in flight"), "after run_end: {err}");
+        finish(&core).unwrap();
+        for d in &dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn rpc_send_forwards_get_last_assistant_text() {
+        // The risk (#825): the summary level asks for the run's closing
+        // words and rpc_send refuses the line, so the summary says nothing;
+        // or the core answers it itself. The child answers, and its text is
+        // model output, null until a run ends on done.
+        let (core, rec, dirs) = with_child("last-text");
+        assert_eq!(
+            core.send(&json!({"id": "desktop-last", "type": "get_last_assistant_text"})),
+            Ok(())
+        );
+        let answer = rec.wait_for("rpc-frame", |f| f["id"] == "desktop-last");
+        assert_eq!(answer["command"], "get_last_assistant_text", "{answer}");
+        assert_eq!(answer["success"], true, "{answer}");
+        assert_eq!(
+            answer["data"],
+            json!({"text": null}),
+            "no run yet: {answer}"
+        );
         finish(&core).unwrap();
         for d in &dirs {
             let _ = std::fs::remove_dir_all(d);
@@ -1642,6 +1767,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&config);
     }
 
+    /// A core with a child whose output nothing reads until the test hands
+    /// it to `Core::read`: until then the view hears only the lines the test
+    /// feeds it, so a line written to the child stays unanswered as far as
+    /// the core knows. As `restart` does, it sets up the session by hand,
+    /// here with a process and without its readers or the models question.
+    fn with_unread_child(name: &str) -> (Core, Arc<Recorder>, Output, [PathBuf; 2]) {
+        let repo = scratch(&format!("{name}-repo"));
+        let config = scratch(&format!("{name}-config"));
+        let (core, rec) = core_with(&config);
+        let (child, out) = core.trellis.spawn_rpc(&repo).unwrap();
+        let mut s = core.lock();
+        s.generation += 1;
+        s.child = Some((s.generation, child));
+        drop(s);
+        (core, rec, out, [repo, config])
+    }
+
+    #[test]
+    fn open_refuses_while_a_prompt_is_in_flight() {
+        // The risk (#815): `open` read `running`, let go of the lock, then
+        // took the child, so a prompt forwarded in between was quit with the
+        // child and its run rolled back; and `running` comes only with the
+        // run's `run_start`, so a prompt the child had not answered yet
+        // counted as nothing in flight either way. A forwarded prompt holds
+        // the child until the child starts its run or refuses it.
+        let (core, rec, out, dirs) = with_unread_child("open-prompt");
+        let other = scratch("open-prompt-other");
+        std::fs::create_dir_all(other.join(".git")).unwrap();
+        model_set(&core);
+        assert_eq!(
+            core.send(&json!({"id": "p", "type": "prompt", "task": "t"})),
+            Ok(())
+        );
+        let err = core.open(&other).unwrap_err();
+        assert!(err.contains("a prompt is in flight"), "{err}");
+        assert!(core.lock().child.is_some(), "the child was taken");
+        assert!(rec.named("child-started").is_empty(), "another was started");
+
+        // Its answer read: this child was never given a model, so it refused
+        // the prompt, no run is coming, and the repository opens.
+        core.read(generation(&core), out);
+        let answer = rec.wait_for("rpc-frame", |f| f["id"] == "p");
+        assert_eq!(answer["success"], false, "{answer}");
+        core.open(&other).unwrap();
+        assert_eq!(rec.named("child-started").len(), 1);
+        finish(&core).unwrap();
+        for d in dirs.iter().chain([&other]) {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
     #[test]
     fn stdout_lines_become_frames_and_a_bad_line_stays_text() {
         // The risk: a line that is not JSON is dropped, or fails the
@@ -1869,6 +2045,43 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&repo);
         let _ = std::fs::remove_dir_all(&config);
+    }
+
+    #[test]
+    fn a_second_close_while_waiting_is_held_and_told() {
+        // The risk (#815): the first close took the child out to send it
+        // `quit` and wait, so a second close found no child, went through,
+        // and ended the process under the wait, before a run in flight had
+        // rolled back and written its trail. A close while the first waits
+        // is held and the page told why the window stays; no repository is
+        // opened meanwhile; and once the child has exited, the window's own
+        // close goes through.
+        let (core, rec, dirs) = with_child("second-close");
+        let other = scratch("second-close-other");
+        std::fs::create_dir_all(other.join(".git")).unwrap();
+        let Close::AfterShutDown(taken) = core.close_requested() else {
+            panic!("the first close did not take the child to shut it down");
+        };
+        assert!(
+            matches!(core.close_requested(), Close::Held),
+            "the second close went through"
+        );
+        let told = rec.named("view").into_iter().any(|v| {
+            v["alert"]
+                .as_str()
+                .is_some_and(|a| a.contains("closes once trellis rpc has exited"))
+        });
+        assert!(told, "the page was not told: {:?}", rec.named("view"));
+        let err = core.open(&other).unwrap_err();
+        assert!(err.contains("the desktop is closing"), "{err}");
+        assert_eq!(rec.named("child-started").len(), 1, "a child was started");
+
+        let status = core.shut_down(taken).unwrap();
+        assert!(status.success(), "{status:?}");
+        assert!(matches!(core.close_requested(), Close::Now));
+        for d in dirs.iter().chain([&other]) {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 
     #[test]
