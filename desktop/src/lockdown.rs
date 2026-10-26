@@ -1546,8 +1546,8 @@ mod tests {
             "ctx.items[k] = b;",
             "markSelected(ctx);",
             r#"`Modules in ${str(p.package) ?? "this package"}`"#,
-            "`edges in ${edgesIn(ctx, m)} · edges out ${figure(m && m.edges_out)} · `",
-            "`doubt ${figure(m && m.doubt)}`",
+            "`edges in ${edgesIn(ctx, m)} · edges out ${notReported(m && m.edges_out)} · `",
+            "`doubt ${notReported(m && m.doubt)}`",
         ] {
             assert!(list.contains(want), "drawList lacks {want}");
         }
@@ -1890,8 +1890,8 @@ mod tests {
         );
         let ask = function_body(&js, "ask");
         let sent = ask
-            .find("invoke(\"rpc_send\"")
-            .expect("ask sends the question");
+            .find("await send(tauri, { id, type: \"get_radius\", symbol }")
+            .expect("ask sends the question through rpc.js's send");
         let off = ask
             .find("submitting(doc, true);")
             .expect("ask disables the button");
@@ -1899,7 +1899,8 @@ mod tests {
             off < sent,
             "the button is disabled only after the question is sent"
         );
-        let refused = between(ask, "catch (err)", "\n  }");
+        // The refusal is rpc.js's send's third argument (#819).
+        let refused = between(ask, "symbol }, (why) => {", "\n  });");
         assert!(
             refused.contains("submitting(doc, false);"),
             "a refused question leaves the button disabled for good"
@@ -2924,12 +2925,12 @@ mod tests {
             BTreeSet::from(["get_codebase", "get_history", "get_radius", "get_symbols"]),
             "atlas.js sends a type that is not one of its four reads"
         );
-        let invoked: Vec<&str> = js
-            .split("invoke(\"")
-            .skip(1)
-            .map(|rest| &rest[..rest.find('"').unwrap()])
-            .collect();
-        assert_eq!(invoked, ["rpc_send"], "{invoked:?}");
+        // It reaches the core only through rpc.js's send (#819), which
+        // calls only rpc_send (model_gate_model_js_parses_no_html).
+        assert!(
+            !js.contains("invoke(") && js.contains(r#"import { send, start } from "./rpc.js";"#),
+            "atlas.js reaches the core some other way"
+        );
         // Every question carries an Atlas id, so the core keeps its
         // answers apart from the Codebase view's and the radius pane's.
         assert!(js.contains(r#"const ID = "desktop-atlas-";"#));
@@ -3228,28 +3229,11 @@ mod tests {
     /// #816 found them. #817 to #820 move them, each taking its lines out;
     /// the list only ever shrinks.
     const NOT_YET_MOVED: &[(&str, &str)] = &[
-        ("atlas.js", "el"),
-        ("atlas.js", "isCount"),
-        ("atlas.js", "plural"),
-        ("atlas.js", "send"),
-        ("atlas.js", "start"),
-        ("atlas.js", "str"),
-        ("codebase.js", "el"),
-        ("codebase.js", "isCount"),
-        ("codebase.js", "start"),
-        ("codebase.js", "str"),
         ("queue.js", "el"),
         ("queue.js", "isCount"),
         ("queue.js", "muted"),
         ("queue.js", "start"),
         ("queue.js", "str"),
-        ("radius.js", "el"),
-        ("radius.js", "isCount"),
-        ("radius.js", "start"),
-        ("radius.js", "str"),
-        ("trails.js", "el"),
-        ("trails.js", "isCount"),
-        ("trails.js", "start"),
         ("vault.js", "el"),
         ("vault.js", "isCount"),
         ("vault.js", "send"),
