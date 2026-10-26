@@ -219,6 +219,26 @@ path of `log_json`'s `always` and `optional`. Held by
 `log_json_carries_every_trail_field_the_desktop_reads` and
 `rpc_steer_abort_compact_answers_carry_what_the_contract_lists` in
 `tests/modes.rs`, with the `rpc_vault_` tests there for the vault answers.
+*Added 2026-10-26 (#799), owner decision of 2026-10-25 (build additive rpc
+fields):* trellis reports the budget's own elapsed time and every ceiling,
+so neither client runs a clock of its own against the budget. `model call`
+and every `turn`, the governance audit's included, carry `elapsed_ms`: the
+loop's monotonic wall-clock spend, with every wait on a person in approve
+mode taken out, the figure the wall-clock ceiling is checked against.
+`run_end` carries it when the loop ran and returned, and leaves it off,
+never sending part of a run as the whole, for an interrupt or abort, an
+error before the loop and a partitioned run. `run budget` carries, beside
+`max_iterations`, `max_wall_clock_ms`, `max_tokens` (the budget's own name,
+in tokens) and `context_bytes` (the driver's prompt ceiling in bytes, left
+off for the scripted driver, which has none). Every `turn` carries
+`completion_tokens_used`, the counter `max_tokens` is checked against: the
+budget counts completion tokens only, so the field says so, and it is never
+summed with prompt tokens. No client reads them yet, so they are under
+`rpc.not_every_client` with empty `read_by`, and the clients' contract
+tests are unchanged. Held by
+`rpc_elapsed_excludes_time_waiting_on_an_approval` and
+`rpc_run_budget_carries_every_ceiling` in `tests/modes.rs`, and on the audit
+turn by `rpc_every_turn_through_the_governance_audit_keeps_the_contract`.
 
 ### 7. Auditing Tauri's tree
 

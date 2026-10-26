@@ -558,6 +558,10 @@ impl<M: trellis_loop::Model> trellis_loop::Model for Watched<'_, M> {
         self.model.prompt_bytes()
     }
 
+    fn context_bytes(&self) -> Option<usize> {
+        self.model.context_bytes()
+    }
+
     fn compactions(&self) -> &[trellis_loop::Compacted] {
         self.model.compactions()
     }
@@ -2002,6 +2006,8 @@ impl Chain {
             run_ids: Some(self.ran.clone()),
             run_ended: Some(self.ended.clone()),
             tier: Some(self.tier.clone()),
+            // Fresh per run, for this run's `run_end` `elapsed_ms` (#799).
+            spent: trellis_loop::SpentSlot::default(),
         };
         // Cleared first, so a run that stops before it decides a tier
         // leaves none, rather than the last run's for another model.

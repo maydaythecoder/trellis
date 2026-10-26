@@ -153,6 +153,11 @@ pub(crate) struct RunExtras {
     /// schema probe for a runtime), and left as it was by a run that stopped
     /// before it did. `None` everywhere but rpc.
     pub tier: Option<TierSlot>,
+    /// Where the agent loop leaves its wall-clock spend when it returns,
+    /// for `run_end`'s `elapsed_ms` (#799). Left empty by a run the loop
+    /// did not finish (an interrupt, an error before it, a partitioned
+    /// run), so `run_end` then carries no figure rather than part of one.
+    pub spent: trellis_loop::SpentSlot,
 }
 
 /// The shared cell `RunExtras::done` writes into. `Arc<Mutex<_>>` because
@@ -178,6 +183,7 @@ impl Default for RunExtras {
             run_ids: None,
             run_ended: None,
             tier: None,
+            spent: trellis_loop::SpentSlot::default(),
         }
     }
 }
@@ -214,10 +220,18 @@ pub(crate) fn framed(
     if let Some(ended) = &extras.run_ended {
         ended.store(true, Ordering::SeqCst);
     }
-    frame(
-        sink,
-        &run_end(&result, run_id, extras.request_id.as_deref()),
-    );
+    let mut end = run_end(&result, run_id, extras.request_id.as_deref());
+    // Taken, not read, so extras used for a later run cannot carry this
+    // run's figure onto that run's `run_end`.
+    let spent = extras
+        .spent
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(d) = spent {
+        end["elapsed_ms"] = json!(u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+    }
+    frame(sink, &end);
     result
 }
 

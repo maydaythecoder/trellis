@@ -1200,6 +1200,10 @@ impl Model for RuntimeModel {
         self.tokens
     }
 
+    fn context_bytes(&self) -> Option<usize> {
+        self.compaction.budget
+    }
+
     fn prompt_tokens(&self) -> Option<u64> {
         self.prompt.total()
     }
@@ -1674,6 +1678,10 @@ impl Model for HostedModel {
     fn tokens_used(&self) -> u64 {
         self.tokens
             .saturating_add(self.unreported.saturating_mul(u64::from(self.max_tokens)))
+    }
+
+    fn context_bytes(&self) -> Option<usize> {
+        self.compaction.budget
     }
 
     fn prompt_tokens(&self) -> Option<u64> {
