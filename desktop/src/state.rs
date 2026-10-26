@@ -1485,8 +1485,8 @@ impl DesktopState {
         let wrote = t.wrote == Some(true);
         let tool = t.tool.unwrap_or_default();
         let target = t.target.unwrap_or_default();
-        // The call's tool is what the turn ran; `run_checks` is the checks
-        // phase, by the call and not the verdict, so the governance audit
+        // The event's tool is what the turn ran; `run_checks` is the checks
+        // phase, by the tool and not the verdict, so the governance audit
         // (a `run_checks` the loop ran itself) reads as checks too.
         self.phase = Some(if tool == "run_checks" {
             Phase::Checks { turn: t.turn }
