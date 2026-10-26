@@ -137,6 +137,8 @@ type State struct {
 	// Theme is the colours each row is painted in, built once from the
 	// terminal (cmd/trellis-tui). The zero Theme paints nothing.
 	Theme theme.Theme
+	// Now is what the Now strip and Where it is draw (now.go, #850).
+	Now Now
 }
 
 // radiusH is the radius pane's height: its three counts, the line that
@@ -158,13 +160,23 @@ func Render(s State, w, h int) string {
 	}
 	entry, bodyH := layout(s, w, h)
 	leftW, rightW := columns(s, w)
-	rest := bodyH - radiusH
+	// Where it is takes the right column's top when the panes below it
+	// keep room for their own rows; at 80x24 they would not, and the
+	// strip above says what the run is on.
+	whereRows := 0
+	if bodyH-radiusH-whereH >= minPaneRows {
+		whereRows = whereH
+	}
+	rest := bodyH - radiusH - whereRows
 	actionsH := rest / 2
 	editsH := rest / 4
 	checksH := rest - actionsH - editsH
 
 	left := transcript(s, leftW, bodyH)
 	var right []string
+	if whereRows > 0 {
+		right = append(right, where(s, rightW, whereRows)...)
+	}
 	right = append(right, actions(s, rightW, actionsH)...)
 	right = append(right, edits(s, rightW, editsH)...)
 	right = append(right, checks(s, rightW, checksH)...)
@@ -172,8 +184,12 @@ func Render(s State, w, h int) string {
 
 	var out []string
 	out = append(out, fill(s.Theme, RoleLabel, status(s, w), w))
+	out = append(out, fill(s.Theme, nowRole(s), nowStrip(s, w), w))
 	for i := 0; i < bodyH; i++ {
 		out = append(out, left[i]+right[i])
+	}
+	if m := messages(s, w); m != "" {
+		out = append(out, m)
 	}
 	out = append(out, Box(s.Theme, "budget", "", rowsOf(RoleText, budgetLabel(s, w-2)), w, 3)...)
 	out = append(out, entry...)
@@ -183,12 +199,51 @@ func Render(s State, w, h int) string {
 // layout is the task box's rows and the body's height at w by h, for
 // Render and for the scroll limits the model keeps (TranscriptTop), so
 // the two cannot disagree about how tall the transcript is (#843). The
-// status bar, the budget box, and the task box's two borders and its
-// input row are always drawn; the completions get what is left of the
+// status bar, the Now strip, the budget box, and the task box's two
+// borders and its input row are always drawn, and the messages row once
+// trellis has written to stderr; the completions get what is left of the
 // rest once the body has its floor.
 func layout(s State, w, h int) (entry []string, bodyH int) {
-	entry = entryLines(s, w, h-1-3-3-MinBodyRows)
-	return entry, h - 1 - 3 - len(entry)
+	entry = entryLines(s, w, completionRoom(s, h))
+	return entry, h - fixedRows(s) - len(entry)
+}
+
+// fixedRows is every row but the body's and the task box's: the status
+// bar, the Now strip and the budget box, and the messages row once
+// trellis has written to stderr.
+func fixedRows(s State) int {
+	n := 1 + 1 + 3
+	if len(s.Stderr) > 0 {
+		n++
+	}
+	return n
+}
+
+// completionRoom is the most rows the @ completions take at height h: what
+// is left once the fixed rows, the task box's borders and input row, and
+// the body's floor are drawn.
+func completionRoom(s State, h int) int {
+	return h - fixedRows(s) - 3 - MinBodyRows
+}
+
+// minPaneRows is the most the actions, edits and checks panes give up to
+// Where it is: below it, the actions graph loses its own node rows.
+const minPaneRows = 12
+
+// nowRole is the Now strip's colour: what needs the person in signal,
+// a stop on its way in warn, a run in flight in cool, the engine's own
+// activity, and an idle or ended view as a label. An ended run is never
+// ok or down: those colours come only from a check's verdict.
+func nowRole(s State) Role {
+	switch {
+	case s.Running && s.Now.Stopping:
+		return RoleNote
+	case s.Running && s.Now.Waiting:
+		return RoleYou
+	case s.Running:
+		return RoleTool
+	}
+	return RoleLabel
 }
 
 // columns splits the width between the transcript and the right column.
@@ -559,6 +614,8 @@ func budgetSegments(s State) (iteration, prompt, elapsed string, rate, queued *s
 	}
 	elapsed = "not started"
 	if b.ElapsedSecs != nil {
+		// This view's clock: the Now strip above says so (#850), and the
+		// line keeps its room for the turn's figures.
 		elapsed = Clock(*b.ElapsedSecs) + " elapsed"
 	}
 	rate, queued = turnRate(b)
