@@ -28,25 +28,11 @@
 // configuration-supplied text, so it reaches the DOM through textContent
 // only (ADR 0007, S10).
 
+import { el } from "./dom.js";
+import { str } from "./fmt.js";
+import { lineId, send } from "./rpc.js";
 import { modelChoices } from "./settings.js";
 import { exitText } from "./status.js";
-
-function el(doc, tag, text) {
-  const e = doc.createElement(tag);
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
-
-function str(v) {
-  return typeof v === "string" ? v : null;
-}
-
-let nextId = 0;
-
-function lineId(kind) {
-  nextId += 1;
-  return `desktop-model-${kind}-${nextId}`;
-}
 
 // The two view keys the choices come from, as last sent.
 let available = null;
@@ -223,20 +209,18 @@ export function modelPaneStopped(doc, why) {
   drawModel(doc, lastModel);
 }
 
-async function send(tauri, p, line) {
-  try {
-    await tauri.core.invoke("rpc_send", { line });
-    return true;
-  } catch (err) {
-    p.note.textContent = String(err);
-    return false;
-  }
+// Sends one line through the core (rpc.js's send); the note says why when
+// it is refused.
+function forward(tauri, p, line) {
+  return send(tauri, line, (why) => {
+    p.note.textContent = why;
+  });
 }
 
 // Asks the child what there is to choose from.
 export function askModels(doc, tauri) {
   const p = parts(doc);
-  return send(tauri, p, { id: lineId("list"), type: "list_models" });
+  return forward(tauri, p, { id: lineId("model", "list"), type: "list_models" });
 }
 
 // Wires the pane once, and listens for the child's events: `child-started`
@@ -274,7 +258,7 @@ export async function wireModelPane(doc, tauri) {
       p.note.textContent = "Type a model spec first.";
       return;
     }
-    if (await send(tauri, p, line)) {
+    if (await forward(tauri, p, line)) {
       p.note.textContent = "Sent; prompt input opens once trellis has taken it.";
     }
   });

@@ -14,7 +14,8 @@
 //! fields `crates/trellis-cli/tests/client_contract.json` lists are read;
 //! the rest are unversioned (ADR 0048 §6).
 
-use serde_json::{Map, Value};
+use crate::json;
+use serde_json::Value;
 
 /// One child line, typed.
 #[derive(Debug, Clone, PartialEq)]
@@ -147,33 +148,33 @@ pub fn parse_stdout(line: &str) -> Frame {
     if let Some(ty) = o.get("type") {
         return match ty.as_str() {
             Some("run_start") => Frame::RunStart(RunStart {
-                version: u(&o, "version"),
-                trellis: s(&o, "trellis"),
-                task: s(&o, "task"),
-                model: s(&o, "model"),
-                root: s(&o, "root"),
-                id: s(&o, "id"),
+                version: json::u64(&o, "version"),
+                trellis: json::string(&o, "trellis"),
+                task: json::string(&o, "task"),
+                model: json::string(&o, "model"),
+                root: json::string(&o, "root"),
+                id: json::string(&o, "id"),
             }),
             Some("run_end") => Frame::RunEnd(RunEnd {
-                outcome: s(&o, "outcome"),
-                exit: o.get("exit").and_then(Value::as_i64),
-                id: s(&o, "id"),
-                run_id: s(&o, "run_id"),
-                restored: b(&o, "restored"),
-                error: s(&o, "error"),
+                outcome: json::string(&o, "outcome"),
+                exit: json::i64(&o, "exit"),
+                id: json::string(&o, "id"),
+                run_id: json::string(&o, "run_id"),
+                restored: json::bool(&o, "restored"),
+                error: json::string(&o, "error"),
             }),
             Some("response") => Frame::Response(Response {
-                command: s(&o, "command"),
-                success: b(&o, "success"),
-                id: s(&o, "id"),
+                command: json::string(&o, "command"),
+                success: json::bool(&o, "success"),
+                id: json::string(&o, "id"),
                 data: o.get("data").cloned(),
-                error: s(&o, "error"),
+                error: json::string(&o, "error"),
             }),
-            Some("approval_request") => match s(&o, "id") {
+            Some("approval_request") => match json::string(&o, "id") {
                 Some(id) => Frame::ApprovalRequest(ApprovalRequest {
                     id,
-                    question: s(&o, "question"),
-                    detail: s(&o, "detail"),
+                    question: json::string(&o, "question"),
+                    detail: json::string(&o, "detail"),
                 }),
                 None => Frame::Ignored,
             },
@@ -184,56 +185,44 @@ pub fn parse_stdout(line: &str) -> Frame {
         return Frame::Ignored;
     };
     match f.get("message").and_then(Value::as_str) {
-        Some("turn") => match (u(f, "turn"), s(f, "call")) {
+        Some("turn") => match (json::u64(f, "turn"), json::string(f, "call")) {
             (Some(turn), Some(call)) => Frame::Turn(Turn {
                 turn,
                 call,
-                verdict: s(f, "verdict"),
-                check_kind: s(f, "check_kind"),
-                observation: s(f, "observation"),
-                resolved: u(f, "resolved"),
-                candidates: u(f, "candidates"),
-                unresolved: u(f, "unresolved"),
-                prompt_bytes: u(f, "prompt_bytes"),
-                model_ms: u(f, "model_ms"),
-                completion_tokens: u(f, "completion_tokens"),
-                queue_wait_ms: u(f, "queue_wait_ms"),
+                verdict: json::string(f, "verdict"),
+                check_kind: json::string(f, "check_kind"),
+                observation: json::string(f, "observation"),
+                resolved: json::u64(f, "resolved"),
+                candidates: json::u64(f, "candidates"),
+                unresolved: json::u64(f, "unresolved"),
+                prompt_bytes: json::u64(f, "prompt_bytes"),
+                model_ms: json::u64(f, "model_ms"),
+                completion_tokens: json::u64(f, "completion_tokens"),
+                queue_wait_ms: json::u64(f, "queue_wait_ms"),
             }),
             _ => Frame::Ignored,
         },
-        Some("model call") => match u(f, "turn") {
+        Some("model call") => match json::u64(f, "turn") {
             Some(turn) => Frame::ModelCall { turn },
             None => Frame::Ignored,
         },
         Some("run budget") => Frame::RunBudget {
-            max_iterations: u(f, "max_iterations"),
+            max_iterations: json::u64(f, "max_iterations"),
         },
         Some("steer delivered") => Frame::SteerDelivered {
-            after_step: u(f, "after_step"),
+            after_step: json::u64(f, "after_step"),
         },
-        Some("runtime identified") => match s(f, "served") {
+        Some("runtime identified") => match json::string(f, "served") {
             Some(served) => Frame::RuntimeIdentified(RuntimeIdentified {
-                runtime: s(f, "runtime"),
+                runtime: json::string(f, "runtime"),
                 served,
-                kv_slots: u(f, "kv_slots"),
-                tiers_vram: u(f, "tiers_vram"),
-                tiers_ram: u(f, "tiers_ram"),
-                tiers_disk: u(f, "tiers_disk"),
+                kv_slots: json::u64(f, "kv_slots"),
+                tiers_vram: json::u64(f, "tiers_vram"),
+                tiers_ram: json::u64(f, "tiers_ram"),
+                tiers_disk: json::u64(f, "tiers_disk"),
             }),
             None => Frame::Ignored,
         },
         _ => Frame::Ignored,
     }
-}
-
-fn s(o: &Map<String, Value>, k: &str) -> Option<String> {
-    o.get(k).and_then(Value::as_str).map(str::to_string)
-}
-
-fn u(o: &Map<String, Value>, k: &str) -> Option<u64> {
-    o.get(k).and_then(Value::as_u64)
-}
-
-fn b(o: &Map<String, Value>, k: &str) -> Option<bool> {
-    o.get(k).and_then(Value::as_bool)
 }
