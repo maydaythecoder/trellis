@@ -566,11 +566,10 @@ func turnRate(b Budget) (rate, queued *string) {
 	return rate, queued
 }
 
-// entryLines is the task entry: the typed line with a block cursor, the @
-// candidates under it (none while a run holds the input: what is typed then
-// is a steer), and what Enter does now.
-// entryLines is the task box: the line being typed and, while no run is
-// in flight, the @ completions under it, in at most room rows.
+// entryLines is the task box: the typed line with a block cursor, the @
+// candidates under it in at most room rows (none while a run holds the
+// input: what is typed then is a steer), and what Enter does now, on its
+// top border.
 //
 // The line keeps its end in view, where the cursor is: wider than the box,
 // it was cut at the right and the cursor went with it (#842). What scrolled
