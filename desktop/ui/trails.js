@@ -11,18 +11,12 @@
 //
 // index.html loads this as a module of its own.
 
+import { el } from "./dom.js";
+import { isCount } from "./fmt.js";
+import { onShown, start } from "./rpc.js";
+
 // How many runs the view asks for: the core's own cap.
 const LIMIT = 200;
-
-function el(doc, tag, text) {
-  const e = doc.createElement(tag);
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
-
-function isCount(v) {
-  return typeof v === "number" && Number.isFinite(v);
-}
 
 // The text an `{untrusted}` value holds, or null for anything else.
 function text(v) {
@@ -251,19 +245,13 @@ export async function wireTrails(doc, tauri) {
       if (shown()) refresh();
     }
   });
-  const button = doc.querySelector('nav.rail button[aria-controls="trails"]');
-  if (button) {
-    button.addEventListener("click", () => {
-      if (stale) refresh();
-    });
-  }
-}
-
-function start() {
-  wireTrails(document, window.__TAURI__).catch((err) => console.error("trellis desktop trails:", err));
+  // Entering the Trails level shows the section (keys.js): a stale list is
+  // read then (#826).
+  onShown(doc, "trails", () => {
+    if (stale) refresh();
+  });
 }
 
 if (typeof window !== "undefined" && window.__TAURI__) {
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
-  else start();
+  start("the trails view", () => wireTrails(document, window.__TAURI__));
 }

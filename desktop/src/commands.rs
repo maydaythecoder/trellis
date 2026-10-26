@@ -5,8 +5,6 @@
 //! lines feed (`state.rs`). What the child prints reaches the page as events:
 //!
 //! - `rpc-frame`: a stdout line that is a JSON object, parsed;
-//! - `rpc-unparsed`: any other stdout line, as a string;
-//! - `rpc-human`: a stderr line, as a string, shown and never read as data;
 //! - `view`: the panes that line changed, one event per line; after a
 //!   forwarded `get_state`, every pane;
 //! - `child-started`: `trellis`, `version` and `root`, once per child;
@@ -20,6 +18,12 @@
 //!   Atlas's;
 //! - `radius`: a `get_radius` answer as reach and doubt (`radius.rs`), or
 //!   `{"error"}`, with the answer's `id` (#308).
+//!
+//! Any other stdout line, and every stderr line, reaches the page through
+//! the `view` alone: the transcript and the alert for the first, the capped
+//! "trellis messages" pane for the second. The core emits no event the page
+//! does not listen for (#821; `every_emitted_event_has_a_listener_in_the_page`
+//! in `web.rs`).
 //!
 //! `vault_search` and `vault_graph` answers become the `view` event's
 //! `vault` key (`state/vault.rs`, #309), `get_queue` answers its `queue`
@@ -292,15 +296,15 @@ impl Core {
         }
     }
 
-    /// One stdout line: `rpc-frame` or `rpc-unparsed`, then its `view`.
+    /// One stdout line: `rpc-frame` when it is a JSON object, then its
+    /// `view`, which carries any other line as text.
     fn stdout_line(&self, generation: u64, line: &str) {
         let mut s = self.lock();
         if s.generation != generation {
             return;
         }
-        match serde_json::from_str::<Value>(line) {
-            Ok(v @ Value::Object(_)) => self.sink.emit("rpc-frame", v),
-            _ => self.sink.emit("rpc-unparsed", json!(line)),
+        if let Ok(v @ Value::Object(_)) = serde_json::from_str::<Value>(line) {
+            self.sink.emit("rpc-frame", v);
         }
         let frame = frames::parse_stdout(line);
         // The read-only views' answers are typed here, not in the page
@@ -319,13 +323,13 @@ impl Core {
         self.feed(&mut s, frame);
     }
 
-    /// One stderr line: `rpc-human`, then its `view`.
+    /// One stderr line, which reaches the page in the `view`'s messages
+    /// pane only: trellis's human text, never read as data.
     fn stderr_line(&self, generation: u64, line: String) {
         let mut s = self.lock();
         if s.generation != generation {
             return;
         }
-        self.sink.emit("rpc-human", json!(line));
         self.feed(&mut s, Frame::Human(line));
     }
 
@@ -1738,6 +1742,9 @@ mod tests {
     fn stdout_lines_become_frames_and_a_bad_line_stays_text() {
         // The risk: a line that is not JSON is dropped, or fails the
         // reader; or a frame reaches the page as a string to parse again.
+        // A bad stdout line and a stderr line reach the page in the view
+        // only, as text (#821): the transcript and the alert for the first,
+        // the messages pane for the second.
         let (core, rec) = idle_core();
         let g = generation(&core);
         let frame = json!({"type": "response", "command": "get_state", "success": true,
@@ -1746,20 +1753,23 @@ mod tests {
         core.stdout_line(g, "<b>not json</b>");
         core.stdout_line(g, "[1,2]");
         core.stderr_line(g, "warning: <i>human</i>".into());
-        let events: Vec<(String, Value)> = rec
-            .take()
-            .into_iter()
-            .filter(|(e, _)| e != "view")
-            .collect();
+        let (views, events): (Vec<_>, Vec<_>) =
+            rec.take().into_iter().partition(|(e, _)| e == "view");
+        assert_eq!(events, vec![("rpc-frame".to_string(), frame)]);
+        let last = |key: &str| {
+            views
+                .iter()
+                .rev()
+                .find_map(|(_, v)| v.get(key).cloned())
+                .unwrap_or_else(|| panic!("no view carried {key}"))
+        };
         assert_eq!(
-            events,
-            vec![
-                ("rpc-frame".to_string(), frame),
-                ("rpc-unparsed".to_string(), json!("<b>not json</b>")),
-                ("rpc-unparsed".to_string(), json!("[1,2]")),
-                ("rpc-human".to_string(), json!("warning: <i>human</i>")),
-            ]
+            last("transcript"),
+            json!(["<b>not json</b>", "[1,2]"]),
+            "a bad line is shown as it came"
         );
+        assert!(last("alert").as_str().is_some_and(|a| a.ends_with("[1,2]")));
+        assert_eq!(last("stderr"), json!(["warning: <i>human</i>"]));
         // A line from a child already replaced reaches nothing.
         core.stdout_line(g + 1, "late");
         assert!(rec.take().is_empty());
