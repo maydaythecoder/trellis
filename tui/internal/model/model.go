@@ -93,7 +93,8 @@ type Model struct {
 	ScrollBack int
 	// ModelName and Tier are what the status bar says (status.go).
 	ModelName, Tier string
-	// Offered are the @ completions on offer (complete.go).
+	// Offered are the @ completions on offer and, when trellis sent more
+	// than OfferedCap, a last line saying how many more (complete.go).
 	Offered []string
 
 	// restored is the last run_end's restored, for the bar's worktree
