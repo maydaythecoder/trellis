@@ -61,9 +61,19 @@ const (
 	Proposed EditStatus = iota
 )
 
+// Edit is one write trellis reported, from its turn event: the path the
+// turn targeted and, for an edit that applied, its line counts, where its
+// hunk starts and the hunk itself (#802). Each is nil where the turn
+// carried none: a file write_file created has no counts and no diff.
 type Edit struct {
 	Path   string
 	Status EditStatus
+	Turn   uint64
+	// Added and Removed are the whole lines the edit added and removed.
+	Added, Removed *uint64
+	// Diff is trellis's unified diff of the hunk, kept as sent: repository
+	// text and model output, made plain line by line when it is drawn.
+	Diff *string
 }
 
 // Check is a check trellis reported running, and what it said. There is no
@@ -141,6 +151,13 @@ type State struct {
 	Now Now
 	// Nav is where the person is in the run view (shell.go, #851).
 	Nav Nav
+	// Asked is every approval question waiting on the person, the one on
+	// screen first, for the code level's state words and its in-place
+	// answer (diff.go, #853).
+	Asked []Asked
+	// Reviewing is set while the question on screen has been set aside to
+	// read its file's diff at the code level, where it is answered.
+	Reviewing bool
 }
 
 // radiusH is the radius pane's height: its three counts, the line that
@@ -376,14 +393,6 @@ func transcript(s State, w, h int) []string {
 		bottom = "last run: " + Plain(s.Outcome)
 	}
 	return Box(s.Theme, title, bottom, rows[start:end], w, h)
-}
-
-func edits(s State, w, h int) []string {
-	rows := notKept(s.Dropped.Edits, "edits")
-	for _, e := range s.Edits {
-		rows = append(rows, Row{Text: "~ " + Plain(e.Path)})
-	}
-	return paneBox(s, PanelEdits, "edits", "", rows, w, h)
 }
 
 // checks draws a row per check trellis reported, in ok or down from its

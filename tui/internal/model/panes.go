@@ -64,7 +64,8 @@ func (m *Model) panesTurn(t *frames.TurnFields) {
 	// line). Only an edit or a write_file sets wrote, and both target the
 	// path they wrote.
 	if wrote {
-		m.Edits.Push(view.Edit{Path: target, Status: view.Proposed})
+		m.Edits.Push(view.Edit{Path: target, Status: view.Proposed, Turn: t.Turn,
+			Added: t.LinesAdded, Removed: t.LinesRemoved, Diff: t.Diff})
 	}
 
 	// A check row only from Some(true) or Some(false): None is a turn that
@@ -189,7 +190,22 @@ func (m *Model) viewState() view.State {
 		Theme:      m.theme,
 		Now:        m.nowState(),
 		Nav:        m.nav,
+		Asked:      m.waiting(),
+		Reviewing:  m.Modal != nil && m.Modal.Reviewing,
 	}
+}
+
+// waiting is every question waiting on the person, the one on screen first,
+// for the code level (#853).
+func (m *Model) waiting() []view.Asked {
+	var out []view.Asked
+	if m.Modal != nil {
+		out = append(out, view.Asked{ID: m.Modal.ID, Question: m.Modal.Question, Detail: m.Modal.Diff, OnScreen: true})
+	}
+	for _, a := range m.approvals {
+		out = append(out, view.Asked{ID: a.ID, Question: a.Question, Detail: a.Diff})
+	}
+	return out
 }
 
 // nowState is the Now strip's and Where it is's state: what the model

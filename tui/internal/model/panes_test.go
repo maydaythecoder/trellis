@@ -118,7 +118,7 @@ func TestPanesAnApprovalAnswerKeepsTheEditsAsReported(t *testing.T) {
 		feed(m, turn(1, "edit a.py", map[string]any{"observation": "applied: true", "tool": "edit", "target": "a.py", "wrote": true}))
 		feed(m, approval("a1", "edit a.py (+1 -1)", "apply the edit?"))
 		key(m, c.key)
-		if m.Edits.Len() != 1 || m.Edits.Slice()[0] != (view.Edit{Path: "a.py", Status: view.Proposed}) {
+		if m.Edits.Len() != 1 || m.Edits.Slice()[0] != (view.Edit{Path: "a.py", Status: view.Proposed, Turn: 1}) {
 			t.Fatalf("%c: %+v", c.key, m.Edits.Slice())
 		}
 		out := m.TakeOutbox()

@@ -56,6 +56,13 @@ const (
 	RoleMeterOver
 	// RoleMeterEmpty is a Meter's empty cells: line-strong.
 	RoleMeterEmpty
+	// RoleDiffAdd, RoleDiffDel and RoleDiffHunk are a diff's added and
+	// removed lines' text and its @@ header (the Diff card, #853):
+	// diff-add, diff-del and diff-hunk. They say what a line is in the
+	// diff trellis sent, never whether the change is right.
+	RoleDiffAdd
+	RoleDiffDel
+	RoleDiffHunk
 
 	// roles is how many roles there are; every one below it has a colour.
 	roles
@@ -129,6 +136,12 @@ func style(th theme.Theme, r Role) lipgloss.Style {
 		return th.Down
 	case RoleMeterEmpty:
 		return th.LineStrong
+	case RoleDiffAdd:
+		return th.DiffAdd
+	case RoleDiffDel:
+		return th.DiffDel
+	case RoleDiffHunk:
+		return th.DiffHunk
 	default:
 		return th.Ink
 	}
