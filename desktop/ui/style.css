@@ -401,8 +401,12 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* .cd-bud-in: the Budget card's raise input (#837), whose ds.css rule
+   drops the outline on focus with a class selector that outranks
+   input:focus-visible; named here, after ds.css, it keeps the ring. */
 button:focus-visible,
 input:focus-visible,
+.cd-bud-in:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
 summary:focus-visible,

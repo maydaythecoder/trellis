@@ -358,6 +358,17 @@ is added, so neither client's contract test reads it yet, and the
 desktop's `rpc_send` does not forward it. Held by
 `rpc_withdraw_refuses_a_delivered_steer` and
 `rpc_withdraw_removes_an_undelivered_follow_up` in `tests/modes.rs`.
+*Added 2026-10-26 (#837):* the desktop reads `paused`'s `turn` and
+`resumed`'s `turn` and `paused_ms`, so their `read_by` names it, and its
+`rpc_send` now forwards `pause`, `resume` and `set_budget` (the #806 and
+#807 notes above said it did not). The strip's word `paused` comes from the
+`paused` event alone, and a budget row's ceiling from `run budget` alone,
+never from `set_budget`'s answer. Held by
+`pause_and_resume_follow_the_engines_events`,
+`a_raised_ceiling_is_drawn_from_run_budget_not_from_the_input` and
+`every_field_in_the_rpc_contract_is_read` in `src/state.rs`, and by
+`run_controls_need_a_run_and_a_raise_is_checked_before_it_leaves_the_core`
+in `src/commands.rs`.
 
 ### 7. Auditing Tauri's tree
 
