@@ -186,6 +186,19 @@ export function txEntry(doc, row) {
   return e;
 }
 
+// The model's words (the Transcript card's `model` entry, #832): the
+// agent's own text under a label saying whose it is, plain sans body,
+// fenced apart from every figure and check the page draws. The text is
+// model output (CLAUDE.md rule 10) and reaches the DOM as text only; the
+// entry carries no tone, so it never reads as a check's result.
+export function modelWords(doc, label, text) {
+  const e = el(doc, "div", null, "cd-tx-e cd-tx-model");
+  const words = el(doc, "div");
+  words.append(el(doc, "span", label, "cd-tx-label"), el(doc, "div", text, "cd-tx-body"));
+  e.append(glyph(doc, "◇"), words, el(doc, "span", "", "cd-tx-meta"));
+  return e;
+}
+
 // The rule a transcript draws ahead of a turn's first row.
 export function txTurn(doc, turn) {
   return el(doc, "div", `turn ${turn}`, "cd-tx-turn");

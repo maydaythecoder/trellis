@@ -60,7 +60,9 @@ use crate::child::{Child, Lines, Output, Trellis};
 use crate::codebase;
 use crate::frames::{self, Frame};
 use crate::radius;
-use crate::state::{Changed, Configured, DesktopState, MODELS_ID, word_overview};
+use crate::state::{
+    Changed, Configured, DesktopState, MODELS_ID, SUMMARY_ID, SUMMARY_TRAILS, word_overview,
+};
 use crate::trails;
 use serde_json::{Value, json};
 use std::io;
@@ -328,6 +330,44 @@ impl Core {
             }
         }
         self.feed(&mut s, frame);
+        // The summary's two reads once a run_end is fed (#832). The trail it
+        // named comes from `trellis log`, on a thread of its own so this
+        // reader goes on draining the child; the model's closing words from
+        // the core's own question, written outside the lock as every line
+        // is.
+        if let Some(run_id) = s.view.trail_to_read() {
+            let core = self.clone();
+            std::thread::spawn(move || {
+                let rows = core.trails(SUMMARY_TRAILS);
+                let mut s = core.lock();
+                if s.generation != generation {
+                    return;
+                }
+                let c = s.view.trail_read(&run_id, rows);
+                if !c.is_empty() {
+                    core.sink.emit("view", s.view.view(c));
+                }
+            });
+        }
+        if s.view.closing_to_ask() {
+            let writer = s.child.as_ref().map(|(_, c)| c.writer());
+            drop(s);
+            let asked = json!({"id": SUMMARY_ID, "type": "get_last_assistant_text"});
+            let sent = match writer {
+                Some(w) => w.send(&asked).map_err(|e| e.to_string()),
+                None => Err("trellis rpc is not running".to_string()),
+            };
+            s = self.lock();
+            if s.generation != generation {
+                return;
+            }
+            if let Err(why) = sent {
+                let c = s.view.closing_unasked(&why);
+                if !c.is_empty() {
+                    self.sink.emit("view", s.view.view(c));
+                }
+            }
+        }
         // A Stop and send's prompt (#830), once this line was the last of
         // the stopped run's `run_end` and the abort's answer: sent on that
         // event, outside the lock as every line is, and through `send`, so
@@ -680,11 +720,12 @@ fn check_line(line: &Value) -> Result<(), String> {
             "rpc_send: the line is {len} bytes, over the {LINE_CAP}-byte cap"
         ));
     }
-    // The core's own question: an answer to a page line carrying this id
-    // would be read as the child's report of the configured specs.
-    if o.get("id").and_then(Value::as_str) == Some(MODELS_ID) {
+    // The core's own questions: an answer to a page line carrying one of
+    // these ids would be read as the child's report of the configured
+    // specs, or as a converged run's closing words (#832).
+    if let Some(id @ (MODELS_ID | SUMMARY_ID)) = o.get("id").and_then(Value::as_str) {
         return Err(format!(
-            "rpc_send: the id {MODELS_ID:?} is the desktop's own; use another"
+            "rpc_send: the id {id:?} is the desktop's own; use another"
         ));
     }
     check_arguments(o)?;
@@ -1083,6 +1124,21 @@ mod tests {
         }
         let err = core.send(&json!({"id": "x", "type": 1})).unwrap_err();
         assert!(err.contains("no string type"), "{err}");
+        // The summary level (#832) is the core's, built from what trellis
+        // already sends: no summary type reaches rpc, and the trail it shows
+        // is the page's get_trails command, never an rpc line.
+        for ty in ["get_summary", "get_trails", "get_trail"] {
+            let err = core.send(&json!({"id": "x", "type": ty})).unwrap_err();
+            assert!(err.contains("is not one rpc_send forwards"), "{ty}: {err}");
+        }
+        // The closing words it reads stay forwarded, but the core's own id
+        // for them is not the page's: an answer to it is read as a converged
+        // run's closing words.
+        assert!(FORWARDED.contains(&"get_last_assistant_text"));
+        let err = core
+            .send(&json!({"id": SUMMARY_ID, "type": "get_last_assistant_text"}))
+            .unwrap_err();
+        assert!(err.contains("is the desktop's own"), "{err}");
         // Every type it lists passes this rule, and so meets the next one.
         for ty in FORWARDED {
             let err = core.send(&json!({"id": "x", "type": ty})).unwrap_err();
@@ -1127,6 +1183,49 @@ mod tests {
             .send(&json!({"id": "x", "type": "get_session_totals"}))
             .unwrap_err();
         assert!(err.contains("is not one rpc_send forwards"), "{err}");
+        finish(&core).unwrap();
+        for d in &dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn summary_reads_the_named_trail_and_asks_only_its_own_closing_words() {
+        // The risk (#832): the summary level waits on a trail and closing
+        // words nothing fetches, so it says "reading" for ever; or the core
+        // asks for the words under an id the page could also send, so a
+        // page's answer is read as the run's. After a converged run_end the
+        // core asks the child with its own id, and the child's answer (no
+        // run of this process ended on done) is the summary's; it reads the
+        // trail run_end named with trellis log, which lists no such run.
+        let (core, rec, dirs) = with_child("summary-reads");
+        run_started(&core);
+        core.stdout_line(
+            generation(&core),
+            &line(
+                json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p",
+                         "run_id": "r-not-written"}),
+            ),
+        );
+        let answer = rec.wait_for("rpc-frame", |f| f["id"] == SUMMARY_ID);
+        assert_eq!(answer["command"], "get_last_assistant_text", "{answer}");
+        assert_eq!(answer["data"], json!({"text": null}), "{answer}");
+        let v = rec.wait_for("view", |v| {
+            v["recap"]["closing"]["why"]
+                .as_str()
+                .is_some_and(|w| w.contains("ended on done"))
+        });
+        assert_eq!(v["recap"]["closing"]["words"], Value::Null, "{v}");
+        let v = rec.wait_for("view", |v| {
+            v["recap"]["trail"]["run_id"] == "r-not-written"
+                && v["recap"]["trail"]["why"]
+                    .as_str()
+                    .is_some_and(|w| w != "reading the trail run_end named")
+        });
+        let why = v["recap"]["trail"]["why"].as_str().unwrap();
+        assert!(why.contains("do not include run r-not-written"), "{why}");
+        assert_eq!(v["recap"]["trail"]["integrity"], Value::Null, "{v}");
+        assert_eq!(v["recap"]["modes"]["verified"], Value::Null, "{v}");
         finish(&core).unwrap();
         for d in &dirs {
             let _ = std::fs::remove_dir_all(d);
@@ -2191,7 +2290,8 @@ mod tests {
         keys.sort();
         // The graph is laid out from the actions, so it changes with them
         // (#303), and the phase with the turn's call (#615).
-        // The Now strip and Where it is are drawn from those (#828).
+        // The Now strip and Where it is are drawn from those (#828), and
+        // the summary level's recap from the actions (#832).
         assert_eq!(
             keys,
             [
@@ -2200,6 +2300,7 @@ mod tests {
                 "graph",
                 "now",
                 "phase",
+                "recap",
                 "transcript",
                 "where"
             ]
@@ -2279,6 +2380,7 @@ mod tests {
                 "phase",
                 "queue",
                 "radius",
+                "recap",
                 "running",
                 "runtime",
                 "session_tokens",

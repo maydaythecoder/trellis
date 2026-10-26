@@ -29,7 +29,10 @@
   map's layout included (atlas.rs); the owner asked for it on 2026-10-11,
   beside the other sections. It only reads. The code and code-file
   sections, the levels below Run, are drawn by code.js from the view's code
-  key (#831); a diff there is shown as text, never parsed as markup.
+  key (#831); a diff there is shown as text, never parsed as markup. The
+  summary section, the level below Run reached also from the Now strip
+  while a run is in flight, is drawn by summary.js from the view's summary
+  key (#832); the model's closing words there are fenced as its own text.
 
   The overview's panels (button[data-enter]) are the ways into the other
   sections, one level each (#826): keys.js shows the level's section and
@@ -262,6 +265,7 @@
               <h3 id="outcome-title">Last run</h3>
               <p id="pane-running"></p>
               <div id="pane-outcome"></div>
+              <button type="button" class="cd-btn cd-btn-ghost" data-burrow="summary" title="The run so far, or how it ended: checks, files, budget, steers, path, trail and the model's closing words.">Summary <span class="cd-drill" aria-hidden="true">⤢</span></button>
             </div>
             <div class="pane" role="region" aria-labelledby="checks-title">
               <h3 id="checks-title">Checks</h3>
@@ -521,6 +525,79 @@
               </div>
             </form>
             <p id="code-comment-note" class="muted" role="status"></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- The summary level (#832), one burrow in from Run through the Last
+      run pane's way in or the Now strip's Summary so far: summary.js draws
+      it from the view's summary key, which the reducer derives from the
+      run's panes, the trail run_end named and the closing words trellis
+      answers for a converged run. While the run is in flight it is the run
+      so far and shows no outcome. -->
+      <section id="summary" aria-labelledby="summary-title" hidden>
+        <h2 id="summary-title" tabindex="-1">Summary</h2>
+        <p id="summary-stage" class="muted" role="status"></p>
+        <div class="summary-grid">
+          <div class="cd-panel" role="region" aria-labelledby="summary-end-title">
+            <div class="cd-panel-head"><h3 id="summary-end-title" class="cd-panel-title">So far</h3></div>
+            <div class="cd-panel-body">
+              <div id="summary-end"></div>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-checks-title">
+            <div class="cd-panel-head"><h3 id="summary-checks-title" class="cd-panel-title">Checks by kind</h3></div>
+            <div class="cd-panel-body">
+              <ol id="summary-checks" class="cd-rail"></ol>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-modes-title">
+            <div class="cd-panel-head"><h3 id="summary-modes-title" class="cd-panel-title">Verified and Reviewed</h3></div>
+            <div class="cd-panel-body">
+              <div id="summary-modes"></div>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-radius-title">
+            <div class="cd-panel-head"><h3 id="summary-radius-title" class="cd-panel-title">Radius</h3></div>
+            <div class="cd-panel-body">
+              <div id="summary-radius"></div>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-files-title">
+            <div class="cd-panel-head"><h3 id="summary-files-title" class="cd-panel-title">Files</h3></div>
+            <div class="cd-panel-body">
+              <ol id="summary-files" class="cd-rail"></ol>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-budget-title">
+            <div class="cd-panel-head"><h3 id="summary-budget-title" class="cd-panel-title">Budget used</h3></div>
+            <div class="cd-panel-body">
+              <div id="summary-budget"></div>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-steers-title">
+            <div class="cd-panel-head"><h3 id="summary-steers-title" class="cd-panel-title">Steers</h3></div>
+            <div class="cd-panel-body">
+              <ol id="summary-steers" class="cd-rail"></ol>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-path-title">
+            <div class="cd-panel-head"><h3 id="summary-path-title" class="cd-panel-title">Path by turn</h3></div>
+            <div class="cd-panel-body">
+              <ol id="summary-path" class="cd-rail"></ol>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-trail-title">
+            <div class="cd-panel-head"><h3 id="summary-trail-title" class="cd-panel-title">Trail</h3></div>
+            <div class="cd-panel-body">
+              <div id="summary-trail"></div>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-closing-title">
+            <div class="cd-panel-head"><h3 id="summary-closing-title" class="cd-panel-title">Closing words</h3></div>
+            <div class="cd-panel-body">
+              <div id="summary-closing" class="cd-tx"></div>
+            </div>
           </div>
         </div>
       </section>

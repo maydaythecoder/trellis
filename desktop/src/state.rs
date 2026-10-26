@@ -122,13 +122,18 @@ pub enum Pane {
     /// its line counts, its state word and its diff, derived from the
     /// panes [`CODE_INPUTS`] names.
     Code,
+    /// The summary level (#832): the run so far while it is in flight, and
+    /// as it ended once `run_end` has come, from the panes
+    /// [`SUMMARY_INPUTS`] names, the trail `run_end` named and the closing
+    /// words trellis answers for a converged run.
+    Summary,
 }
 
 /// Every pane the view carries. Each is a key the page must draw:
 /// `view_renders_every_pane_key` in `lockdown.rs` drives a whole run through
 /// [`DesktopState::update`] and fails naming a key here that no module the
 /// page loads reads from the `view` event (ADR 0052 section 1, #513).
-const PANES: [Pane; 28] = [
+const PANES: [Pane; 29] = [
     Pane::Transcript,
     Pane::Actions,
     Pane::Edits,
@@ -157,6 +162,7 @@ const PANES: [Pane; 28] = [
     Pane::Where,
     Pane::Pending,
     Pane::Code,
+    Pane::Summary,
 ];
 
 /// The panes a run starts afresh: everything but the transcript, which,
@@ -269,6 +275,38 @@ fn limit_row(
 /// and how it ended, which decide each file's state word.
 const CODE_INPUTS: [Pane; 4] = [Pane::Edits, Pane::Approvals, Pane::Running, Pane::Outcome];
 
+/// The panes the summary level is drawn from (#832), the Code level's
+/// files among them. Applied where a view is built
+/// ([`DesktopState::view`]), after [`with_now`] has added the Code level.
+/// Its steers are the transcript's steer rows, but not the transcript,
+/// which changes with every turn and note: a steer row's change says
+/// [`Pane::Summary`] itself ([`DesktopState::steer_sent`] and `deliver`).
+const SUMMARY_INPUTS: [Pane; 8] = [
+    Pane::Running,
+    Pane::Outcome,
+    Pane::Checks,
+    Pane::Radius,
+    Pane::Budget,
+    Pane::Actions,
+    Pane::Code,
+    Pane::Summary,
+];
+
+/// How many of the newest trails the core reads to find the one a
+/// `run_end` named (#832). trellis writes that trail before it sends
+/// `run_end`, so it is the newest unless another run in this repository
+/// ended in between; a few more cover that, and a run not among them is
+/// said to be so rather than looked for further.
+pub const SUMMARY_TRAILS: u32 = 20;
+
+/// The id of the `get_last_assistant_text` the core asks after a converged
+/// run (#832); only the answer to it is read as that run's closing words.
+pub const SUMMARY_ID: &str = "desktop-summary";
+
+/// The most of the model's closing words the summary keeps: model output,
+/// cut with the desktop's marker past this, as a diff is.
+const CLOSING_BYTES: usize = 16 * 1024;
+
 /// `c`, and the Now strip and Where it is when `c` changed what they read,
 /// and the Code level when it changed what that reads.
 fn with_now(c: Changed) -> Changed {
@@ -329,6 +367,9 @@ impl Pane {
             Pane::Where => "where",
             Pane::Pending => "pending",
             Pane::Code => "code",
+            // Not `summary`: that word holds `sum`, which no view key may
+            // (turn_usage_is_per_turn_and_never_summed).
+            Pane::Summary => "recap",
         }
     }
 
@@ -412,6 +453,8 @@ enum Phase {
 /// One turn, whatever it was and however it went.
 #[derive(Debug, Clone, PartialEq)]
 struct Action {
+    /// The turn it was, for the summary's path by turn (#832).
+    turn: u64,
     tool: String,
     target: String,
     /// Whether the turn changed the tree: an applied `edit`, or a
@@ -422,11 +465,47 @@ struct Action {
     completion_tokens: Option<u64>,
 }
 
-/// A check that ran: its kind and whether it passed.
+/// A check that ran: its kind and whether it passed, the turn that ran it
+/// and that turn's `duration_ms`, `None` when the event carried none.
 #[derive(Debug, Clone, PartialEq)]
 struct Check {
     kind: String,
     passed: bool,
+    turn: u64,
+    took_ms: Option<u64>,
+}
+
+/// The trail a `run_end` named, as the summary reads it (#832): none
+/// named, being read through `trellis log`, read, or not found with why.
+#[derive(Debug, Clone, Default, PartialEq)]
+enum TrailRead {
+    #[default]
+    Unnamed,
+    Reading(String),
+    Read {
+        run_id: String,
+        /// trellis's own word, from the digest: `intact` or `altered`.
+        integrity: String,
+        /// The trail's two mode counts, each kept apart and `None` when the
+        /// trail records none (CLAUDE.md rule 4).
+        verified: Option<u64>,
+        reviewed: Option<u64>,
+    },
+    Failed {
+        run_id: String,
+        why: String,
+    },
+}
+
+/// The model's closing words for the summary (#832): not asked (with the
+/// run's own reason), asked of trellis, said, or not said with why.
+#[derive(Debug, Clone, Default, PartialEq)]
+enum Closing {
+    #[default]
+    Unasked,
+    Asked,
+    Said(String),
+    Unsaid(String),
 }
 
 /// What a transcript row came from (#827), as the design system's
@@ -1297,6 +1376,14 @@ pub struct DesktopState {
     queued: Vec<Queued>,
     /// The prompt a Stop and send holds, until it is sent or dropped.
     held: Option<Held>,
+    /// The trail the last `run_end` named, for the summary (#832).
+    trail: TrailRead,
+    /// Whether the core has yet to read that trail.
+    trail_unread: bool,
+    /// The last run's closing words, for the summary (#832).
+    closing: Closing,
+    /// Whether the core has yet to ask for them.
+    closing_unasked: bool,
 }
 
 impl DesktopState {
@@ -1398,6 +1485,24 @@ impl DesktopState {
                     self.alert.push(format!("The run ended in error: {error}"));
                     c = c.with(Pane::Alert);
                 }
+                // The summary's trail and closing words (#832), which the
+                // core reads once this event is fed: the trail run_end
+                // named, and the model's words only for a converged run,
+                // the one outcome that ended on `done`. trellis keeps the
+                // words of the last run that did, so after any other an
+                // answer could be an earlier run's, shown as this one's.
+                self.trail = match &e.run_id {
+                    Some(id) => TrailRead::Reading(id.clone()),
+                    None => TrailRead::Unnamed,
+                };
+                self.trail_unread = e.run_id.is_some();
+                let converged = e.outcome.as_deref() == Some("converged");
+                self.closing = if converged {
+                    Closing::Asked
+                } else {
+                    Closing::Unasked
+                };
+                self.closing_unasked = converged;
                 self.outcome = Some(e);
                 c
             }
@@ -1542,6 +1647,33 @@ impl DesktopState {
                         }
                     }
                     _ => {}
+                }
+                // The summary's closing words (#832): only the answer to the
+                // core's own question, and only while this run's is open, so
+                // an answer that comes after another run has started is not
+                // read as that run's.
+                if r.command.as_deref() == Some("get_last_assistant_text")
+                    && r.id.as_deref() == Some(SUMMARY_ID)
+                    && self.closing == Closing::Asked
+                {
+                    let text = r
+                        .data
+                        .as_ref()
+                        .and_then(|d| d.get("text"))
+                        .and_then(Value::as_str);
+                    self.closing = match (r.success, text) {
+                        (Some(true), Some(t)) => Closing::Said(t.to_string().fit(CLOSING_BYTES)),
+                        (Some(true), None) => Closing::Unsaid(
+                            "trellis holds no closing words: no run of this trellis rpc has \
+                             ended on done"
+                                .into(),
+                        ),
+                        _ => Closing::Unsaid(format!(
+                            "get_last_assistant_text refused: {}",
+                            r.error.as_deref().unwrap_or("no reason given")
+                        )),
+                    };
+                    c = c.with(Pane::Summary);
                 }
                 // A steer's answer says where its row stands: the step whose
                 // request carried it, or why none did, which the row says.
@@ -1818,6 +1950,13 @@ impl DesktopState {
     /// other carries only their rows not sent yet, and marks them sent.
     pub fn view(&mut self, changed: Changed) -> Value {
         let whole = changed.is_everything();
+        // The summary is derived here, after `whole` is read, from every
+        // path a view comes by (see [`SUMMARY_INPUTS`]).
+        let changed = if SUMMARY_INPUTS.iter().any(|&p| changed.has(p)) {
+            changed.with(Pane::Summary)
+        } else {
+            changed
+        };
         let mut v = Map::new();
         for p in PANES.into_iter().filter(|&p| changed.has(p)) {
             let value = match p {
@@ -1975,6 +2114,7 @@ impl DesktopState {
             Pane::Now => self.now(),
             Pane::Where => self.where_it_is(),
             Pane::Code => self.code(),
+            Pane::Summary => self.summary(),
             Pane::Pending => Value::Array(
                 self.queued
                     .iter()
@@ -2382,6 +2522,192 @@ impl DesktopState {
         json!({"files": files})
     }
 
+    /// The summary level (#832): what the run has done so far while it is
+    /// in flight, and how it ended once `run_end` has come. Every part is
+    /// another pane's data as the reducer already holds it, never
+    /// recomputed: the checks as trellis-checks reported them, by kind with
+    /// each turn's own time; the radius as its three counts (CLAUDE.md rule
+    /// 3); the Code level's files with their counts and state words; the
+    /// budget's rows; this run's steer rows with their delivery; and the
+    /// path, one step per turn. From the trail `run_end` named, its
+    /// integrity and its Verified and Reviewed counts, two figures and never
+    /// one (CLAUDE.md rule 4). The model's closing words are fenced as
+    /// `{untrusted}` text under a label saying whose they are (rule 10).
+    /// No outcome is given before `run_end`: a run in flight has none.
+    fn summary(&self) -> Value {
+        let (state, _) = self.state_word();
+        let (stage, word) = match state {
+            "ended" => ("final", "how the run ended"),
+            "idle" if self.actions.is_empty() => ("none", "no run yet"),
+            "idle" => (
+                "unended",
+                "no run_end: trellis rpc exited before the run ended",
+            ),
+            _ => (
+                "so_far",
+                "so far: the run is in flight, and this is not its end",
+            ),
+        };
+        let outcome = match (stage, &self.outcome) {
+            ("final", Some(e)) => json!({
+                "outcome": e.outcome.as_deref().map(outcome_words),
+                "exit": e.exit,
+                "restored": e.restored,
+                "error": e.error,
+            }),
+            _ => Value::Null,
+        };
+        let why_outcome = match stage {
+            "final" => None,
+            "so_far" => Some("the run is in flight: its outcome and exit code come with run_end"),
+            "unended" => Some("trellis rpc exited before a run_end said how the run ended"),
+            _ => Some("no run has started"),
+        };
+
+        // By kind, in the order each kind first ran; each run its verdict
+        // and its turn's time. `took`, not `duration`: that word holds
+        // `ratio`, which no view key may (CLAUDE.md rule 3's test).
+        let mut kinds: Vec<(&str, Vec<Value>)> = Vec::new();
+        for c in &self.checks {
+            let run = json!({
+                "turn": c.turn,
+                "result": if c.passed { "passed" } else { "failed" },
+                "took_ms": c.took_ms,
+                "why_took": c.took_ms.is_none().then_some("the turn's event carried no duration_ms"),
+            });
+            match kinds.iter_mut().find(|(k, _)| *k == c.kind) {
+                Some((_, runs)) => runs.push(run),
+                None => kinds.push((c.kind.as_str(), vec![run])),
+            }
+        }
+        let checks: Vec<Value> = kinds
+            .into_iter()
+            .map(|(kind, runs)| json!({"kind": kind, "runs": runs}))
+            .collect();
+
+        let radius = self.radius.map(|r| {
+            json!({"resolved": r.resolved, "candidates": r.candidates, "unresolved": r.unresolved})
+        });
+
+        let code = self.code();
+        let files: Vec<Value> = code["files"]
+            .as_array()
+            .map(|fs| {
+                fs.iter()
+                    .map(|f| {
+                        json!({
+                            "path": f["path"], "added": f["added"], "removed": f["removed"],
+                            "why_counts": f["why_counts"], "word": f["word"], "tone": f["tone"],
+                            "why_state": f["why_state"],
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // This run's steers: the rows after its task's, which run_start
+        // writes first. Each delivery as the transcript row says it.
+        let mut steers: Vec<Value> = self
+            .transcript
+            .rows()
+            .rev()
+            .take_while(|e| e.kind != Kind::Task)
+            .filter(|e| e.kind == Kind::Steer)
+            .map(|e| {
+                let row = e.to_json();
+                json!({"text": row["text"], "delivery": row["delivery"]})
+            })
+            .collect();
+        steers.reverse();
+
+        let path: Vec<Value> = self
+            .actions
+            .iter()
+            .map(|a| json!({"turn": a.turn, "tool": a.tool, "target": a.target, "wrote": a.wrote}))
+            .collect();
+
+        let (trail, modes) = match &self.trail {
+            TrailRead::Read {
+                run_id,
+                integrity,
+                verified,
+                reviewed,
+            } => (
+                json!({"run_id": run_id, "integrity": integrity, "why": null}),
+                json!({
+                    "verified": verified,
+                    "reviewed": reviewed,
+                    "why_verified": verified.is_none().then_some("the trail records no verified count"),
+                    "why_reviewed": reviewed.is_none().then_some("the trail records no reviewed count"),
+                }),
+            ),
+            other => {
+                let (run_id, why) = match other {
+                    TrailRead::Reading(id) => {
+                        (Some(id.as_str()), "reading the trail run_end named")
+                    }
+                    TrailRead::Failed { run_id, why } => (Some(run_id.as_str()), why.as_str()),
+                    _ => match stage {
+                        "final" => (
+                            None,
+                            "run_end named no trail: trellis wrote none for this run",
+                        ),
+                        "so_far" => (
+                            None,
+                            "trellis writes the run's trail, and counts its modes, at run_end",
+                        ),
+                        "unended" => (None, "trellis rpc exited before run_end named a trail"),
+                        _ => (None, "no run has started"),
+                    },
+                };
+                (
+                    json!({"run_id": run_id, "integrity": null, "why": why}),
+                    json!({"verified": null, "reviewed": null, "why_verified": why, "why_reviewed": why}),
+                )
+            }
+        };
+
+        let closing_why = match (&self.closing, stage) {
+            (Closing::Said(_), _) => None,
+            (Closing::Asked, _) => Some("asked trellis for the model's closing words".to_string()),
+            (Closing::Unsaid(why), _) => Some(why.clone()),
+            (Closing::Unasked, "final") => Some(
+                "this run did not converge, and trellis keeps only the closing words of the \
+                 last run that ended on done, which may be an earlier run's"
+                    .to_string(),
+            ),
+            (Closing::Unasked, "so_far") => {
+                Some("the model's closing words come once the run has converged".to_string())
+            }
+            (Closing::Unasked, _) => Some("no run has converged".to_string()),
+        };
+        let words = match &self.closing {
+            Closing::Said(t) => json!({"untrusted": t}),
+            _ => Value::Null,
+        };
+
+        json!({
+            "stage": stage,
+            "word": word,
+            "outcome": outcome,
+            "why_outcome": why_outcome,
+            "checks": checks,
+            "modes": modes,
+            "radius": radius,
+            "why_radius": radius.is_none().then_some("no blast_radius turn has reported one this run"),
+            "files": files,
+            "budget": self.limits(),
+            "steers": steers,
+            "path": path,
+            "trail": trail,
+            "closing": {
+                "label": "the model's closing words: its own, not a verdict",
+                "words": words,
+                "why": closing_why,
+            },
+        })
+    }
+
     /// A turn, as the `turn` event reports it.
     fn turn(&mut self, t: Turn) -> Changed {
         let mut c = Changed::of(&[
@@ -2450,6 +2776,7 @@ impl DesktopState {
             c = c.with(Pane::Edits);
         }
         self.actions.push(Action {
+            turn: t.turn,
             tool,
             target,
             wrote,
@@ -2466,7 +2793,12 @@ impl DesktopState {
             let mut row = Entry::new(Kind::Check, Some(t.turn), format!("{kind} {word}"));
             row.passed = Some(passed);
             self.transcript.push(row);
-            self.checks.push(Check { kind, passed });
+            self.checks.push(Check {
+                kind,
+                passed,
+                turn: t.turn,
+                took_ms: t.duration_ms,
+            });
             c = c.with(Pane::Checks);
         }
 
@@ -2513,6 +2845,10 @@ impl DesktopState {
         self.runtime = None;
         self.stopping = false;
         self.elapsed_ms = None;
+        self.trail = TrailRead::Unnamed;
+        self.trail_unread = false;
+        self.closing = Closing::Unasked;
+        self.closing_unasked = false;
     }
 
     /// The page sent a steer, `text`, with line id `id`: its row, pending
@@ -2524,7 +2860,7 @@ impl DesktopState {
         let id = cut(id.to_string(), id.len(), STEER_FIELD_BYTES);
         row.steer = Some((id, Delivery::Pending));
         self.transcript.push(row);
-        Changed::of(&[Pane::Transcript])
+        Changed::of(&[Pane::Transcript, Pane::Summary])
     }
 
     /// The steer sent with `id` could not be written to the child, for
@@ -2556,7 +2892,7 @@ impl DesktopState {
         let queued = fate.is_some_and(|f| self.settle(QueuedKind::Steer, id, f));
         let mut c = Changed::default();
         if changed {
-            c = c.with(Pane::Transcript);
+            c = c.with(Pane::Transcript).with(Pane::Summary);
         }
         if queued {
             c = c.with(Pane::Pending);
@@ -2756,6 +3092,78 @@ impl DesktopState {
         };
         let id = h.line.get("id").and_then(Value::as_str).unwrap_or_default();
         self.held_sent(id, Err(why))
+    }
+    /// The run id of a trail the last `run_end` named and the core has not
+    /// yet read for the summary (#832), once: the core reads it with
+    /// `trellis log` and hands the rows to [`DesktopState::trail_read`].
+    pub fn trail_to_read(&mut self) -> Option<String> {
+        if !std::mem::take(&mut self.trail_unread) {
+            return None;
+        }
+        match &self.trail {
+            TrailRead::Reading(id) => Some(id.clone()),
+            _ => None,
+        }
+    }
+
+    /// `trellis log`'s rows, or why it gave none, for the trail `run_id`.
+    /// Read only while the summary still waits on that run's trail: rows
+    /// that come after another run has started are not this run's. The
+    /// row's integrity is trellis's word, and its two mode counts are kept
+    /// as two (CLAUDE.md rule 4).
+    pub fn trail_read(&mut self, run_id: &str, rows: Result<Vec<Value>, String>) -> Changed {
+        if self.trail != TrailRead::Reading(run_id.to_string()) {
+            return Changed::default();
+        }
+        let failed = |why: String| TrailRead::Failed {
+            run_id: run_id.to_string(),
+            why,
+        };
+        self.trail = match rows {
+            Err(why) => failed(why),
+            Ok(rows) => {
+                let row = rows.iter().find(|r| {
+                    r.get("run_id")
+                        .and_then(|i| i.get("untrusted"))
+                        .and_then(Value::as_str)
+                        == Some(run_id)
+                });
+                match row {
+                    None => failed(format!(
+                        "trellis log's newest {SUMMARY_TRAILS} trails do not include run {run_id}"
+                    )),
+                    Some(r) => match r.get("integrity").and_then(Value::as_str) {
+                        Some(integrity) => {
+                            let count = |k: &str| r["mode_counts"][k].as_u64();
+                            TrailRead::Read {
+                                run_id: run_id.to_string(),
+                                integrity: integrity.to_string(),
+                                verified: count("verified"),
+                                reviewed: count("reviewed"),
+                            }
+                        }
+                        None => failed("trellis log's row for the run carries no integrity".into()),
+                    },
+                }
+            }
+        };
+        Changed::of(&[Pane::Summary])
+    }
+
+    /// Whether the core is to ask trellis for the run's closing words
+    /// (#832), once, with [`SUMMARY_ID`].
+    pub fn closing_to_ask(&mut self) -> bool {
+        std::mem::take(&mut self.closing_unasked) && self.closing == Closing::Asked
+    }
+
+    /// The core's question for the closing words could not be written.
+    pub fn closing_unasked(&mut self, why: &str) -> Changed {
+        if self.closing != Closing::Asked {
+            return Changed::default();
+        }
+        self.closing =
+            Closing::Unsaid(format!("the desktop could not ask trellis for them: {why}"));
+        Changed::of(&[Pane::Summary])
     }
 }
 
@@ -4860,7 +5268,8 @@ mod tests {
         let mut s = DesktopState::default();
         feed(&mut s, &run_start("p"));
         let c = s.steer_sent("composer-steer-1", "<b>keep</b> tokens.py");
-        assert_eq!(c, Changed::of(&[Pane::Transcript]));
+        // The row, and the summary level's steers, which list it (#832).
+        assert_eq!(c, Changed::of(&[Pane::Transcript, Pane::Summary]));
         let v = s.view(c);
         let row = rows(&v["transcript"]).pop().unwrap();
         assert_eq!(
@@ -5695,7 +6104,8 @@ mod tests {
             | "context_bytes"
             | "lines_added"
             | "lines_removed"
-            | "start_line" => {
+            | "start_line"
+            | "duration_ms" => {
                 *n += 1;
                 json!(*n)
             }
@@ -5841,5 +6251,359 @@ mod tests {
             lost.is_empty(),
             "the parser drops what client_contract.json lists: {lost:?}"
         );
+    }
+
+    /// A run to summarise (#832): its start, a radius, a check that passed
+    /// with its time, an applied edit, and a steer delivered after turn 1.
+    fn summary_run(s: &mut DesktopState) {
+        feed(s, &run_start("p1"));
+        feed(s, &event("run budget", json!({"max_iterations": 40})));
+        feed(
+            s,
+            &turn(
+                json!({"turn": 1, "call": "blast_radius f", "verdict": "None",
+                         "check_kind": "", "observation": "", "tool": "blast_radius",
+                         "target": "f", "wrote": false, "resolved": 4, "candidates": 2,
+                         "unresolved": 1}),
+            ),
+        );
+        s.steer_sent("composer-steer-1", "keep the name");
+        feed(
+            s,
+            &json!({"type": "response", "command": "steer", "success": true,
+                    "id": "composer-steer-1", "data": {"after_step": 1}})
+            .to_string(),
+        );
+        feed(
+            s,
+            &turn(
+                json!({"turn": 2, "call": "edit a.py", "verdict": "None", "check_kind": "",
+                         "observation": "applied", "tool": "edit", "target": "a.py",
+                         "wrote": true, "lines_added": 3, "lines_removed": 1}),
+            ),
+        );
+        feed(
+            s,
+            &turn(
+                json!({"turn": 3, "call": "run_checks", "verdict": "Some(true)",
+                         "check_kind": "Tests", "observation": "ok", "tool": "run_checks",
+                         "target": "", "wrote": false, "duration_ms": 1250}),
+            ),
+        );
+    }
+
+    /// A `trellis log` row as `trails.rs` makes it, for run `id`.
+    fn trail_row(id: &str, verified: Value, reviewed: Value) -> Value {
+        json!({"integrity": "intact", "run_id": {"untrusted": id},
+               "outcome": {"untrusted": "converged"}, "task": {"untrusted": "change f"},
+               "mode_counts": {"verified": verified, "reviewed": reviewed}})
+    }
+
+    #[test]
+    fn summary_so_far_shows_no_outcome_before_run_end() {
+        // The risk (#832): the summary reached mid-run shows an outcome, or
+        // reads as the run's end, while the run is still in flight; or
+        // recomputes what the panes beside it hold, so the two disagree.
+        let mut s = DesktopState::default();
+        summary_run(&mut s);
+        let v = all(&mut s);
+        let sm = &v["recap"];
+        assert_eq!(sm["stage"], "so_far", "{sm}");
+        assert!(sm["word"].as_str().unwrap().contains("so far"), "{sm}");
+        assert_eq!(
+            sm["outcome"],
+            Value::Null,
+            "an outcome before run_end: {sm}"
+        );
+        assert!(sm["why_outcome"].as_str().unwrap().contains("run_end"));
+        assert_eq!(
+            sm["checks"],
+            json!([{"kind": "Tests", "runs": [
+                {"turn": 3, "result": "passed", "took_ms": 1250, "why_took": null}]}])
+        );
+        assert_eq!(sm["radius"], v["radius"], "the radius pane's three counts");
+        assert_eq!(
+            sm["budget"], v["budget"]["limits"],
+            "the budget pane's rows"
+        );
+        assert_eq!(sm["files"][0]["path"], "a.py");
+        assert_eq!(sm["files"][0]["added"], v["code"]["files"][0]["added"]);
+        assert_eq!(sm["files"][0]["word"], "in the worktree");
+        assert_eq!(
+            sm["steers"],
+            json!([{"text": "keep the name",
+                    "delivery": {"state": "delivered", "after_step": 1}}])
+        );
+        assert_eq!(
+            sm["path"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| p["turn"].clone())
+                .collect::<Vec<_>>(),
+            [json!(1), json!(2), json!(3)]
+        );
+        assert_eq!(sm["trail"]["integrity"], Value::Null);
+        assert_eq!(sm["closing"]["words"], Value::Null);
+        // A steer row changed outside update still re-sends the summary.
+        let c = s.steer_sent("composer-steer-2", "and the test");
+        let v = s.view(c);
+        assert_eq!(
+            v["recap"]["steers"][1]["delivery"],
+            json!({"state": "pending"})
+        );
+
+        // Once run_end has come it is the run's end, with its outcome.
+        feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "not_converged", "exit": 1, "id": "p1",
+                    "restored": true})
+            .to_string(),
+        );
+        let sm = all(&mut s)["recap"].clone();
+        assert_eq!(sm["stage"], "final");
+        assert_eq!(sm["outcome"]["outcome"], "not converged");
+        assert_eq!(sm["outcome"]["exit"], 1);
+        assert_eq!(sm["files"][0]["word"], "rolled back");
+        // A run that did not converge is never given trellis's last closing
+        // words, which may be an earlier run's.
+        assert!(!s.closing_to_ask());
+        assert!(
+            sm["closing"]["why"]
+                .as_str()
+                .unwrap()
+                .contains("earlier run")
+        );
+        // A new run starts its summary afresh.
+        feed(&mut s, &run_start("p2"));
+        let sm = all(&mut s)["recap"].clone();
+        assert_eq!(sm["stage"], "so_far");
+        assert_eq!(sm["checks"], json!([]));
+        assert_eq!(sm["steers"], json!([]));
+    }
+
+    #[test]
+    fn summary_keeps_verified_and_reviewed_apart() {
+        // The risk (CLAUDE.md rule 4, ADR 0003): the summary's mode counts
+        // collapsed into one figure (a total, a sum, a share), which says
+        // how much of a run was verified when part of it was only reviewed;
+        // or a count the trail does not record drawn as 0.
+        let mut s = DesktopState::default();
+        summary_run(&mut s);
+        feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p1",
+                    "run_id": "r-1"})
+            .to_string(),
+        );
+        // Mid-read the trail is said to be read, its counts null, never 0.
+        let sm = all(&mut s)["recap"].clone();
+        assert_eq!(sm["modes"]["verified"], Value::Null);
+        assert_eq!(sm["modes"]["reviewed"], Value::Null);
+        assert_eq!(sm["trail"]["run_id"], "r-1");
+        assert_eq!(s.trail_to_read().as_deref(), Some("r-1"));
+        assert_eq!(s.trail_to_read(), None, "the core reads it once");
+
+        // Another run's row is not this run's.
+        let c = s.trail_read("r-0", Ok(vec![trail_row("r-0", json!(9), json!(9))]));
+        assert!(c.is_empty(), "{c:?}");
+        let c = s.trail_read(
+            "r-1",
+            Ok(vec![
+                trail_row("r-2", json!(7), json!(7)),
+                trail_row("r-1", json!(3), json!(1)),
+            ]),
+        );
+        assert!(c.has(Pane::Summary), "{c:?}");
+        let v = s.view(c);
+        let sm = &v["recap"];
+        assert_eq!(
+            sm["modes"],
+            json!({"verified": 3, "reviewed": 1, "why_verified": null, "why_reviewed": null})
+        );
+        assert_eq!(
+            sm["trail"],
+            json!({"run_id": "r-1", "integrity": "intact", "why": null})
+        );
+        // No figure derived from the two: no key names one, and their sum
+        // appears nowhere in the summary.
+        let mut ks = Vec::new();
+        keys(sm, &mut ks);
+        let derived: Vec<&String> = ks
+            .iter()
+            .filter(|k| {
+                let k = k.to_lowercase();
+                [
+                    "total",
+                    "sum",
+                    "ratio",
+                    "percent",
+                    "fraction",
+                    "share",
+                    "mode_count",
+                ]
+                .iter()
+                .any(|w| k.contains(w))
+            })
+            .collect();
+        assert!(derived.is_empty(), "{derived:?}");
+        fn numbers(v: &Value, out: &mut Vec<u64>) {
+            match v {
+                Value::Number(n) => out.extend(n.as_u64()),
+                Value::Array(a) => a.iter().for_each(|x| numbers(x, out)),
+                Value::Object(o) => o.values().for_each(|x| numbers(x, out)),
+                _ => {}
+            }
+        }
+        let mut ns = Vec::new();
+        numbers(&sm["modes"], &mut ns);
+        numbers(&sm["trail"], &mut ns);
+        ns.sort_unstable();
+        assert_eq!(
+            ns,
+            [1, 3],
+            "Verified and Reviewed, two figures and no third"
+        );
+
+        // A trail that records one count and not the other keeps them
+        // apart: the missing one is null with why, never 0 or the other's.
+        let mut s = DesktopState::default();
+        summary_run(&mut s);
+        feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p1",
+                    "run_id": "r-1"})
+            .to_string(),
+        );
+        let c = s.trail_read("r-1", Ok(vec![trail_row("r-1", json!(2), Value::Null)]));
+        let sm = s.view(c)["recap"].clone();
+        assert_eq!(sm["modes"]["verified"], 2);
+        assert_eq!(sm["modes"]["reviewed"], Value::Null);
+        assert!(sm["modes"]["why_reviewed"].is_string());
+        // A run trellis log does not list is said to be missing, not read.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p1"));
+        feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "error", "exit": 2, "id": "p1",
+                    "run_id": "r-9", "error": "boom"})
+            .to_string(),
+        );
+        let c = s.trail_read("r-9", Ok(vec![]));
+        let sm = s.view(c)["recap"].clone();
+        assert_eq!(sm["trail"]["integrity"], Value::Null);
+        assert!(
+            sm["trail"]["why"]
+                .as_str()
+                .unwrap()
+                .contains("do not include run r-9")
+        );
+        assert_eq!(sm["modes"]["verified"], Value::Null);
+    }
+
+    #[test]
+    fn summary_closing_words_are_fenced_text() {
+        // The risk (CLAUDE.md rule 10, ADR 0007): the model's closing words
+        // reach the summary as anything but its own text: unfenced, so the
+        // page could draw them as the desktop's or as a verdict; altered
+        // (markup or control characters dropped), so they are not what the
+        // model said; read from an answer the core did not ask for, or
+        // asked after a run that did not converge, so an earlier run's words
+        // stand as this run's.
+        let mut s = DesktopState::default();
+        summary_run(&mut s);
+        // Mid-run there are none, and nothing is asked.
+        assert!(!s.closing_to_ask());
+        let said = "Done. <script>alert(1)</script> \u{1b}[31mred\u{1b}[0m\n\tall checks ok";
+        let answer = |id: &str| {
+            json!({"type": "response", "command": "get_last_assistant_text",
+                   "success": true, "id": id, "data": {"text": said}})
+            .to_string()
+        };
+        // Before the core has asked, an answer is not read.
+        feed(&mut s, &answer(SUMMARY_ID));
+        assert_eq!(all(&mut s)["recap"]["closing"]["words"], Value::Null);
+
+        feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p1"}).to_string(),
+        );
+        assert!(s.closing_to_ask(), "a converged run's words are asked for");
+        assert!(!s.closing_to_ask(), "once");
+        // An answer to another id is the page's, not the summary's.
+        feed(&mut s, &answer("desktop-last"));
+        assert_eq!(all(&mut s)["recap"]["closing"]["words"], Value::Null);
+        let c = feed(&mut s, &answer(SUMMARY_ID));
+        let v = s.view(c);
+        let closing = &v["recap"]["closing"];
+        // Fenced as `{untrusted}`, the trails' one shape for text not the
+        // desktop's, byte for byte, under a label saying whose it is.
+        assert_eq!(closing["words"], json!({"untrusted": said}));
+        assert_eq!(closing["why"], Value::Null);
+        let label = closing["label"].as_str().unwrap();
+        assert!(
+            label.contains("the model's") && label.contains("not a verdict"),
+            "{label}"
+        );
+        // Nowhere else in the summary: no tone, result or check carries it.
+        let elsewhere = v["recap"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(k, _)| *k != "closing")
+            .any(|(_, x)| x.to_string().contains("alert(1)"));
+        assert!(!elsewhere, "the words leak out of their fence");
+        // Nor into the transcript as a row of any kind.
+        assert!(!v.to_string().contains("\"text\":\"Done."), "{v}");
+
+        // Long words are cut with the desktop's marker, not kept whole.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p1"));
+        feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p1"}).to_string(),
+        );
+        let long = "x".repeat(CLOSING_BYTES * 2);
+        let c = feed(
+            &mut s,
+            &json!({"type": "response", "command": "get_last_assistant_text",
+                    "success": true, "id": SUMMARY_ID, "data": {"text": long}})
+            .to_string(),
+        );
+        let words = s.view(c)["recap"]["closing"]["words"]["untrusted"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(words.len() <= CLOSING_BYTES, "{}", words.len());
+        assert!(words.ends_with("bytes were cut]"), "{words}");
+
+        // No words held, or a question the core could not write: null with
+        // why, never an empty string drawn as the model's.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p1"));
+        feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p1"}).to_string(),
+        );
+        let c = feed(
+            &mut s,
+            &json!({"type": "response", "command": "get_last_assistant_text",
+                    "success": true, "id": SUMMARY_ID, "data": {"text": null}})
+            .to_string(),
+        );
+        let closing = s.view(c)["recap"]["closing"].clone();
+        assert_eq!(closing["words"], Value::Null);
+        assert!(closing["why"].as_str().unwrap().contains("ended on done"));
+        // A new run started before an answer came: that answer is not read
+        // as the new run's.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p1"));
+        feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p1"}).to_string(),
+        );
+        feed(&mut s, &run_start("p2"));
+        feed(&mut s, &answer(SUMMARY_ID));
+        assert_eq!(all(&mut s)["recap"]["closing"]["words"], Value::Null);
     }
 }

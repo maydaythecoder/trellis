@@ -10,9 +10,9 @@
 //
 // Stop opens the same confirmation the composer's Stop opens, and only
 // opens it: the dialog's close, in composer.js, is the one place an abort
-// is sent, and only when its own Stop closed it (#637). Summary
-// so far has no level to open yet (#832), so it is marked not built rather
-// than drawn as a button that does nothing.
+// is sent, and only when its own Stop closed it (#637). Summary so far,
+// or Summary once the run has ended, opens the summary level (#832) one
+// burrow in from Run, and sends nothing.
 //
 // Every value is trellis- or model-supplied text, written through
 // textContent only (ADR 0007, S10).
@@ -20,6 +20,7 @@
 import { el } from "./dom.js";
 import { dsButton, dsStatus, facts, nowStrip, unreported } from "./ds.js";
 import { isCount, str } from "./fmt.js";
+import { burrow } from "./keys.js";
 
 // The bundle's NowStrip state each of the reducer's states is coloured as.
 // The word drawn is the reducer's, never the bundle's: an ended run reads
@@ -73,8 +74,11 @@ export function drawNow(doc, pane, n) {
     controls.push(stop);
   }
   if (state !== "idle") {
-    const summary = el(doc, "span", `${state === "ended" ? "Summary" : "Summary so far"} · not built`, "unbuilt");
-    summary.title = "the summary level is not built yet (#832)";
+    const summary = dsButton(doc, state === "ended" ? "Summary" : "Summary so far", {
+      variant: "ghost",
+      title: state === "ended" ? "How the run ended, what it changed and its trail" : "What the run has done so far: it has not ended",
+    });
+    summary.addEventListener("click", () => burrow(doc, ["run", "summary"]));
     controls.push(summary);
   }
   pane.replaceChildren(

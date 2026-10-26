@@ -2426,3 +2426,26 @@ article.past-run section + section {
   color: var(--ink);
   font: 400 13px/20px var(--font-mono);
 }
+
+/* The summary level (#832): its Panels in two columns where the window
+   has room for them, one where it has not. A check kind's runs and a
+   file's meta wrap as the Code level's do. */
+#summary {
+  display: grid;
+  gap: var(--space-4);
+  align-content: start;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.summary-runs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}

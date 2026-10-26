@@ -94,6 +94,10 @@ pub struct Turn {
     /// The run's wall-clock spend after the turn, by the budget's own
     /// clock (#799), with waits on a person and pauses taken out.
     pub elapsed_ms: Option<u64>,
+    /// The tool call's time by the monotonic clock, waits on a person taken
+    /// out, and on the governance audit's turn the audit's own (#800): what
+    /// the summary level shows beside each check (#832).
+    pub duration_ms: Option<u64>,
     /// The completion (output) tokens over every reply so far, the counter
     /// `run budget`'s `max_tokens` is checked against (#799): never prompt
     /// tokens, and never a sum of the two.
@@ -249,6 +253,7 @@ pub fn parse_stdout(line: &str) -> Frame {
                 completion_tokens: json::u64(f, "completion_tokens"),
                 queue_wait_ms: json::u64(f, "queue_wait_ms"),
                 elapsed_ms: json::u64(f, "elapsed_ms"),
+                duration_ms: json::u64(f, "duration_ms"),
                 completion_tokens_used: json::u64(f, "completion_tokens_used"),
                 lines_added: json::u64(f, "lines_added"),
                 lines_removed: json::u64(f, "lines_removed"),
