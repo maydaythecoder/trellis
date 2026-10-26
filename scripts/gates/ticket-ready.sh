@@ -5,11 +5,12 @@ source "$(dirname "$0")/lib.sh"
 source "$ROOT/scripts/tickets/blocked-by.sh"
 n="${1:?usage: ticket-ready.sh <issue-number>}"
 
-# gh's built-in --jq, so the gates need nothing beyond gh, git, cargo and python.
-state=$(gh issue view "$n" --json state -q .state) || fail "cannot read issue #$n"
+# gh's built-in --jq, so the gates need nothing beyond gh, git, cargo and
+# python. blocked-by.sh has sourced scripts/tickets/issues.sh (REST, #924).
+state=$(issue_state_rest "$n") || fail "cannot read issue #$n"
 # A body edited from Windows is CRLF; every test below reads it as LF (#205).
-body=$(gh issue view "$n" --json body -q .body | tr -d '\r')
-labels=$(gh issue view "$n" --json labels -q '[.labels[].name] | join(" ")')
+body=$(issue_body "$n" | tr -d '\r')
+labels=$(issue_labels "$n")
 
 problems=()
 [ "$state" = "OPEN" ] || problems+=("issue is $state")
