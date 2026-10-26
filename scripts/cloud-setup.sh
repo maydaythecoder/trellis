@@ -41,9 +41,34 @@ got=$(go env GOVERSION)
 git config user.name "muhyadin mohamed"
 git config user.email "99102186+maydaythecoder@users.noreply.github.com"
 
+# G5's tools, at the versions ci.yml pins. Each install is skipped when that
+# version is already there, so a second run in one session is quick.
+installed() { command -v "$1" >/dev/null 2>&1 && "$@" 2>/dev/null | grep -qF "$VERSION"; }
+VERSION=0.20.2; installed cargo-deny deny --version \
+  || cargo install -q --locked cargo-deny --version "$VERSION" || { echo "FAIL: cargo-deny $VERSION"; exit 1; }
+VERSION=0.22.2; installed cargo-audit audit --version \
+  || cargo install -q --locked cargo-audit --version "$VERSION" || { echo "FAIL: cargo-audit $VERSION"; exit 1; }
+python3 -m pip install -q --root-user-action=ignore --require-hashes -r .github/requirements-zizmor.txt \
+  || { echo "FAIL: could not install .github/requirements-zizmor.txt"; exit 1; }
+# Outside tui/, so `go install` cannot touch tui/go.mod.
+(cd / && go install golang.org/x/vuln/cmd/govulncheck@v1.8.0 \
+  && go install github.com/google/go-licenses/v2@v2.0.1) \
+  || { echo "FAIL: could not install govulncheck or go-licenses"; exit 1; }
+# gitleaks, from the release ci.yml downloads, checked against the same hash.
+VERSION=8.21.2
+if ! installed gitleaks version; then
+  dir="$HOME/.local/gitleaks"; mkdir -p "$dir"
+  tgz="$dir/gitleaks_${VERSION}_linux_x64.tar.gz"
+  curl -sSfL -o "$tgz" "https://github.com/gitleaks/gitleaks/releases/download/v$VERSION/gitleaks_${VERSION}_linux_x64.tar.gz" \
+    && echo "5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba  $tgz" | sha256sum -c - >/dev/null \
+    && tar -xzf "$tgz" -C "$dir" gitleaks \
+    && ln -sf "$dir/gitleaks" "$HOME/.local/bin/gitleaks" \
+    || { echo "FAIL: gitleaks $VERSION did not download, or its hash did not match"; exit 1; }
+fi
+
 # G2b's guard fixture runs `python -m mypy` and `python -m pytest`; the
 # versions and hashes are the ones ci.yml's guard job installs (#215).
-python3 -m pip install -q --require-hashes -r qa/requirements-ci.txt \
+python3 -m pip install -q --root-user-action=ignore --require-hashes -r qa/requirements-ci.txt \
   || { echo "FAIL: could not install qa/requirements-ci.txt"; exit 1; }
 
 # G2b's dirty_worktree guard needs 127.0.0.1:11434 to accept a connection
@@ -64,4 +89,4 @@ fi
 gh api 'repos/{owner}/{repo}' --jq .full_name >/dev/null \
   || { echo "FAIL: gh api cannot reach the repository"; exit 1; }
 
-echo "OK: go $got, git identity set, a listener on 127.0.0.1:11434, gh api reaches the repository"
+echo "OK: go $got, G5's tools, git identity set, a listener on 127.0.0.1:11434, gh api reaches the repository"
