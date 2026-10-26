@@ -165,6 +165,17 @@ jobs:
       - name: Test (desktop/)
         run: cargo test --locked --manifest-path desktop/Cargo.toml
 
+      # ADR 0059: the page itself, in the runner's Chrome over the DevTools
+      # pipe, against the QA fixture with a scripted model: no exception, no
+      # console error, no CSP refusal, and listeners, nodes and documents that
+      # come back. Linux only, since the pipe is fds 3 and 4. The self-test
+      # runs first, so a check that cannot fail does not pass.
+      - name: Desktop smoke run in headless Chrome (Linux; ADR 0059)
+        if: runner.os == 'Linux'
+        run: |
+          python3 qa/desktop_smoke.py --self-test
+          python3 qa/desktop_smoke.py
+
       # The guard the supply-chain job runs on Linux, here on Windows too.
       # `shell: bash` is Git Bash on Windows; a bare `bash` from the default
       # pwsh can resolve to WSL's System32\bash.exe instead.
