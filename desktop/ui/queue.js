@@ -9,9 +9,11 @@
 // Each cell is a button: pressed, the list below shows only the tasks whose
 // `status` is the cell's, and "Show all" lifts that (#656). Presentation
 // only: the rows are the view's tasks, and nothing is counted from them.
-// Below the cells, each task with its text, priority, labels, waiting reason
-// and chain (#559). PR and CI state is drawn by overview.js's drawPrCi, so
-// the board and the overview never draw it differently.
+// Below the cells, the tasks as a Rail, each with its text, priority,
+// labels, waiting reason and chain (#559). A task and PR and CI state are
+// drawn by overview.js's taskRow and drawPrCi, so the board and the
+// overview never draw them differently. Each cell's count is the design
+// system's Stat and the task count the Queue panel's meta (ds.js, #910).
 //
 // Task text, labels, waiting reasons, errors and everything `gh` reports are
 // written by others (ADR 0007, S10): they reach the DOM only through
@@ -20,9 +22,10 @@
 //
 // index.html loads this as a module of its own.
 
-import { el, muted } from "./dom.js";
-import { isCount, str } from "./fmt.js";
-import { drawPrCi } from "./overview.js";
+import { el, fill, muted } from "./dom.js";
+import { figure, panelMeta, railRows, stat } from "./ds.js";
+import { plural, str } from "./fmt.js";
+import { drawPrCi, taskRow } from "./overview.js";
 import { onShown, runEnded, send, start } from "./rpc.js";
 
 let asked = 0;
@@ -38,10 +41,6 @@ let pressed = null;
 // The view's queue as last drawn, so a press redraws it.
 let lastQueue = null;
 
-function texts(v) {
-  return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
-}
-
 function status(doc, text) {
   doc.getElementById("qb-status").textContent = text;
 }
@@ -56,8 +55,9 @@ function press(doc, status) {
   }
 }
 
-// The eight cells, in the order the view lists them, each a button that
-// filters the list by its status, then "Show all".
+// The eight cells, in the order the view lists them, each a button holding
+// its status's count as a Stat, that filters the list by its status, then
+// "Show all".
 function drawCounts(doc, counts) {
   const pane = doc.getElementById("qb-counts");
   if (!Array.isArray(counts)) {
@@ -70,9 +70,7 @@ function drawCounts(doc, counts) {
     const b = el(doc, "button");
     b.type = "button";
     b.className = "qb-cell";
-    const n = el(doc, "span", isCount(c && c.count) ? String(c.count) : "not reported");
-    n.className = "qb-count";
-    b.append(n, el(doc, "span", s ?? "status not reported"));
+    b.append(stat(doc, { label: s ?? "status not reported", value: figure(doc, c && c.count, "the view did not count it"), size: "sm" }));
     b.setAttribute("aria-pressed", s !== null && s === pressed ? "true" : "false");
     if (s === null) b.disabled = true;
     else b.addEventListener("click", () => press(doc, s));
@@ -89,38 +87,8 @@ function drawCounts(doc, counts) {
   pane.replaceChildren(...cells, all);
 }
 
-function task(doc, t) {
-  const li = el(doc, "li");
-  const id = str(t && t.id) ?? "?";
-  const state = str(t && t.state) ?? "?";
-  if (str(t && t.error) !== null) {
-    li.append(el(doc, "code", id), " ", el(doc, "span", state), " ");
-    const e = el(doc, "span", `unreadable: ${t.error}`);
-    e.className = "failed";
-    li.append(e);
-    return li;
-  }
-  li.append(
-    el(doc, "code", id),
-    " ",
-    el(doc, "span", str(t.status) ?? "status not reported"),
-    " ",
-    muted(doc, "span", str(t.priority) ?? "priority not reported"),
-    " ",
-    el(doc, "span", str(t.task) ?? "task not reported"),
-  );
-  const meta = [];
-  const labels = texts(t.labels);
-  if (labels.length > 0) meta.push(`labels: ${labels.join(", ")}`);
-  if (str(t.assignee) !== null) meta.push(`assignee: ${t.assignee}`);
-  if (str(t.parent) !== null) meta.push(`part of ${t.parent}`);
-  const blockers = texts(t.blockers);
-  if (blockers.length > 0) meta.push(`after ${blockers.join(", ")}`);
-  if (str(t.waiting) !== null) meta.push(`waiting: ${t.waiting}`);
-  if (meta.length > 0) li.append(muted(doc, "div", meta.join(" · ")));
-  return li;
-}
-
+// The tasks as Rail rows, in the queue's order, each with its labels and
+// assignee too (overview.js's taskRow).
 function drawTasks(doc, tasks) {
   const pane = doc.getElementById("qb-tasks");
   if (!Array.isArray(tasks)) {
@@ -128,25 +96,23 @@ function drawTasks(doc, tasks) {
     return;
   }
   // With a cell pressed, only the tasks whose status is its; an
-  // unreadable task has none, as it is in no cell.
-  const items = tasks
+  // unreadable task has none, as it is in no cell. The rows are drawn,
+  // never counted.
+  const rows = tasks
     .filter((t) => pressed === null || str(t && t.status) === pressed)
-    .map((t) => task(doc, t));
-  if (items.length === 0) {
-    const li = el(doc, "li", pressed === null ? "No tasks queued." : `No task is ${pressed}.`);
-    li.className = "empty";
-    items.push(li);
-  }
-  pane.replaceChildren(...items);
+    .map((t) => taskRow(doc, t, true));
+  fill(doc, pane, railRows(doc, rows), pressed === null ? "No tasks queued." : `No task is ${pressed}.`);
 }
 
 export function drawQueue(doc, q) {
   if (q === null || typeof q !== "object") return;
   lastQueue = q;
-  if (str(q.error) !== null) status(doc, q.error);
-  else if (Array.isArray(q.tasks)) {
-    const n = q.tasks.length;
-    status(doc, `${n} task${n === 1 ? "" : "s"} in the queue, read-only: trellis queue and trellis work change it.`);
+  if (str(q.error) !== null) {
+    status(doc, q.error);
+    panelMeta(doc, "qb-tasks-meta");
+  } else if (Array.isArray(q.tasks)) {
+    status(doc, "Read-only: trellis queue and trellis work change it.");
+    panelMeta(doc, "qb-tasks-meta", plural(q.tasks.length, "task", "tasks"));
   }
   drawCounts(doc, q.counts);
   drawTasks(doc, q.tasks);
