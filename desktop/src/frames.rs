@@ -31,10 +31,10 @@ pub enum Frame {
         /// this call (#799); `None` from a trellis that sends none.
         elapsed_ms: Option<u64>,
     },
-    /// The loop's one `run budget` event per run.
-    RunBudget {
-        max_iterations: Option<u64>,
-    },
+    /// The loop's `run budget` event: every ceiling in force, sent as the
+    /// loop starts and again after a `set_budget` raise takes effect
+    /// (#807), so the latest one replaces the last whole.
+    RunBudget(RunBudget),
     /// The loop's `steer delivered` event.
     SteerDelivered {
         after_step: Option<u64>,
@@ -92,6 +92,23 @@ pub struct Turn {
     /// The run's wall-clock spend after the turn, by the budget's own
     /// clock (#799), with waits on a person and pauses taken out.
     pub elapsed_ms: Option<u64>,
+    /// The completion (output) tokens over every reply so far, the counter
+    /// `run budget`'s `max_tokens` is checked against (#799): never prompt
+    /// tokens, and never a sum of the two.
+    pub completion_tokens_used: Option<u64>,
+}
+
+/// A `run budget` event's ceilings (#799). Each is `None` when the event
+/// did not carry it: an older trellis sends `max_iterations` alone, and the
+/// scripted driver, which elides nothing, sends no `context_bytes`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RunBudget {
+    pub max_iterations: Option<u64>,
+    pub max_wall_clock_ms: Option<u64>,
+    /// A ceiling on completion tokens only, as `completion_tokens_used`.
+    pub max_tokens: Option<u64>,
+    /// The ceiling on one prompt, in bytes.
+    pub context_bytes: Option<u64>,
 }
 
 /// colibri's self-report (client_contract.json's `runtime identified`).
@@ -220,6 +237,7 @@ pub fn parse_stdout(line: &str) -> Frame {
                 completion_tokens: json::u64(f, "completion_tokens"),
                 queue_wait_ms: json::u64(f, "queue_wait_ms"),
                 elapsed_ms: json::u64(f, "elapsed_ms"),
+                completion_tokens_used: json::u64(f, "completion_tokens_used"),
             }),
             _ => Frame::Ignored,
         },
@@ -230,9 +248,12 @@ pub fn parse_stdout(line: &str) -> Frame {
             },
             None => Frame::Ignored,
         },
-        Some("run budget") => Frame::RunBudget {
+        Some("run budget") => Frame::RunBudget(RunBudget {
             max_iterations: json::u64(f, "max_iterations"),
-        },
+            max_wall_clock_ms: json::u64(f, "max_wall_clock_ms"),
+            max_tokens: json::u64(f, "max_tokens"),
+            context_bytes: json::u64(f, "context_bytes"),
+        }),
         Some("steer delivered") => Frame::SteerDelivered {
             after_step: json::u64(f, "after_step"),
         },

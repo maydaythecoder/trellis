@@ -3742,12 +3742,25 @@ mod tests {
                 assert!(!code.contains(bad), "{name} falls back to 0: {bad}");
             }
         }
-        // The page draws no clock, so the budget's elapsed is the dash.
+        // The page draws no clock: the budget's elapsed is the wall-clock
+        // row the core built from trellis's elapsed_ms (#829), and each side
+        // of a row the core sent null is the dash with its reason.
+        let render = code_of("render.js");
+        let budget = function_body(&render, "budget");
         assert!(
-            function_body(&code_of("render.js"), "budget")
-                .contains(r#"{ label: "elapsed", value: unreported(doc,"#),
-            "the budget draws an elapsed time the core did not send"
+            budget.contains("budgetRows(doc, Array.isArray(v.limits) ? v.limits : [])"),
+            "the budget draws rows the core did not send"
         );
+        for clock in ["Date", "performance", "setInterval", "setTimeout"] {
+            assert!(!budget.contains(clock), "the budget keeps a clock: {clock}");
+        }
+        let rows = function_body(&ds, "budgetRows");
+        for want in [
+            "used === null ? unreported(doc, str(r.why_used)",
+            "ceiling === null ? unreported(doc, str(r.why_ceiling)",
+        ] {
+            assert!(rows.contains(want), "budgetRows lacks {want}");
+        }
         let rules = css_rules();
         let dash: Vec<String> = rules
             .iter()

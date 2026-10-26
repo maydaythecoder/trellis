@@ -26,7 +26,7 @@
 // unreported: a dash with the reason as its title, never 0.
 
 import { atEnd, drawFeed, el, fill, muted } from "./dom.js";
-import { dsStatus, figure, railRows, stats, txEntry, txTurn, unreported } from "./ds.js";
+import { budgetRows, dsStatus, figure, railRows, stats, txEntry, txTurn, unreported } from "./ds.js";
 import { isCount, str } from "./fmt.js";
 import { drawGraph } from "./graph.js";
 import { drawNow, drawWhere } from "./now.js";
@@ -141,29 +141,21 @@ function radius(doc, pane, r) {
   );
 }
 
-// The budget as Stats: the turn against its ceiling, the last turn's prompt
-// in bytes and its reply in tokens (#312), never joined. The budget pane
-// carries no elapsed time (trellis's elapsed_ms is the Now strip's, #828)
-// and the page draws no clock of its own, so elapsed is drawn unreported
-// here rather than as one the pane was not sent; a turn not reported is
-// not turn 0.
+// The budget (#829): one row per ceiling the run enforces, as the reducer
+// built it (`budget.limits`): turns, wall clock, completion tokens and the
+// prompt against the context ceiling, each two figures and a Meter, the
+// wall clock trellis's own elapsed_ms. Below them, the last turn's reply in
+// tokens and its rate and queue wait as Stats; the prompt is in bytes and
+// the reply in tokens (#312), never joined. A figure trellis did not report
+// is a dash with its reason, never 0.
 function budget(doc, pane, b) {
   const v = b !== null && typeof b === "object" ? b : {};
-  const list = [
-    {
-      label: "turn",
-      value: figure(doc, v.turn, "no turn has started"),
-      unit: isCount(v.max_turns) ? `/ ${v.max_turns}` : null,
-    },
-    { label: "prompt", value: figure(doc, v.prompt_bytes, "the last turn sent no prompt size"), unit: "B" },
-    { label: "out", value: figure(doc, v.completion_tokens, "the last turn sent no token count"), unit: "tok" },
-    { label: "elapsed", value: unreported(doc, "the budget pane carries none: the Now strip shows trellis's elapsed time, and the desktop keeps no clock of its own") },
-  ];
+  const list = [{ label: "last turn out", value: figure(doc, v.completion_tokens, "the last turn sent no token count"), unit: "tok" }];
   const rate = str(v.tokens_per_second);
   if (rate !== null) list.push({ label: "rate", value: rate, unit: "tok/s" });
   const queued = str(v.queued_seconds);
   if (queued !== null) list.push({ label: "queued", value: queued, unit: "s" });
-  pane.replaceChildren(stats(doc, list));
+  pane.replaceChildren(budgetRows(doc, Array.isArray(v.limits) ? v.limits : []), stats(doc, list));
 }
 
 // The session's prompt and completion tokens per model, as trellis's

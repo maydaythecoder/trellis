@@ -514,6 +514,25 @@ article.past-run section > * + * {
   gap: var(--space-1);
 }
 
+/* The budget's rows (ds.js's budgetRows, #829) share one grid, so every
+   Meter starts in the same column whatever its label: the bundle's 56px
+   label column is narrower than "completion tokens", and a grid per row
+   would set each Meter where its own label ends. */
+#pane-budget .cd-bud {
+  display: grid;
+  grid-template-columns: max-content max-content 1fr;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+#pane-budget .cd-bud-row {
+  display: contents;
+}
+
+#pane-budget .cd-bud + .stat-row {
+  margin-top: var(--space-3);
+}
+
 /* A Stat's meta (the Atlas's source tag) stays one word: the label wraps
    beside it, never through it. */
 .cd-stat-label > .cd-stat-unit {

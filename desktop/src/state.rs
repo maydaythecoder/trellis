@@ -31,7 +31,7 @@ mod vault;
 use crate::atlas;
 use crate::capped::{Capped, Item, cut};
 use crate::feed::{Feed, Row};
-use crate::frames::{ApprovalRequest, Frame, RunEnd, RuntimeIdentified, Turn};
+use crate::frames::{ApprovalRequest, Frame, RunBudget, RunEnd, RuntimeIdentified, Turn};
 use crate::graph;
 use crate::queue;
 use serde_json::{Map, Value, json};
@@ -190,6 +190,68 @@ const NOW_INPUTS: [Pane; 8] = [
     Pane::Tier,
     Pane::Runtime,
 ];
+
+/// A budget meter's cells, fixed: █ and ░ have different East Asian width
+/// classes, so a meter whose length followed its figures would not line up
+/// with the next. 16 as the TUI's Meter where it leads a row (#911).
+const METER_CELLS: u64 = 16;
+
+/// How many of [`METER_CELLS`] a meter fills for `used` of `ceiling`, by
+/// the TUI's rule (`meterFilled`): the share rounded down, except that a
+/// figure above 0 fills at least one cell, so an empty meter is exactly 0,
+/// and only a figure at its ceiling or past it fills every cell. In u128:
+/// trellis sends `u64::MAX` for a ceiling too long for milliseconds.
+fn meter_filled(used: u64, ceiling: u64) -> u64 {
+    if used >= ceiling {
+        return METER_CELLS;
+    }
+    // used < ceiling, so the share rounded down is under METER_CELLS.
+    let n = u64::try_from(u128::from(used) * u128::from(METER_CELLS) / u128::from(ceiling))
+        .unwrap_or(METER_CELLS);
+    if used > 0 && n == 0 { 1 } else { n }
+}
+
+/// A meter's tone, the Budget card's and the TUI's (`meterRole`): cool,
+/// signal past 70% of its ceiling, down past 90%.
+fn meter_tone(used: u64, ceiling: u64) -> &'static str {
+    let (used, ceiling) = (u128::from(used) * 10, u128::from(ceiling));
+    if used > ceiling * 9 {
+        "down"
+    } else if used > ceiling * 7 {
+        "signal"
+    } else {
+        "cool"
+    }
+}
+
+/// One budget row: a limit's used figure against its ceiling, each as
+/// trellis sent it and as text, and the meter's cells and tone. Either
+/// figure unreported is null with why, and then no cell is filled and no
+/// tone chosen: cells with no share to show would read as 0 (#829). Keys
+/// name no ratio, percentage or total, and no token (CLAUDE.md rule 3's
+/// and #312's tests below), which the limit's own name says instead.
+fn limit_row(
+    limit: &str,
+    unit: Option<&str>,
+    (used, why_used): (Option<u64>, &str),
+    (ceiling, why_ceiling): (Option<u64>, &str),
+    text: fn(u64) -> String,
+) -> Value {
+    let meter = used.zip(ceiling);
+    json!({
+        "limit": limit,
+        "unit": unit,
+        "used": used,
+        "ceiling": ceiling,
+        "used_text": used.map(text),
+        "ceiling_text": ceiling.map(text),
+        "why_used": used.is_none().then_some(why_used),
+        "why_ceiling": ceiling.is_none().then_some(why_ceiling),
+        "cells": METER_CELLS,
+        "filled": meter.map(|(u, c)| meter_filled(u, c)),
+        "tone": meter.map(|(u, c)| meter_tone(u, c)),
+    })
+}
 
 /// `c`, and the Now strip and Where it is when `c` changed what they read.
 fn with_now(c: Changed) -> Changed {
@@ -479,7 +541,14 @@ struct Radius {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct Budget {
     turn: Option<u64>,
-    max_turns: Option<u64>,
+    /// The latest `run budget`'s ceilings, replaced whole by each one, so a
+    /// `set_budget` raise (#807) is drawn from the event that says it took
+    /// effect.
+    ceilings: RunBudget,
+    /// The run's completion tokens so far, as the latest turn reported the
+    /// counter `max_tokens` is checked against (#799). trellis's figure:
+    /// the desktop sums no turns into it.
+    completion_tokens_used: Option<u64>,
     /// The latest turn's prompt size; `None` for a turn that reported none
     /// (a scripted run), not 0.
     prompt_bytes: Option<u64>,
@@ -940,10 +1009,13 @@ impl DesktopState {
                 if elapsed_ms.is_some() {
                     self.elapsed_ms = elapsed_ms;
                 }
-                Changed::of(&[Pane::Phase])
+                // The budget's turns and wall-clock rows read both.
+                Changed::of(&[Pane::Phase, Pane::Budget])
             }
-            Frame::RunBudget { max_iterations } => {
-                self.budget.max_turns = max_iterations;
+            Frame::RunBudget(b) => {
+                // Whole, as the contract sends it again after a raise: a
+                // ceiling the latest event lacks is not the last one's.
+                self.budget.ceilings = b;
                 Changed::of(&[Pane::Budget])
             }
             // The loop's word that a model request carried a steer: the
@@ -995,8 +1067,14 @@ impl DesktopState {
                 self.phase = None;
                 // Nobody is left to answer a question the run asked.
                 self.approvals.clear();
-                let mut c =
-                    Changed::of(&[Pane::Running, Pane::Approvals, Pane::Outcome, Pane::Phase]);
+                // The budget's wall-clock row reads run_end's figure.
+                let mut c = Changed::of(&[
+                    Pane::Running,
+                    Pane::Approvals,
+                    Pane::Outcome,
+                    Pane::Phase,
+                    Pane::Budget,
+                ]);
                 if let Some(error) = &e.error {
                     self.alert.push(format!("The run ended in error: {error}"));
                     c = c.with(Pane::Alert);
@@ -1424,7 +1502,8 @@ impl DesktopState {
                 let (rate, queued) = self.budget.rate_and_queue();
                 json!({
                     "turn": self.budget.turn,
-                    "max_turns": self.budget.max_turns,
+                    "max_turns": self.budget.ceilings.max_iterations,
+                    "limits": self.limits(),
                     "prompt_bytes": self.budget.prompt_bytes,
                     "completion_tokens": self.budget.completion_tokens,
                     "model_ms": self.budget.model_ms,
@@ -1615,6 +1694,67 @@ impl DesktopState {
         }
     }
 
+    /// The budget's rows (#829), one per ceiling the run enforces: the
+    /// turn against max_iterations, trellis's elapsed time against
+    /// max_wall_clock_ms, its completion-token counter against max_tokens
+    /// (never prompt tokens, never a sum of the two), and the last prompt's
+    /// bytes against context_bytes. Each figure is trellis's; the desktop
+    /// keeps no clock and sums no turns.
+    fn limits(&self) -> Value {
+        let c = &self.budget.ceilings;
+        let not_sent = "trellis has sent no run budget carrying it for this run";
+        let elapsed_why = if self.state_word().0 == "ended" {
+            "run_end carried no elapsed time: trellis sends none for a run its loop did not finish"
+        } else {
+            "trellis has sent no elapsed time for this run yet"
+        };
+        let count = |n: u64| n.to_string();
+        json!([
+            limit_row(
+                "turns",
+                None,
+                (self.turn_now(), "no turn has started"),
+                (c.max_iterations, not_sent),
+                count,
+            ),
+            limit_row(
+                "wall clock",
+                None,
+                (self.elapsed_ms, elapsed_why),
+                (c.max_wall_clock_ms, not_sent),
+                clock,
+            ),
+            limit_row(
+                "completion tokens",
+                Some("tok"),
+                (
+                    self.budget.completion_tokens_used,
+                    "no turn has reported completion_tokens_used",
+                ),
+                (c.max_tokens, not_sent),
+                count,
+            ),
+            limit_row(
+                "context",
+                Some("B"),
+                (
+                    self.budget.prompt_bytes,
+                    "the last turn sent no prompt size"
+                ),
+                (
+                    c.context_bytes,
+                    if *c == RunBudget::default() {
+                        not_sent
+                    } else {
+                        "the run budget carried no context_bytes: a driver that elides \
+                         nothing, the scripted one, has no context ceiling"
+                    },
+                ),
+                count,
+            ),
+        ])
+    }
+
     /// The Now strip (#828). The clock is trellis's elapsed figure, shown
     /// for a run in flight or ended, and with none reported it is null with
     /// the reason: the desktop draws no clock of its own (ADR 0048 §8).
@@ -1657,7 +1797,7 @@ impl DesktopState {
             "elapsed": self.elapsed_ms.filter(|_| shows_clock).map(clock),
             "elapsed_why": elapsed_why,
             "turn": self.turn_now().filter(|_| self.running),
-            "max_turns": self.budget.max_turns.filter(|_| self.running),
+            "max_turns": self.budget.ceilings.max_iterations.filter(|_| self.running),
             "phase": phase,
             "tool": tool,
             "target": target,
@@ -1689,7 +1829,7 @@ impl DesktopState {
             "tool": tool,
             "target": target,
             "turn": self.turn_now(),
-            "max_turns": self.budget.max_turns,
+            "max_turns": self.budget.ceilings.max_iterations,
             "model_ms": self.budget.model_ms,
             "completion_tokens": self.budget.completion_tokens,
             "model": self.run_model,
@@ -1800,6 +1940,11 @@ impl DesktopState {
         self.budget.queue_wait_ms = t.queue_wait_ms;
         if t.elapsed_ms.is_some() {
             self.elapsed_ms = t.elapsed_ms;
+        }
+        // A running counter: a turn without it leaves trellis's last
+        // figure standing, as elapsed_ms does.
+        if t.completion_tokens_used.is_some() {
+            self.budget.completion_tokens_used = t.completion_tokens_used;
         }
         c
     }
@@ -2645,11 +2790,31 @@ mod tests {
             ),
         );
         let v = all(&mut s);
+        let not_sent = "trellis has sent no run budget carrying it for this run";
         assert_eq!(
             v["budget"],
             json!({"turn": 1, "max_turns": 40, "prompt_bytes": 9800,
-                   "completion_tokens": null, "model_ms": null, "queue_wait_ms": null,
-                   "tokens_per_second": null, "queued_seconds": null})
+            "completion_tokens": null, "model_ms": null, "queue_wait_ms": null,
+            "tokens_per_second": null, "queued_seconds": null,
+            "limits": [
+                {"limit": "turns", "unit": null, "used": 1, "ceiling": 40,
+                 "used_text": "1", "ceiling_text": "40", "why_used": null,
+                 "why_ceiling": null, "cells": 16, "filled": 1, "tone": "cool"},
+                {"limit": "wall clock", "unit": null, "used": null, "ceiling": null,
+                 "used_text": null, "ceiling_text": null,
+                 "why_used": "trellis has sent no elapsed time for this run yet",
+                 "why_ceiling": not_sent, "cells": 16, "filled": null, "tone": null},
+                {"limit": "completion tokens", "unit": "tok", "used": null,
+                 "ceiling": null, "used_text": null, "ceiling_text": null,
+                 "why_used": "no turn has reported completion_tokens_used",
+                 "why_ceiling": not_sent, "cells": 16, "filled": null, "tone": null},
+                {"limit": "context", "unit": "B", "used": 9800, "ceiling": null,
+                 "used_text": "9800", "ceiling_text": null, "why_used": null,
+                 "why_ceiling": "the run budget carried no context_bytes: a driver \
+                                 that elides nothing, the scripted one, has no \
+                                 context ceiling",
+                 "cells": 16, "filled": null, "tone": null},
+            ]})
         );
 
         // A scripted turn: no prompt was sent, so no size is reported.
@@ -2780,6 +2945,176 @@ mod tests {
         assert!(bad.is_empty(), "the view sums turns: {bad:?} in {v}");
     }
 
+    /// The budget row for `limit` in a view.
+    fn limit<'a>(v: &'a Value, limit: &str) -> &'a Value {
+        v["budget"]["limits"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|r| r["limit"] == limit))
+            .unwrap_or_else(|| panic!("no {limit} row: {v}"))
+    }
+
+    /// A row's meter: (used text, ceiling text, cells filled, tone).
+    fn meter(row: &Value) -> (Value, Value, Value, Value) {
+        assert_eq!(row["cells"], 16, "the cell count moved: {row}");
+        (
+            row["used_text"].clone(),
+            row["ceiling_text"].clone(),
+            row["filled"].clone(),
+            row["tone"].clone(),
+        )
+    }
+
+    #[test]
+    fn budget_meter_is_text_and_names_unreported_rows() {
+        // The risk (#829): a budget drawn as a percentage, which reads as
+        // percent-complete with no denominator (DESIGN.md rule 4); a limit
+        // trellis did not report drawn as an empty meter or 0, a claim it
+        // never made; a raise (#807) drawn against the old ceiling; or a
+        // meter whose tone the page decides. Each row is two figures as
+        // text and a fixed count of cells, its tone the TUI's (cool, signal
+        // past 70%, down past 90%), and an unreported side is null with why.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p1"));
+        let c = feed(
+            &mut s,
+            &event(
+                "run budget",
+                json!({"max_iterations": 10, "max_wall_clock_ms": 100_000,
+                       "max_tokens": 1000, "context_bytes": 10_000}),
+            ),
+        );
+        assert!(c.has(Pane::Budget), "{c:?}");
+        let c = feed(
+            &mut s,
+            &event("model call", json!({"turn": 7, "elapsed_ms": 70_000})),
+        );
+        assert!(c.has(Pane::Budget), "the clock row left stale: {c:?}");
+        let v = all(&mut s);
+        // Exactly 70% is not past it.
+        assert_eq!(
+            meter(limit(&v, "wall clock")),
+            (json!("01:10"), json!("01:40"), json!(11), json!("cool"))
+        );
+        assert_eq!(
+            meter(limit(&v, "turns")),
+            (json!("7"), json!("10"), json!(11), json!("cool"))
+        );
+
+        feed(
+            &mut s,
+            &turn(
+                json!({"turn": 7, "call": "read_file a.py", "verdict": "None",
+                         "check_kind": "", "observation": "", "prompt_bytes": 9100,
+                         "completion_tokens": 30, "completion_tokens_used": 710,
+                         "elapsed_ms": 71_000}),
+            ),
+        );
+        let v = all(&mut s);
+        assert_eq!(
+            meter(limit(&v, "wall clock")),
+            (json!("01:11"), json!("01:40"), json!(11), json!("signal"))
+        );
+        // trellis's counter, not the turn's own figure nor a sum of turns.
+        assert_eq!(
+            meter(limit(&v, "completion tokens")),
+            (json!("710"), json!("1000"), json!(11), json!("signal"))
+        );
+        assert_eq!(limit(&v, "completion tokens")["unit"], "tok");
+        assert_eq!(
+            meter(limit(&v, "context")),
+            (json!("9100"), json!("10000"), json!(14), json!("down"))
+        );
+        assert_eq!(limit(&v, "context")["unit"], "B");
+        assert_eq!(v["budget"]["completion_tokens"], 30, "{v}");
+
+        // A raise is drawn from the run budget sent again, whole.
+        feed(
+            &mut s,
+            &event(
+                "run budget",
+                json!({"max_iterations": 10, "max_wall_clock_ms": 100_000,
+                       "max_tokens": 2000, "context_bytes": 10_000}),
+            ),
+        );
+        let v = all(&mut s);
+        assert_eq!(
+            meter(limit(&v, "completion tokens")),
+            (json!("710"), json!("2000"), json!(5), json!("cool"))
+        );
+
+        // A scripted run: no context ceiling, no prompt, and a counter of 0
+        // that trellis did report. At the ceiling every cell is filled.
+        feed(&mut s, &run_start("p2"));
+        feed(
+            &mut s,
+            &event(
+                "run budget",
+                json!({"max_iterations": 3, "max_wall_clock_ms": 1000, "max_tokens": 5}),
+            ),
+        );
+        feed(
+            &mut s,
+            &turn(
+                json!({"turn": 3, "call": "blast_radius f", "verdict": "None",
+                         "check_kind": "", "observation": "", "resolved": 4,
+                         "candidates": 2, "unresolved": 1, "completion_tokens_used": 0,
+                         "elapsed_ms": 10}),
+            ),
+        );
+        let v = all(&mut s);
+        assert_eq!(
+            meter(limit(&v, "turns")),
+            (json!("3"), json!("3"), json!(16), json!("down"))
+        );
+        assert_eq!(
+            meter(limit(&v, "completion tokens")),
+            (json!("0"), json!("5"), json!(0), json!("cool")),
+            "a reported 0 is 0"
+        );
+        let context = limit(&v, "context");
+        assert_eq!(
+            meter(context),
+            (Value::Null, Value::Null, Value::Null, Value::Null),
+            "an unreported row drawn as a meter: {context}"
+        );
+        assert_eq!(
+            (&context["used"], &context["ceiling"]),
+            (&Value::Null, &Value::Null)
+        );
+        assert!(
+            context["why_ceiling"]
+                .as_str()
+                .is_some_and(|w| w.contains("context_bytes")),
+            "{context}"
+        );
+        assert!(context["why_used"].as_str().is_some_and(|w| !w.is_empty()));
+        // A reported figure carries no reason; every reason is for a null.
+        for row in v["budget"]["limits"].as_array().unwrap() {
+            for (fig, why) in [("used", "why_used"), ("ceiling", "why_ceiling")] {
+                assert_eq!(row[fig].is_null(), row[why].is_string(), "{row}");
+            }
+        }
+
+        // Text, never a share: no figure the rows carry is a percentage,
+        // and the radius beside them carries its three counts and no meter
+        // (CLAUDE.md rule 3).
+        let mut texts = Vec::new();
+        let mut stack = vec![&v["budget"]["limits"]];
+        while let Some(x) = stack.pop() {
+            match x {
+                Value::String(t) => texts.push(t.clone()),
+                Value::Array(a) => stack.extend(a),
+                Value::Object(o) => stack.extend(o.values()),
+                _ => {}
+            }
+        }
+        assert!(!texts.iter().any(|t| t.contains('%')), "{texts:?}");
+        assert_eq!(
+            v["radius"],
+            json!({"resolved": 4, "candidates": 2, "unresolved": 1})
+        );
+    }
+
     #[test]
     fn run_start_resets_the_run_panes_and_clear_resets_the_view() {
         // The risk: a second run drawn on top of the first's actions, edits
@@ -2819,11 +3154,19 @@ mod tests {
         assert_eq!(v["edits"], json!([]));
         assert_eq!(v["checks"], json!([]));
         assert_eq!(v["radius"], Value::Null);
+        let limits = v["budget"]["limits"].as_array().expect("budget rows");
+        assert_eq!(limits.len(), 4, "{v}");
+        for row in limits {
+            for k in ["used", "ceiling", "filled", "tone"] {
+                assert!(row[k].is_null(), "the last run's {k} kept: {row}");
+            }
+        }
         assert_eq!(
             v["budget"],
             json!({"turn": null, "max_turns": null, "prompt_bytes": null,
                    "completion_tokens": null, "model_ms": null, "queue_wait_ms": null,
-                   "tokens_per_second": null, "queued_seconds": null})
+                   "tokens_per_second": null, "queued_seconds": null,
+                   "limits": limits})
         );
         assert_eq!(v["approvals"], json!([]));
         assert_eq!(v["outcome"], Value::Null);
@@ -3940,10 +4283,27 @@ mod tests {
             return vals.last().cloned().expect("a non-empty value list");
         }
         match field {
-            "turn" | "resolved" | "candidates" | "unresolved" | "prompt_bytes" | "model_ms"
-            | "completion_tokens" | "queue_wait_ms" | "max_iterations" | "after_step"
-            | "version" | "exit" | "kv_slots" | "tiers_vram" | "tiers_ram" | "tiers_disk"
-            | "elapsed_ms" => {
+            "turn"
+            | "resolved"
+            | "candidates"
+            | "unresolved"
+            | "prompt_bytes"
+            | "model_ms"
+            | "completion_tokens"
+            | "queue_wait_ms"
+            | "max_iterations"
+            | "after_step"
+            | "version"
+            | "exit"
+            | "kv_slots"
+            | "tiers_vram"
+            | "tiers_ram"
+            | "tiers_disk"
+            | "elapsed_ms"
+            | "completion_tokens_used"
+            | "max_wall_clock_ms"
+            | "max_tokens"
+            | "context_bytes" => {
                 *n += 1;
                 json!(*n)
             }
