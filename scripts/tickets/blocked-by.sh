@@ -7,8 +7,10 @@
 
 # The issue's state as gh reports it (OPEN, CLOSED), or UNKNOWN when it cannot
 # be read. The check redefines this after sourcing, so it never calls GitHub.
+# shellcheck source=issues.sh
+source "$(dirname "${BASH_SOURCE[0]}")/issues.sh"
 issue_state() {
-  gh issue view "$1" --json state -q .state 2>/dev/null || echo UNKNOWN
+  issue_state_rest "$1" 2>/dev/null || echo UNKNOWN
 }
 
 # Body on stdin; prints the blocked_by entries separated by spaces.
