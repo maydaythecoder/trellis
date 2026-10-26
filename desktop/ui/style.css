@@ -711,7 +711,7 @@ code {
   cursor: pointer;
 }
 
-/* The status bar (#306): five short facts on one wrapping line. */
+/* The status bar (#306): six short facts on one wrapping line. */
 .status-bar {
   display: flex;
   flex-wrap: wrap;
