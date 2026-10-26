@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/maydaythecoder/trellis/tui/internal/frames"
+	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
 // Routing. Whether a typed line is a question or a task is trellis's rule
@@ -17,7 +18,7 @@ const forClassify = "classify"
 
 // route asks trellis what a line is before anything runs.
 func (m *Model) route(text string) {
-	m.pushLine("> " + Plain(text))
+	m.pushLine("> " + view.Plain(text))
 	m.classifying = true
 	m.classifyText = text
 	m.ask("classify", forClassify, map[string]any{"text": text})
@@ -45,7 +46,7 @@ func (m *Model) classified(r *frames.ResponseFields, ok bool) {
 			if strings.TrimSpace(l) == "" {
 				continue
 			}
-			m.pushLine("! " + Plain(l))
+			m.pushLine("! " + view.Plain(l))
 			said = true
 		}
 		if !said {
