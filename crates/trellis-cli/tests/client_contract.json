@@ -52,6 +52,18 @@
           "tiers_disk": "as tiers_vram"
         },
         "about": "sent once per run, before the run's first model request, for an endpoint identified as colibri (ADR 0047 decision 13; #627); never for any other endpoint. runtime is always \"colibri\"; served is the model id colibri listed, cut to 200 characters. kv_slots, tiers_vram, tiers_ram and tiers_disk are colibri's own counts and are absent, never 0, when it did not report them; the three tier counts are separate figures, and no total or share is derived from them. Not in the trail (ADR 0047 decision 13)."
+      },
+      "plan": {
+        "always": ["turn", "steps", "steps_cut", "texts_cut"],
+        "about": "the model's plan (ADR 0058 section 5, #810), sent after the turn of a plan call the gates let through, and only in a run whose repository enables the tool ([tools] enable = [\"plan\"]); a disabled or declined plan call sends none. turn is that turn's number. steps is the plan as kept, a JSON array in one string, since an event's fields are flat: each element {\"text\", \"state\"}, state one of todo, current and done, in the model's order. At most eight are kept, each text at most 200 characters: steps_cut is how many steps past the eighth were dropped and texts_cut how many kept texts were shortened, so a client can say the plan was cut. The text and the state are the model's words (rule 1): a client shows them as text, never interprets them (CLAUDE.md rule 10), and makes no count of done steps. A later plan event replaces the earlier one. A person's edit to the plan goes back as a steer; nothing edits this plan but the model's next plan call"
+      },
+      "paused": {
+        "always": ["turn"],
+        "about": "the run is held (ADR 0058 section 1, #806): sent once, when the loop reaches the hold a client's pause asked for, at the top of an iteration after the model request in flight and the tool call it chose have finished, and before the pause is answered. turn is the model call it holds before, numbered as the model call event numbers it. While held the run asks the model nothing; steer and follow_up are accepted and wait, so a steer sent now is in the first request after resumed; approve, abort and quit are read as always, and an abort ends the held run with its rollback and no resumed event. Held time is not charged to the wall clock (elapsed_ms)"
+      },
+      "resumed": {
+        "always": ["turn", "paused_ms"],
+        "about": "the held run goes on (#806): sent by the loop as it leaves the hold, after a client's resume or when rpc's input ends, since nothing could resume it then. turn is the paused event's; paused_ms is how long it was held, in milliseconds by the monotonic clock, the time left out of elapsed_ms and so of the wall-clock budget"
       }
     },
     "framing": {
@@ -111,21 +123,6 @@
           "always": ["turn", "turns_folded", "elided_turns", "bytes_before", "bytes_after"],
           "read_by": {"turn": [], "turns_folded": [], "elided_turns": [], "bytes_before": [], "bytes_after": []},
           "about": "sent as the request after a client's compact is built, when it folded at least one turn; the compact's answer carries the same figures (responses.compact)"
-        },
-        "plan": {
-          "always": ["turn", "steps", "steps_cut", "texts_cut"],
-          "read_by": {"turn": ["desktop"], "steps": ["desktop"], "steps_cut": ["desktop"], "texts_cut": ["desktop"]},
-          "about": "the model's plan (ADR 0058 section 5, #810), sent after the turn of a plan call the gates let through, and only in a run whose repository enables the tool ([tools] enable = [\"plan\"]); a disabled or declined plan call sends none. turn is that turn's number. steps is the plan as kept, a JSON array in one string, since an event's fields are flat: each element {\"text\", \"state\"}, state one of todo, current and done, in the model's order. At most eight are kept, each text at most 200 characters: steps_cut is how many steps past the eighth were dropped and texts_cut how many kept texts were shortened, so a client can say the plan was cut. The text and the state are the model's words (rule 1): a client shows them as text, never interprets them (CLAUDE.md rule 10), and makes no count of done steps. A later plan event replaces the earlier one. A person's edit to the plan goes back as a steer; nothing edits this plan but the model's next plan call"
-        },
-        "paused": {
-          "always": ["turn"],
-          "read_by": {"turn": ["desktop"]},
-          "about": "the run is held (ADR 0058 section 1, #806): sent once, when the loop reaches the hold a client's pause asked for, at the top of an iteration after the model request in flight and the tool call it chose have finished, and before the pause is answered. turn is the model call it holds before, numbered as the model call event numbers it. While held the run asks the model nothing; steer and follow_up are accepted and wait, so a steer sent now is in the first request after resumed; approve, abort and quit are read as always, and an abort ends the held run with its rollback and no resumed event. Held time is not charged to the wall clock (elapsed_ms)"
-        },
-        "resumed": {
-          "always": ["turn", "paused_ms"],
-          "read_by": {"turn": ["desktop"], "paused_ms": ["desktop"]},
-          "about": "the held run goes on (#806): sent by the loop as it leaves the hold, after a client's resume or when rpc's input ends, since nothing could resume it then. turn is the paused event's; paused_ms is how long it was held, in milliseconds by the monotonic clock, the time left out of elapsed_ms and so of the wall-clock budget"
         }
       },
       "framing": {

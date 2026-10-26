@@ -3361,7 +3361,8 @@ fn rpc_plan_event_keeps_the_contract_and_the_trail_records_the_call_as_an_action
     // not make) or not at all. The fields are the contract's list; the
     // trail is held to one `plan` action and nothing new.
     let c = contract();
-    let listed = &c["rpc"]["not_every_client"]["events"]["plan"];
+    // In rpc.events since both clients read it (#857).
+    let listed = &c["rpc"]["events"]["plan"];
     let f = fixture("rpc-plan");
     std::fs::create_dir_all(f.root.join(".trellis")).unwrap();
     std::fs::write(
@@ -5124,7 +5125,6 @@ fn rpc_pause_holds_before_the_next_model_request() {
     // what it carries, not by a clock: a steer sent after the answer is in
     // it.
     let c = contract();
-    let later = &c["rpc"]["not_every_client"];
     let f = fixture("rpc-pause-holds");
     let (mut rpc, server, q) = at_the_edit_s_question(
         &f,
@@ -5205,7 +5205,8 @@ fn rpc_pause_holds_before_the_next_model_request() {
     for (i, what) in [(paused, "paused"), (resumed, "resumed")] {
         gaps.extend(missing(
             &records[i]["fields"],
-            &later["events"][what]["always"],
+            // In rpc.events since both clients read them (#857).
+            &c["rpc"]["events"][what]["always"],
             what,
         ));
     }
