@@ -503,7 +503,7 @@ fn read_radius(data: &Value) -> Result<RadiusAnswer, String> {
                 Some(Site {
                     path: json::string(s, "path")?,
                     line: json::u64(s, "line"),
-                    certain: s.get("certain").and_then(Value::as_bool),
+                    certain: json::bool(s, "certain"),
                 })
             })
             .collect(),

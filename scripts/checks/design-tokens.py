@@ -2,7 +2,7 @@
 """design-tokens.py: every copy of the design tokens matches tokens.json.
 
     scripts/checks/design-tokens.py               check every copy
-    scripts/checks/design-tokens.py --write       regenerate DESIGN.md's tables
+    scripts/checks/design-tokens.py --write       regenerate DESIGN.md's tables and tokens_gen.go
     scripts/checks/design-tokens.py --self-test   prove each check bites
 
 docs/design/system/tokens.json is the one source of every token value: the
@@ -11,23 +11,37 @@ Everything else is a copy that must agree with it:
 
 - the three tables in docs/design/DESIGN.md (colour, base, terminal), which
   --write regenerates from tokens.json;
+- tui/internal/theme/tokens_gen.go, the TUI's theme table, which --write
+  also regenerates: each term-* token's colour on a dark and on a light
+  terminal at truecolor, 256 and 16 colours (DESIGN.md section 3.4);
 - the token block at the top of docs/design/run-view-wireframe.html (the
   dark rule, the light rule and the theme-free rule of its first <style>),
   checked name by name and in order, and never rewritten by this script.
 
-A client that keeps its own copy (desktop/ui/style.css, the TUI's theme
-table) is added here by the ticket that creates that copy, so a value has one
-place to change and one check that names where it drifted.
+A client that keeps its own copy (desktop/ui/style.css) is added here by the
+ticket that creates that copy, so a value has one place to change and one
+check that names where it drifted.
 
-Exit 0: every copy matches (or the tables were written). Exit 1: a copy
-differs, each difference printed, or the self-test failed. Exit 2: a file, a
+The theme table takes a term-* token's truecolor hex from the colour role of
+the same name (term-ink is ink), its 256-colour index from its value, and its
+16-colour index from its usage text: the index in parentheses beside its
+colour's name ("bright black (8)"), the one marked "on dark terminals" for a
+dark terminal where a usage gives two; no colour for "default background" or
+"reverse video"; another token's for "Same as <role>". A usage it cannot read
+fails the check. Below truecolor a light terminal gets no colour for the ink
+roles (its own foreground) and every other role's 16-colour index at both
+depths (owner decision, 2026-10-25, #840). An empty value is never painted.
+
+Exit 0: every copy matches (or the copies were written). Exit 1: a copy
+differs, each difference printed; a term-* usage gives no 16-colour value
+the theme table can read; or the self-test failed. Exit 2: a file, a
 selector or a marker is missing, or tokens.json lacks a section.
 """
 import difflib
+import io
 import json
 import os
 import re
-import shutil
 import sys
 import tempfile
 
@@ -35,14 +49,27 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 SOURCE = os.path.join(ROOT, "docs", "design", "system", "tokens.json")
 WIREFRAME = os.path.join(ROOT, "docs", "design", "run-view-wireframe.html")
 DESIGN = os.path.join(ROOT, "docs", "design", "DESIGN.md")
+THEME = os.path.join(ROOT, "tui", "internal", "theme", "tokens_gen.go")
 
 # The wireframe's three token rules, by the selector each is written under.
 RULES = (("dark", ":root,[data-theme=dark]"), ("light", "[data-theme=light]"), ("base", ":root"))
 TABLES = ("colour", "base", "terminal")
 
+# The sixteen terminal colours, by the names the usage texts give them.
+ANSI = ("black", "red", "green", "yellow", "blue", "magenta", "cyan", "white")
+ANSI_INDEX = {name: i for i, name in enumerate(ANSI)}
+ANSI_INDEX.update({"bright " + name: i + 8 for i, name in enumerate(ANSI)})
+# "bright black (8)"; "bright blue (12) on dark terminals" where a usage gives
+# a dark terminal an index of its own.
+NAMED_INDEX = re.compile(r"((?:bright )?(?:%s)) \((\d+)\)( on dark terminals)?" % "|".join(ANSI))
+
 
 class Missing(Exception):
     """A file, selector, marker or section this check needs is absent (exit 2)."""
+
+
+class Unreadable(Exception):
+    """A term-* token gives no value the TUI's theme table can be made from (exit 1)."""
 
 
 def read(path):
@@ -89,6 +116,119 @@ def tables(tok):
     return {"colour": "\n".join(colour), "base": "\n".join(base), "terminal": "\n".join(terminal)}
 
 
+def sixteen(terminal):
+    """{token: (dark, light)}: each term-* token's 16-colour index on a dark
+    and on a light terminal, read from its usage text; "" is no colour."""
+    found, same = {}, {}
+    for name, _, usage in terminal:
+        _, marker, text = usage.partition("16-colour:")
+        if marker:
+            found[name] = fallback(name, text.strip())
+            continue
+        m = re.match(r"Same as ([a-z0-9-]+)", usage)
+        if not m:
+            raise Unreadable(f"{name}: its usage names no 16-colour value: {usage!r}")
+        same[name] = "term-" + m.group(1)
+    for name, other in same.items():
+        if other not in found:
+            raise Unreadable(f"{name}: its usage says it is the same as {other}, "
+                             "which names no 16-colour value of its own")
+        found[name] = found[other]
+    return found
+
+
+def fallback(name, text):
+    """(dark, light) from the text after "16-colour:" in name's usage."""
+    named = NAMED_INDEX.findall(text)
+    if not named:
+        if text.startswith(("default background", "reverse video")):
+            return "", ""
+        raise Unreadable(f"{name}: its usage names no 16-colour value in {text!r} (an index "
+                         "beside its colour's name, default background, or reverse video)")
+    for colour, index, _ in named:
+        if ANSI_INDEX[colour] != int(index):
+            raise Unreadable(f"{name}: its usage gives {colour} as {index}, but {colour} "
+                             f"is {ANSI_INDEX[colour]}")
+    plain = [index for _, index, dark in named if not dark]
+    marked = [index for _, index, dark in named if dark]
+    if len(plain) != 1 or len(marked) > 1:
+        raise Unreadable(f"{name}: {text!r} does not give one 16-colour index for each background")
+    return (marked or plain)[0], plain[0]
+
+
+def theme_table(tok):
+    """The TUI's theme table: (name, usage, dark, light) for each term-*
+    token, dark and light each a (truecolor, 256-colour, 16-colour) triple
+    in which "" is never painted."""
+    dark_hex, light_hex = dict(tok["dark"]), dict(tok["light"])
+    indexes = sixteen(tok["terminal"])
+    rows = []
+    for name, value, usage in tok["terminal"]:
+        if not name.startswith("term-"):
+            raise Unreadable(f"{name}: a terminal token's name starts with term-")
+        role = name[len("term-"):]
+        if "--" + role not in dark_hex:
+            raise Unreadable(f"{name}: tokens.json has no colour named {role} to take its hex from")
+        dark16, light16 = indexes[name]
+        # Below truecolor a light terminal keeps its own foreground for text
+        # and takes the 16-colour index for every other role, at both depths.
+        light_index = "" if role == "ink" or role.startswith("ink-") else light16
+        rows.append((name, usage,
+                     (dark_hex["--" + role], value, dark16),
+                     (light_hex["--" + role], light_index, light_index)))
+    return rows
+
+
+def go_name(token):
+    """term-panel-raised -> termPanelRaised, the Go name of a token's entry."""
+    first, *rest = token.split("-")
+    return first + "".join(part.capitalize() for part in rest)
+
+
+def go_source(tok):
+    """tokens_gen.go: the theme table as Go, laid out as gofmt leaves it."""
+    def colour(triple):
+        # A JSON string is a Go string literal for these values.
+        return "lipgloss.CompleteColor{TrueColor: %s, ANSI256: %s, ANSI: %s}" % tuple(
+            json.dumps(v) for v in triple)
+
+    rows = theme_table(tok)
+    out = [
+        "// Code generated by scripts/checks/design-tokens.py. DO NOT EDIT.",
+        "",
+        "package theme",
+        "",
+        'import "github.com/charmbracelet/lipgloss"',
+        "",
+        "// The term-* tokens of docs/design/system/tokens.json, in its order: each",
+        "// one's colour on a dark and on a light terminal at truecolor, 256 and 16",
+        "// colours. An empty value is never painted. Edit tokens.json, not this",
+        "// file, and run scripts/checks/design-tokens.py --write.",
+        "var (",
+    ]
+    for name, usage, dark, light in rows:
+        out += [
+            f"\t// {name}: {' '.join(usage.split())}",
+            f"\t{go_name(name)} = lipgloss.CompleteAdaptiveColor{{",
+            f"\t\tDark:  {colour(dark)},",
+            f"\t\tLight: {colour(light)},",
+            "\t}",
+        ]
+    out += [
+        ")",
+        "",
+        "// termTokens is every entry above by its token's name, for the tests that",
+        "// read tokens.json.",
+        "var termTokens = map[string]lipgloss.CompleteAdaptiveColor{",
+    ]
+    # gofmt aligns the values of a literal's one-line entries one space past
+    # the longest key.
+    width = max(len(json.dumps(name)) + 1 for name, *_ in rows)
+    out += [f"\t{(json.dumps(name) + ':').ljust(width)} {go_name(name)}," for name, *_ in rows]
+    out += ["}", ""]
+    return "\n".join(out)
+
+
 def section(doc, name):
     """The text between <!-- tokens:name --> and <!-- /tokens:name -->."""
     # The body is empty (a new section) or whole lines ending in a newline.
@@ -126,8 +266,8 @@ def compare(label, want, have):
     return found
 
 
-def check(source_path, wireframe_path, design_path, out=sys.stdout):
-    """True when the wireframe and DESIGN.md both agree with tokens.json."""
+def check(source_path, wireframe_path, design_path, theme_path, out=sys.stdout):
+    """True when the wireframe, DESIGN.md and tokens_gen.go all agree with tokens.json."""
     tok = load(source_path)
     problems = []
     rules = wireframe_rules(read(wireframe_path))
@@ -142,59 +282,86 @@ def check(source_path, wireframe_path, design_path, out=sys.stdout):
             out.writelines(difflib.unified_diff(
                 have.splitlines(True), (table + "\n").splitlines(True), "DESIGN.md", "tokens.json"))
             out.write("\n")
+    try:
+        want = go_source(tok)
+    except Unreadable as e:
+        problems.append(f"the TUI's theme table: {e}")
+    else:
+        have = read(theme_path)
+        if have != want:
+            problems.append("tui/internal/theme/tokens_gen.go differs from tokens.json "
+                            "(scripts/checks/design-tokens.py --write regenerates it)")
+            out.writelines(difflib.unified_diff(
+                have.splitlines(True), want.splitlines(True), "tokens_gen.go", "tokens.json"))
+            out.write("\n")
     for p in problems:
         out.write(f"FAIL: {p}\n")
     return not problems
 
 
-def write(source_path, design_path):
+def write(source_path, design_path, theme_path):
+    tok = load(source_path)
+    # Every copy is made before one is written, so a usage the theme table
+    # cannot read (Unreadable) leaves both files as they were.
+    go = go_source(tok)
     doc = read(design_path)
-    for name, table in tables(load(source_path)).items():
+    for name, table in tables(tok).items():
         m = section(doc, name)
         doc = doc[: m.start(1)] + table + "\n" + doc[m.end(1):]
-    with open(design_path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(doc)
-    print(f"wrote {design_path}")
+    for path, body in ((design_path, doc), (theme_path, go)):
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(body)
+        print(f"wrote {path}")
+
+
+def plant(paths, bodies):
+    for path, body in zip(paths, bodies):
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(body)
 
 
 def self_test():
-    """Plant each kind of drift in a copy of the three files; each must fail."""
+    """Plant each kind of drift in a copy of the four files; each must fail."""
     with open(os.devnull, "w") as quiet:
-        if not check(SOURCE, WIREFRAME, DESIGN, out=quiet):
+        if not check(SOURCE, WIREFRAME, DESIGN, THEME, out=quiet):
             print("FAIL: self-test needs the committed files to agree first")
             return False
-    source, html, doc = read(SOURCE), read(WIREFRAME), read(DESIGN)
-    cases = {
-        "a value drifted in tokens.json": (source.replace('"#0b0b0d"', '"#000001"', 1), html, doc),
-        "a value drifted in the wireframe": (source, html.replace("--ground:#0b0b0d", "--ground:#000001", 1), doc),
-        "a token missing from the wireframe": (source, html.replace("--scrim:#000000b3;", "", 1), doc),
-        "a token only the wireframe has": (source, html.replace("--scrim:", "--extra:#ffffff;--scrim:", 1), doc),
-        "a DESIGN.md row edited by hand": (source, html, doc.replace("| `--ground` | `#0b0b0d`", "| `--ground` | `#000001`", 1)),
-    }
+    source, html, doc, go = read(SOURCE), read(WIREFRAME), read(DESIGN), read(THEME)
+    drifted = source.replace('"#0b0b0d"', '"#000001"', 1)
+    no_index = source.replace("16-colour: bright white (15)", "16-colour: the brightest", 1)
+    # Each case: its label, the four files, and what the failure must say
+    # where another check failing too could hide it.
+    cases = [
+        ("a value drifted in tokens.json", (drifted, html, doc, go), None),
+        ("a value drifted in the wireframe", (source, html.replace("--ground:#0b0b0d", "--ground:#000001", 1), doc, go), None),
+        ("a token missing from the wireframe", (source, html.replace("--scrim:#000000b3;", "", 1), doc, go), None),
+        ("a token only the wireframe has", (source, html.replace("--scrim:", "--extra:#ffffff;--scrim:", 1), doc, go), None),
+        ("a DESIGN.md row edited by hand", (source, html, doc.replace("| `--ground` | `#0b0b0d`", "| `--ground` | `#000001`", 1), go), None),
+        ("a stale tokens_gen.go", (source, html, doc, go.replace('ANSI256: "214"', 'ANSI256: "220"', 1)),
+         "tokens_gen.go differs"),
+        ("a usage that names no 16-colour index", (no_index, html, doc, go), "names no 16-colour value"),
+        ("a usage that gives a colour the wrong index",
+         (source.replace("16-colour: yellow (3)", "16-colour: yellow (4)", 1), html, doc, go), "but yellow is 3"),
+    ]
     with tempfile.TemporaryDirectory() as d:
-        paths = [os.path.join(d, n) for n in ("tokens.json", "wireframe.html", "DESIGN.md")]
-        for label, files in cases.items():
-            if files == (source, html, doc):
+        paths = [os.path.join(d, n) for n in ("tokens.json", "wireframe.html", "DESIGN.md", "tokens_gen.go")]
+        for label, files, says in cases:
+            if files == (source, html, doc, go):
                 print(f"FAIL: self-test could not plant '{label}'")
                 return False
-            for path, body in zip(paths, files):
-                with open(path, "w", encoding="utf-8", newline="\n") as f:
-                    f.write(body)
-            with open(os.devnull, "w") as quiet:
-                if check(*paths, out=quiet):
-                    print(f"FAIL: self-test: '{label}' was not caught")
-                    return False
-        # --write repairs DESIGN.md after tokens.json moves, and touches
-        # nothing else: the wireframe still fails until a person edits it.
-        shutil.copyfile(DESIGN, paths[2])
-        with open(paths[0], "w", encoding="utf-8", newline="\n") as f:
-            f.write(cases["a value drifted in tokens.json"][0])
-        with open(paths[1], "w", encoding="utf-8", newline="\n") as f:
-            f.write(html)
+            plant(paths, files)
+            said = io.StringIO()
+            if check(*paths, out=said) or (says and says not in said.getvalue()):
+                print(f"FAIL: self-test: '{label}' was not caught")
+                return False
+        # --write repairs DESIGN.md and tokens_gen.go after tokens.json
+        # moves, and touches nothing else: the wireframe still fails until a
+        # person edits it.
+        plant(paths, (drifted, html, doc, go))
         with open(os.devnull, "w") as quiet:
             stdout, sys.stdout = sys.stdout, quiet
             try:
-                write(paths[0], paths[2])
+                write(paths[0], paths[2], paths[3])
             finally:
                 sys.stdout = stdout
             tok = load(paths[0])
@@ -202,9 +369,25 @@ def self_test():
             if any(section(regenerated, n).group(1) != t + "\n" for n, t in tables(tok).items()):
                 print("FAIL: self-test: --write did not regenerate the tables")
                 return False
+            if read(paths[3]) != go_source(tok):
+                print("FAIL: self-test: --write did not regenerate tokens_gen.go")
+                return False
             if check(*paths, out=quiet):
                 print("FAIL: self-test: the drifted wireframe passed after --write")
                 return False
+        # A usage the theme table cannot read stops --write before it writes
+        # either file.
+        plant(paths, (no_index, html, doc, go))
+        try:
+            write(paths[0], paths[2], paths[3])
+        except Unreadable:
+            pass
+        else:
+            print("FAIL: self-test: --write wrote past a usage it cannot read")
+            return False
+        if read(paths[2]) != doc or read(paths[3]) != go:
+            print("FAIL: self-test: --write changed a file before refusing")
+            return False
     print("self-test: ok")
     return True
 
@@ -214,15 +397,18 @@ def main(argv):
         if argv == ["--self-test"]:
             return 0 if self_test() else 1
         if argv == ["--write"]:
-            write(SOURCE, DESIGN)
+            write(SOURCE, DESIGN, THEME)
             return 0
         if argv:
             print(__doc__)
             return 2
-        return 0 if check(SOURCE, WIREFRAME, DESIGN) else 1
+        return 0 if check(SOURCE, WIREFRAME, DESIGN, THEME) else 1
     except Missing as e:
         print(f"FAIL: {e}")
         return 2
+    except Unreadable as e:
+        print(f"FAIL: {e}")
+        return 1
 
 
 if __name__ == "__main__":
