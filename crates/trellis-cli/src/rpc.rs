@@ -490,6 +490,31 @@ impl SteeringPort {
         st.delivered = delivered.len();
     }
 
+    /// Everything sent and not yet delivered, in the order received, for
+    /// `get_state` (#801). It takes nothing: it names what `close` would
+    /// hand back now, by the same rule, so the two must agree.
+    fn pending(&self) -> Vec<Value> {
+        let st = self.state();
+        let mut steers = 0;
+        let mut out = Vec::new();
+        for s in &st.sent {
+            if matches!(s.what, Steering::Steer(_)) {
+                steers += 1;
+                if steers <= st.delivered {
+                    continue;
+                }
+            }
+            out.push(
+                Unsent {
+                    id: s.id.clone(),
+                    what: s.what.clone(),
+                }
+                .json(),
+            );
+        }
+        out
+    }
+
     /// Ends the channel and hands back everything sent and not delivered,
     /// in the order it was received. A steer among them is answered as not
     /// delivered.
@@ -606,12 +631,43 @@ struct Running {
     /// thread instead of being refused (#495).
     ended: Arc<AtomicBool>,
     current: Arc<Mutex<Current>>,
+    /// `Chain::queue`.
+    queue: FollowUps,
     /// What was sent and never delivered when the chain stopped on an
     /// abort, in the order it was received, for `abort`'s answer.
     leftover: Arc<Mutex<Vec<Value>>>,
 }
 
+/// Follow-ups whose run has not started, as `(id, text)` in the order
+/// received. Shared, not the chain's own, so `get_state` can name them.
+type FollowUps = Arc<Mutex<VecDeque<(Option<String>, String)>>>;
+
+/// A follow-up that never started, as `abort` and `get_state` name it.
+fn queued_json(id: Option<String>, text: String) -> Value {
+    Unsent {
+        id,
+        what: Steering::FollowUp(text),
+    }
+    .json()
+}
+
 impl Running {
+    /// What `get_state` reports as `pending` (#801): the follow-ups queued
+    /// behind the run in flight, then what was sent to that run and not yet
+    /// delivered. The queue's were sent during earlier runs of the chain,
+    /// so this is oldest first. The queue's lock is held while the port is
+    /// read, as the chain holds it from closing a port to starting the next
+    /// run, so a follow-up moving from one to the other is seen once.
+    fn pending(&self) -> Vec<Value> {
+        let queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut out: Vec<Value> = queue
+            .iter()
+            .map(|(id, text)| queued_json(id.clone(), text.clone()))
+            .collect();
+        out.extend(self.current().steering.pending());
+        out
+    }
+
     fn current(&self) -> Current {
         self.current
             .lock()
@@ -1292,8 +1348,17 @@ impl Server {
                     .lock()
                     .map(|a| a.keys().cloned().collect())
                     .unwrap_or_default();
+                // After `in_flight`, which drops a finished run: with none in
+                // flight nothing is waiting to be delivered.
+                let waiting = self
+                    .running
+                    .as_ref()
+                    .map(Running::pending)
+                    .unwrap_or_default();
                 let data = json!({
                     "running": running,
+                    // Each steer and follow-up not yet delivered (#801).
+                    "pending": waiting,
                     // Not a run, but it holds the slot `prompt` needs (#522).
                     "classifying": self.classify_pending(),
                     "run_request_id": self.running.as_ref().and_then(|r| r.current().id),
@@ -1800,6 +1865,7 @@ impl Server {
         let ended = Arc::new(AtomicBool::new(false));
         let current = Arc::new(Mutex::new(Current::new(id.map(str::to_string))));
         let leftover: Arc<Mutex<Vec<Value>>> = Arc::default();
+        let queue: FollowUps = Arc::default();
         let chain = Chain {
             root: self.root.clone(),
             sink: self.sink.clone(),
@@ -1814,6 +1880,7 @@ impl Server {
             abort: abort.clone(),
             ended: ended.clone(),
             current: current.clone(),
+            queue: queue.clone(),
             model,
             model_from_user,
             unconstrained,
@@ -1835,6 +1902,7 @@ impl Server {
             done,
             ended,
             current,
+            queue,
             leftover,
         });
         Ok(())
@@ -1865,6 +1933,10 @@ struct Chain {
     /// `Running::ended`.
     ended: Arc<AtomicBool>,
     current: Arc<Mutex<Current>>,
+    /// Follow-ups waiting for the run they were sent during to end and the
+    /// ones before them to run. Held from a port's close to the next run's
+    /// start (#801).
+    queue: FollowUps,
     model: String,
     model_from_user: bool,
     unconstrained: bool,
@@ -1879,47 +1951,25 @@ impl Chain {
     /// sent and never delivered when it stopped on one; otherwise nothing,
     /// since every follow-up ran and every stranded steer was answered.
     fn run(&self, task: String) -> Vec<Value> {
-        let first = self.current().id;
-        let mut queue: VecDeque<(Option<String>, String)> = VecDeque::from([(first, task)]);
-        let mut started = false;
-        while let Some((id, task)) = queue.pop_front() {
-            if self.abort.requested() {
-                queue.push_front((id, task));
-                return queue
-                    .into_iter()
-                    .map(|(id, task)| {
-                        Unsent {
-                            id,
-                            what: Steering::FollowUp(task),
-                        }
-                        .json()
-                    })
-                    .collect();
-            }
-            // The first run's `Current` was made with the `prompt`, so a
-            // `steer` read before this thread got here still reaches it.
-            if started {
-                // Before the run is replaced, so a `prompt` waiting on this
-                // thread sees a run in flight from here on.
-                self.ended.store(false, Ordering::SeqCst);
-                *self.current.lock().unwrap_or_else(PoisonError::into_inner) =
-                    Current::new(id.clone());
-            }
-            started = true;
+        // The first run's `Current` was made with the `prompt`, so a
+        // `steer` read before this thread got here still reaches it.
+        if self.abort.requested() {
+            return vec![queued_json(self.current().id, task)];
+        }
+        let mut task = task;
+        loop {
             let cur = self.current();
             self.run_one_task(&task, &cur);
+            // Held until the next run is current, so a follow-up leaving
+            // the port's record is in the queue whenever `get_state` reads
+            // either, and is gone from both only once its run starts.
+            let mut queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
             let unsent = cur.steering.close();
             if self.abort.requested() {
                 // Queued before this run's own, so received before them.
                 let mut all: Vec<Value> = queue
-                    .into_iter()
-                    .map(|(id, task)| {
-                        Unsent {
-                            id,
-                            what: Steering::FollowUp(task),
-                        }
-                        .json()
-                    })
+                    .drain(..)
+                    .map(|(id, text)| queued_json(id, text))
                     .collect();
                 all.extend(unsent.iter().map(Unsent::json));
                 return all;
@@ -1932,8 +1982,15 @@ impl Chain {
                     queue.push_back((u.id, text));
                 }
             }
+            let Some((id, next)) = queue.pop_front() else {
+                return Vec::new();
+            };
+            // Before the run is replaced, so a `prompt` waiting on this
+            // thread sees a run in flight from here on.
+            self.ended.store(false, Ordering::SeqCst);
+            *self.current.lock().unwrap_or_else(PoisonError::into_inner) = Current::new(id);
+            task = next;
         }
-        Vec::new()
     }
 
     fn current(&self) -> Current {

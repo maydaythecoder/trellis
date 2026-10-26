@@ -314,14 +314,22 @@
           "root",
           "last_run",
           "pending_approvals",
+          "pending",
           "tier"
         ],
+        "pending_entries": ["pending[].id", "pending[].type", "pending[].message"],
+        "pending_type_values": ["steer", "follow_up"],
+        "pending_about": "each steer and follow_up sent and not yet delivered, oldest first: follow_ups queued behind the run in flight, then what was sent to that run (#801). A steer leaves it at the model request that carries it, the one its steer delivered event announces: the event is written just before the server marks it, so a get_state read between the two may still list it, and its steer response is written after the mark; a follow_up leaves it when its own run starts. A steer still waiting when its run ends leaves it then, answered as not delivered. message is the text as it was sent.",
         "last_run": "the last run's run_end framing fields, without type",
         "null_when": {
           "run_request_id": "no run is in flight, or the one in flight was started by a command sent with no id",
           "model": "neither set_model nor the configuration's [model] spec names one",
           "last_run": "no run of this rpc process has ended",
-          "tier": "no run of this rpc process has decided its tier yet, or the last run stopped before deciding one; never guessed from the spec"
+          "tier": "no run of this rpc process has decided its tier yet, or the last run stopped before deciding one; never guessed from the spec",
+          "pending[].id": "the steer or follow_up was sent with no id"
+        },
+        "empty_when": {
+          "pending": "no run is in flight, or nothing sent to it is still waiting"
         },
         "tier_label": {
           "heads": ["1", "2", "3", "4", "unknown", "scripted"],
