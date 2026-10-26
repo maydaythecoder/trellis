@@ -1645,8 +1645,19 @@ mod tests {
             mark.contains(r#"if (b) b.setAttribute("aria-pressed", on(k) ? "true" : "false");"#),
             "the list does not follow the selection: {mark}"
         );
-        // The details and the list say edges in the same way.
-        assert!(function_body(&js, "drawDetails").contains(r#"row("edges in", edgesIn(ctx, m));"#));
+        // The details and the list say edges in the same way: both ask
+        // edgesInFloor whether it is a floor, the list in its row's words
+        // and the details in the edges-in Stat's label (#910).
+        assert!(function_body(&js, "edgesIn").contains("edgesInFloor(ctx)"));
+        let details = function_body(&js, "drawDetails");
+        for want in [
+            "const floor = edgesInFloor(ctx);",
+            r#"label: "edges in","#,
+            r#"meta: floor ? "at least" : null,"#,
+            "value: figure(doc, m.edges_in, why),",
+        ] {
+            assert!(details.contains(want), "drawDetails lacks {want}");
+        }
         for f in ["draw", "clear"] {
             assert!(
                 function_body(&js, f).contains("drawList(doc, ctx);"),
@@ -1730,25 +1741,49 @@ mod tests {
         // text identical to the intact one. Integrity is the one bare string
         // in a row, computed by trellis from the digest (trails.rs), so it
         // alone may take the failed colour; no `{untrusted}` text gets a
-        // class the page reads as a verdict.
+        // tone the page reads as a verdict. Since #910 integrity is a
+        // Status, down when altered, in each row and in the record's head,
+        // and the trail's own outcome word is a Status in the idle tone.
         let js = ui_file("trails.js");
+        let integrity = function_body(&js, "integrity");
+        assert!(
+            integrity
+                .contains(r#"dsStatus(doc, r.integrity === "altered" ? "down" : "idle", word)"#),
+            "an altered integrity does not take the down tone: {integrity}"
+        );
         let list = function_body(&js, "drawList");
         assert!(
-            list.contains("if (r.integrity === \"altered\") integrity.className = \"failed\";"),
-            "an altered row's integrity element does not take the failed class"
+            list.contains("integrity(doc, r)"),
+            "a row draws no integrity"
         );
-        for untrusted in ["r.task", "r.outcome", "r.label", "r.started_at"] {
-            let draws = between(list, &format!("recorded(doc, \"span\", {untrusted}"), ")");
-            assert!(
-                !draws.contains("failed"),
-                "{untrusted} is untrusted text and may not carry the failed class"
-            );
-        }
-        let css = css_rules();
         assert!(
-            css.iter()
-                .any(|(s, d)| s.trim() == ".failed" && d.contains("var(--down)")),
-            "style.css has no .failed rule in the failed colour"
+            function_body(&js, "drawDetail")
+                .contains(r#"panelMeta(doc, "tr-detail-meta", integrity(doc, r));"#),
+            "the record's head draws no integrity"
+        );
+        assert!(
+            function_body(&js, "outcome")
+                .contains(r#"dsStatus(doc, "idle", recorded(doc, "span", r.outcome,"#),
+            "the trail's outcome word takes a tone"
+        );
+        for untrusted in ["r.task", "r.label", "r.started_at"] {
+            let draws = between(list, &format!("recorded(doc, \"span\", {untrusted}"), ")");
+            for tone in ["failed", "down", "\"ok\""] {
+                assert!(
+                    !draws.contains(tone),
+                    "{untrusted} is untrusted text and may not carry {tone}"
+                );
+            }
+        }
+        // Untrusted text reaches the page through `recorded` alone, in the
+        // untrusted class or the muted one, never a tone.
+        assert!(
+            function_body(&js, "recorded")
+                .contains(r#"e.className = t === null ? "muted" : "untrusted";"#)
+        );
+        assert!(
+            ui_file("ds.css").contains(".cd-status-down { color: var(--down); }"),
+            "the down Status is not the failed colour"
         );
     }
 
@@ -2482,7 +2517,15 @@ mod tests {
             assert!(!js.contains(bad), "queue.js uses {bad}");
         }
         assert!(js.contains("textContent"), "queue.js writes no text");
-        // What each task shows: the ticket's four, and the chain (#559).
+        // What each task shows: the ticket's four, and the chain (#559),
+        // drawn by overview.js's taskRow, which the board asks for in full
+        // (#910); and each cell's status and count as the view gives them.
+        assert!(
+            js.contains("taskRow(doc, t, true)"),
+            "the board draws its tasks some other way"
+        );
+        let overview = overview_code();
+        let row = function_body(&overview, "taskRow");
         for field in [
             "t.task",
             "t.priority",
@@ -2491,9 +2534,10 @@ mod tests {
             "t.blockers",
             "t.parent",
             "t.error",
-            "c.count",
-            "c.status",
         ] {
+            assert!(row.contains(field), "taskRow does not draw {field}");
+        }
+        for field in ["c.count", "c.status"] {
             assert!(js.contains(field), "queue.js does not draw {field}");
         }
         let sent: Vec<&str> = js
@@ -2556,9 +2600,13 @@ mod tests {
             tasks.contains(".filter((t) => pressed === null || str(t && t.status) === pressed)"),
             "drawTasks does not honour the pressed status: {tasks}"
         );
-        // The filtered rows are drawn, never counted.
-        assert_eq!(tasks.matches(".length").count(), 1, "{tasks}");
-        assert!(tasks.contains("if (items.length === 0) {"), "{tasks}");
+        // The filtered rows are drawn, never counted: dom.js's fill says so
+        // when none is left (#910).
+        assert!(!tasks.contains(".length"), "{tasks}");
+        assert!(
+            tasks.contains("fill(doc, pane, railRows(doc, rows),"),
+            "{tasks}"
+        );
         assert!(
             js.split(r#"listen("child-started""#)
                 .nth(1)
@@ -2574,15 +2622,27 @@ mod tests {
         // (the queue directory, `state`) and "todo" on the board (`status`).
         // Both now draw `status`, which the overview's contract entry lists,
         // so a rename fails trellis's own contract test rather than
-        // blanking the word.
+        // blanking the word. Since #910 both draw a task through one
+        // function, overview.js's taskRow, whose Status is its `status`;
+        // `state` is drawn only for a task too broken to have one.
         let overview_js = code_of("overview.js");
-        let overview = function_body(&overview_js, "task");
+        let row = function_body(&overview_js, "taskRow");
+        assert!(row.contains("const status = str(t.status);"), "{row}");
         assert!(
-            overview.contains(r#"el(doc, "span", str(t.status) ?? "?")"#),
-            "{overview}"
+            row.contains(
+                r#"dsStatus(doc, TASK_TONES[status] ?? "idle", status ?? "status not reported")"#
+            ),
+            "{row}"
         );
-        assert!(!overview.contains("t.state"), "{overview}");
-        assert!(code_of("queue.js").contains(r#"str(t.status) ?? "status not reported""#));
+        assert_eq!(row.matches("t.state").count(), 1, "{row}");
+        assert!(
+            between(row, "if (str(t && t.error) !== null) {", "\n  }").contains("t.state"),
+            "a readable task is drawn with its state: {row}"
+        );
+        assert!(
+            code_of("queue.js").contains(r#"import { drawPrCi, taskRow } from "./overview.js";"#),
+            "the board draws a task some other way"
+        );
         let contract: Value = serde_json::from_str(include_str!(
             "../../crates/trellis-cli/tests/client_contract.json"
         ))
@@ -2639,8 +2699,9 @@ mod tests {
         // eagle_eye_board_draws_pr_ci_entries_and_the_unavailable_reason
         // holds to every field and the reason.
         let js = code_of("queue.js");
-        assert!(
-            js.contains(r#"import { drawPrCi } from "./overview.js";"#),
+        assert_eq!(
+            imports_of(&js).get("drawPrCi").map(String::as_str),
+            Some("overview.js"),
             "queue.js does not draw PR and CI with overview.js's drawPrCi"
         );
         assert!(
@@ -2899,7 +2960,7 @@ mod tests {
     }
 
     /// The ids atlas.js draws into or reads, every one inside #atlas.
-    const ATLAS_IDS: [&str; 30] = [
+    const ATLAS_IDS: [&str; 32] = [
         "at-where",
         "at-open-search",
         "at-status",
@@ -2926,6 +2987,8 @@ mod tests {
         "at-tab-chg",
         "at-tab-pin",
         "at-detail",
+        "at-detail-title",
+        "at-detail-meta",
         "at-search",
         "at-q",
         "at-qclose",
@@ -3329,6 +3392,11 @@ mod tests {
         ("stat", "ds.js"),
         ("stats", "ds.js"),
         ("railRows", "ds.js"),
+        ("rail", "ds.js"),
+        ("panelMeta", "ds.js"),
+        // A queue task's Rail row, which the overview and the board share
+        // (#656, #910).
+        ("taskRow", "overview.js"),
         ("txEntry", "ds.js"),
         ("txTurn", "ds.js"),
     ];
@@ -3503,6 +3571,198 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The levels #910 moved to the design system's components.
+    const DS_SECTIONS: [&str; 5] = ["trails", "codebase", "board", "vault", "atlas"];
+
+    /// Each module that draws one of them, and what it draws with from
+    /// ds.js: its Panels' meta, its figures as Stats, its states as
+    /// Statuses and its sequences as Rails.
+    const DS_MODULES: [(&str, &[&str]); 6] = [
+        (
+            "trails.js",
+            &[
+                "dsStatus",
+                "figure",
+                "panelMeta",
+                "rail",
+                "railRows",
+                "stats",
+            ],
+        ),
+        ("codebase.js", &["dsStatus", "figure", "panelMeta", "stats"]),
+        ("radius.js", &["figure", "stats"]),
+        ("queue.js", &["figure", "panelMeta", "railRows", "stat"]),
+        ("vault.js", &["panelMeta", "stats"]),
+        ("atlas.js", &["panelMeta", "stats", "unreported"]),
+    ];
+
+    /// What is wrong with the regions of `section` in `page`: a region that
+    /// is not the design system's Panel, a Panel without a head or without
+    /// an h3 title in it, a region its title does not name, or a `.pane`
+    /// the level still frames itself. Empty when there is nothing.
+    fn panel_faults(page: &[Element], section: &str) -> Vec<String> {
+        let classes = |i: usize| -> Vec<&str> {
+            page[i]
+                .attr("class")
+                .unwrap_or("")
+                .split_whitespace()
+                .collect()
+        };
+        let child = |of: usize, class: &str| {
+            (of + 1..page.len())
+                .find(|&i| page[i].parent == Some(of) && classes(i).contains(&class))
+        };
+        let s = index_of(page, section);
+        let inside: Vec<usize> = (0..page.len()).filter(|&i| within(page, i, s)).collect();
+        let mut out = Vec::new();
+        let regions: Vec<usize> = inside
+            .iter()
+            .copied()
+            .filter(|&i| page[i].attr("role") == Some("region"))
+            .collect();
+        if regions.is_empty() {
+            out.push(format!("#{section} has no region"));
+        }
+        for r in regions {
+            if !classes(r).contains(&"cd-panel") {
+                out.push(format!("a region of #{section} is not a Panel"));
+                continue;
+            }
+            let Some(head) = child(r, "cd-panel-head") else {
+                out.push(format!("a Panel of #{section} has no head"));
+                continue;
+            };
+            let Some(title) = child(head, "cd-panel-title") else {
+                out.push(format!("a Panel head of #{section} has no title"));
+                continue;
+            };
+            if page[title].tag != "h3" {
+                out.push(format!(
+                    "a Panel title of #{section} is a <{}>",
+                    page[title].tag
+                ));
+            }
+            if page[r].attr("aria-labelledby").is_none()
+                || page[r].attr("aria-labelledby") != page[title].attr("id")
+            {
+                out.push(format!("a Panel of #{section} is not named by its title"));
+            }
+        }
+        if inside.iter().any(|&i| classes(i).contains(&"pane")) {
+            out.push(format!("#{section} frames a .pane of its own"));
+        }
+        out
+    }
+
+    /// The design system's markup `code` writes itself: a Panel's head,
+    /// title, meta or body, a Stat, a Status, or a region's h3 title.
+    fn ds_markup_written(code: &str) -> Vec<String> {
+        let mut out: Vec<String> = ["cd-panel", "cd-stat", "cd-status"]
+            .into_iter()
+            .filter(|class| {
+                ['"', '`', ' ']
+                    .iter()
+                    .any(|q| code.contains(&format!("{q}{class}")))
+            })
+            .map(str::to_string)
+            .collect();
+        if code.contains("\"h3\"") {
+            out.push("an h3".to_string());
+        }
+        out
+    }
+
+    #[test]
+    fn every_level_draws_through_ds() {
+        // The risk (#910; the owner, 2026-10-26: "stay with the design
+        // system, apply it universally"): the Trails, Codebase, Board,
+        // Vault and Atlas levels drawing frames, heads, figures and states
+        // of their own beside the design system's, so they drift from the
+        // Run level and the overview, and a figure goes back to being a
+        // sentence. Every region of those levels is the system's Panel as
+        // index.html serves it, its uppercase title in its head; no module
+        // but ds.js writes a Panel's head, a Stat or a Status; and each
+        // level module draws its counts, figures, states and sequences with
+        // ds.js's components.
+        let page = page();
+        for section in DS_SECTIONS {
+            let faults = panel_faults(&page, section);
+            assert!(faults.is_empty(), "{faults:?}");
+        }
+        // A planted region framed as a .pane, and one whose head lacks its
+        // title, are caught.
+        let html = ui_file("index.html");
+        let planted = html.replacen(
+            r#"<div class="cd-panel" role="region" aria-labelledby="tr-list-title">"#,
+            r#"<div class="pane" role="region" aria-labelledby="tr-list-title">"#,
+            1,
+        );
+        assert_ne!(planted, html, "the trails' Runs Panel moved");
+        assert!(!panel_faults(&page_of(&planted), "trails").is_empty());
+        let untitled = html.replacen(
+            r#"<h3 id="qb-tasks-title" class="cd-panel-title">"#,
+            r#"<h3 id="qb-tasks-title">"#,
+            1,
+        );
+        assert_ne!(untitled, html, "the board's Queue title moved");
+        assert!(!panel_faults(&page_of(&untitled), "board").is_empty());
+
+        let ui = ui_code();
+        for (module, code) in &ui {
+            if module == "ds.js" {
+                continue;
+            }
+            let written = ds_markup_written(code);
+            assert!(
+                written.is_empty(),
+                "{module} writes {written:?} itself: draw it with ds.js"
+            );
+        }
+        assert!(!ds_markup_written(r#"el(doc, "div", null, "cd-panel-head")"#).is_empty());
+        assert!(!ds_markup_written(r#"el(doc, "h3", "Module")"#).is_empty());
+
+        for (module, uses) in DS_MODULES {
+            let code = &ui[module];
+            let imports = imports_of(code);
+            for name in uses {
+                assert_eq!(
+                    imports.get(*name).map(String::as_str),
+                    Some("ds.js"),
+                    "{module} does not draw with ds.js's {name}"
+                );
+                assert!(
+                    code.contains(&format!("{name}(")),
+                    "{module} imports {name} and never draws one"
+                );
+            }
+        }
+
+        // A trail's mode counts are two Stats, never one number (CLAUDE.md
+        // rule 4), and the radius keeps its caption (rule 3).
+        let detail = function_body(&ui["trails.js"], "drawDetail");
+        for want in [
+            r#"{ label: "verified", value: figure(doc, m.verified, why) },"#,
+            r#"{ label: "reviewed only", value: figure(doc, m.reviewed, why) },"#,
+        ] {
+            assert!(detail.contains(want), "the record lacks {want}");
+        }
+        for bad in [
+            "m.verified +",
+            "+ m.reviewed",
+            "m.reviewed +",
+            "+ m.verified",
+        ] {
+            assert!(
+                !detail.contains(bad),
+                "the record sums Verified and Reviewed"
+            );
+        }
+        assert!(
+            ui["radius.js"].contains(r#""a floor on reach, not a boundary""#),
+            "the radius pane lost its caption"
+        );
     }
 
     #[test]
