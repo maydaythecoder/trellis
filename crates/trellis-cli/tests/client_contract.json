@@ -148,6 +148,10 @@
       "list_paths": {
         "always": ["paths"]
       },
+      "read_file": {
+        "always": ["path", "text", "bytes", "cut"],
+        "about": "{path} answers with one file's text for a whole-file view (ADR 0058 section 4, #809), read-only. path is repository-relative and is refused, by the rule it breaks, when it is absolute, holds a .. component or a control character (list_paths' prefix rule), when list_paths would not offer it (tracked, or untracked and not ignored, byte for byte as git spells it with /), when it resolves outside the root or into .git through a link (trellis_core::paths::resolve_repo_input), when it is not a file, and when the bytes read are not UTF-8. path is the path asked; bytes is the file's size on disk; text is at most 262144 bytes (256 KiB, a display limit), and a file past that is cut at the last whole character before it, with cut true. Bytes past the cap are not read, so they are not checked for UTF-8. text is repository text: a client shows it and never interprets it (CLAUDE.md rule 10), and nothing it answers enters a prompt."
+      },
       "list_models": {
         "always": [
           "configured",
