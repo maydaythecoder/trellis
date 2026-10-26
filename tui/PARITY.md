@@ -35,7 +35,7 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 
 | Rust file | Rust test | Rule | Ticket | Go test |
 | --- | --- | --- | --- | --- |
-| `app.rs` | `esc_on_an_empty_line_quits` | esc on an empty line quits | T3 (#509) | `TestModelEscClearsTheLineThenQuitsWhenIdle` |
+| `app.rs` | `esc_on_an_empty_line_quits` | esc on an empty line quits | T3 (#509) | not ported: the owner's decision of 2026-10-25 (#851): ESC goes out one level and at the top only clears the line; ^c leaves. `TestModelEscClearsTheLineAndNeverQuits` and `TestNavEnterInEscOut` hold the rule that replaced it |
 | `app.rs` | `quit_is_still_reachable_as_a_message` | quit is still reachable as a message | T2 (#508) | `TestModelCtrlCIdleQuitsAndEndsOnExit` |
 | `app.rs` | `a_release_event_changes_nothing` | a release event changes nothing | T2 (#508) | not ported: Bubble Tea delivers key presses only; there is no release or repeat event to filter (crossterm reported both on Windows) |
 | `app.rs` | `the_transcript_is_capped` | the transcript is capped | T2 (#508) | `TestModelTranscriptCapHolds` |
@@ -65,7 +65,7 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `app.rs` | `at_file_enter_submits_the_line_as_typed` | at file enter submits the line as typed | R4 (#502) / T5 (#511) | `TestCompleteEnterSubmitsTheLineAsTyped` |
 | `app.rs` | `typing_then_enter_submits_the_line` | typing then enter submits the line | T2 (#508) | `TestModelSentTaskBecomesOnePrompt` |
 | `app.rs` | `q_types_a_q_now_that_there_is_somewhere_to_type` | q types a q now that there is somewhere to type | T2 (#508) | `TestModelTypingBackspaceAndAnEmptyLine` |
-| `app.rs` | `esc_clears_a_line_and_leaves_an_empty_one` | esc clears a line and leaves an empty one | T3 (#509) | `TestModelEscClearsTheLineThenQuitsWhenIdle` |
+| `app.rs` | `esc_clears_a_line_and_leaves_an_empty_one` | esc clears a line and leaves an empty one | T3 (#509) | `TestModelEscClearsTheLineAndNeverQuits` |
 | `app.rs` | `backspace_deletes_and_stops_at_empty` | backspace deletes and stops at empty | T2 (#508) | `TestModelTypingBackspaceAndAnEmptyLine` |
 | `app.rs` | `an_empty_line_submits_nothing` | an empty line submits nothing | T2 (#508) | `TestModelTypingBackspaceAndAnEmptyLine` |
 | `app.rs` | `a_line_typed_mid_run_is_queued_as_a_steer_not_started_as_a_second_task` | a line typed mid run is queued as a steer not started as a second task | T3 (#509) | `TestSteerMidRunLineIsASteerNotATask` |
@@ -89,9 +89,9 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `app.rs` | `paste_with_crlf_breaks_is_one_space_per_break` | paste with crlf breaks is one space per break | T2 (#508) | `TestModelPasteIsOneInputAndSubmitsNothing` |
 | `app.rs` | `worktree_state_a_second_task_clears_the_four_panes` | worktree state a second task clears the four panes | T5 (#511) | `TestStatusWorktreeASecondTaskClearsTheFourPanes` |
 | `app.rs` | `worktree_state_follows_how_the_run_ended` | worktree state follows how the run ended | T5 (#511) | `TestStatusWorktreeFollowsHowTheRunEnded` |
-| `app.rs` | `ctrl_c_mid_run_asks_the_run_to_stop_and_leaves_once_it_has_finished` | ctrl c mid run asks the run to stop and leaves once it has finished | T3 (#509) | `TestModelCtrlCMidRunSendsAbortThenQuit`, `TestModelStopMidRunEscOnAnEmptyLineStopsAsCtrlCDoes` |
+| `app.rs` | `ctrl_c_mid_run_asks_the_run_to_stop_and_leaves_once_it_has_finished` | ctrl c mid run asks the run to stop and leaves once it has finished | T3 (#509) | `TestModelCtrlCMidRunSendsAbortThenQuit`, `TestModelStopMidRunOnlyCtrlCStops` |
 | `app.rs` | `ctrl_c_mid_run_no_longer_applies_after_run_finished` | ctrl c mid run no longer applies after run finished | T3 (#509) | `TestModelStopMidRunNoLongerAppliesAfterTheRunEnded` |
-| `app.rs` | `ctrl_c_mid_run_esc_on_an_empty_line_stops_the_same_way` | ctrl c mid run esc on an empty line stops the same way | T3 (#509) | `TestModelStopMidRunEscOnAnEmptyLineStopsAsCtrlCDoes`, `TestModelEscClearsTheLineThenQuitsWhenIdle` |
+| `app.rs` | `ctrl_c_mid_run_esc_on_an_empty_line_stops_the_same_way` | ctrl c mid run esc on an empty line stops the same way | T3 (#509) | not ported: the owner's decision of 2026-10-25 (#851): ^c is the only key that stops a run, and ESC on an empty line mid-run stops nothing. `TestModelStopMidRunOnlyCtrlCStops` holds the rule that replaced it |
 | `app.rs` | `ctrl_c_mid_run_withdraws_an_open_question_without_answering_it` | ctrl c mid run withdraws an open question without answering it | T3 (#509) | `TestModelStopMidRunWithdrawsTheQuestionAndShowsNoNewOne` |
 | `view.rs` | `transcript_follows_its_end_while_new_lines_arrive` | transcript follows its end while new lines arrive | T4 (#510) | `TestViewTranscriptFollowsScrollsBackAndKeepsTheOutcome` |
 | `view.rs` | `transcript_scrolled_back_stops_following_and_says_so` | transcript scrolled back stops following and says so | T4 (#510) | `TestViewTranscriptFollowsScrollsBackAndKeepsTheOutcome` |
@@ -137,7 +137,7 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `events.rs` | `a_steer_is_drawn_queued_then_delivered` | a steer is drawn queued then delivered | T3 (#509) | `TestSteerMidRunLineIsASteerNotATask`, `TestSteerDeliveredOnceAtItsTurn` |
 | `events.rs` | `a_steer_before_a_task_is_ahead_of_that_tasks_boundary` | a steer before a task is ahead of that tasks boundary | T3 (#509) | `TestSteerAfterTheRunEndedIsATask`, `TestSteerCountedPerRun` |
 | `events.rs` | `paste_event_becomes_one_paste_message` | paste event becomes one paste message | T2 (#508) | `TestModelPasteArrivesAsOneKey` |
-| `events.rs` | `ctrl_c_mid_run_emits_one_stop_before_the_loop_ends` | ctrl c mid run emits one stop before the loop ends | T3 (#509) | `TestModelCtrlCMidRunSendsAbortThenQuit`, `TestModelStopMidRunEscOnAnEmptyLineStopsAsCtrlCDoes` |
+| `events.rs` | `ctrl_c_mid_run_emits_one_stop_before_the_loop_ends` | ctrl c mid run emits one stop before the loop ends | T3 (#509) | `TestModelCtrlCMidRunSendsAbortThenQuit`, `TestModelStopMidRunOnlyCtrlCStops` |
 | `events.rs` | `ctrl_c_mid_run_with_nothing_to_stop_it_leaves_at_once` | ctrl c mid run with nothing to stop it leaves at once | T3 (#509) | `TestModelStopWithNoChildToStopStillEnds` |
 | `events.rs` | `ctrl_c_mid_run_draws_the_stopping_line_and_help_says_so` | ctrl c mid run draws the stopping line and help says so | T5 (#511) | `TestSlashHelpListsThePageKeysAndTheStop` |
 | `tui_bridge.rs` | `tui_bridge_budget_carries_the_runs_ceiling_and_its_elapsed_time` | tui bridge budget carries the runs ceiling and its elapsed time | T4 (#510) | `TestPanesBudgetCarriesTheCeilingTheTurnsFiguresAndElapsed` |
@@ -217,3 +217,20 @@ tests held no colour rule, so the row names no Rust test.
 | none | none | each row is painted in its role's token, and a check row takes ok or down only from the verdict trellis sent, never from its words | #841 | `TestPaintEachRoleTakesItsToken`, `TestViewCheckRowsTakeOkAndDownRoles` |
 | none | none | painted, the only escape sequences on screen are the theme's colours, at every colour depth, and every row is still exactly the screen's width | #841 | `TestViewNoEscapeSequenceReachesTheScreen`, `TestViewWideTextKeepsEveryRowWithinTheWidth`, `TestFrameBoxIsExactlyItsSize` |
 | none | none | every transcript row is written with its role through rows.go, and no role is read from a row's words | #849 | `TestRowsEveryTranscriptLineHasARole`, `TestRowsOnlyRowsGoWritesTheTranscript` |
+
+## Run view
+
+The regions of the run view the brand book and `docs/design/DESIGN.md`
+section 2 name, as the TUI draws them (S20, #790). The ratatui TUI had none
+of them, so each row names no Rust test.
+
+| Rust file | Rust test | Rule | Ticket | Go test |
+| --- | --- | --- | --- | --- |
+| none | none | the Now strip names the state, the turn against the run's ceiling and what the run is on; an ended run in run_end's own words and exit code, never done or failed | #850 | `TestNowStripShowsStateTurnAndActivity` |
+| none | none | the strip's clock is this view's and says so, and leaves out the time a question waited on the person | #850 | `TestNowClockIsLabelledAndSkipsApprovalWaits` |
+| none | none | Where it is names the runtime as it identified itself and the repository trellis serves, and a control mode trellis does not send as not reported | #850 | `TestWhereItIsShowsTheRuntime` |
+| none | none | the messages row draws trellis's newest stderr line and how many came before, and only once there is one | #850 | `TestViewDrawsTheNewestStderrLine` |
+| none | none | the Trail is the first row and the status bar with the live keys the last, at 120x40 and 80x24, at the top level and inside a pane | #851 | `TestShellTrailFirstStatusLastAt120x40And80x24` |
+| none | none | below 100 columns or 30 rows the right column folds into one row of the panes under a full-width transcript | #851 | `TestShellFoldsTheRightColumnAt80` |
+| none | none | Tab selects a pane, ⏎ on an empty line goes in, ESC comes out and never quits, Tab inside a pane goes across | #851 | `TestNavEnterInEscOut`, `TestShellSelectedPaneAndTheRail` |
+| none | none | the shell's renders at 80x24 and 120x40 match the goldens in tui/internal/view/testdata | #851 | `TestShellGoldenRenders` |

@@ -1,0 +1,261 @@
+package view
+
+import (
+	"fmt"
+	"strings"
+)
+
+// The shell (#851; docs/design/system/faces.md and the Shell card): the
+// Trail on the top row, the status bar with the live keys on the last, and
+// the stage between, which is all that changes as the person burrows. The
+// run view's top level is the transcript and its panes; ⏎ on a pane Tab
+// selected goes into it, and ESC comes back out. Inside a pane, the other
+// panes collapse to a rail three columns wide down the left, their titles
+// written downward.
+
+// Panel is one of the run view's panes, which Tab selects at the top level
+// and ⏎ goes into.
+type Panel string
+
+const (
+	PanelWhere   Panel = "where"
+	PanelActions Panel = "actions"
+	PanelEdits   Panel = "edits"
+	PanelChecks  Panel = "checks"
+	PanelRadius  Panel = "radius"
+)
+
+// Panels is every pane, in the order Tab visits them and the rail lists
+// them: the order they stand in the right column.
+var Panels = []Panel{PanelWhere, PanelActions, PanelEdits, PanelChecks, PanelRadius}
+
+// Nav is where the person is in the run view.
+type Nav struct {
+	// Open is the pane gone into from the top level; "" at the top.
+	Open Panel
+	// Selected is the pane Tab last selected at the top level, which ⏎
+	// goes into; "" when none is.
+	Selected Panel
+}
+
+// Levels is the depth the Trail's gauge counts to, as the desktop's does:
+// the run view, a pane, and the two levels below a pane that the code and
+// summary levels add (#853, #854).
+const Levels = 4
+
+// FoldWidth and FoldHeight are the screen below which the right column
+// folds: the transcript takes the whole stage and the panes become one row
+// under it, each a way in (#851). At 80 columns the column kept 36 and
+// left the transcript 44; under 30 rows the panes below the Trail, the Now
+// strip and the status bar had no room for their own rows. The fold is
+// the screen's, not the stage's, so an @ list that grows does not fold
+// and unfold the panes under the person's eyes.
+const (
+	FoldWidth  = 100
+	FoldHeight = 30
+)
+
+// railW is the sibling rail's width inside a pane: a title's letter and a
+// column either side of it.
+const railW = 3
+
+// folded is whether the right column folds on a w by h screen.
+func folded(w, h int) bool { return w < FoldWidth || h < FoldHeight }
+
+// level is the Trail's depth: 1 at the top, 2 inside a pane.
+func level(s State) int {
+	if s.Nav.Open != "" {
+		return 2
+	}
+	return 1
+}
+
+// trail is the top row: where the person is, each level after the first
+// one more segment, and on the right the depth against the gauge, the key
+// that goes back out, and the program's name.
+func trail(s State, w int) string {
+	left := " Run"
+	if s.Nav.Open != "" {
+		left += " ⟩ " + string(s.Nav.Open)
+	}
+	right := fmt.Sprintf("L%d / %d", level(s), Levels)
+	if s.Nav.Open != "" {
+		right += "  ESC out"
+	}
+	right += "  TRELLIS "
+	return spread(left, right, w)
+}
+
+// keycaps are the keys that act at the level shown, for the status bar.
+// ^C is always one: it is the only key that stops a run.
+func keycaps(s State) string {
+	if s.Nav.Open != "" {
+		return "ESC out  ^C stop"
+	}
+	return "TAB select  ⏎ in  ^C stop"
+}
+
+// statusBar is the last row: the live keys on the left, and on the right
+// the worktree, the model and the tier. When the row runs short the model
+// is cut first (context), then the keys give way to ^C alone, then to
+// nothing: what the worktree holds matters more than a key the Trail and
+// the strip already imply.
+func statusBar(s State, w int) string {
+	for _, keys := range []string{" " + keycaps(s), " ^C stop", ""} {
+		ctx := context(s, max(w-Width(keys)-2, 1))
+		if Width(keys)+Width(ctx)+2 <= w {
+			return spread(keys, ctx+" ", w)
+		}
+	}
+	return Cut(" "+context(s, w-1), w)
+}
+
+// spread is left and right on one row of w cells, with the room between
+// them; when both do not fit, the right is cut first.
+func spread(left, right string, w int) string {
+	gap := w - Width(left) - Width(right)
+	if gap < 1 {
+		return Cut(left+" "+right, w)
+	}
+	return left + strings.Repeat(" ", gap) + right
+}
+
+// stage is the rows between the Now strip and the messages row, h rows of
+// w cells on a screen fold says is folded or not: the top level's
+// transcript and panes, or the pane gone into with the rail beside it.
+func stage(s State, fold bool, w, h int) []string {
+	if s.Nav.Open != "" {
+		return inside(s, w, h)
+	}
+	if fold {
+		out := transcript(s, w, h-1)
+		return append(out, foldedRow(s, w))
+	}
+	leftW, rightW := columns(s, w)
+	left := transcript(s, leftW, h)
+	right := rightColumn(s, rightW, h)
+	out := make([]string, h)
+	for i := range out {
+		out[i] = left[i] + right[i]
+	}
+	return out
+}
+
+// rightColumn is the panes beside the transcript, h rows of w cells. Where
+// it is takes the top when the panes below keep room for their own rows.
+func rightColumn(s State, w, h int) []string {
+	whereRows := 0
+	if h-radiusH-whereH >= minPaneRows {
+		whereRows = whereH
+	}
+	rest := h - radiusH - whereRows
+	actionsH := rest / 2
+	editsH := rest / 4
+	checksH := rest - actionsH - editsH
+	var out []string
+	if whereRows > 0 {
+		out = append(out, where(s, w, whereRows)...)
+	}
+	out = append(out, actions(s, w, actionsH)...)
+	out = append(out, edits(s, w, editsH)...)
+	out = append(out, checks(s, w, checksH)...)
+	return append(out, radius(s, w, radiusH)...)
+}
+
+// foldedRow is the panes as one row under a folded transcript: each pane's
+// name with how many rows it holds, the selected one in brackets and in
+// signal, and how to go in.
+func foldedRow(s State, w int) string {
+	counts := map[Panel]string{
+		PanelActions: fmt.Sprint(len(s.Actions) + s.Dropped.Actions),
+		PanelEdits:   fmt.Sprint(len(s.Edits) + s.Dropped.Edits),
+		PanelChecks:  fmt.Sprint(len(s.Checks) + s.Dropped.Checks),
+	}
+	var parts []string
+	for _, p := range Panels {
+		name := string(p)
+		if c := counts[p]; c != "" {
+			name += " " + c
+		}
+		if p == s.Nav.Selected {
+			name = "[" + name + "]"
+		}
+		parts = append(parts, name)
+	}
+	row := " " + strings.Join(parts, " · ")
+	if s.Nav.Selected != "" {
+		row += "   ⏎ goes in"
+	} else {
+		row += "   TAB selects"
+	}
+	role := RoleLabel
+	if s.Nav.Selected != "" {
+		role = RoleYou
+	}
+	return fill(s.Theme, role, row, w)
+}
+
+// inside is a pane gone into: the rail of every pane down the left, the
+// open one in signal, and the pane over the rest of the stage.
+func inside(s State, w, h int) []string {
+	r := rail(s, h)
+	body := pane(s, s.Nav.Open, w-railW, h)
+	out := make([]string, h)
+	for i := range out {
+		out[i] = r[i] + body[i]
+	}
+	return out
+}
+
+// pane draws p at w by h.
+func pane(s State, p Panel, w, h int) []string {
+	switch p {
+	case PanelWhere:
+		return where(s, w, h)
+	case PanelActions:
+		return actions(s, w, h)
+	case PanelEdits:
+		return edits(s, w, h)
+	case PanelChecks:
+		return checks(s, w, h)
+	}
+	return radius(s, w, h)
+}
+
+// rail is the panes' titles written downward, three columns wide and h
+// rows tall, each title given an equal share of the rows and cut to it.
+func rail(s State, h int) []string {
+	out := make([]string, 0, h)
+	share := max(h/len(Panels), 2)
+	for _, p := range Panels {
+		role := RoleLabel
+		if p == s.Nav.Open {
+			role = RoleYou
+		}
+		letters := []rune(string(p))
+		for i := 0; i < share-1 && len(out) < h; i++ {
+			c := " "
+			if i < len(letters) {
+				c = string(letters[i])
+			}
+			out = append(out, " "+paint(s.Theme, role, c)+" ")
+		}
+		if len(out) < h {
+			out = append(out, strings.Repeat(" ", railW))
+		}
+	}
+	for len(out) < h {
+		out = append(out, strings.Repeat(" ", railW))
+	}
+	return out
+}
+
+// paneBox is Box for a pane: its frame in signal with heavy corners when
+// Tab has selected it at the top level, as the faces doc draws a selected
+// panel, and in line otherwise.
+func paneBox(s State, p Panel, title, bottom string, rows []Row, w, h int) []string {
+	if s.Nav.Open == "" && s.Nav.Selected == p {
+		return frameBox(s.Theme, RoleYou, heavyCorners, title, bottom, rows, w, h)
+	}
+	return Box(s.Theme, title, bottom, rows, w, h)
+}

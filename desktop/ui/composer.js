@@ -40,6 +40,7 @@
 
 import { el } from "./dom.js";
 import { str } from "./fmt.js";
+import { enter } from "./keys.js";
 import { lineId, send } from "./rpc.js";
 import { exitText } from "./status.js";
 
@@ -272,11 +273,9 @@ export async function wireComposer(doc, tauri) {
     drawTemplate(doc);
     p.text.focus();
   });
-  // The rail's own Run button, so showing Run here is what the rail does.
-  p.follow.addEventListener("click", () => {
-    const run = doc.querySelector('nav.rail button[aria-controls="run"]');
-    if (run) run.click();
-  });
+  // Entering Run as the overview's Run panel does (keys.js), so the Trail,
+  // the sibling rail and the way back are the same.
+  p.follow.addEventListener("click", () => enter(doc, "run"));
   // Stop aborts the run and rolls its edits back, which cannot be undone,
   // so a click only asks (#637). The dialog's close is the one place an
   // abort is sent, and only when its Stop button closed it: Escape, Cancel

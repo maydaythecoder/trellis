@@ -86,7 +86,7 @@ func TestBudgetLineNamesWhatWasNotReported(t *testing.T) {
 func TestViewSixRegionsAtEightyByTwentyFour(t *testing.T) {
 	out := Render(populated(), 80, 24)
 	for _, want := range []string{"TRELLIS", "transcript", "edits", "checks", "radius", "budget",
-		"Reading blast radius", "resolved", "8400 B prompt", "iteration 2/40", "0:18 elapsed"} {
+		"Reading blast radius", "8400 B prompt", "iteration 2/40", "0:18 elapsed"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("%q missing from:\n%s", want, out)
 		}
@@ -180,7 +180,7 @@ func TestViewTaskLineShowsWhatIsTypedAndHowToSendIt(t *testing.T) {
 func TestViewManyCompletionsNeverPanic(t *testing.T) {
 	for _, size := range [][2]int{{80, 24}, {80, 25}, {100, 30}, {120, 40}} {
 		w, h := size[0], size[1]
-		room := h - 1 - 3 - 3 - MinBodyRows
+		room := completionRoom(populated(), h)
 		for n := 0; n <= 40; n++ {
 			s := populated()
 			for i := 0; i < n; i++ {
@@ -196,7 +196,9 @@ func TestViewManyCompletionsNeverPanic(t *testing.T) {
 					t.Fatalf("%dx%d, %d offered: row %d is %d cells:\n%s", w, h, n, i, Width(l), out)
 				}
 			}
-			if !strings.Contains(out, "resolved") || !strings.Contains(out, "a floor on reach") {
+			// Folded (#851), the panes are a row under the transcript and
+			// the radius is reached by going in.
+			if !folded(w, h) && (!strings.Contains(out, "resolved") || !strings.Contains(out, "a floor on reach")) {
 				t.Fatalf("%dx%d, %d offered: the radius pane was cut:\n%s", w, h, n, out)
 			}
 			more := fmt.Sprintf("… %d more", n-(room-1))
@@ -341,6 +343,10 @@ func TestViewNoEscapeSequenceReachesTheScreen(t *testing.T) {
 	s.Actions = []Action{{Tool: "edit\x1b", Target: "\x9b2J", Wrote: true}}
 	s.Input = "typed\x1b"
 	s.Outcome = "failed: \x1b[1mbold"
+	s.Stderr = []string{"probe\x1b]0;t\x07 done"}
+	s.Running = true
+	s.Now = Now{Phase: Phase{Kind: "tool", Turn: 2, Tool: "edit\x1b[31m", Target: "a\x9b2J.py"},
+		Runtime: "ollama\x1b[2K", Root: "/w/re\x07po"}
 	for _, depth := range themetest.Depths {
 		for _, dark := range []bool{true, false} {
 			th := theme.New(themetest.Renderer(t, depth, dark))
@@ -348,6 +354,7 @@ func TestViewNoEscapeSequenceReachesTheScreen(t *testing.T) {
 			screens := map[string]string{
 				"render": Render(s, 100, 40),
 				"modal":  Modal(th, "edit a\x1b[2J.py", "+ok\x1b]0;t\x07\n-\x9b2Jgone", 0, 100, 40),
+				"asking": Asking(s, "edit a\x1b[2J.py", "+ok\x1b]0;t\x07\n-\x9b2Jgone", 0, 100, 40),
 			}
 			for name, out := range screens {
 				rest := unpainted(th, out)

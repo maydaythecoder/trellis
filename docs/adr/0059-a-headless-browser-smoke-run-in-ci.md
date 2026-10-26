@@ -57,13 +57,19 @@ called.
    2026-10-26, #797:* on CI's runner one walk left the overview drawn from
    before the codebase view's first answer saved the index it reads, and
    the next walk's nodes were taken for a leak).
-   It walks every section of the page and back to the first, five times,
-   and all three counts must be where they were. It then runs five tasks to
+   It walks into every level of the page and out again, five times, and
+   all three counts must be where they were. It then runs five tasks to
    their `run_end` with `scripted-done-only.json`, and the document and
    listener counts must be where they were. The node count is printed and
    not judged after the tasks, since a task adds transcript rows that the
-   page keeps up to its cap (#814 holds the cap). Once the desktop's levels
-   exist (the Trail, #826), the walk goes in and out of them.
+   page keeps up to its cap (#814 holds the cap). *Amended 2026-10-26
+   (#826):* the walk goes into each of the overview's panels and out with
+   ESC, then across the sibling rail, since the levels replaced the
+   section rail it first walked; and after its two walks the warm-up walks
+   again while a walk still changes the counts (at most four walks in
+   all), since a section asks for what it shows only while it is shown,
+   the Atlas in steps, so a walk can end before the page has asked for all
+   it will.
 4. The JS heap (`Runtime.getHeapUsage`) is printed as a trend and not
    judged: the protocol marks it experimental.
 5. `--self-test` runs the same checks over three pages the script serves

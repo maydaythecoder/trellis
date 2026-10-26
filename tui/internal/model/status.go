@@ -80,4 +80,22 @@ func (m *Model) stateAnswered(data any) {
 		// starts with the word would read "tier tier".
 		m.Tier = view.Plain(strings.TrimPrefix(s, "tier "))
 	}
+	// Where it is names the repository trellis serves, as trellis says it.
+	if s, isStr := d["root"].(string); isStr {
+		m.strip.Root = view.Plain(s)
+	}
+}
+
+// runtimeText is what a runtime said of itself, for Where it is: the
+// runtime's name and what it serves, or what it serves alone when it gave
+// no name.
+func runtimeText(r *frames.RuntimeFields) string {
+	if r == nil {
+		return ""
+	}
+	served := view.Plain(r.Served)
+	if r.Runtime == nil || strings.TrimSpace(*r.Runtime) == "" {
+		return served
+	}
+	return view.Plain(*r.Runtime) + " · " + served
 }

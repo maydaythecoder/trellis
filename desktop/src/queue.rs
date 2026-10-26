@@ -24,7 +24,9 @@
 //! errors are written by others, which the page writes through
 //! `textContent` only (ADR 0007, S10).
 
+use crate::asked::{self, Asked};
 use crate::frames::Response;
+use crate::json;
 use serde_json::{Map, Value, json};
 
 pub const COMMAND: &str = "get_queue";
@@ -72,42 +74,24 @@ pub struct Queue {
     tasks: Option<Vec<Task>>,
     /// trellis's refusal, or the reason the last answer was bad data.
     error: Option<String>,
-    /// The id of the last `get_queue` the page sent; only its answer is
-    /// taken, since each is answered from its own thread. `None` takes any.
-    asked: Option<String>,
+    /// The last `get_queue` the page sent; only its answer is taken, since
+    /// each is answered from its own thread.
+    asked: Asked,
 }
 
+// A task's fields, read as `queue_json` writes them: text, text or `null`
+// (the contract's `null_when`), and lists it writes empty when there is
+// none (`empty_when`).
 fn text(o: &Map<String, Value>, k: &str) -> Result<String, String> {
-    match o.get(k) {
-        Some(Value::String(s)) => Ok(s.clone()),
-        None => Err(format!("a task has no {k}")),
-        Some(_) => Err(format!("a task's {k} is not text")),
-    }
+    json::text(o, k, "a task")
 }
 
-/// A field `queue_json` writes as text or `null` (the contract's
-/// `null_when`); absent is not null.
 fn text_or_null(o: &Map<String, Value>, k: &str) -> Result<Option<String>, String> {
-    match o.get(k) {
-        Some(Value::Null) => Ok(None),
-        Some(Value::String(s)) => Ok(Some(s.clone())),
-        None => Err(format!("a task has no {k}")),
-        Some(_) => Err(format!("a task's {k} is not text or null")),
-    }
+    json::text_or_null(o, k, "a task")
 }
 
-/// A list `queue_json` writes empty when there is none (`empty_when`).
 fn texts(o: &Map<String, Value>, k: &str) -> Result<Vec<String>, String> {
-    o.get(k)
-        .and_then(Value::as_array)
-        .ok_or_else(|| format!("a task's {k} is not a list"))?
-        .iter()
-        .map(|v| {
-            v.as_str()
-                .map(str::to_string)
-                .ok_or_else(|| format!("an entry of a task's {k} is not text"))
-        })
-        .collect()
+    json::texts(o, k, "a task")
 }
 
 fn task(v: &Value) -> Result<Task, String> {
@@ -191,7 +175,7 @@ fn task_json(t: &Task) -> Value {
 impl Queue {
     /// The page sent `get_queue` with `id`: only that answer is taken.
     pub fn asked(&mut self, id: Option<&str>) {
-        self.asked = id.map(str::to_string);
+        self.asked.ask(id);
     }
 
     /// Takes a `get_queue` response into the view, and says whether it
@@ -201,7 +185,7 @@ impl Queue {
         if r.command.as_deref() != Some(COMMAND) {
             return false;
         }
-        if self.asked.is_some() && r.id != self.asked {
+        if !self.asked.takes(r.id.as_deref()) {
             return false;
         }
         let read = match (r.success, &r.data) {
@@ -209,10 +193,7 @@ impl Queue {
             (Some(true), None) => Err("it has no data".into()),
             _ => {
                 self.tasks = None;
-                self.error =
-                    Some(r.error.clone().unwrap_or_else(|| {
-                        "get_queue was refused, and trellis gave no reason".into()
-                    }));
+                self.error = Some(asked::refusal(COMMAND, r));
                 return true;
             }
         };
