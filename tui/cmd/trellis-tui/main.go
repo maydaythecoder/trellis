@@ -213,7 +213,8 @@ func finish(c child, quitting bool, runErr error, stderr io.Writer, within time.
 	}
 	switch {
 	case runErr != nil:
-		// The screen failed, not trellis.
+		// The screen failed, or SIGINT interrupted the program
+		// (tea.ErrInterrupted, "program was interrupted"): not trellis.
 		fmt.Fprintln(stderr, "trellis-tui:", runErr)
 	case quitting:
 		fmt.Fprintln(stderr, "trellis-tui: stopped before trellis rpc finished quitting")
