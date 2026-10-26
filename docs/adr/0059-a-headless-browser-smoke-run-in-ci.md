@@ -49,8 +49,14 @@ called.
    at any point of the run. One request is not the page's: the browser asks
    for `/favicon.ico` on its own while the page names no icon (until #835),
    and the server's refusal of it is ignored.
-3. After a warm-up (one task, one walk), it counts documents, nodes and
-   listeners (`Memory.getDOMCounters`, after `HeapProfiler.collectGarbage`).
+3. After a warm-up (one task, then two walks, the first to all its
+   answers), it counts documents, nodes and listeners
+   (`Memory.getDOMCounters`, after `HeapProfiler.collectGarbage`), each
+   time once every call the page made to the core has finished and the
+   child has answered every rpc line the core accepted (*amended
+   2026-10-26, #797:* on CI's runner one walk left the overview drawn from
+   before the codebase view's first answer saved the index it reads, and
+   the next walk's nodes were taken for a leak).
    It walks every section of the page and back to the first, five times,
    and all three counts must be where they were. It then runs five tasks to
    their `run_end` with `scripted-done-only.json`, and the document and
