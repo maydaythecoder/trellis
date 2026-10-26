@@ -156,11 +156,8 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "trellis-tui:", err)
 		return 1
 	}
-	m := model.New(model.Options{Task: a.task, ModelSpec: a.model})
+	m := model.New(model.Options{Task: a.task, ModelSpec: a.model, Theme: th})
 	app := model.NewApp(m, c)
-	// Nothing paints with the theme yet: #841 hands it to the model and
-	// the view, and paints every row with it.
-	_ = th
 	_, err = tea.NewProgram(app, tea.WithAltScreen()).Run()
 	// The program has ended, on whatever path: what it left waiting on the
 	// child's lines and the clock ends with it (#847).

@@ -45,6 +45,18 @@ func (r *Ring[T]) Cap() int { return cap(r.buf) }
 // Dropped is how many values were pushed out to make room for newer ones.
 func (r *Ring[T]) Dropped() int { return r.dropped }
 
+// Oldest is the value the next Push drops, and true, once the ring is
+// full; while it has room, the zero value and false. An owner that keeps
+// something else about each value (an index, a pending answer) reads it
+// before the push, so what it keeps leaves with the value.
+func (r *Ring[T]) Oldest() (T, bool) {
+	if len(r.buf) < cap(r.buf) {
+		var zero T
+		return zero, false
+	}
+	return r.buf[r.oldest], true
+}
+
 // Slice is a copy of the values held, oldest first. A copy, so a caller
 // may keep it while the ring goes on.
 func (r *Ring[T]) Slice() []T {

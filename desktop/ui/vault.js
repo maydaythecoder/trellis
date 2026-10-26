@@ -19,21 +19,11 @@
 //
 // index.html loads this as a module of its own.
 
+import { el } from "./dom.js";
+import { isCount, str } from "./fmt.js";
+import { send, start } from "./rpc.js";
+
 let asked = 0;
-
-function el(doc, tag, text) {
-  const e = doc.createElement(tag);
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
-
-function str(v) {
-  return typeof v === "string" ? v : null;
-}
-
-function isCount(v) {
-  return typeof v === "number" && Number.isFinite(v);
-}
 
 function status(doc, text) {
   doc.getElementById("vt-status").textContent = text;
@@ -90,21 +80,17 @@ function reference(doc, tauri, r) {
   return li;
 }
 
-// Says whether the line was sent: a refusal is drawn as the status.
-async function send(doc, tauri, line, waiting) {
+// Sends one line through the core (rpc.js's send), saying `waiting` in
+// the status line until the answer comes; a refusal is drawn as the status.
+// Says whether the line was sent.
+function forward(doc, tauri, line, waiting) {
   status(doc, waiting);
-  try {
-    await tauri.core.invoke("rpc_send", { line });
-    return true;
-  } catch (err) {
-    status(doc, `Open a repository to read its vault. ${err}`);
-    return false;
-  }
+  return send(tauri, line, (why) => status(doc, `Open a repository to read its vault. ${why}`));
 }
 
 function askNote(doc, tauri, path) {
   asked += 1;
-  send(doc, tauri, { id: `desktop-vault-graph-${asked}`, type: "vault_graph", note: path }, `Reading ${path}.`);
+  forward(doc, tauri, { id: `desktop-vault-graph-${asked}`, type: "vault_graph", note: path }, `Reading ${path}.`);
 }
 
 // Asks for what `trellis vault check` prints (#632), never `--fix`: rpc
@@ -113,13 +99,9 @@ function askNote(doc, tauri, path) {
 async function askCheck(doc, tauri) {
   asked += 1;
   const pane = doc.getElementById("vt-check");
-  try {
-    await tauri.core.invoke("rpc_send", { line: { id: `desktop-vault-check-${asked}`, type: "vault_check" } });
-  } catch (err) {
-    const p = el(doc, "p", `Open a repository to check its vault. ${err}`);
-    p.className = "empty";
-    pane.replaceChildren(p);
-  }
+  await send(tauri, { id: `desktop-vault-check-${asked}`, type: "vault_check" }, (why) => {
+    pane.replaceChildren(el(doc, "p", `Open a repository to check its vault. ${why}`, "empty"));
+  });
 }
 
 // The report `trellis vault check` prints, line for line as the core gives
@@ -196,7 +178,7 @@ function drawHits(doc, tauri, v) {
 // search box does on focus. Read-only, through the same path as a search.
 function browse(doc, tauri) {
   asked += 1;
-  send(doc, tauri, { id: `desktop-vault-search-${asked}`, type: "vault_search", query: "" }, "Listing the vault's notes.");
+  forward(doc, tauri, { id: `desktop-vault-search-${asked}`, type: "vault_search", query: "" }, "Listing the vault's notes.");
 }
 
 function section(doc, heading, body) {
@@ -270,7 +252,7 @@ export async function wireVault(doc, tauri) {
     const query = doc.getElementById("vt-query").value.trim();
     asked += 1;
     searching(doc, true);
-    const sent = await send(doc, tauri, { id: `desktop-vault-search-${asked}`, type: "vault_search", query }, query === "" ? "Listing the vault's notes." : `Searching the vault for ${query}.`);
+    const sent = await forward(doc, tauri, { id: `desktop-vault-search-${asked}`, type: "vault_search", query }, query === "" ? "Listing the vault's notes." : `Searching the vault for ${query}.`);
     if (!sent) searching(doc, false);
   });
   doc.getElementById("vt-check-ask").addEventListener("click", () => askCheck(doc, tauri));
@@ -290,11 +272,6 @@ export async function wireVault(doc, tauri) {
   await tauri.event.listen("rpc-exited", () => searching(doc, false));
 }
 
-function start() {
-  wireVault(document, window.__TAURI__).catch((err) => console.error("trellis desktop vault:", err));
-}
-
 if (typeof window !== "undefined" && window.__TAURI__) {
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
-  else start();
+  start("the vault view", () => wireVault(document, window.__TAURI__));
 }
