@@ -8,8 +8,6 @@
 //   component, with the whole path as the cell's title, so the bar stays
 //   one line (#652); the root also names the window in `document.title`
 //   (#645);
-// - the session's model and where it came from (`repository`, `user` or
-//   `session`, the view's `model.source`, null when the core cannot tell);
 // - whether a run is in flight, the view's `running`;
 // - what the run is on, the view's `phase` (#615): the model being called
 //   for a turn, or the tool or checks the last turn ran, each with the
@@ -20,12 +18,15 @@
 //   status `rpc-exited` carried, or not started for the reason `no-child`
 //   gave.
 //
-// Runtime reachability is not shown here: rpc's `list_models` probes the
-// default local runtimes, and the model pane (model.js) lists what each
-// address answered; the page itself never talks to a runtime. Every value
-// is trellis-supplied text, written through textContent only (ADR 0007,
-// S10).
+// The session's model is the bar's last cell, the model chooser's summary,
+// which model.js draws (#909). Runtime reachability is not shown here:
+// rpc's `list_models` probes the default local runtimes, and the model
+// chooser lists what each address answered; the page itself never talks to
+// a runtime. Each state is a design-system Status, a dot and its word
+// (ds.js), and every value is trellis-supplied text, written through
+// textContent only (ADR 0007, S10).
 
+import { dsStatus } from "./ds.js";
 import { str } from "./fmt.js";
 
 function show(doc, id, text) {
@@ -52,14 +53,6 @@ function showPath(doc, id, path, missing, after = "") {
   e.setAttribute("title", path);
 }
 
-// The session's model as the status bar words it.
-function modelText(m) {
-  const spec = m && typeof m === "object" ? str(m.spec) : null;
-  if (spec === null) return "none chosen yet";
-  const source = str(m.source);
-  return source === null ? `${spec} (source not known)` : `${spec} (from ${source})`;
-}
-
 // What `rpc-exited` carried, as text: the code, or why there is none.
 export function exitText(status) {
   if (status === null || typeof status !== "object") return "exited";
@@ -71,28 +64,34 @@ export function exitText(status) {
 }
 
 // What the run is on, as the status bar words the view's `phase`: the
-// phase trellis's last event said, and its turn number, nothing else.
+// phase trellis's last event said, and its turn number, nothing else; none
+// is an empty cell.
 export function phaseText(p) {
-  if (p === null || typeof p !== "object") return "none";
-  const turn = typeof p.turn === "number" ? `, turn ${p.turn}` : "";
+  if (p === null || typeof p !== "object") return "";
+  const turn = typeof p.turn === "number" ? ` · t${p.turn}` : "";
   switch (str(p.phase)) {
     case "model":
-      return `calling the model${turn}`;
+      return `→ model${turn}`;
     case "tool":
-      return `ran ${str(p.tool) ?? "a tool"}${turn}`;
+      return `→ ${str(p.tool) ?? "a tool"}${turn}`;
     case "checks":
-      return `ran checks${turn}`;
+      return `→ checks${turn}`;
     default:
-      return "none";
+      return "";
   }
+}
+
+// The cell `id` as one Status.
+function showStatus(doc, id, tone, word, options) {
+  doc.getElementById(id).replaceChildren(dsStatus(doc, tone, word, options));
 }
 
 // Draws the status bar's keys of one `view` event.
 export function drawStatus(doc, view) {
   if (view === null || typeof view !== "object") return;
-  if ("model" in view) show(doc, "status-model", modelText(view.model));
   if ("running" in view) {
-    show(doc, "status-run", view.running === true ? "a run is in flight" : "no run in flight");
+    if (view.running === true) showStatus(doc, "status-run", "signal", "running", { live: true });
+    else showStatus(doc, "status-run", "idle", "idle");
   }
   if ("phase" in view) show(doc, "status-phase", phaseText(view.phase));
 }
@@ -105,16 +104,16 @@ export async function wireStatus(doc, tauri) {
     const version = str(c.version) ?? "version not reported";
     showPath(doc, "status-trellis", str(c.trellis), "path not reported", ` · ${version}`);
     showPath(doc, "status-root", str(c.root), "not reported");
-    show(doc, "status-child", "running");
+    showStatus(doc, "status-child", "ok", "rpc running");
     // The window title names the open repository, so someone with several
     // windows can tell them apart from the task bar (#645). The root is a
     // path trellis reported, written as text: `title` is plain text.
     doc.title = str(c.root) === null ? "trellis" : `trellis · ${c.root}`;
   });
   await tauri.event.listen("rpc-exited", (event) => {
-    show(doc, "status-child", exitText(event.payload));
+    showStatus(doc, "status-child", "down", `rpc ${exitText(event.payload)}`);
   });
   await tauri.event.listen("no-child", (event) => {
-    show(doc, "status-child", `not started: ${String(event.payload)}`);
+    showStatus(doc, "status-child", "idle", "rpc not started", { title: String(event.payload) });
   });
 }
