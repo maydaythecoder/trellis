@@ -142,8 +142,9 @@ func asked(t *testing.T, question string, n int) *Model {
 func press(m *Model, k tea.KeyType) { m.Update(tea.KeyMsg{Type: k}) }
 
 // #640: the arrows and PgUp and PgDn scroll the diff while the modal is
-// up, never above its first line or past its last; q, Esc and Enter still
-// do nothing, and only y or n answers.
+// up, never above its first line or past its last page (#843: a diff that
+// fits has no page past its first, so it does not scroll); q, Esc and Enter
+// still do nothing, and only y or n answers.
 func TestApproveModalScrollStaysInsideTheDiff(t *testing.T) {
 	m := asked(t, "edit a.py (+3 -0)", 3)
 	press(m, tea.KeyUp)
@@ -153,14 +154,14 @@ func TestApproveModalScrollStaysInsideTheDiff(t *testing.T) {
 	}
 	press(m, tea.KeyPgDown)
 	press(m, tea.KeyDown)
-	if m.Modal.Scroll != 2 {
-		t.Fatalf("scroll %d, want 2: the last line is as far as it goes", m.Modal.Scroll)
+	if m.Modal.Scroll != 0 {
+		t.Fatalf("scroll %d, want 0: the diff fits, so its first page is its last", m.Modal.Scroll)
 	}
 	key(m, 'q')
 	press(m, tea.KeyEsc)
 	press(m, tea.KeyEnter)
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y"), Paste: true})
-	if out := m.TakeOutbox(); len(out) != 0 || m.Quitting || m.Modal == nil || m.Modal.Scroll != 2 {
+	if out := m.TakeOutbox(); len(out) != 0 || m.Quitting || m.Modal == nil || m.Modal.Scroll != 0 {
 		t.Fatalf("a key that is not the modal's acted: out %v quitting %v modal %+v", kinds(out), m.Quitting, m.Modal)
 	}
 }
@@ -193,6 +194,54 @@ func TestApproveModalKeepsTheQuestionDrawnWhileTheDiffScrolls(t *testing.T) {
 	out := m.TakeOutbox()
 	if m.Modal != nil || len(out) != 1 || out[0].Cmd["yes"] != true {
 		t.Fatalf("y did not answer: %v", kinds(out))
+	}
+}
+
+// #843: the model let the offset run to the diff's last line while the
+// view stopped a page earlier, so after paging to the end the first Up
+// moved nothing. The offset now stops where the view does.
+func TestApproveModalUpMovesAtOnceAfterTheEnd(t *testing.T) {
+	m := asked(t, "edit a.py (+60 -0)", 60)
+	for i := 0; i < 10; i++ {
+		press(m, tea.KeyPgDown)
+	}
+	end := m.View()
+	if !strings.Contains(end, "–60 of 60") {
+		t.Fatalf("paging down did not reach the end:\n%s", end)
+	}
+	press(m, tea.KeyUp)
+	if up := m.View(); up == end || strings.Contains(up, "–60 of 60") {
+		t.Fatalf("the first Up after the end did not move the view:\n%s", up)
+	}
+}
+
+// A last line that wraps to more rows than the box shows is its own last
+// page: the offset stops at that line and the box shows what fits of it.
+// The limit ran one past the last line, and one Down on a long bash
+// command emptied the box and read "lines 2–2 of 1", leaving nothing of
+// the call being answered on screen.
+func TestApproveModalALineTallerThanTheBoxIsItsOwnLastPage(t *testing.T) {
+	for _, c := range []struct {
+		diff, shows string
+		last        int
+	}{
+		{strings.Repeat("x", 900), "xxxxxxxx", 0},
+		{"echo start\n" + strings.Repeat("y", 900), "yyyyyyyy", 1},
+	} {
+		m := running(t)
+		m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+		feed(m, approval("a1", "bash", c.diff))
+		for i := 0; i < 5; i++ {
+			press(m, tea.KeyPgDown)
+			press(m, tea.KeyDown)
+		}
+		if m.Modal.Scroll != c.last {
+			t.Fatalf("scroll %d, want %d: the last line is as far as it goes", m.Modal.Scroll, c.last)
+		}
+		n := c.last + 1
+		if v := m.View(); !strings.Contains(v, c.shows) || !strings.Contains(v, fmt.Sprintf("lines %d–%d of %d", n, n, n)) {
+			t.Fatalf("the box does not show the last line from its start:\n%s", v)
+		}
 	}
 }
 
