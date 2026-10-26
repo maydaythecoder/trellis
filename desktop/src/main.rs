@@ -29,7 +29,9 @@
 //! repository no child is started, and the core emits the overview instead.
 //!
 //! A close request on the window is held while a child runs: the core sends
-//! it `quit`, and the window closes once it has exited. Nothing kills it.
+//! it `quit`, and the window closes once it has exited. Nothing kills it. A
+//! second close while it waits is held too, and the page told why
+//! (`Core::close_requested`).
 
 // A windowed program: without this Windows opens a console beside the
 // window. Tests keep the console so their output is seen.
@@ -49,7 +51,7 @@ mod state;
 mod trails;
 mod web;
 
-use commands::Core;
+use commands::{Close, Core};
 use std::path::PathBuf;
 use std::sync::{Arc, Once};
 use tauri::webview::{NewWindowResponse, PageLoadEvent};
@@ -139,19 +141,25 @@ fn main() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let core = window.state::<Core>().inner().clone();
-                // Only while a child runs: once it has gone, the close the
-                // thread below asks for goes through.
-                if let Some(taken) = core.take_child("the desktop is closing") {
-                    api.prevent_close();
-                    let window = window.clone();
-                    std::thread::spawn(move || {
-                        if let Err(e) = core.shut_down(taken) {
-                            eprintln!("trellis-desktop: shutting down trellis rpc: {e}");
-                        }
-                        if let Err(e) = window.close() {
-                            eprintln!("trellis-desktop: cannot close the window: {e}");
-                        }
-                    });
+                match core.close_requested() {
+                    Close::Now => {}
+                    // An earlier close waits for the child: the core has
+                    // told the page, and this one is held (#815).
+                    Close::Held => api.prevent_close(),
+                    // Once the child has exited, the close the thread asks
+                    // for finds none running, and goes through.
+                    Close::AfterShutDown(taken) => {
+                        api.prevent_close();
+                        let window = window.clone();
+                        std::thread::spawn(move || {
+                            if let Err(e) = core.shut_down(taken) {
+                                eprintln!("trellis-desktop: shutting down trellis rpc: {e}");
+                            }
+                            if let Err(e) = window.close() {
+                                eprintln!("trellis-desktop: cannot close the window: {e}");
+                            }
+                        });
+                    }
                 }
             }
         })

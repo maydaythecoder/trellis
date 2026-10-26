@@ -93,8 +93,9 @@ Parity between the clients is tracked in `tui/PARITY.md`.
 ## Tokens
 
 Every value comes from `docs/design/system/tokens.json`, the owner's design
-system as vendored into the repository; the wireframe's first `<style>` block
-and the tables in `docs/design/DESIGN.md` §3 are copies that
+system as vendored into the repository; the wireframe's first `<style>` block,
+the tables in `docs/design/DESIGN.md` §3 and the TUI's
+`tui/internal/theme/tokens_gen.go` are copies that
 `scripts/checks/design-tokens.py` holds to it. Each colour's meaning is in
 DESIGN.md §3.1, the terminal colours (256-colour index and 16-colour fallback)
 in §3.4, and where the brand book and the engine's rules differ in §2.1. The
