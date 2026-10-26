@@ -222,11 +222,12 @@ mod tests {
         found[0]
     }
 
-    /// The seven sections the rail switches, in rail order (#300 as amended
-    /// 2026-10-07; overview is the landing section). The seventh, atlas,
-    /// sits after codebase: the owner asked on 2026-10-11 for the Atlas
-    /// "without removing the other ones", so it is added beside them and
-    /// every other section keeps its place.
+    /// The seven sections, in page order (#300 as amended 2026-10-07;
+    /// overview is the landing level, and the other six are its panels, the
+    /// levels below it, #826). The seventh, atlas, sits after codebase: the
+    /// owner asked on 2026-10-11 for the Atlas "without removing the other
+    /// ones", so it is added beside them and every other section keeps its
+    /// place.
     const SECTIONS: [&str; 7] = [
         "overview", "run", "trails", "codebase", "atlas", "board", "vault",
     ];
@@ -362,31 +363,59 @@ mod tests {
     }
 
     #[test]
-    fn page_rail_buttons_control_sections_that_exist() {
-        // The risk: a rail button that shows nothing, or a section no
-        // button reaches; a later view shown before it is built, or a run
-        // section that says it is not built. Seven sections (#300 as amended
-        // 2026-10-07, and the Atlas the owner asked for on 2026-10-11),
-        // overview first and the one shown at load; the ones in BUILT are
-        // built.
+    fn page_levels_enter_sections_that_exist() {
+        // The risk (#826): a panel of the overview that enters nothing, or
+        // a section no panel reaches; a tab rail left beside the Trail (the
+        // brand book has no tabs); a later view shown before it is built,
+        // or a run section that says it is not built. Seven sections (#300
+        // as amended 2026-10-07, and the Atlas the owner asked for on
+        // 2026-10-11): the overview first and the one shown at load, and a
+        // panel on it for each of the other six; the ones in BUILT are built.
         let page = page();
-        let navs: Vec<usize> = (0..page.len()).filter(|&i| page[i].tag == "nav").collect();
-        assert_eq!(navs.len(), 1, "one nav");
-        let buttons: Vec<&Element> = (0..page.len())
-            .filter(|&i| page[i].tag == "button" && within(&page, i, navs[0]))
-            .map(|i| &page[i])
-            .collect();
-        let controls: Vec<&str> = buttons
+        let navs: Vec<&str> = page
             .iter()
-            .map(|b| {
-                b.attr("aria-controls")
-                    .expect("a rail button with no aria-controls")
+            .filter(|e| e.tag == "nav")
+            .map(|e| e.attr("id").expect("a nav with an id"))
+            .collect();
+        assert_eq!(
+            navs,
+            ["trail", "siblings"],
+            "the Trail and the sibling rail, and no tabs"
+        );
+        assert!(
+            page[index_of(&page, "siblings")]
+                .attrs
+                .contains_key("hidden"),
+            "the sibling rail is drawn below the overview only"
+        );
+        let overview = index_of(&page, "overview");
+        let panels: Vec<&str> = (0..page.len())
+            .filter(|&i| page[i].attr("data-enter").is_some())
+            .map(|i| {
+                assert_eq!(page[i].tag, "button", "a panel is a button, so ⏎ enters it");
+                assert!(within(&page, i, overview), "a way in outside the overview");
+                page[i].attr("data-enter").unwrap()
             })
             .collect();
-        assert_eq!(controls, SECTIONS, "the rail's buttons, in order");
+        assert_eq!(
+            panels,
+            SECTIONS[1..],
+            "the overview's panels, in page order"
+        );
         let sections: Vec<&Element> = page.iter().filter(|e| e.tag == "section").collect();
         let ids: Vec<&str> = sections.iter().filter_map(|s| s.attr("id")).collect();
-        assert_eq!(ids, SECTIONS, "every section, each with a rail button");
+        assert_eq!(ids, SECTIONS, "every section, each with a way in");
+        let stage = index_of(&page, "stage");
+        for &i in &(0..page.len())
+            .filter(|&i| page[i].tag == "section")
+            .collect::<Vec<_>>()
+        {
+            assert_eq!(
+                page[i].parent,
+                Some(stage),
+                "a section is a level of the stage"
+            );
+        }
         for id in SECTIONS {
             let found = by_id(&page, id);
             assert_eq!(found.len(), 1, "one element with id {id}");
@@ -2724,16 +2753,17 @@ mod tests {
     }
 
     #[test]
-    fn eagle_eye_overview_is_the_first_rail_button() {
+    fn eagle_eye_overview_is_the_first_level() {
         // The risk: the window landing on another section, or an overview
         // section nothing draws, so bare `trellis` opens on an empty page.
+        // The Trail as served says Overview, L1 (#826).
         let page = page();
-        let first = page
+        let current = page
             .iter()
-            .find(|e| e.tag == "button" && e.attr("aria-controls").is_some())
-            .expect("a rail button");
-        assert_eq!(first.attr("aria-controls"), Some("overview"));
-        assert_eq!(first.attr("aria-current"), Some("page"));
+            .find(|e| e.attr("aria-current") == Some("location"))
+            .expect("the Trail marks the level shown");
+        assert_eq!(current.text.trim(), "Overview");
+        assert_eq!(page[index_of(&page, "trail-level")].text.trim(), "L1 / 4");
         assert!(
             !page[index_of(&page, "overview")]
                 .attrs
@@ -3617,21 +3647,20 @@ mod tests {
         );
         assert_eq!(js.matches("p.follow.hidden = false;").count(), 1);
         let follow = click_handler(&js, "p.follow");
-        assert!(
-            follow.contains(r#"doc.querySelector('nav.rail button[aria-controls="run"]')"#)
-                && follow.contains("run.click()"),
-            "{follow}"
-        );
+        assert!(follow.contains(r#"enter(doc, "run")"#), "{follow}");
         let page = page();
         let button = index_of(&page, "composer-follow");
         assert!(within(&page, button, index_of(&page, "composer")));
         assert!(page[button].attrs.contains_key("hidden"), "shown as served");
         assert!(page[button].text.contains("Run"), "{}", page[button].text);
         assert!(
-            page.iter().any(|e| e.tag == "button"
-                && e.attr("aria-controls") == Some("run")
-                && page[e.parent.expect("in the rail")].tag == "nav"),
-            "the rail has no Run button for it to press"
+            page.iter()
+                .any(|e| e.tag == "button" && e.attr("data-enter") == Some("run")),
+            "the overview has no Run panel for it to enter as"
+        );
+        assert!(
+            js.contains(r#"import { enter } from "./keys.js";"#),
+            "composer.js enters Run some other way than the overview's panel does"
         );
     }
 
@@ -4580,35 +4609,126 @@ mod tests {
     }
 
     #[test]
-    fn focus_section_rail_press_focuses_the_shown_section_s_heading() {
-        // The risk (#646): showing a section and leaving focus on the rail
-        // button, or focusing something other than the heading the section
-        // is labelled by. No JavaScript runs under cargo test, so this holds
-        // the text; a node smoke script with a fake DOM pressed each rail
-        // button (see the commit).
-        let main = code_of("main.js");
-        let rail = function_body(&main, "wireRail");
-        let click = rail
-            .split("b.addEventListener(\"click\", () => {")
-            .nth(1)
-            .and_then(|r| r.split("});").next())
-            .expect("each rail button has a click handler");
-        let shown = click
-            .find("select(b);")
-            .expect("the press shows its section");
-        let section = click
-            .find("document.getElementById(b.getAttribute(\"aria-controls\"))")
-            .expect("the press finds its section");
-        let heading = click
-            .find("document.getElementById(section.getAttribute(\"aria-labelledby\"))")
-            .expect("the press finds the section's heading");
-        let focused = click
-            .find("heading.focus();")
-            .expect("the press focuses it");
+    fn focus_section_entering_a_level_focuses_its_heading() {
+        // The risk (#646, #826): entering a level and leaving focus on the
+        // panel that entered it, or focusing something other than the
+        // heading the section is labelled by; and going out a level with
+        // focus nowhere. No JavaScript runs under cargo test, so this holds
+        // the text; the CI smoke run walks in and out of every level.
+        let keys = code_of("keys.js");
+        let enter = function_body(&keys, "enter");
+        let shown = enter.find("show(doc);").expect("entering shows the level");
+        let heading = enter
+            .find("doc.getElementById(section.getAttribute(\"aria-labelledby\"))")
+            .expect("entering finds the section's heading");
+        let focused = enter.find("heading.focus();").expect("entering focuses it");
         assert!(
-            shown < section && section < heading && heading < focused,
-            "the heading is focused before its section is shown: {click}"
+            shown < heading && heading < focused,
+            "the heading is focused before its section is shown: {enter}"
         );
+        let go = function_body(&keys, "go");
+        assert!(
+            go.contains("button[data-enter=") && go.contains("panel.focus();"),
+            "going out leaves the focus nowhere: {go}"
+        );
+    }
+
+    #[test]
+    fn escape_goes_out_one_level() {
+        // The risk (#826): ESC claimed by more than one module, so one key
+        // does two things (the Atlas held it for the whole document); ESC
+        // taken from a person typing in a field or answering a dialog; or
+        // ESC that goes nowhere. keys.js is the one document-wide owner: a
+        // dialog keeps its own ESC, a field is left rather than navigated
+        // from, a module that uses ESC is asked first through onEscape, an
+        // element that used it calls preventDefault, and otherwise ESC goes
+        // out one level.
+        let keys = code_of("keys.js");
+        let wire = function_body(&keys, "wireKeys");
+        let order: Vec<usize> = [
+            "if (e.key !== \"Escape\" || e.defaultPrevented) return;",
+            "if (doc.querySelector(\"dialog[open]\")) return;",
+            "if (typing(e.target)) {",
+            "for (const handler of [...escapes].reverse()) {",
+            "if (out(doc)) e.preventDefault();",
+        ]
+        .iter()
+        .map(|want| {
+            wire.find(want)
+                .unwrap_or_else(|| panic!("wireKeys lacks {want}: {wire}"))
+        })
+        .collect();
+        assert!(
+            order.windows(2).all(|w| w[0] < w[1]),
+            "ESC is decided in another order: {wire}"
+        );
+        let out = function_body(&keys, "out");
+        assert!(
+            out.contains("if (path.length < 2) return false;")
+                && out.contains("go(doc, path.length - 2);"),
+            "out does not go up exactly one level: {out}"
+        );
+        // No other module listens for ESC on the whole document.
+        for (module, code) in ui_code() {
+            if module == "keys.js" {
+                continue;
+            }
+            for listener in code.split("doc.addEventListener(\"keydown\"").skip(1) {
+                let body = listener.split("\n  });").next().unwrap_or("");
+                assert!(
+                    !body.contains("\"Escape\""),
+                    "{module} takes ESC for the whole document; register it with onEscape"
+                );
+            }
+        }
+        assert!(
+            code_of("atlas.js").contains("onEscape((ev) => {"),
+            "the Atlas's ESC is not keys.js's"
+        );
+    }
+
+    #[test]
+    fn leaving_a_level_removes_every_listener_it_added() {
+        // The risk (#826): a level's listeners outliving it, so each visit
+        // adds another and the page's listener count grows with every walk
+        // in and out. What keys.js draws for a level adds each listener
+        // with the level's AbortController signal, and leaving the level
+        // aborts it, calls every unlisten the level registered and starts
+        // a new scope; what it drew is replaced, never appended to. The CI
+        // smoke run counts the page's listeners across those walks.
+        let keys = code_of("keys.js");
+        for drawer in ["drawTrail", "drawSiblings"] {
+            let body = function_body(&keys, drawer);
+            let adds = body.matches("addEventListener(").count();
+            assert!(
+                adds > 0,
+                "{drawer} adds no listener, so this test reads nothing"
+            );
+            assert_eq!(
+                body.matches("{ signal });").count(),
+                adds,
+                "{drawer} adds a listener without the level's signal: {body}"
+            );
+            assert!(
+                body.contains("replaceChildren("),
+                "{drawer} appends to what it drew: {body}"
+            );
+        }
+        let end = function_body(&keys, "endScope");
+        for want in [
+            "scope.controller.abort();",
+            "for (const unlisten of scope.unlisten.splice(0)) unlisten();",
+            "scope = newScope();",
+        ] {
+            assert!(end.contains(want), "endScope lacks {want}: {end}");
+        }
+        for caller in ["go", "enter"] {
+            assert!(
+                function_body(&keys, caller).contains("leave(doc);"),
+                "{caller} changes the level without ending the last one's scope"
+            );
+        }
+        assert!(function_body(&keys, "leave").contains("endScope();"));
     }
 
     #[test]

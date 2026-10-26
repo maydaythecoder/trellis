@@ -30,6 +30,7 @@
 
 import { el } from "./dom.js";
 import { isCount, plural, str } from "./fmt.js";
+import { onEscape, typing } from "./keys.js";
 import { send, start } from "./rpc.js";
 
 const ID = "desktop-atlas-";
@@ -2806,10 +2807,6 @@ function hint(A) {
   }, 2500);
 }
 
-function typing(t) {
-  return t && ["INPUT", "SELECT", "TEXTAREA"].includes(t.tagName);
-}
-
 function wireControls(A) {
   byId(A, "at-zin").addEventListener("click", () => zoomAbout(A, 1.6, A.vw / 2, A.vh / 2));
   byId(A, "at-zout").addEventListener("click", () => zoomAbout(A, 1 / 1.6, A.vw / 2, A.vh / 2));
@@ -2861,10 +2858,23 @@ function wireControls(A) {
     if (ev.key === "/" && !busy) {
       ev.preventDefault();
       openSearch(A);
-    } else if (ev.key === "Escape" && !byId(A, "at-search").hidden) closeSearch(A);
-    else if (ev.key === "Escape" && !busy && A.sel) select(A, null);
-    else if (ev.key === "[" && !busy) histGo(A, -1);
+    } else if (ev.key === "[" && !busy) histGo(A, -1);
     else if (ev.key === "]" && !busy) histGo(A, 1);
+  });
+  // ESC is keys.js's for the whole page (#826): the Atlas is asked first,
+  // and closes its search, then clears its selection, before ESC goes out
+  // a level.
+  onEscape((ev) => {
+    if (!shown(A)) return false;
+    if (!byId(A, "at-search").hidden) {
+      closeSearch(A);
+      return true;
+    }
+    if (!typing(ev.target) && A.sel) {
+      select(A, null);
+      return true;
+    }
+    return false;
   });
   A.doc.addEventListener("pointerdown", (ev) => {
     const s = byId(A, "at-search");
