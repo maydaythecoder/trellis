@@ -18,7 +18,7 @@ const forClassify = "classify"
 
 // route asks trellis what a line is before anything runs.
 func (m *Model) route(text string) {
-	m.pushLine("> " + view.Plain(text))
+	m.push(view.RoleYou, "> "+view.Plain(text))
 	m.classifying = true
 	m.classifyText = text
 	m.ask("classify", forClassify, map[string]any{"text": text})
@@ -46,13 +46,13 @@ func (m *Model) classified(r *frames.ResponseFields, ok bool) {
 			if strings.TrimSpace(l) == "" {
 				continue
 			}
-			m.pushLine("! " + view.Plain(l))
+			m.push(view.RoleRefusal, "! "+view.Plain(l))
 			said = true
 		}
 		if !said {
-			m.pushLine("! trellis could not tell whether that was a question or a task, and gave no reason")
+			m.push(view.RoleRefusal, "! trellis could not tell whether that was a question or a task, and gave no reason")
 		}
-		m.pushLine("· nothing was run")
+		m.push(view.RoleNote, "· nothing was run")
 		return
 	}
 	d, _ := r.Data.(map[string]any)
@@ -60,13 +60,13 @@ func (m *Model) classified(r *frames.ResponseFields, ok bool) {
 	case "question":
 		answer, _ := d["answer"].(string)
 		if strings.TrimSpace(answer) == "" {
-			m.pushLine("· trellis took that for a question and gave no answer; nothing was run")
+			m.push(view.RoleNote, "· trellis took that for a question and gave no answer; nothing was run")
 			return
 		}
-		m.pushText(answer)
+		m.pushText(view.RoleText, answer)
 	case "task":
 		m.startRun(text)
 	default:
-		m.pushLine("! trellis answered classify with no intent this view knows; nothing was run")
+		m.push(view.RoleRefusal, "! trellis answered classify with no intent this view knows; nothing was run")
 	}
 }

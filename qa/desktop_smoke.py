@@ -18,7 +18,8 @@ one JSON message per NUL byte), and fails on:
 - an uncaught exception (`Runtime.exceptionThrown`), a `console.error`
   (`Runtime.consoleAPICalled` of type error), or a log entry at level error
   (`Log.entryAdded`, where a Content-Security-Policy refusal shows up);
-- listeners, nodes or documents that do not come back. After a warm-up, it
+- listeners, nodes or documents that do not come back. After a warm-up
+  (one task, and walks until one leaves the counts where the last did), it
   counts them (`Memory.getDOMCounters`, after `HeapProfiler.collectGarbage`),
   then walks into every level of the page and out again, N times,
   and the three counts must be where they were; then it runs N tasks to
@@ -78,6 +79,9 @@ SCRIPT = FIXTURES / "scripted-done-only.json"
 # How long one wait may take before the run fails, in seconds: a page load,
 # a run to its end, a protocol answer.
 WAIT = 60
+
+# The most walks the warm-up takes to reach counts that hold (see smoke()).
+WARM_WALKS = 4
 
 
 class Missing(Exception):
@@ -181,6 +185,12 @@ class Chrome:
             # Chrome, not trellis: nothing of the repository's runs in it.
             self.proc.kill()
             self.proc.wait()
+        # Chrome has exited, so the reader sees the end of its pipe and
+        # returns; both ends are closed once it has.
+        self.out.close()
+        self.reader.join(timeout=5)
+        if not self.reader.is_alive():
+            self.inp.close()
         shutil.rmtree(self.profile, ignore_errors=True)
 
 
@@ -336,6 +346,15 @@ class Desktop:
         self.page_url = f"http://{self.host}:{self.port}/{self.token}/"
         self.frames = queue.Queue()
         threading.Thread(target=self._events, daemon=True).start()
+        # The desktop writes only its errors to stderr. Read as they come,
+        # so one shows in the run's log and the pipe never fills and holds
+        # the desktop on a write; the thread ends when the desktop exits.
+        self.stderr = threading.Thread(target=self._stderr, daemon=True)
+        self.stderr.start()
+
+    def _stderr(self):
+        for raw in self.proc.stderr:
+            print(f"smoke: trellis-desktop stderr: {raw.decode('utf-8', errors='replace').rstrip()}")
 
     def _events(self):
         """The core's events, as a second page would hear them: the frames
@@ -383,6 +402,9 @@ class Desktop:
             self.proc.wait(timeout=WAIT)
         except subprocess.TimeoutExpired:
             print("smoke: trellis-desktop did not stop within the bound after its stdin closed")
+        else:
+            self.stderr.join(timeout=5)
+            self.proc.stdout.close()
         shutil.rmtree(self.config, ignore_errors=True)
 
 
@@ -396,19 +418,37 @@ def smoke(chrome_bin, desktop, trellis, prompts, cycles):
     failures = []
     with fixture_repo(None, BASELINE) as repo:
         d = Desktop(desktop, trellis, repo)
-        chrome = Chrome(chrome_bin)
+        # Set inside the try, so a Chrome that fails to start still leaves
+        # the desktop asked to stop before the clone it runs in is removed.
+        chrome = None
         try:
+            chrome = Chrome(chrome_bin)
             page = Page(chrome)
             page.open(d.page_url)
             page.settle(3)
             d.send({"type": "set_model", "model": "scripted:" + SCRIPT.as_posix(), "id": "smoke-model"})
             d.wait_for(lambda f: f.get("type") == "response" and f.get("id") == "smoke-model", "set_model answer")
             # Warm-up: whatever the page creates once for its life is made
-            # here, before anything is counted.
+            # here, before anything is counted. A section asks for what it
+            # shows only while it is shown, and the Atlas asks in steps (the
+            # history, HEAD, its symbols, each snapshot), so on a slow
+            # machine one walk can end before the page has drawn all it
+            # will. The warm-up walks again until a walk leaves the counts
+            # where the one before left them, at most WARM_WALKS times; a
+            # page that grows on every walk grows in the counted walks too,
+            # and fails there.
             task(d, 0)
             levels = page.run(WALK)
             page.settle(2)
-            start, heap0 = page.counts(), page.heap()
+            start = page.counts()
+            for _ in range(WARM_WALKS - 1):
+                page.run(WALK)
+                page.settle(2)
+                again = page.counts()
+                if again == start:
+                    break
+                start = again
+            heap0 = page.heap()
             print(f"smoke: warm-up done; {levels} levels; counts {start}")
             for _ in range(cycles):
                 page.run(WALK)
@@ -430,7 +470,8 @@ def smoke(chrome_bin, desktop, trellis, prompts, cycles):
             page.settle(1)
             failures += page.errors
         finally:
-            chrome.close()
+            if chrome is not None:
+                chrome.close()
             d.close()
     return failures
 
@@ -509,6 +550,7 @@ def self_test(chrome_bin):
     finally:
         chrome.close()
         server.shutdown()
+        server.server_close()
         shutil.rmtree(site, ignore_errors=True)
     for b in bad:
         print(f"FAIL: self-test: {b}")

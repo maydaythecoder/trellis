@@ -31,7 +31,7 @@
 import { el } from "./dom.js";
 import { isCount, plural, str } from "./fmt.js";
 import { onEscape, typing } from "./keys.js";
-import { send, start } from "./rpc.js";
+import { onShown, send, start } from "./rpc.js";
 
 const ID = "desktop-atlas-";
 // get_codebase lists this many modules: all of any repository the layout
@@ -2974,25 +2974,21 @@ export async function wireAtlas(doc, win, tauri) {
     A.childUp = false;
     if (A.view === null) status(A, "No repository is open: open a repository to see its atlas.");
   });
-  const button = doc.querySelector('nav.rail button[aria-controls="atlas"]');
-  if (button) {
-    button.addEventListener("click", () => {
-      // The model pane, open above every section until a model is chosen,
-      // would push the map below the fold; showing the Atlas folds it, and
-      // its summary opens it again.
-      const pane = doc.getElementById("model-pane");
-      if (pane && pane.open) pane.open = false;
-      // After every click listener, the rail's among them, has run, so the
-      // section is shown when it is measured. A page loaded after its child
-      // started saw no child-started; asking is what tells whether one is
-      // there.
-      Promise.resolve().then(() => {
-        A.childUp = true;
-        resize(A);
-        pump(A);
-      });
-    });
-  }
+  // Entering the Atlas's level shows its section (keys.js), and the Atlas
+  // measures and asks then (#826).
+  onShown(doc, "atlas", () => {
+    // The model pane, open above every section until a model is chosen,
+    // would push the map below the fold; showing the Atlas folds it, and
+    // its summary opens it again.
+    const pane = doc.getElementById("model-pane");
+    if (pane && pane.open) pane.open = false;
+    // The section is shown by now, so it can be measured. A page loaded
+    // after its child started saw no child-started; asking is what tells
+    // whether one is there.
+    A.childUp = true;
+    resize(A);
+    pump(A);
+  });
   return A;
 }
 

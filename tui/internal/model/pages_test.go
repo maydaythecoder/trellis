@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/maydaythecoder/trellis/tui/internal/rpc"
+	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
 // numbered is a model at 80x24 whose transcript is n numbered lines,
@@ -19,7 +20,7 @@ func numbered(t *testing.T, n int) *Model {
 	m.Update(windowSize(80, 24))
 	m.Transcript = nil
 	for i := 0; i < n; i++ {
-		m.pushLine(fmt.Sprintf("line %03d", i))
+		m.push(view.RoleText, fmt.Sprintf("line %03d", i))
 	}
 	return m
 }
@@ -60,7 +61,7 @@ func TestPanesHomeShowsTheFirstLineAndPageUpStopsThere(t *testing.T) {
 	m.Update(windowSize(80, 24))
 	m.Transcript = nil
 	for i := 0; i < 120; i++ {
-		m.pushLine(fmt.Sprintf("line %03d %s", i, strings.Repeat("wrapped words ", 5)))
+		m.push(view.RoleText, fmt.Sprintf("line %03d %s", i, strings.Repeat("wrapped words ", 5)))
 	}
 	if strings.Contains(m.View(), "line 000") {
 		t.Fatal("it does not start at the end")
@@ -87,7 +88,7 @@ func TestPanesEndFollowsTheEndAgain(t *testing.T) {
 	if m.ScrollBack != 0 {
 		t.Fatalf("scroll back %d after End", m.ScrollBack)
 	}
-	m.pushLine("THE NEWEST")
+	m.push(view.RoleText, "THE NEWEST")
 	if !strings.Contains(m.View(), "THE NEWEST") {
 		t.Fatalf("not following:\n%s", m.View())
 	}
@@ -126,19 +127,25 @@ func TestPanesClockKeepsElapsedCurrentWhileRunning(t *testing.T) {
 }
 
 // The program's clock (tui_run.rs's send_elapsed): a TickMsg after a
-// measured second, and another scheduled each time one arrives.
+// measured second, and another scheduled each time one arrives; once the
+// App is closed, a waiting tick ends at once with nothing (#847).
 func TestPanesClockTicksOnceASecond(t *testing.T) {
+	a := NewApp(fresh(t), &fakeClient{lines: make(chan rpc.Line)})
 	start := time.Now()
-	msg := tick()()
+	msg := a.tick()()
 	if _, ok := msg.(TickMsg); !ok {
 		t.Fatalf("got %T, want TickMsg", msg)
 	}
 	if d := time.Since(start); d < 900*time.Millisecond {
 		t.Fatalf("ticked after %v, not a second", d)
 	}
-	a := NewApp(fresh(t), &fakeClient{lines: make(chan rpc.Line)})
 	if _, next := a.Update(TickMsg{}); next == nil {
 		t.Fatal("no next tick was scheduled")
+	}
+	a.Close()
+	start = time.Now()
+	if msg := a.tick()(); msg != nil || time.Since(start) > 500*time.Millisecond {
+		t.Fatalf("a tick after Close gave %T after %v", msg, time.Since(start))
 	}
 }
 
