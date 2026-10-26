@@ -25,6 +25,7 @@ func (m *Model) clearPanes() {
 	m.restored = nil
 	m.runStart = m.now()
 	m.waited = 0
+	m.engineMs, m.engineMark = nil, 0
 	m.strip.Phase = view.Phase{}
 	m.strip.Stopping = false
 	m.strip.Outcome, m.strip.Exit = "", nil
@@ -80,7 +81,8 @@ func (m *Model) panesTurn(t *frames.TurnFields) {
 		m.Radius = &view.Radius{Resolved: *t.Resolved, Candidates: *t.Candidates, Unresolved: *t.Unresolved}
 	}
 
-	elapsed := uint64(m.ownElapsed() / time.Second)
+	m.reportedElapsed(t.ElapsedMs)
+	elapsed := uint64(m.elapsed() / time.Second)
 	m.Budget = view.Budget{
 		Iteration:        t.Turn,
 		MaxIterations:    m.Budget.MaxIterations,
@@ -100,16 +102,40 @@ func (m *Model) runBudget(max *uint64) {
 
 // tick keeps the budget's elapsed time current between turns (#641): the
 // screen moved only when a turn arrived, and a long model call read as a
-// hang. The figure is this view's clock (ownElapsed); a tick with no run in
-// flight changes nothing, so a run that has ended keeps the time it took.
+// hang. The figure is elapsed's; a tick with no run in flight changes
+// nothing, so a run that has ended keeps the time it took. This view's own
+// clock says nothing before its first second, while trellis's figure is
+// drawn from the first one it sends.
 func (m *Model) tick() {
 	if !m.Running || m.runStart.IsZero() {
 		return
 	}
-	if d := m.ownElapsed(); d >= time.Second {
+	if d := m.elapsed(); m.engineMs != nil || d >= time.Second {
 		secs := uint64(d / time.Second)
 		m.Budget.ElapsedSecs = &secs
 	}
+}
+
+// reportedElapsed takes an elapsed_ms trellis sent (#906) as the figure the
+// strip counts on from; nil, an event that carried none, changes nothing.
+func (m *Model) reportedElapsed(ms *uint64) {
+	if ms == nil {
+		return
+	}
+	v := *ms
+	m.engineMs, m.engineMark = &v, m.ownElapsed()
+}
+
+// elapsed is the run's time as the strip draws it: the last figure trellis
+// sent, counted on since by this view's clock, which leaves out a question
+// waiting on the person as trellis's budget does; or, with none sent, this
+// view's own clock alone.
+func (m *Model) elapsed() time.Duration {
+	own := m.ownElapsed()
+	if m.engineMs == nil {
+		return own
+	}
+	return time.Duration(*m.engineMs)*time.Millisecond + max(own-m.engineMark, 0)
 }
 
 // ownElapsed is the run's time by this view's clock: from its start, less
@@ -171,5 +197,6 @@ func (m *Model) viewState() view.State {
 func (m *Model) nowState() view.Now {
 	n := m.strip
 	n.Waiting = m.Modal != nil
+	n.EngineClock = m.engineMs != nil
 	return n
 }

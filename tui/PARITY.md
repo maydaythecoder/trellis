@@ -228,14 +228,15 @@ of them, so each row names no Rust test.
 | Rust file | Rust test | Rule | Ticket | Go test |
 | --- | --- | --- | --- | --- |
 | none | none | the Now strip names the state, the turn against the run's ceiling and what the run is on; an ended run in run_end's own words and exit code, never done or failed | #850 | `TestNowStripShowsStateTurnAndActivity` |
-| none | none | the strip's clock is this view's and says so, and leaves out the time a question waited on the person | #850 | `TestNowClockIsLabelledAndSkipsApprovalWaits` |
+| none | none | for a run whose events carry no elapsed_ms the strip's clock is this view's and says so, and leaves out the time a question waited on the person | #850 | `TestNowClockIsLabelledAndSkipsApprovalWaits` |
+| none | none | once a model call or turn carries elapsed_ms the strip's clock is trellis's figure, unmarked, counted on between events by this view's tick and held while a question waits; run_end's figure is the run's total, and a run_end without one falls back to this view's clock, marked | #906 | `TestNowClockIsTheEnginesWhenReported` |
 | none | none | Where it is names the runtime as it identified itself and the repository trellis serves, and a control mode trellis does not send as not reported | #850 | `TestWhereItIsShowsTheRuntime` |
 | none | none | the messages row draws trellis's newest stderr line and how many came before, and only once there is one | #850 | `TestViewDrawsTheNewestStderrLine` |
 | none | none | the Trail is the first row and the status bar with the live keys the last, at 120x40 and 80x24, at the top level and inside a pane | #851 | `TestShellTrailFirstStatusLastAt120x40And80x24` |
 | none | none | below 100 columns or 30 rows the right column folds into one row of the panes under a full-width transcript | #851 | `TestShellFoldsTheRightColumnAt80` |
 | none | none | Tab selects a pane, ⏎ on an empty line goes in, ESC comes out and never quits, Tab inside a pane goes across | #851 | `TestNavEnterInEscOut`, `TestShellSelectedPaneAndTheRail` |
 | none | none | the shell's renders at 80x24 and 120x40 match the goldens in tui/internal/view/testdata | #851 | `TestShellGoldenRenders` |
-| none | none | the Now strip draws the state as a dot and its word, the time by this view's clock marked * and the turn as a Meter of █ and ░ against the run's ceiling, never a percentage | #911 | `TestNowStripDrawsTheTurnAsAMeter`, `TestMeterFillsToTheShareAndKeepsTheBudgetTones` |
+| none | none | the Now strip draws the state as a dot and its word, the time (this view's clock marked *, or trellis's elapsed_ms unmarked) and the turn as a Meter of █ and ░ against the run's ceiling, never a percentage | #911 | `TestNowStripDrawsTheTurnAsAMeter`, `TestMeterFillsToTheShareAndKeepsTheBudgetTones` |
 | none | none | the budget row is a Meter for each limit the TUI holds, then the prompt in kB and the time | #911 | `TestBudgetLineNamesWhatWasNotReported`, `TestShellGoldenRenders` |
 | none | none | a figure trellis did not report is drawn —, never 0 and never as a Meter's cells, and /help says what — and * mean | #911 | `TestUnreportedFigureIsADash`, `TestBudgetLineUnreportedFiguresAreNamedNotDrawnAsZero` |
 | none | none | the status bar's worktree is a Status in its tone, and every key the screen shows is a keycap, the key in brackets | #911 | `TestStatusBarDrawsTheWorktreeAsAStatusAndTheKeysAsKeycaps`, `TestKeycapsAndStatusDrawTheirCards` |
