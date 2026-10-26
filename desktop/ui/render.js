@@ -25,28 +25,37 @@
 // order, Statuses for states. A figure trellis did not report is ds.js's
 // unreported: a dash with the reason as its title, never 0.
 
-import { appendRows, atEnd, el, fill, muted } from "./dom.js";
-import { dsStatus, figure, railRows, stats, unreported } from "./ds.js";
+import { atEnd, drawFeed, el, fill, muted } from "./dom.js";
+import { dsStatus, figure, railRows, stats, txEntry, txTurn, unreported } from "./ds.js";
 import { isCount, str } from "./fmt.js";
 import { drawGraph } from "./graph.js";
 
-// The actions log: the transcript, as the TUI's, one line per element. It
-// follows its end only while the reader is there (#643, as the TUI has
-// since #244); otherwise their place is kept and the jump button under the
-// log says new lines arrived. The view carries the whole transcript each
-// turn; dom.js's appendRows appends only the lines beyond those drawn, since
-// replacing every child of a role="log" region may have a screen reader
-// read the whole log again.
-function transcript(doc, pane, lines) {
-  const { followed, drawn } = appendRows(doc, pane, lines, "Nothing has run yet.");
+// The actions log: the transcript as the design system's Transcript
+// (#827), one entry per row the core sent, typed by what it came from, a
+// rule ahead of each turn's first row. The core sends each row once, and
+// again only when it changes, and dom.js's drawFeed appends or replaces
+// rows rather than redrawing the log. It follows its end only while the
+// reader is there (#643, as the TUI has since #244); otherwise their place
+// is kept and the jump button under the log says new rows arrived. Answers
+// true when rows are missing (the page fell behind its event stream), so
+// drawView's caller asks for the whole run again.
+function transcript(doc, pane, feed) {
+  const { followed, drawn, missing } = drawFeed(doc, pane, feed, {
+    draw: (row) => txEntry(doc, row),
+    divider: (row, before) =>
+      isCount(row.turn) && (before === null || before.dataset.turn !== String(row.turn)) ? txTurn(doc, row.turn) : null,
+    empty: "Nothing has run yet.",
+  });
   const jump = doc.getElementById("log-jump");
   if (followed) jump.hidden = true;
   else if (drawn > 0) jump.hidden = false;
+  return missing;
 }
 
 // Wires the actions log once: the jump button takes the reader to the end,
-// and scrolling there by hand puts the button away, since what it offered
-// is done.
+// scrolling there by hand puts the button away, since what it offered is
+// done, and a click or Enter on a tool row opens or closes its raw call and
+// observation. One listener each for the whole log, so its rows add none.
 export function wireLog(doc) {
   const pane = doc.getElementById("pane-transcript");
   const jump = doc.getElementById("log-jump");
@@ -57,6 +66,19 @@ export function wireLog(doc) {
   });
   pane.addEventListener("scroll", () => {
     if (atEnd(pane)) jump.hidden = true;
+  });
+  const toggle = (e) => {
+    const row = e.target.closest(".cd-tx-tool");
+    if (row === null || !pane.contains(row)) return;
+    const raw = row.querySelector(".cd-tx-raw");
+    raw.hidden = !raw.hidden;
+    row.setAttribute("aria-expanded", String(!raw.hidden));
+  };
+  pane.addEventListener("click", toggle);
+  pane.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    toggle(e);
   });
 }
 
@@ -263,13 +285,15 @@ const PANES = {
 };
 
 // Draws every pane the event carries; a key this page does not know is
-// left alone.
-export function drawView(doc, view) {
+// left alone. `onMissing` is called when the transcript found rows missing,
+// so the caller asks the core for the whole run again (#827).
+export function drawView(doc, view, onMissing) {
   if (view === null || typeof view !== "object") return;
   for (const [key, value] of Object.entries(view)) {
     const entry = PANES[key];
     if (!entry) continue;
     const pane = doc.getElementById(entry[0]);
-    if (pane) entry[1](doc, pane, value);
+    // Only a feed's drawing answers, and only true for missing rows.
+    if (pane && entry[1](doc, pane, value) === true) onMissing();
   }
 }
