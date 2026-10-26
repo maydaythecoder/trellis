@@ -436,6 +436,7 @@ impl Core {
         let steer_id = (line.get("type").and_then(Value::as_str) == Some("steer"))
             .then(|| line.get("id").and_then(Value::as_str).map(str::to_string))
             .flatten();
+        let abort = line.get("type").and_then(Value::as_str) == Some("abort");
         let writer = {
             let mut s = self.lock();
             check_model(line, s.view.configured())?;
@@ -473,6 +474,12 @@ impl Core {
                 Some(t @ ("get_history" | "get_codebase" | "get_symbols" | "get_radius")) => {
                     s.view.atlas_asked(t, line);
                 }
+                // The Now strip says `stopping` from here to the run's
+                // `run_end` (#828): no event says a stop began.
+                Some("abort") => {
+                    let c = s.view.abort_sent();
+                    self.sink.emit("view", s.view.view(c));
+                }
                 _ => {}
             }
             w
@@ -490,6 +497,12 @@ impl Core {
             if !c.is_empty() {
                 self.sink.emit("view", s.view.view(c));
             }
+        }
+        // Nor will an abort that never reached it stop anything.
+        if sent.is_err() && abort {
+            let mut s = self.lock();
+            let c = s.view.abort_unsent();
+            self.sink.emit("view", s.view.view(c));
         }
         sent
     }
@@ -1538,6 +1551,28 @@ mod tests {
     }
 
     #[test]
+    fn now_stopping_follows_a_forwarded_abort_until_trellis_answers() {
+        // The risk (#828): no event says a stop began, so a Now strip fed
+        // only by the child reads `running` through the whole rollback, and
+        // the person presses Stop again; or a refused abort leaves the strip
+        // saying `stopping` over a run that goes on. The core's forwarding
+        // sets it, and the child's refusal clears it. Here the run is the
+        // test's own line, so the child has none and refuses the abort.
+        let (core, rec, dirs) = with_child("now-stopping");
+        run_started(&core);
+        rec.take();
+        assert_eq!(core.send(&json!({"id": "ab", "type": "abort"})), Ok(()));
+        let stopping = rec.wait_for("view", |v| v["now"]["word"] == "stopping");
+        assert_eq!(stopping["now"]["can_stop"], false, "{stopping}");
+        rec.wait_for("rpc-frame", |f| f["id"] == "ab" && f["success"] == false);
+        rec.wait_for("view", |v| v["now"]["word"] == "running");
+        finish(&core).unwrap();
+        for d in &dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
     fn rpc_send_refuses_steer_and_abort_with_no_run_in_flight() {
         // The risk (#301): Stop or a steer sent while nothing runs, which
         // the page shows only during a run; or the child exits mid-run and
@@ -1888,7 +1923,19 @@ mod tests {
         keys.sort();
         // The graph is laid out from the actions, so it changes with them
         // (#303), and the phase with the turn's call (#615).
-        assert_eq!(keys, ["actions", "budget", "graph", "phase", "transcript"]);
+        // The Now strip and Where it is are drawn from those (#828).
+        assert_eq!(
+            keys,
+            [
+                "actions",
+                "budget",
+                "graph",
+                "now",
+                "phase",
+                "transcript",
+                "where"
+            ]
+        );
 
         // Text on stdout also raises the alert (#302).
         core.stdout_line(g, "plain text");
@@ -1957,6 +2004,7 @@ mod tests {
                 "graph",
                 "model",
                 "models",
+                "now",
                 "outcome",
                 "phase",
                 "queue",
@@ -1969,7 +2017,8 @@ mod tests {
                 "tier",
                 "transcript",
                 "undelivered",
-                "vault"
+                "vault",
+                "where"
             ]
         );
         assert_eq!(

@@ -206,12 +206,22 @@
 
       <section id="run" aria-labelledby="run-title" hidden>
         <h2 id="run-title" class="visually-hidden" tabindex="-1">Run</h2>
+        <!-- The Now strip (#828; the NowStrip card): what is happening right
+        now, drawn by now.js from the view's now key, which the core derives
+        from the run's events. It stays at the top while the level scrolls.
+        The role is on this element, which stays while the strip is drawn
+        afresh, so a change is announced. -->
+        <div id="pane-now" class="now" role="status" aria-label="Now"></div>
         <!-- The run view as the design system draws it (docs/design/system/
         components/RunView.md; #909): three columns, the run's figures on the
         left, the log and the graph in the middle, what it changed and how
         it ended on the right. -->
         <div class="cd-rv-grid run-grid">
           <div class="cd-rv-col">
+            <div class="pane" role="region" aria-labelledby="where-title">
+              <h3 id="where-title">Where it is</h3>
+              <div id="pane-where"></div>
+            </div>
             <div class="pane" role="region" aria-labelledby="budget-title">
               <h3 id="budget-title">Budget</h3>
               <div id="pane-budget"></div>

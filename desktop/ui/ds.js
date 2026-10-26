@@ -190,3 +190,63 @@ export function txEntry(doc, row) {
 export function txTurn(doc, turn) {
   return el(doc, "div", `turn ${turn}`, "cd-tx-turn");
 }
+
+// Button (the design system's): a button with its word, `variant` one of
+// the bundle's (signal, ghost, down; none is the outline one).
+export function dsButton(doc, word, { variant, title } = {}) {
+  const b = el(doc, "button", word, cx("cd-btn", variant && `cd-btn-${variant}`));
+  b.type = "button";
+  if (title) b.title = title;
+  return b;
+}
+
+// NowStrip (the design system's, #828): the run's state as a dot and its
+// word, the clock, the turn, where the run is, and on the right what waits
+// on the person, the model and the controls that apply. `tone` is one of
+// the bundle's NowStrip states (idle, running, waiting, paused, failed,
+// done), which colour the word; the word itself is the caller's. Each of
+// `clock`, `turn`, `where`, `wait` and `model` is text or an element, and
+// left out when null. The bundle sets role="status" on the strip; the page
+// sets it on the pane that holds the strip, which stays while the strip
+// is drawn afresh, since a live region added anew is not announced.
+export function nowStrip(doc, { tone, word, clock, turn, where, wait, model, controls = [] }) {
+  const root = el(doc, "div", null, "cd-now");
+  const state = el(doc, "span", null, cx("cd-now-state", `cd-now-${tone || "idle"}`));
+  const dot = el(doc, "span", null, "cd-now-dot");
+  dot.setAttribute("aria-hidden", "true");
+  state.append(dot, part(doc, word));
+  root.append(state);
+  const slot = (cls, v) => {
+    const s = el(doc, "span", null, cls);
+    s.append(part(doc, v));
+    return s;
+  };
+  const sep = () => {
+    const s = el(doc, "span", null, "cd-now-sep");
+    s.setAttribute("aria-hidden", "true");
+    return s;
+  };
+  if (clock != null) root.append(slot("cd-now-clock", clock));
+  if (turn != null) root.append(sep(), slot(null, turn));
+  if (where != null) root.append(sep(), slot("cd-now-where", where));
+  root.append(el(doc, "span", null, "cd-now-spacer"));
+  if (wait != null) root.append(slot("cd-now-wait", wait));
+  if (model != null) root.append(slot("cd-now-model", model));
+  root.append(...controls);
+  return root;
+}
+
+// Facts (#828): a label and its value per row, as a description list, for
+// a region that states where something is rather than counting it (Where
+// it is). Each value is text or an element (unreported's dash).
+export function facts(doc, rows) {
+  const dl = el(doc, "dl", null, "facts");
+  for (const r of rows) {
+    const row = el(doc, "div");
+    const dd = el(doc, "dd");
+    dd.append(part(doc, r.value));
+    row.append(el(doc, "dt", r.label), dd);
+    dl.append(row);
+  }
+  return dl;
+}
