@@ -127,7 +127,7 @@ read-only `get_*`, `list_*`, `classify` and `vault_*` queries
 | A finished run gets `\(^o^)/  all 212 passed` (README, Ascii card). | Counts come only from `trellis-checks` (rule 1). | A face may mark the outcome; any count beside it is a recorded check's count, never the model's. |
 | Components ship as React on `window.Trellis` with `components/bundle.css` (README, "Components"). | The desktop is plain ES modules with no bundler and a CSP without `'unsafe-inline'`; the TUI is Go (`desktop/CLAUDE.md`, ADR 0052). | The desktop loads `components/bundle.css` itself, as `desktop/ui/ds.css`, the same bytes below its header (`ds_css_is_the_design_systems_bundle`), and `desktop/ui/ds.js` builds each component's markup as the bundle's code does, with a class where the bundle sets a style (owner, 2026-10-26, #909). The TUI draws the same components in cells with Lip Gloss. |
 | Meter widths and Sparkline paths are drawn per value (Meter, Sparkline cards). | No `style` attribute and no `.style` from script on the desktop (`desktop/CLAUDE.md`). | Meters are block characters in text (`█░`), the same in both faces; anything else that varies takes a class, never an inline style. |
-| Event names `session.start`, `tool.call`, `context.update`, … (`events.md`). | A client reads only the contract's names (`run_start`, `turn`, `run budget`, `steer delivered`, …) and fields (rule 7). | `system/events.md` is intent. The mapping from the contract's names to each mark is not written yet (open); when it is, it is its own document, `docs/design/events.md`. |
+| Event names `session.start`, `tool.call`, `context.update`, … (`events.md`). | A client reads only the contract's names (`run_start`, `turn`, `run budget`, `steer delivered`, …) and fields (rule 7). | `system/events.md` is intent. `docs/design/events.md` maps each framing record, event and command answer the contract lists to the mark it makes in the desktop and in the TUI, one row each, and `scripts/checks/design-events.py` fails when the contract lists one with no row (#804). |
 | JetBrains Mono for numerals, labels, keycaps and code, IBM Plex Sans for headings and prose, both from Google Fonts (README, "Type"). | The desktop loads nothing from a network, and its CSP (`default-src 'none'`, no `font-src`) changes only by amending ADR 0048 (`desktop/CLAUDE.md`); the TUI draws in the terminal's font. | Fonts come from the machine. The stacks in `tokens.json` (`type.families`) name the two faces first and fall back to the system's (`ui-monospace`, `system-ui`, …), so each face shows where it is installed. Nothing is bundled, and the CSP keeps its directives. |
 | Focus is a 1px `signal-ring` outline, offset 1px; on a panel the whole frame turns `signal` (README, "States and motion"). | The desktop draws one 2px `--focus` outline on every button, field and summary, so WebView2 and WebKitGTK show the same ring (`field_contrast_focus_ring_covers_every_field_and_summary` in `desktop/src/lockdown.rs`). | The desktop's focus ring stays 2px wide, a deliberate difference from the brand book: WCAG 2.2's focus-appearance criterion (2.4.13) asks for at least the area of a 2px perimeter, which a 1px ring does not give. |
 | The composer's third verb, `Stop and send` (§3.3, from the run-view wireframe): stop this run, then run the message. | `trellis rpc` refuses a `prompt` while a run is in flight ("one at a time"), answers `abort` only once the run has ended and rolled back, and an abort also drops the follow-ups queued behind the run (`crates/trellis-cli/src/rpc.rs`). | The client sends `abort`, holds the message, and sends it as a `prompt` once that run's `run_end` arrives. Where the client keeps its state sequences it (the desktop's core, the TUI's model), on the event and never on a timer. |
@@ -266,8 +266,8 @@ and the wireframe itself.
 | Now strip | state word, elapsed, `-ing` activity line, `turn n / max`, queued count, `Stop` / `Pause` / `Summary so far` | `run_start`, last event, `run_end` |
 | Action log | role-typed rows (you · task, you · steer, model said, tool call, check, note, refusal, model asks you), turn dividers, filters, quiet mode | the event stream |
 | Compose | one box, three verbs on the button: `Steer`, `Queue`, `Stop and send`; the queue with per-item state | steer channel, `follow_up` |
-| Where it is | phase, tool and target, turn, last call, prompt bytes vs context budget, compactions, model, tier, runtime, control, root | `turn`, `run_budget`, `get_state` |
-| Budget | two numbers per row (used / ceiling); wall clock excludes waiting on a person | `run_budget` |
+| Where it is | phase, tool and target, turn, last call, prompt bytes vs context budget, compactions, model, tier, runtime, control, root | `turn`, `run budget`, `get_state` |
+| Budget | two numbers per row (used / ceiling); wall clock excludes waiting on a person | `run budget` |
 | Code | files touched with two line counts and a state; `diff` and `whole file`; approve/reject only while waiting on that edit; a line comment becomes a steer | `approval_request`, the worktree |
 | Summary | outcome and exit code, checks by kind with duration, facts, budget consumed, steers, path by turn, files, trail id and integrity, closing words fenced | `run_end`, the trail |
 
@@ -297,7 +297,9 @@ the named row's for `Same as`; a row the check cannot read fails it.
 raised row with no fill at the terminal's depth is drawn in reverse video.
 `trellis-tui` reads the terminal's colour depth and background once, before
 its program starts, and `--theme dark|light` replaces the background the
-terminal answers (Windows always answers dark). The view paints each row by
+terminal answers (Windows always answers dark). `--register serious|playful`
+is the register dial: `playful` draws one Ascii face on the Now strip where it
+has no run to show, and changes no other word, figure or key (#857). The view paints each row by
 its role, after every cut and pad is made on the plain text
 (`tui/internal/view/paint.go`, #841): what the person typed in `signal`,
 the model's words in `ink`, tool calls in `cool`, a check in `ok` or `down`
