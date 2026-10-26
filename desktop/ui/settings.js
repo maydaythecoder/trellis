@@ -33,26 +33,9 @@
 // Every spec, name, licence and error is trellis- or configuration-supplied
 // text, so it reaches the DOM through textContent only (ADR 0007, S10).
 
-function el(doc, tag, text) {
-  const e = doc.createElement(tag);
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
-
-function str(v) {
-  return typeof v === "string" ? v : null;
-}
-
-function isCount(v) {
-  return typeof v === "number" && Number.isFinite(v);
-}
-
-let nextId = 0;
-
-function lineId() {
-  nextId += 1;
-  return `desktop-settings-set-${nextId}`;
-}
+import { el } from "./dom.js";
+import { isCount, str } from "./fmt.js";
+import { lineId } from "./rpc.js";
 
 // What the picker calls the configured spec trellis pins when asked to.
 export const REPOSITORY_DEFAULT = "repository default";
@@ -84,7 +67,7 @@ export function modelChoices(available, models) {
     spec: resolved ?? (listed ? "nothing configured" : "not reported yet"),
     preselect: user === null && resolved !== null,
     saves: false,
-    line: () => ({ id: lineId(), type: "set_model", configured: true }),
+    line: () => ({ id: lineId("settings", "set"), type: "set_model", configured: true }),
   });
   if (user !== null) {
     choices.push({
@@ -93,7 +76,7 @@ export function modelChoices(available, models) {
       spec: user,
       preselect: true,
       saves: false,
-      line: () => ({ id: lineId(), type: "set_model", model: user }),
+      line: () => ({ id: lineId("settings", "set"), type: "set_model", model: user }),
     });
   }
   const local = listed && Array.isArray(listed.local) ? listed.local : [];
@@ -109,7 +92,7 @@ export function modelChoices(available, models) {
       spec,
       preselect: false,
       saves: true,
-      line: (save) => withSave({ id: lineId(), type: "set_model", model: spec }, save),
+      line: (save) => withSave({ id: lineId("settings", "set"), type: "set_model", model: spec }, save),
     });
   }
   choices.push({
@@ -121,7 +104,7 @@ export function modelChoices(available, models) {
     line: (save, typed) => {
       const spec = str(typed) === null ? "" : typed.trim();
       if (spec === "") return null;
-      return withSave({ id: lineId(), type: "set_model", model: spec }, save);
+      return withSave({ id: lineId("settings", "set"), type: "set_model", model: spec }, save);
     },
   });
   return choices;

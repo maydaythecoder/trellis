@@ -13,6 +13,7 @@
 // characters, never parsed.
 
 import { drawView, wireLog } from "./render.js";
+import { send, start } from "./rpc.js";
 import { drawOpenRefusal, drawOverview, drawOverviewChild } from "./overview.js";
 import { askStarters, composerStopped, drawComposer, wireComposer } from "./composer.js";
 import { drawDialogs, wireDialogs } from "./dialogs.js";
@@ -69,15 +70,9 @@ const NO_CHILD = "rpc_send: no trellis rpc child is running: ";
 // that loaded late heard no `no-child` or `rpc-exited` for that, so the
 // refusal is passed on as the not-running state (#638). Says whether the
 // line was forwarded, so a child is known to be running.
-async function askState(tauri) {
+function askState(tauri) {
   const heard = childrenStarted;
-  try {
-    await tauri.core.invoke("rpc_send", {
-      line: { id: "desktop-state", type: "get_state" },
-    });
-    return true;
-  } catch (err) {
-    const said = String(err);
+  return send(tauri, { id: "desktop-state", type: "get_state" }, (said) => {
     show("status", said);
     if (said.startsWith(NO_CHILD) && childrenStarted === heard) {
       const why = said.slice(NO_CHILD.length);
@@ -85,8 +80,7 @@ async function askState(tauri) {
       modelPaneStopped(document, why);
       drawOverviewChild(document, false);
     }
-    return false;
-  }
+  });
 }
 
 // The overview's actions: "Open" on a recent repository. Success needs no
@@ -121,9 +115,7 @@ let lastOutcome = null;
 // core keeps from trellis's own answer: the page adds up no turn itself.
 // A refusal (no child yet) is the status line's to say, not this pane's.
 function askSessionTokens(tauri) {
-  tauri.core
-    .invoke("rpc_send", { line: { id: "desktop-session-stats", type: "get_session_stats" } })
-    .catch((err) => show("status", String(err)));
+  send(tauri, { id: "desktop-session-stats", type: "get_session_stats" }, (why) => show("status", why));
 }
 
 async function main() {
@@ -208,10 +200,4 @@ async function main() {
   }
 }
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", () => {
-    main().catch((err) => console.error("trellis desktop:", err));
-  });
-} else {
-  main().catch((err) => console.error("trellis desktop:", err));
-}
+start("trellis desktop", main);
