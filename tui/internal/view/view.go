@@ -1,9 +1,18 @@
+// Package view draws the Go TUI. It holds no state and changes none: each
+// function takes what it draws and returns the text, so a test reads the
+// screen as a string. It imports nothing of the TUI's own, so the model can
+// use it without a cycle.
+//
+// A frame starts at Render, below, which the model's View calls with the
+// State that model/panes.go builds; while an approval question is up, View
+// draws Modal (modal.go) instead. Both draw their regions with Box
+// (frame.go), from text that the helpers in text.go make plain, cut, pad
+// and wrap, measuring every width in terminal cells.
 package view
 
 import (
 	"fmt"
 	"strings"
-	"unicode"
 )
 
 // Below this the six-region layout has no room to be legible; the ratatui
@@ -126,11 +135,11 @@ func Render(s State, w, h int) string {
 	right = append(right, radius(s, rightW, radiusH)...)
 
 	var out []string
-	out = append(out, pad(status(s, w), w))
+	out = append(out, Pad(status(s, w), w))
 	for i := 0; i < bodyH; i++ {
 		out = append(out, left[i]+right[i])
 	}
-	out = append(out, box("budget", "", []string{budgetLabel(s, w-2)}, w, 3)...)
+	out = append(out, Box("budget", "", []string{budgetLabel(s, w-2)}, w, 3)...)
 	out = append(out, entry...)
 	return strings.Join(out, "\n")
 }
@@ -155,7 +164,7 @@ func TranscriptRows(s State, w int) int {
 	left, _ := columns(s, w)
 	n := 0
 	for _, l := range s.Transcript {
-		n += len(wrapWords(plain(l), left-2))
+		n += len(WrapWords(Plain(l), left-2))
 	}
 	return n
 }
@@ -169,18 +178,18 @@ func tooSmall(w, h int) string {
 // cut, with "…", to the room left: drawn last, the worktree was pushed past
 // column 80 by a long spec and read "work" (#636).
 func status(s State, w int) string {
-	model := plain(s.Model)
+	model := Plain(s.Model)
 	if model == "" {
 		model = "none"
 	}
-	tier := plain(s.Tier)
+	tier := Plain(s.Tier)
 	if tier == "" {
 		tier = "probing…"
 	}
 	head := " TRELLIS   worktree " + WorktreeState(s) + "  model "
 	tail := "  tier " + tier
-	room := max(w-len([]rune(head))-len([]rune(tail)), 1)
-	return head + cut(model, room) + tail
+	room := max(w-Width(head)-Width(tail), 1)
+	return head + Cut(model, room) + tail
 }
 
 // WorktreeState is what the bar says about the worktree (#636), from this
@@ -216,7 +225,7 @@ func transcript(s State, w, h int) []string {
 	inner := w - 2
 	var rows []string
 	for _, l := range s.Transcript {
-		rows = append(rows, wrapWords(plain(l), inner)...)
+		rows = append(rows, WrapWords(Plain(l), inner)...)
 	}
 	innerH := h - 2
 	// Scrolled back past the first row, the first page is shown: the view
@@ -232,17 +241,17 @@ func transcript(s State, w, h int) []string {
 	}
 	bottom := ""
 	if s.Outcome != "" {
-		bottom = "last run: " + plain(s.Outcome)
+		bottom = "last run: " + Plain(s.Outcome)
 	}
-	return box(title, bottom, rows[start:end], w, h)
+	return Box(title, bottom, rows[start:end], w, h)
 }
 
 func edits(s State, w, h int) []string {
 	var lines []string
 	for _, e := range s.Edits {
-		lines = append(lines, "~ "+plain(e.Path))
+		lines = append(lines, "~ "+Plain(e.Path))
 	}
-	return box("edits", "", lines, w, h)
+	return Box("edits", "", lines, w, h)
 }
 
 func checks(s State, w, h int) []string {
@@ -252,19 +261,19 @@ func checks(s State, w, h int) []string {
 		if c.Passed {
 			word = "passed"
 		}
-		lines = append(lines, plain(c.Name)+" "+word)
+		lines = append(lines, Plain(c.Name)+" "+word)
 	}
-	return box("checks", "", lines, w, h)
+	return Box("checks", "", lines, w, h)
 }
 
 // radius draws the three counts as three rows meeting at one focus, never
 // as a ratio, a percentage or a total, and says what they are a floor on.
 func radius(s State, w, h int) []string {
 	if w-2 < 24 {
-		return box("radius", "", nil, w, h)
+		return Box("radius", "", nil, w, h)
 	}
 	if s.Radius == nil {
-		return box("radius", "", []string{"  no blast_radius call yet"}, w, h)
+		return Box("radius", "", []string{"  no blast_radius call yet"}, w, h)
 	}
 	r := s.Radius
 	rows := []struct {
@@ -286,7 +295,7 @@ func radius(s State, w, h int) []string {
 		lines = append(lines, l)
 	}
 	lines = append(lines, "  a floor on reach, not a boundary")
-	return box("radius", "", lines, w, h)
+	return Box("radius", "", lines, w, h)
 }
 
 // node is one node of the action graph: a tool and its count as its row
@@ -320,7 +329,7 @@ func nodes(s State) []node {
 				}
 			}
 		}
-		n := node{name: plain(name), calls: calls}
+		n := node{name: Plain(name), calls: calls}
 		switch {
 		case calls == 0:
 		case wrote == 0:
@@ -343,21 +352,22 @@ func focus(s State) string {
 	return fmt.Sprintf("──◆ %d action%s", n, plural)
 }
 
-// widths is the widest label and the widest count among the nodes.
+// widths is the widest label and the widest count among the nodes, in
+// cells.
 func widths(ns []node) (labelW, countW int) {
 	for _, n := range ns {
-		labelW = max(labelW, len([]rune(n.name)))
-		countW = max(countW, len([]rune(n.count)))
+		labelW = max(labelW, Width(n.name))
+		countW = max(countW, Width(n.count))
 	}
 	return labelW, countW
 }
 
-// actionsWidth is the columns the graph's widest row takes, so the layout
+// actionsWidth is the cells the graph's widest row takes, so the layout
 // can give the pane that much (#655): indent, label, the count between two
 // spaces, glyph, edge, and the focus.
 func actionsWidth(s State) int {
 	labelW, countW := widths(nodes(s))
-	return 2 + labelW + 1 + countW + 1 + 1 + 2 + len([]rune(focus(s)))
+	return 2 + labelW + 1 + countW + 1 + 1 + 2 + Width(focus(s))
 }
 
 // actions draws the action graph: every tool a node, filled once called,
@@ -368,7 +378,7 @@ func actionsWidth(s State) int {
 func actions(s State, w, h int) []string {
 	inner := w - 2
 	if inner < 24 {
-		return box("actions", "", nil, w, h)
+		return Box("actions", "", nil, w, h)
 	}
 	ns := nodes(s)
 	labelW, countW := widths(ns)
@@ -385,11 +395,11 @@ func actions(s State, w, h int) []string {
 		if n.calls > 0 {
 			glyph = "●"
 		}
-		l := "  " + padRunes(n.name, labelW) + " " + strings.Repeat(" ", countW-len([]rune(n.count))) + n.count + " " + glyph + "─" + join
+		l := "  " + Pad(n.name, labelW) + " " + strings.Repeat(" ", countW-Width(n.count)) + n.count + " " + glyph + "─" + join
 		if i == mid {
 			l += focus(s)
 		}
-		lines = append(lines, cut(l, inner))
+		lines = append(lines, Cut(l, inner))
 	}
 	wroteN := 0
 	for _, a := range s.Actions {
@@ -416,10 +426,10 @@ func actions(s State, w, h int) []string {
 			if a.Wrote {
 				mark = "*"
 			}
-			lines = append(lines, cut("  "+mark+" "+plain(a.Tool)+" "+plain(a.Target), inner))
+			lines = append(lines, Cut("  "+mark+" "+Plain(a.Tool)+" "+Plain(a.Target), inner))
 		}
 	}
-	return box("actions", "", lines, w, h)
+	return Box("actions", "", lines, w, h)
 }
 
 // budgetSegments are the budget line's figures, in order: the iteration
@@ -480,7 +490,7 @@ func budgetLabel(s State, width int) string {
 		return strings.Join(parts, "  ·  ")
 	}
 	for _, drop := range []int{3, 4, 1} {
-		if width < 0 || len([]rune(join())) <= width {
+		if width < 0 || Width(join()) <= width {
 			break
 		}
 		segs[drop] = nil
@@ -526,7 +536,7 @@ func turnRate(b Budget) (rate, queued *string) {
 // candidates under it (none while a run holds the input: what is typed then
 // is a steer), and what Enter does now.
 func entryLines(s State, w int) []string {
-	lines := []string{plain(s.Input) + "█"}
+	lines := []string{Plain(s.Input) + "█"}
 	title := "task  ·  enter to run  ·  /help  ·  esc to clear, esc again to quit"
 	if s.Running {
 		title = "running — enter queues a steer for its next turn  ·  ^c stops it"
@@ -536,61 +546,10 @@ func entryLines(s State, w int) []string {
 			if i == 0 {
 				mark = "tab "
 			}
-			lines = append(lines, mark+plain(p))
+			lines = append(lines, mark+Plain(p))
 		}
 	}
-	return box(title, "", lines, w, 2+len(lines))
-}
-
-// box draws lines in a w by h bordered box, the title in the top border and
-// bottom in the bottom one. Lines are cut, never wrapped, so a long one
-// cannot break the border; a box too small for its lines keeps the first.
-func box(title, bottom string, lines []string, w, h int) []string {
-	if h < 2 || w < 2 {
-		return make([]string, max(h, 0))
-	}
-	inner := w - 2
-	out := []string{edge("┌", "┐", title, inner)}
-	for i := 0; i < h-2; i++ {
-		l := ""
-		if i < len(lines) {
-			l = lines[i]
-		}
-		out = append(out, "│"+padRunes(cut(l, inner), inner)+"│")
-	}
-	return append(out, edge("└", "┘", bottom, inner))
-}
-
-func edge(left, right, title string, inner int) string {
-	if title == "" {
-		return left + strings.Repeat("─", inner) + right
-	}
-	t := cut(" "+plain(title)+" ", inner)
-	return left + t + strings.Repeat("─", inner-len([]rune(t))) + right
-}
-
-// plain removes control characters (C0, DEL, C1), so served text drawn in a
-// pane can never move the cursor or start an escape sequence.
-func plain(s string) string {
-	if strings.IndexFunc(s, unicode.IsControl) < 0 {
-		return s
-	}
-	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return -1
-		}
-		return r
-	}, s)
-}
-
-func pad(s string, w int) string { return padRunes(cut(s, w), w) }
-
-func padRunes(s string, w int) string {
-	n := len([]rune(s))
-	if n >= w {
-		return s
-	}
-	return s + strings.Repeat(" ", w-n)
+	return Box(title, "", lines, w, 2+len(lines))
 }
 
 func contains(xs []string, x string) bool {
@@ -600,38 +559,4 @@ func contains(xs []string, x string) bool {
 		}
 	}
 	return false
-}
-
-// wrapWords breaks a transcript line into rows of at most w runes at word
-// boundaries, as the ratatui paragraph does: a row cut inside a word reads
-// as a different word (#655). A word longer than the row is broken across
-// rows.
-func wrapWords(s string, w int) []string {
-	if w < 1 {
-		w = 1
-	}
-	var out []string
-	row := []rune{}
-	for i, word := range strings.Split(s, " ") {
-		r := []rune(word)
-		if i > 0 {
-			if len(row)+1+len(r) <= w {
-				row = append(row, ' ')
-				row = append(row, r...)
-				continue
-			}
-			out = append(out, string(row))
-			row = row[:0:0]
-		}
-		for len(r) > w {
-			if len(row) > 0 {
-				out = append(out, string(row))
-				row = row[:0:0]
-			}
-			out = append(out, string(r[:w]))
-			r = r[w:]
-		}
-		row = append(row, r...)
-	}
-	return append(out, string(row))
 }

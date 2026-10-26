@@ -3,6 +3,8 @@ package model
 import (
 	"strings"
 	"unicode"
+
+	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
 // @ completion. The paths come from trellis (rpc list_paths, R4 #502),
@@ -56,7 +58,7 @@ func (m *Model) pathsAnswered(id string, data any) {
 	var paths []string
 	for _, p := range list {
 		if s, isStr := p.(string); isStr && s != "" {
-			paths = append(paths, Plain(s))
+			paths = append(paths, view.Plain(s))
 		}
 	}
 	switch len(paths) {
