@@ -2,7 +2,6 @@ package theme
 
 import (
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,34 +11,9 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
-)
 
-// rendererAt is a renderer at the named colour depth, on a dark or a light
-// background. Lip Gloss takes the depth as a termenv profile, and this
-// module does not import termenv (Lip Gloss's dependency, not its own: ADR
-// 0052 section 3), so each depth is given as termenv's number for it; the
-// name check makes a renumbering fail here rather than test the wrong depth.
-func rendererAt(t *testing.T, depth string, dark bool) *lipgloss.Renderer {
-	t.Helper()
-	r := lipgloss.NewRenderer(io.Discard)
-	switch depth {
-	case "TrueColor":
-		r.SetColorProfile(0)
-	case "ANSI256":
-		r.SetColorProfile(1)
-	case "ANSI":
-		r.SetColorProfile(2)
-	case "Ascii":
-		r.SetColorProfile(3)
-	default:
-		t.Fatalf("no colour depth %q", depth)
-	}
-	if got := r.ColorProfile().Name(); got != depth {
-		t.Fatalf("the profile set for %s is %s", depth, got)
-	}
-	r.SetHasDarkBackground(dark)
-	return r
-}
+	"github.com/maydaythecoder/trellis/tui/internal/theme/themetest"
+)
 
 // escaped reports whether s carries an escape sequence.
 func escaped(s string) bool { return strings.Contains(s, "\x1b") }
@@ -69,7 +43,7 @@ func TestThemeEveryTokenParses(t *testing.T) {
 			for _, depth := range []struct{ name, value string }{
 				{"TrueColor", bg.at.TrueColor}, {"ANSI256", bg.at.ANSI256}, {"ANSI", bg.at.ANSI},
 			} {
-				out := rendererAt(t, depth.name, bg.dark).NewStyle().Foreground(c).Render("x")
+				out := themetest.Renderer(t, depth.name, bg.dark).NewStyle().Foreground(c).Render("x")
 				if escaped(out) != (depth.value != "") {
 					t.Errorf("%s on %s at %s: value %q drew %q", name, bg.name, depth.name, depth.value, out)
 				}
@@ -144,7 +118,7 @@ func TestThemeMatchesTokensJSON(t *testing.T) {
 
 	// At truecolor every role paints a colour; below it the raised row is
 	// reverse video and carries none.
-	th := New(rendererAt(t, "TrueColor", true))
+	th := New(themetest.Renderer(t, "TrueColor", true))
 	painted := map[string]lipgloss.TerminalColor{
 		"term-ground":        th.Ground.GetBackground(),
 		"term-panel":         th.Panel.GetBackground(),
@@ -261,8 +235,8 @@ func sixteenFrom(t *testing.T, doc tokensJSON) map[string][2]string {
 // styles that set nothing.
 func TestThemeNoColourProfilePaintsNothing(t *testing.T) {
 	for _, dark := range []bool{true, false} {
-		plain := styles(t, New(rendererAt(t, "Ascii", dark)))
-		coloured := styles(t, New(rendererAt(t, "TrueColor", dark)))
+		plain := styles(t, New(themetest.Renderer(t, "Ascii", dark)))
+		coloured := styles(t, New(themetest.Renderer(t, "TrueColor", dark)))
 		for name, s := range plain {
 			if out := s.Render("x"); out != "x" {
 				t.Errorf("dark %v: %s drew %q with no colour profile", dark, name, out)
@@ -309,7 +283,7 @@ func TestThemeRaisedRowIsReverseVideoWithoutAFill(t *testing.T) {
 		{"ANSI256", false, true},
 		{"ANSI", false, true},
 	} {
-		out := New(rendererAt(t, c.depth, c.dark)).PanelRaised.Render("x")
+		out := New(themetest.Renderer(t, c.depth, c.dark)).PanelRaised.Render("x")
 		if !escaped(out) || strings.Contains(out, "\x1b[7m") != c.reverse {
 			t.Errorf("%s, dark %v: a raised row drew %q; want reverse video %v", c.depth, c.dark, out, c.reverse)
 		}

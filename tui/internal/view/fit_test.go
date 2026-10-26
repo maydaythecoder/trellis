@@ -3,6 +3,11 @@ package view
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/maydaythecoder/trellis/tui/internal/theme"
+	"github.com/maydaythecoder/trellis/tui/internal/theme/themetest"
 )
 
 // paneRows is the inside of the pane titled title, as drawn at w by h.
@@ -87,11 +92,11 @@ func wideState() State {
 	s := populated()
 	s.Model = "通义千问-编码器-三十二B-指令版-量化四位-中文" // a long spec, cut to the room left
 	s.Tier = "2, 工具已探测"
-	s.Transcript = []string{
-		"> 修复 应用/计算.py 中的类型错误，然后运行所有检查",
-		"· read_file 应用/计算.py 🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂",
-		strings.Repeat("中", 90),
-		"combining marks take no cell: " + strings.Repeat("e\u0301", 40),
+	s.Transcript = []Row{
+		{Text: "> 修复 应用/计算.py 中的类型错误，然后运行所有检查", Role: RoleYou},
+		{Text: "· read_file 应用/计算.py 🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂", Role: RoleTool, Turn: 1},
+		{Text: strings.Repeat("中", 90)},
+		{Text: "combining marks take no cell: " + strings.Repeat("e\u0301", 40)},
 	}
 	s.Outcome = "failed: 无法解析模块 应用/计算.py，类型检查没有通过"
 	s.Input = "修复 @应用/计"
@@ -115,20 +120,31 @@ func wideState() State {
 func TestViewWideTextKeepsEveryRowWithinTheWidth(t *testing.T) {
 	diff := "--- a/应用/计算.py\n+++ b/应用/计算.py\n@@ -1,3 +1,3 @@\n-def 计算(数值):\n+def 计算(数值: int) -> int:\n" +
 		"     return " + strings.Repeat("数值 + ", 40) + "1"
-	for _, size := range [][2]int{{80, 24}, {120, 40}} {
-		w, h := size[0], size[1]
-		screens := map[string]string{
-			"render": Render(wideState(), w, h),
-			"modal":  Modal("edit 应用/计算.py 把所有的类型错误都修复好并且保留原来的行为", diff, 0, w, h),
-		}
-		for name, screen := range screens {
-			rows := strings.Split(screen, "\n")
-			if len(rows) != h {
-				t.Fatalf("%s at %dx%d: %d rows, want %d", name, w, h, len(rows), h)
+	// Unpainted, and painted at truecolor and at 16 colours, measured with
+	// lipgloss.Width, which skips the colours' escape sequences (#841).
+	themes := map[string]theme.Theme{
+		"unpainted":   {},
+		"truecolor":   theme.New(themetest.Renderer(t, "TrueColor", true)),
+		"16 on light": theme.New(themetest.Renderer(t, "ANSI", false)),
+	}
+	for paint, th := range themes {
+		for _, size := range [][2]int{{80, 24}, {120, 40}} {
+			w, h := size[0], size[1]
+			s := wideState()
+			s.Theme = th
+			screens := map[string]string{
+				"render": Render(s, w, h),
+				"modal":  Modal(th, "edit 应用/计算.py 把所有的类型错误都修复好并且保留原来的行为", diff, 0, w, h),
 			}
-			for i, r := range rows {
-				if got := Width(r); got != w {
-					t.Fatalf("%s at %dx%d: row %d is %d cells, want %d:\n%s", name, w, h, i, got, w, screen)
+			for name, screen := range screens {
+				rows := strings.Split(screen, "\n")
+				if len(rows) != h {
+					t.Fatalf("%s, %s, at %dx%d: %d rows, want %d", name, paint, w, h, len(rows), h)
+				}
+				for i, r := range rows {
+					if got := lipgloss.Width(r); got != w {
+						t.Fatalf("%s, %s, at %dx%d: row %d is %d cells, want %d:\n%s", name, paint, w, h, i, got, w, screen)
+					}
 				}
 			}
 		}

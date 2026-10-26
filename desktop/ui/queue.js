@@ -20,7 +20,10 @@
 //
 // index.html loads this as a module of its own.
 
+import { el, muted } from "./dom.js";
+import { isCount, str } from "./fmt.js";
 import { drawPrCi } from "./overview.js";
+import { runEnded, send, start } from "./rpc.js";
 
 let asked = 0;
 // The overview reads for PR and CI state: each runs `trellis overview` and
@@ -34,26 +37,6 @@ let prciInFlight = false;
 let pressed = null;
 // The view's queue as last drawn, so a press redraws it.
 let lastQueue = null;
-
-function el(doc, tag, text) {
-  const e = doc.createElement(tag);
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
-
-function muted(doc, tag, text) {
-  const e = el(doc, tag, text);
-  e.className = "muted";
-  return e;
-}
-
-function str(v) {
-  return typeof v === "string" ? v : null;
-}
-
-function isCount(v) {
-  return typeof v === "number" && Number.isFinite(v);
-}
 
 function texts(v) {
   return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
@@ -171,11 +154,9 @@ export function drawQueue(doc, q) {
 
 async function askQueue(doc, tauri) {
   asked += 1;
-  try {
-    await tauri.core.invoke("rpc_send", { line: { id: `desktop-queue-${asked}`, type: "get_queue" } });
-  } catch (err) {
-    status(doc, `Open a repository to see its queue. ${err}`);
-  }
+  await send(tauri, { id: `desktop-queue-${asked}`, type: "get_queue" }, (why) =>
+    status(doc, `Open a repository to see its queue. ${why}`),
+  );
 }
 
 // PR and CI state comes with the overview, which runs `gh` with a bounded
@@ -217,8 +198,7 @@ export async function wireQueue(doc, tauri) {
   });
   // A run may have claimed, finished or failed a task.
   await tauri.event.listen("rpc-frame", (event) => {
-    const f = event.payload;
-    if (f !== null && typeof f === "object" && f.type === "run_end") askQueue(doc, tauri);
+    if (runEnded(event.payload)) askQueue(doc, tauri);
   });
   // Another repository is another queue. A PR and CI read still out is the
   // last repository's: it is dropped when it comes, and this one may start.
@@ -232,11 +212,6 @@ export async function wireQueue(doc, tauri) {
   if (button) button.addEventListener("click", refresh);
 }
 
-function start() {
-  wireQueue(document, window.__TAURI__).catch((err) => console.error("trellis desktop board:", err));
-}
-
 if (typeof window !== "undefined" && window.__TAURI__) {
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
-  else start();
+  start("the board", () => wireQueue(document, window.__TAURI__));
 }

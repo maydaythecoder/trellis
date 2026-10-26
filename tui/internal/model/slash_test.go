@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func lines(m *Model) string { return strings.Join(m.Transcript, "\n") }
+func lines(m *Model) string { return strings.Join(texts(m), "\n") }
 
 // /help lists the view's commands, /codebase and /graph among them, and
 // starts no run.
@@ -125,8 +125,8 @@ func TestSlashClearEmptiesTheTranscript(t *testing.T) {
 	feed(m, turn(1, "old", nil))
 	typeLine(m, "/clear")
 	enter(m)
-	if len(m.Transcript) != 1 || m.Transcript[0] != "· transcript cleared" {
-		t.Fatalf("%q", m.Transcript)
+	if len(m.Transcript) != 1 || texts(m)[0] != "· transcript cleared" {
+		t.Fatalf("%q", texts(m))
 	}
 }
 

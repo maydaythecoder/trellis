@@ -1546,8 +1546,8 @@ mod tests {
             "ctx.items[k] = b;",
             "markSelected(ctx);",
             r#"`Modules in ${str(p.package) ?? "this package"}`"#,
-            "`edges in ${edgesIn(ctx, m)} · edges out ${figure(m && m.edges_out)} · `",
-            "`doubt ${figure(m && m.doubt)}`",
+            "`edges in ${edgesIn(ctx, m)} · edges out ${notReported(m && m.edges_out)} · `",
+            "`doubt ${notReported(m && m.doubt)}`",
         ] {
             assert!(list.contains(want), "drawList lacks {want}");
         }
@@ -1890,8 +1890,8 @@ mod tests {
         );
         let ask = function_body(&js, "ask");
         let sent = ask
-            .find("invoke(\"rpc_send\"")
-            .expect("ask sends the question");
+            .find("await send(tauri, { id, type: \"get_radius\", symbol }")
+            .expect("ask sends the question through rpc.js's send");
         let off = ask
             .find("submitting(doc, true);")
             .expect("ask disables the button");
@@ -1899,7 +1899,8 @@ mod tests {
             off < sent,
             "the button is disabled only after the question is sent"
         );
-        let refused = between(ask, "catch (err)", "\n  }");
+        // The refusal is rpc.js's send's third argument (#819).
+        let refused = between(ask, "symbol }, (why) => {", "\n  });");
         assert!(
             refused.contains("submitting(doc, false);"),
             "a refused question leaves the button disabled for good"
@@ -1956,7 +1957,15 @@ mod tests {
             submit.contains("if (!sent) searching(doc, false);"),
             "a refused search leaves the button disabled for good"
         );
-        let send = function_body(&js, "send");
+        // forward() answers rpc.js's send's answer, which says whether the
+        // line went (#820).
+        let forward = function_body(&js, "forward");
+        assert!(
+            forward.contains("return send(tauri, line, (why) =>"),
+            "forward() does not say whether the line went: {forward}"
+        );
+        let rpc = code_of("rpc.js");
+        let send = function_body(&rpc, "send");
         assert!(
             send.contains("return true;")
                 && between(send, "catch (err)", "\n  }").contains("return false;"),
@@ -2416,11 +2425,17 @@ mod tests {
             .skip(1)
             .map(|rest| &rest[..rest.find('"').unwrap()])
             .collect();
-        assert_eq!(invoked, ["rpc_send", "get_overview"], "{invoked:?}");
+        // get_queue goes through rpc.js's send (#820); the overview, which
+        // carries PR and CI state, is the core's own command.
+        assert_eq!(invoked, ["get_overview"], "{invoked:?}");
+        assert!(
+            js.contains(r#"import { runEnded, send, start } from "./rpc.js";"#),
+            "queue.js reaches the core some other way"
+        );
         // When it asks: on opening, on Refresh, and after each run_end.
         assert!(js.contains(r#"aria-controls="board""#), "{js}");
         assert!(js.contains(r#"getElementById("qb-refresh").addEventListener("click""#));
-        assert!(js.contains(r#"f.type === "run_end") askQueue"#));
+        assert!(js.contains("if (runEnded(event.payload)) askQueue(doc, tauri);"));
     }
 
     #[test]
@@ -2924,12 +2939,12 @@ mod tests {
             BTreeSet::from(["get_codebase", "get_history", "get_radius", "get_symbols"]),
             "atlas.js sends a type that is not one of its four reads"
         );
-        let invoked: Vec<&str> = js
-            .split("invoke(\"")
-            .skip(1)
-            .map(|rest| &rest[..rest.find('"').unwrap()])
-            .collect();
-        assert_eq!(invoked, ["rpc_send"], "{invoked:?}");
+        // It reaches the core only through rpc.js's send (#819), which
+        // calls only rpc_send (model_gate_model_js_parses_no_html).
+        assert!(
+            !js.contains("invoke(") && js.contains(r#"import { send, start } from "./rpc.js";"#),
+            "atlas.js reaches the core some other way"
+        );
         // Every question carries an Atlas id, so the core keeps its
         // answers apart from the Codebase view's and the radius pane's.
         assert!(js.contains(r#"const ID = "desktop-atlas-";"#));
@@ -3201,6 +3216,241 @@ mod tests {
         assert!(!function_body(&js, "moduleView").contains("three counts"));
     }
 
+    /// Each page helper's one home (#816): a module that needs one imports
+    /// it from there.
+    const HELPER_HOMES: &[(&str, &str)] = &[
+        ("el", "dom.js"),
+        ("muted", "dom.js"),
+        ("svg", "dom.js"),
+        ("fill", "dom.js"),
+        ("atEnd", "dom.js"),
+        ("appendRows", "dom.js"),
+        ("str", "fmt.js"),
+        ("isCount", "fmt.js"),
+        ("notReported", "fmt.js"),
+        ("plural", "fmt.js"),
+        ("bytes", "fmt.js"),
+        ("millis", "fmt.js"),
+        ("tokens", "fmt.js"),
+        ("send", "rpc.js"),
+        ("lineId", "rpc.js"),
+        ("start", "rpc.js"),
+        ("onShown", "rpc.js"),
+        ("runEnded", "rpc.js"),
+    ];
+
+    /// The names a module defines at its top level, at the start of a
+    /// line: `function name(`, exported, async or both, and `const name =`
+    /// or `let name =` bound to a function or an arrow. A definition
+    /// nested in another function is indented and is not counted.
+    fn top_level_definitions(code: &str) -> BTreeSet<String> {
+        let ident = |s: &str| -> String {
+            s.chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+                .collect()
+        };
+        let mut out = BTreeSet::new();
+        for line in code.lines() {
+            let mut l = line.strip_prefix("export ").unwrap_or(line);
+            l = l.strip_prefix("async ").unwrap_or(l);
+            if let Some(rest) = l.strip_prefix("function ") {
+                out.insert(ident(rest.trim_start()));
+            } else if let Some(rest) = l.strip_prefix("const ").or_else(|| l.strip_prefix("let ")) {
+                let name = ident(rest);
+                let value = rest[name.len()..].trim_start();
+                if let Some(v) = value.strip_prefix('=') {
+                    let v = v.trim_start();
+                    let v = v.strip_prefix("async").map_or(v, str::trim_start);
+                    // An arrow's one parameter may go without parentheses
+                    // (`v => ...`), and is a definition all the same.
+                    let param = ident(v);
+                    let bare_arrow =
+                        !param.is_empty() && v[param.len()..].trim_start().starts_with("=>");
+                    if v.starts_with("function") || v.starts_with('(') || bare_arrow {
+                        out.insert(name);
+                    }
+                }
+            }
+        }
+        out.remove("");
+        out
+    }
+
+    #[test]
+    fn page_helpers_live_in_one_module_each() {
+        // The risk: a helper written again in one more module (`el` was
+        // written twelve times, `str` twelve), so a fix to one copy leaves
+        // the others wrong. #817 to #820 moved every copy #816 found, so no
+        // module but a helper's home defines it.
+        let ui = ui_code();
+        for (name, home) in HELPER_HOMES {
+            let code = ui
+                .get(*home)
+                .unwrap_or_else(|| panic!("ui/{home} is missing"));
+            assert!(
+                top_level_definitions(code).contains(*name),
+                "{home} does not define {name}, though it is its home"
+            );
+        }
+        for (module, code) in &ui {
+            for name in top_level_definitions(code) {
+                let Some((_, home)) = HELPER_HOMES.iter().find(|(n, _)| *n == name) else {
+                    continue;
+                };
+                assert!(
+                    module == home,
+                    "{module} defines {name}, whose one home is {home}: import it from there"
+                );
+            }
+        }
+        // A run's end is known one way, rpc.js's runEnded (#816): no other
+        // module tests a frame for run_end itself.
+        for (module, code) in &ui {
+            assert!(
+                module == "rpc.js" || !code.contains(r#""run_end""#),
+                "{module} tests for run_end itself: use rpc.js's runEnded"
+            );
+        }
+    }
+
+    #[test]
+    fn page_helper_definitions_are_read_at_the_top_level_only() {
+        // The risk: the reader above misses a definition form, so a copy
+        // passes unseen, or counts a nested one, so a local helper of the
+        // same name fails a module for nothing.
+        let code = "function el(doc) {}\nexport async function send(t) {}\nconst str = (v) => v;\nlet plural = async (k) => k;\nconst fill = function (p) {};\nconst SIZE = 3;\n  function start() {}\nexport function atEnd(p) {}\n";
+        // An arrow whose one parameter has no parentheses is read too, and
+        // a value that only names another binding is not a definition.
+        let bare = top_level_definitions("const isCount = v => v;\nconst muted = el;\n");
+        assert_eq!(bare.into_iter().collect::<Vec<_>>(), ["isCount"]);
+        let got: Vec<String> = top_level_definitions(code).into_iter().collect();
+        assert_eq!(got, ["atEnd", "el", "fill", "plural", "send", "str"]);
+    }
+
+    #[test]
+    fn page_icons_are_inline_symbols_and_each_has_a_label() {
+        // The risk (#835): an icon drawn as the only carrier of a meaning,
+        // which a screen reader or a reader who does not know the glyph
+        // cannot read; an icon pointing at a symbol the page lacks, drawn as
+        // nothing; the set drifting from the design system's; or an icon
+        // fetched as an <img>, which draws in black rather than the label's
+        // colour. The set is one hidden <svg> of <symbol>s, each the design
+        // system's file's drawing, and every <use> sits in an aria-hidden
+        // icon beside a label with words of its own.
+        let page = page();
+        let sprites: Vec<usize> = (0..page.len())
+            .filter(|&i| page[i].attr("class") == Some("icon-sprite"))
+            .collect();
+        assert_eq!(sprites.len(), 1, "one icon sprite");
+        let sprite = sprites[0];
+        assert_eq!(page[sprite].tag, "svg");
+        assert_eq!(page[sprite].attr("aria-hidden"), Some("true"));
+        let symbols: BTreeMap<&str, usize> = (0..page.len())
+            .filter(|&i| page[i].tag == "symbol")
+            .map(|i| {
+                assert_eq!(page[i].parent, Some(sprite), "a symbol outside the sprite");
+                assert_eq!(page[i].attr("viewbox"), Some("0 0 16 16"));
+                (page[i].attr("id").expect("a symbol has an id"), i)
+            })
+            .collect();
+        let set = Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/design/system/icons");
+        let html = ui_file("index.html");
+        let mut files = 0;
+        for entry in std::fs::read_dir(&set).unwrap() {
+            let p = entry.unwrap().path();
+            if p.extension().is_none_or(|x| x != "svg") {
+                continue;
+            }
+            files += 1;
+            let name = p.file_stem().unwrap().to_string_lossy().to_string();
+            assert!(symbols.contains_key(name.as_str()), "no symbol for {name}");
+            // The drawing inside the file's root, as the symbol holds it.
+            let file = std::fs::read_to_string(&p).unwrap();
+            let inner = file
+                .trim()
+                .split_once('>')
+                .and_then(|(_, r)| r.strip_suffix("</svg>"))
+                .unwrap_or_else(|| panic!("{name} is not one <svg>"));
+            let symbol = format!(
+                r#"<symbol id="{name}" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">{inner}</g></symbol>"#
+            );
+            assert!(
+                html.contains(&symbol),
+                "{name}'s symbol is not the design system's drawing"
+            );
+        }
+        assert_eq!(
+            symbols.len(),
+            files,
+            "a symbol the design system has no file for"
+        );
+        let mut uses = 0;
+        for (i, e) in page.iter().enumerate() {
+            if e.tag == "img" {
+                assert!(
+                    !e.attr("src").unwrap_or("").contains("icon"),
+                    "an icon drawn as an <img>"
+                );
+            }
+            if e.tag != "use" {
+                continue;
+            }
+            uses += 1;
+            let href = e.attr("href").expect("a <use> has an href");
+            let id = href
+                .strip_prefix('#')
+                .expect("a <use> names a symbol in the page");
+            assert!(symbols.contains_key(id), "{href} names no symbol");
+            let icon = e.parent.expect("a <use> sits in an icon");
+            assert_eq!(page[icon].tag, "svg");
+            assert_eq!(page[icon].attr("class"), Some("icon"));
+            assert_eq!(page[icon].attr("aria-hidden"), Some("true"), "{href}");
+            assert!(!within(&page, i, sprite), "a <use> inside the sprite");
+            let label = page[icon].parent.expect("an icon sits in a label");
+            assert!(
+                page[label].text.chars().any(char::is_alphabetic),
+                "{href} is the only carrier of its label's meaning"
+            );
+        }
+        assert!(uses > 0, "the page draws no icon");
+        // The mark is the page's icon too, served as a file of its own.
+        let icon_link = page
+            .iter()
+            .find(|e| e.tag == "link" && e.attr("rel") == Some("icon"))
+            .expect("a <link rel=icon>");
+        assert_eq!(icon_link.attr("href"), Some("favicon.svg"));
+        assert!(
+            !ui_file("favicon.svg").contains("style="),
+            "favicon.svg has a style"
+        );
+    }
+
+    #[test]
+    fn page_icons_app_icon_is_the_design_system_s_mark() {
+        // The risk (#835): the window and the bundle keep an icon that is
+        // not the TRELLIS mark, or an .ico missing the title-bar sizes. The
+        // PNG is the 512px app icon byte for byte, and the .ico holds the
+        // 16, 32, 128 and 256px images (an .ico entry's width byte is 0 for
+        // 256).
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let logos = dir.join("../docs/design/system/logos");
+        assert_eq!(
+            std::fs::read(dir.join("icons/icon.png")).unwrap(),
+            std::fs::read(logos.join("app-icon-512.png")).unwrap(),
+            "icons/icon.png is not app-icon-512.png"
+        );
+        let ico = std::fs::read(dir.join("icons/icon.ico")).unwrap();
+        assert_eq!(&ico[..4], &[0, 0, 1, 0], "not an .ico");
+        let count = usize::from(u16::from_le_bytes([ico[4], ico[5]]));
+        let sizes: BTreeSet<u32> = (0..count)
+            .map(|k| match ico[6 + 16 * k] {
+                0 => 256,
+                w => u32::from(w),
+            })
+            .collect();
+        assert_eq!(sizes, BTreeSet::from([16, 32, 128, 256]));
+    }
+
     #[test]
     fn page_has_no_style_attribute() {
         // The risk: an inline style, which the CSP's `style-src 'self'`
@@ -3211,23 +3461,15 @@ mod tests {
             assert!(!e.attrs.contains_key("style"), "<{} style=...>", e.tag);
             assert_ne!(e.tag, "style", "a <style> element");
         }
-        for name in [
-            "main.js",
-            "render.js",
-            "overview.js",
-            "composer.js",
-            "dialogs.js",
-            "model.js",
-            "settings.js",
-            "status.js",
-            "graph.js",
-            "codebase.js",
-            "radius.js",
-            "trails.js",
-            "vault.js",
-            "queue.js",
-            "atlas.js",
-        ] {
+        // Every module under ui/, read from the directory: the list this
+        // was written by hand missed web.js (#816).
+        let modules: Vec<String> = ui_code().into_keys().collect();
+        assert!(
+            modules.len() >= 18,
+            "ui/ lists {} modules: {modules:?}",
+            modules.len()
+        );
+        for name in &modules {
             let js = ui_file(name);
             for bad in [".style", "cssText", "\"style\"", "'style'"] {
                 assert!(!js.contains(bad), "{name} writes a style: {bad}");
@@ -3362,7 +3604,7 @@ mod tests {
         let js = code_of("composer.js");
         let submit = composer_submit(&js);
         let sent = submit
-            .split("if (await send(tauri, p, line)) {")
+            .split("if (await forward(tauri, p, line)) {")
             .nth(1)
             .and_then(|r| r.split("\n    }").next())
             .expect("the prompt has a success branch");
@@ -3584,32 +3826,38 @@ mod tests {
         // turn. The end is followed only when the pane was already there,
         // measured before it is redrawn; the one other scroll to the end in
         // render.js is the jump button's own click.
-        let js = code_of("render.js");
-        let at_end = function_body(&js, "atEnd");
+        // The transcript is drawn by dom.js's appendRows (#817), where the
+        // end is measured and followed.
+        let dom = code_of("dom.js");
+        let at_end = function_body(&dom, "atEnd");
         assert!(
             at_end
                 .contains("pane.scrollHeight - pane.clientHeight - pane.scrollTop <= AT_END_SLACK"),
             "atEnd measures something else: {at_end}"
         );
-        let transcript = function_body(&js, "transcript");
-        let measured = transcript
+        let rows = function_body(&dom, "appendRows");
+        let measured = rows
             .find("const follow = atEnd(pane);")
-            .expect("transcript reads the end before drawing");
-        let drawn = transcript.find("pane.append(").expect("transcript appends");
+            .expect("appendRows reads the end before drawing");
+        let drawn = rows.find("pane.append(").expect("appendRows appends");
         assert!(
             measured < drawn,
             "the end is read after the redraw moved it"
         );
         assert_eq!(
-            transcript
-                .matches("pane.scrollTop = pane.scrollHeight;")
-                .count(),
+            rows.matches("pane.scrollTop = pane.scrollHeight;").count(),
             1,
-            "transcript scrolls to the end in more than one place"
+            "appendRows scrolls to the end in more than one place"
         );
         assert!(
-            transcript.contains("if (follow) {\n    pane.scrollTop = pane.scrollHeight;"),
-            "the scroll to the end is not under the at-end check: {transcript}"
+            rows.contains("if (follow) pane.scrollTop = pane.scrollHeight;"),
+            "the scroll to the end is not under the at-end check: {rows}"
+        );
+        let js = code_of("render.js");
+        assert!(
+            function_body(&js, "transcript")
+                .contains(r#"appendRows(doc, pane, lines, "Nothing has run yet.")"#),
+            "render.js draws the transcript some other way"
         );
         let scrolls: Vec<&str> = js
             .lines()
@@ -3618,10 +3866,7 @@ mod tests {
             .collect();
         assert_eq!(
             scrolls,
-            [
-                "pane.scrollTop = pane.scrollHeight;",
-                "pane.scrollTop = pane.scrollHeight;"
-            ],
+            ["pane.scrollTop = pane.scrollHeight;"],
             "render.js scrolls somewhere else too"
         );
         assert!(
@@ -3638,19 +3883,22 @@ mod tests {
         // reader read the whole log again. Lines beyond those drawn are
         // appended; only a list that does not extend the drawn one (the cap
         // dropped lines, or the transcript was cleared) is drawn afresh.
-        let js = code_of("render.js");
-        let transcript = function_body(&js, "transcript");
+        let dom = code_of("dom.js");
+        let rows = function_body(&dom, "appendRows");
         for want in [
             "drawn.every((c, i) => c.textContent === list[i])",
             "list.slice(drawn.length)",
             "if (grows && drawn.length > 0) pane.append(...rows);",
-            "else fill(doc, pane, rows, \"Nothing has run yet.\", \"div\");",
+            "else fill(doc, pane, rows, empty, \"div\");",
         ] {
-            assert!(
-                transcript.contains(want),
-                "transcript lacks {want}: {transcript}"
-            );
+            assert!(rows.contains(want), "appendRows lacks {want}: {rows}");
         }
+        let render = code_of("render.js");
+        let transcript = function_body(&render, "transcript");
+        assert!(
+            transcript.contains(r#"appendRows(doc, pane, lines, "Nothing has run yet.")"#),
+            "render.js draws the transcript some other way: {transcript}"
+        );
         let page = page();
         let log = &page[index_of(&page, "pane-transcript")];
         assert_eq!(
@@ -3690,7 +3938,9 @@ mod tests {
         let transcript = function_body(&js, "transcript");
         assert!(transcript.contains(r#"const jump = doc.getElementById("log-jump");"#));
         assert!(
-            transcript.contains("if (follow) {\n    pane.scrollTop = pane.scrollHeight;\n    jump.hidden = true;\n  } else if (rows.length > 0) {\n    jump.hidden = false;\n  }"),
+            transcript.contains(
+                "if (followed) jump.hidden = true;\n  else if (drawn > 0) jump.hidden = false;"
+            ),
             "the jump button is shown or hidden on something else: {transcript}"
         );
         let wire = function_body(&js, "wireLog");
@@ -3726,32 +3976,21 @@ mod tests {
         // The risk (#643): the messages pane keeping the old rule, so a
         // reader of trellis's stderr is pulled to the end at each view while
         // the actions log is not; or a second, differently measured notion
-        // of "at the end". dialogs.js imports render.js's atEnd and scrolls
-        // only under it.
+        // of "at the end". dialogs.js draws the pane with dom.js's
+        // appendRows, the actions log's own (#817), and scrolls nowhere
+        // else.
         let js = code_of("dialogs.js");
         assert!(
-            js.contains(r#"import { atEnd } from "./render.js";"#),
+            js.contains(r#"import { appendRows, el } from "./dom.js";"#),
             "dialogs.js measures the end its own way"
         );
         let stderr = function_body(&js, "drawStderr");
-        let measured = stderr
-            .find("const follow = atEnd(log);")
-            .expect("drawStderr reads the end before drawing");
-        let drawn = stderr
-            .find("log.replaceChildren(")
-            .expect("drawStderr redraws the pane");
         assert!(
-            measured < drawn,
-            "the end is read after the redraw moved it"
+            stderr.contains(r#"appendRows(doc, doc.getElementById("messages-log"), lines,"#),
+            "drawStderr draws the pane some other way: {stderr}"
         );
-        let scrolls: Vec<&str> = js
-            .lines()
-            .filter(|l| l.contains("scrollTop"))
-            .map(str::trim)
-            .collect();
-        assert_eq!(
-            scrolls,
-            ["if (follow) log.scrollTop = log.scrollHeight;"],
+        assert!(
+            !js.contains("scrollTop"),
             "dialogs.js scrolls somewhere unguarded"
         );
     }
@@ -3926,12 +4165,18 @@ mod tests {
             assert!(!js.contains(bad), "model.js uses {bad}");
         }
         assert!(js.contains("textContent"), "model.js writes no text");
-        let invokes: Vec<&str> = js
+        // It sends through rpc.js's send (#818), which calls only rpc_send.
+        assert!(
+            !js.contains("invoke(") && js.contains(r#"import { lineId, send } from "./rpc.js";"#),
+            "model.js reaches the core some other way"
+        );
+        let rpc = code_of("rpc.js");
+        let invokes: Vec<&str> = rpc
             .split("invoke(\"")
             .skip(1)
             .map(|r| r.split('"').next().unwrap_or(""))
             .collect();
-        assert_eq!(invokes, ["rpc_send"], "model.js calls only rpc_send");
+        assert_eq!(invokes, ["rpc_send"], "rpc.js calls only rpc_send");
     }
 
     #[test]
@@ -3953,21 +4198,33 @@ mod tests {
         assert_eq!(page[title].text.trim(), "Session tokens");
         let render = ui_file("render.js");
         for want in [
-            "` · prompt ${tokens(m.prompt_tokens)}`",
-            "` · completion ${tokens(m.completion_tokens)}`",
-            r#"isCount(v) ? String(v) : "unknown""#,
+            "` · prompt ${notReported(m.prompt_tokens)}`",
+            "` · completion ${notReported(m.completion_tokens)}`",
             "el(doc, \"code\", model)",
         ] {
             assert!(render.contains(want), "render.js lacks {want}");
         }
+        // A figure a run did not report is said to be, never drawn as 0:
+        // fmt.js's notReported, which render.js takes (#817).
+        assert!(
+            function_body(&code_of("fmt.js"), "notReported")
+                .contains("if (isCount(v)) return String(v);"),
+            "notReported draws something other than the figure"
+        );
         let main = ui_file("main.js");
         for want in [
             r#"type: "get_session_stats""#,
             r#"listen("rpc-frame""#,
-            r#"f.type === "run_end") askSessionTokens(tauri)"#,
+            "if (runEnded(event.payload)) askSessionTokens(tauri);",
         ] {
             assert!(main.contains(want), "main.js lacks {want}");
         }
+        // rpc.js's runEnded is the one way the page knows a run ended
+        // (#816): the child's run_end frame.
+        assert!(
+            function_body(&code_of("rpc.js"), "runEnded").contains(r#"frame.type === "run_end""#),
+            "runEnded reads something other than the run_end frame"
+        );
         let started = main
             .split(r#"listen("child-started""#)
             .nth(1)
