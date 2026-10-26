@@ -1,5 +1,5 @@
 {
-  "about": "The rpc and log --json fields a client may rely on (ADR 0048 section 6, ADR 0025 sections 4 and 5), held by tests in tests/modes.rs. An event's fields are under its \"fields\" object, beside \"message\": those always present, those present only in the case a list is named for (a turn that called the model, a blast_radius turn, a prompt-sending driver, a response header the endpoint sent), and, under \"absent_when\", when a listed field is still left off. A figure trellis did not measure is absent, never 0. A response's data, per command, is under \"responses\": the fields always in it, and those present only for one value of another; get_codebase's, get_queue's, get_radius's, get_symbols' and get_history's are dotted paths, with [] meaning each element of an array (#559; the Atlas, owner request of 2026-10-11). A response's id is the id its command was sent with, and a run's run_start and run_end carry the id of the prompt that started it. Fields not listed here are unversioned.",
+  "about": "The rpc and log --json fields a client may rely on (ADR 0048 section 6, ADR 0025 sections 4 and 5). Fields not listed here are unversioned. trellis is held to every entry by tests/modes.rs (the rpc stream, the command answers and log --json), tests/cli.rs (overview, the Atlas's answers, get_queue and get_state's fields) and tests/colibri_doctor.rs and src/hosted.rs (get_state's tier_label). Both clients are held to rpc.events and rpc.framing by tests that read every field listed there: desktop/src/state.rs every_field_in_the_rpc_contract_is_read and tui/internal/frames/frames_test.go TestFramesReadEveryContractField; and the desktop to log_json's always and optional by desktop/src/trails.rs every_trail_field_in_the_log_contract_is_read. A field that not every client reads yet is under not_every_client instead (rpc.not_every_client for events and framing, log_json.not_every_client for trail paths), in the same shape, with read_by naming the clients that read it today; those tests do not read it, nor rpc.responses. An event's fields are under its \"fields\" object, beside \"message\": those always present, those present only in the case a list is named for (a turn that called the model, a blast_radius turn, a prompt-sending driver, a response header the endpoint sent), and, under \"absent_when\", when a listed field is still left off. A figure trellis did not measure is absent, never 0. A <field>_values list names every value the field takes; both clients' tests send its last value and look for it in what their parser kept, so the last is one that nothing else in the record contains. A command's answer data is under \"responses\", per command: the fields always in it, and those present only for one value of another, as dotted paths, with [] meaning each element of an array (#559; the Atlas, owner request of 2026-10-11). framing.response's no_data names the commands that answer with no data. A response's id is the id its command was sent with, and a run's run_start and run_end carry the id of the prompt that started it.",
   "rpc": {
     "events": {
       "turn": {
@@ -14,7 +14,9 @@
           "completion_tokens": "the governance audit's turn event, which reads no reply; or a reply the step read reported no output tokens (the provider stub's replies all report them)",
           "queue_wait_ms": "a reply the step read carried no x-colibri-queue-wait-ms header"
         },
-        "verdict_values": ["None", "Some(true)", "Some(false)"]
+        "verdict_values": ["None", "Some(true)", "Some(false)"],
+        "check_kind_values": ["", "Typecheck", "Tests", "Import", "Governance"],
+        "check_kind": "\"\" on a turn that ran no check; otherwise the kind of check behind the turn's verdict, as trellis-checks names it (CheckKind, crates/trellis-checks/src/verdict.rs); the governance audit's turn is Governance"
       },
       "model call": {
         "always": ["turn"],
@@ -52,18 +54,64 @@
           "run_id": "when a trail was written",
           "restored": "when the outcome is not_converged or interrupted",
           "error": "when the outcome is error"
-        }
+        },
+        "outcome_values": ["converged", "not_converged", "error", "interrupted"]
       },
       "response": {
         "always": ["type", "command", "success", "id"],
         "optional": {
-          "data": "when success is true and the command answers with data",
+          "data": "when success is true and the command is not one no_data names",
           "error": "when success is false"
+        },
+        "no_data": {
+          "prompt": "accepted: the run's run_start and run_end follow",
+          "follow_up": "accepted at once, while the run it was sent during goes on; its own run's run_start and run_end carry its id",
+          "quit": "answered once any run in flight has rolled back and every other answer is written; trellis then exits"
         }
       },
       "approval_request": {
         "always": ["type", "id", "question", "detail"],
         "optional": {}
+      }
+    },
+    "not_every_client": {
+      "about": "What trellis emits and a client may rely on, which not every client reads yet: listed so a rename fails trellis's tests, and kept out of rpc.events and rpc.framing, every field of which both clients' tests require their parser to keep. A record here has the keys a record there has, for the fields it adds; read_by names, per field, the clients that read it today (desktop, tui), and [] is neither yet. A field moves to rpc.events or rpc.framing once both clients read it.",
+      "event_line": {
+        "always": ["level"],
+        "level_values": ["INFO", "WARN", "ERROR"],
+        "read_by": {"level": ["tui"]},
+        "about": "the key of every event's line beside fields, as tracing's JSON layer writes it. The stdout layer passes trellis's events at info and above whatever RUST_LOG says (main.rs), so level is one of level_values. The TUI shows a WARN or ERROR event it has no record for as a warning."
+      },
+      "events": {
+        "turn": {
+          "model_call_only": ["duration_ms"],
+          "blast_radius_only": ["summarised"],
+          "absent_when": {
+            "duration_ms": "the governance audit's turn event, which sends none (trellis-loop agent.rs)"
+          },
+          "read_by": {"duration_ms": [], "summarised": []},
+          "about": "duration_ms is the tool call's time in milliseconds by the monotonic clock, with any wait on a person in approve mode taken out; summarised is how many of the radius's call sites its observation summarised by file instead of listing them, 0 when it listed every one"
+        },
+        "compacted": {
+          "always": ["turn", "elided_turns", "elided_bytes", "request_bytes", "budget"],
+          "read_by": {"turn": [], "elided_turns": [], "elided_bytes": [], "request_bytes": [], "budget": []},
+          "about": "sent when a model request would have exceeded the run's context budget in bytes and older observations were elided to fit it: turn is the turn that request produced; turns 1 to elided_turns have their observations elided from it on, which held elided_bytes; request_bytes is the request's size after eliding and budget the budget in force. Sent again only when another turn is elided."
+        },
+        "compacted on request": {
+          "always": ["turn", "turns_folded", "elided_turns", "bytes_before", "bytes_after"],
+          "read_by": {"turn": [], "turns_folded": [], "elided_turns": [], "bytes_before": [], "bytes_after": []},
+          "about": "sent as the request after a client's compact is built, when it folded at least one turn; the compact's answer carries the same figures (responses.compact)"
+        }
+      },
+      "framing": {
+        "approval_request": {
+          "always": ["request_id"],
+          "null_when": {
+            "request_id": "the prompt or follow_up whose run asks was sent with no id"
+          },
+          "read_by": {"request_id": []},
+          "about": "request_id is the id of the prompt or follow_up whose run asks the question"
+        }
       }
     },
     "responses": {
@@ -238,34 +286,144 @@
           "tasks[].labels": "the task has no label",
           "tasks[].blockers": "the task waits on no other task"
         }
-      }
-    },
-    "commands": {
+      },
       "get_state": {
-        "data": {
-          "always": [
-            "running",
-            "classifying",
-            "run_request_id",
-            "model",
-            "root",
-            "last_run",
-            "pending_approvals",
-            "tier"
-          ],
-          "last_run": "the last run's run_end framing fields, without type",
-          "null_when": {
-            "run_request_id": "no run is in flight, or the one in flight was started by a command sent with no id",
-            "model": "neither set_model nor the configuration's [model] spec names one",
-            "last_run": "no run of this rpc process has ended",
-            "tier": "no run of this rpc process has decided its tier yet, or the last run stopped before deciding one; never guessed from the spec"
-          },
-          "tier_label": {
-            "heads": ["1", "2", "3", "4", "unknown", "scripted"],
-            "detail_separator": ", ",
-            "shape": "<head>, or <head><detail_separator><detail>. A digit head is the adapter tier; unknown means nothing has established one; scripted means no model is called. <detail> is prose for a person (e.g. \"native tool calls\", \"no schema\", \"unavailable: colibri olmoe refuses tools\"), not a further format. A label never begins with the word tier: a status bar writes `tier ` before it."
-          }
+        "always": [
+          "running",
+          "classifying",
+          "run_request_id",
+          "model",
+          "root",
+          "last_run",
+          "pending_approvals",
+          "tier"
+        ],
+        "last_run": "the last run's run_end framing fields, without type",
+        "null_when": {
+          "run_request_id": "no run is in flight, or the one in flight was started by a command sent with no id",
+          "model": "neither set_model nor the configuration's [model] spec names one",
+          "last_run": "no run of this rpc process has ended",
+          "tier": "no run of this rpc process has decided its tier yet, or the last run stopped before deciding one; never guessed from the spec"
+        },
+        "tier_label": {
+          "heads": ["1", "2", "3", "4", "unknown", "scripted"],
+          "detail_separator": ", ",
+          "shape": "<head>, or <head><detail_separator><detail>. A digit head is the adapter tier; unknown means nothing has established one; scripted means no model is called. <detail> is prose for a person (e.g. \"native tool calls\", \"no schema\", \"unavailable: colibri olmoe refuses tools\"), not a further format. A label never begins with the word tier: a status bar writes `tier ` before it."
         }
+      },
+      "steer": {
+        "always": ["after_step"],
+        "about": "answered once a model request carries the steer: after_step is the step it followed, so the request after that step was the first to carry it. Refused, success false, when the run ends before another request."
+      },
+      "abort": {
+        "always": ["undelivered", "undelivered[].id", "undelivered[].type", "undelivered[].message"],
+        "type_values": ["steer", "follow_up"],
+        "null_when": {
+          "undelivered[].id": "the steer or follow_up was sent with no id"
+        },
+        "empty_when": {
+          "undelivered": "every steer reached a request and no follow_up was waiting, or a pending classify was dropped"
+        },
+        "about": "answered once the run has ended and rolled back: everything sent on the steering channel and never delivered, in the order received. A follow_up waiting behind the run is never run after an abort, so it is here."
+      },
+      "approve": {
+        "always": ["approved"],
+        "about": "approved is the answer the approve gave, as true or false; an approve for a question trellis no longer holds is refused"
+      },
+      "compact": {
+        "always": ["turn", "turns_folded", "elided_turns", "elided_bytes", "bytes_before", "bytes_after"],
+        "about": "answered once the run's next model request has been built: turn is the turn that request produced; turns_folded the turns this compact elided, 0 when nothing was left to fold; turns 1 to elided_turns have their observations elided, which held elided_bytes; bytes_before and bytes_after are the request's size either side. Refused when the run ends before another request."
+      },
+      "get_commands": {
+        "always": ["prompts", "prompts[].name", "prompts[].description"],
+        "empty_when": {
+          "prompts": "the repository and its installed packages hold no prompt template"
+        },
+        "about": "prompts are the repository's templates (.trellis/prompts/<name>.md) and its installed packages', each sent as a prompt's prompt by name; description is the template's frontmatter description or its first line"
+      },
+      "get_session_stats": {
+        "always": ["models", "models[].model", "models[].prompt_tokens", "models[].completion_tokens", "runs_not_counted"],
+        "null_when": {
+          "models[].prompt_tokens": "a run of that model did not report its prompt tokens",
+          "models[].completion_tokens": "a run of that model did not report its completion tokens"
+        },
+        "empty_when": {
+          "models": "no run of this rpc process has written a trail that read back"
+        },
+        "about": "per model, over the trails of this process's runs (#313): two figures, never summed. runs_not_counted counts the runs whose trail did not read back, so the rows are not taken for the whole session."
+      },
+      "get_available_models": {
+        "always": [
+          "catalog",
+          "catalog[].name",
+          "catalog[].license",
+          "catalog[].download_gib",
+          "catalog[].default",
+          "configured",
+          "configured.repository",
+          "configured.user",
+          "configured.session"
+        ],
+        "null_when": {
+          "configured.repository": "the repository's config sets no [model] spec, or does not read",
+          "configured.user": "the user's config sets no [model] spec",
+          "configured.session": "no set_model has named this session's model"
+        },
+        "about": "catalog is the weights trellis model pull fetches, download_gib rounded to a tenth; a catalogue name is not a spec. configured is each source's [model] spec; the repository's wins over the user's (ADR 0025 section 7)."
+      },
+      "get_last_assistant_text": {
+        "always": ["text"],
+        "null_when": {
+          "text": "no run of this rpc process has ended on done"
+        },
+        "about": "the summary of the last run that ended on done: model output, a JSON string, read as nothing else (ADR 0007)"
+      },
+      "vault_search": {
+        "always": ["hits", "hits[].path", "hits[].title", "hits[].score", "mode", "mode.body", "mode.trigrams"],
+        "empty_when": {
+          "hits": "nothing in the vault matches the query"
+        },
+        "about": "what trellis vault search prints, in its order; mode says which of the index's reductions the search ran under. Strings are as the notes store them."
+      },
+      "vault_graph": {
+        "always": [
+          "note",
+          "note.path",
+          "note.title",
+          "depth",
+          "lineage",
+          "unresolved_parent",
+          "children",
+          "children[].path",
+          "children[].title",
+          "refs_out",
+          "refs_out[].path",
+          "refs_out[].title",
+          "refs_out[].weight",
+          "refs_in",
+          "refs_in[].path",
+          "refs_in[].title",
+          "refs_in[].weight",
+          "issues"
+        ],
+        "null_when": {
+          "depth": "the note is under a parent that does not resolve, or on a cycle",
+          "unresolved_parent": "the note's parent resolves, or it names none"
+        },
+        "about": "what trellis vault graph prints about one note: lineage and issues are lists of text; weight counts the links between the two notes. Strings are as the notes store them."
+      },
+      "vault_check": {
+        "always": ["line", "issues", "warnings", "gate", "gate.accepts"],
+        "gate_accepts_only": [
+          "gate.stats",
+          "gate.stats.notes",
+          "gate.stats.parentless",
+          "gate.stats.connected",
+          "gate.stats.manifest_missing",
+          "gate.stats.manifest_extra"
+        ],
+        "gate_refuses_only": ["gate.violations"],
+        "about": "what trellis vault check prints, never --fix's path: nothing is written. gate is the run gate's vault validation, not a Verdict (ADR 0004): whether a run would accept the vault, and nothing about code."
       }
     }
   },
@@ -285,6 +443,25 @@
     ],
     "optional": {
       "trail.factual.label": "when the session was named"
+    },
+    "not_every_client": {
+      "always": ["trail.base_commit", "trail.factual.radius", "trail.factual.context", "trail.factual.actions"],
+      "optional": {
+        "trail.ended_at": "on every trail written since #622; absent on one written before it",
+        "trail.factual.steering": "when a steer or follow_up was sent during the run (ADR 0034); absent when none was, and on an interrupted run, whose turns and steering are dropped with its loop"
+      },
+      "null_when": {
+        "trail.factual.context": "no turn of the run carried a prompt size: a scripted model, or an interrupted run, whose turns are dropped with its loop"
+      },
+      "read_by": {
+        "trail.base_commit": [],
+        "trail.factual.radius": [],
+        "trail.factual.context": [],
+        "trail.factual.actions": [],
+        "trail.ended_at": [],
+        "trail.factual.steering": []
+      },
+      "about": "listed for the summary level (story #790), which will read them, and kept out of always and optional above, every path of which the desktop's trails test requires its rows to carry; they move up once a client reads them. The fields inside radius, context, actions and steering are listed when a client reads them. trail is the run's trail as written, read back as untrusted data (ADR 0007)."
     }
   },
   "overview": {
