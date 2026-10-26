@@ -162,15 +162,15 @@ func Render(s State, w, h int) string {
 	}
 	entry, bodyH := layout(s, w, h)
 	var out []string
-	out = append(out, fill(s.Theme, RoleLabel, trail(s, w), w))
-	out = append(out, fill(s.Theme, nowRole(s), nowStrip(s, w), w))
+	out = append(out, line(s.Theme, trail(s, w), w))
+	out = append(out, line(s.Theme, nowStrip(s), w))
 	out = append(out, stage(s, folded(w, h), w, bodyH)...)
 	if m := messages(s, w); m != "" {
 		out = append(out, m)
 	}
-	out = append(out, Box(s.Theme, "budget", "", rowsOf(RoleText, budgetLabel(s, w-2)), w, 3)...)
+	out = append(out, Box(s.Theme, "budget", "", []Row{{Spans: budgetRow(s, w-2)}}, w, 3)...)
 	out = append(out, entry...)
-	out = append(out, fill(s.Theme, RoleLabel, statusBar(s, w), w))
+	out = append(out, line(s.Theme, statusBar(s, w), w))
 	return strings.Join(out, "\n")
 }
 
@@ -282,12 +282,13 @@ func tooSmall(w, h int) string {
 	return fmt.Sprintf("terminal too small\n%dx%d — need at least %dx%d", w, h, MinWidth, MinHeight)
 }
 
-// context is the status bar's right side, w cells at most: the
-// worktree's state, the model and the tier. The worktree comes before the
-// model, and the model is the span cut, with "…", to the room left: drawn
-// last, the worktree was pushed past column 80 by a long spec and read
-// "work" (#636).
-func context(s State, w int) string {
+// barRight is the status bar's right side, w cells at most: the
+// worktree's state as a Status, the model and the tier. The worktree comes
+// before the model, and the model is the span cut, with "…", to the room
+// left: drawn last, the worktree was pushed past column 80 by a long spec
+// and read "work" (#636).
+func barRight(s State, w int) []Span {
+	head := statusSpan(worktree(s))
 	model := Plain(s.Model)
 	if model == "" {
 		model = "none"
@@ -296,29 +297,29 @@ func context(s State, w int) string {
 	if tier == "" {
 		tier = "probing…"
 	}
-	head := "worktree " + WorktreeState(s) + "  model "
 	tail := "  tier " + tier
-	room := max(w-Width(head)-Width(tail), 1)
-	return head + Cut(model, room) + tail
+	room := max(w-Width(head.Text)-Width("  model ")-Width(tail), 1)
+	return []Span{head, {Text: "  model " + Cut(model, room) + tail, Role: RoleLabel}}
 }
 
-// WorktreeState is what the bar says about the worktree (#636), from this
-// task's writes and how its run ended. The edits pane holds one row per
-// write trellis reported, so a run in flight counts writes and a finished
-// one counts the files they touched. A run that rolled back has left
-// nothing, and one that did not say so (a converged run, or an ending that
-// did not report it) has left its files for the person to review. Once
-// the oldest writes are no longer held (#848), their files cannot be
-// counted, and the bar says "or more".
-func WorktreeState(s State) string {
+// worktree is the worktree's state as the status bar's Status, its word
+// and its tone (#636, #911), from this task's writes and how its run
+// ended. The edits pane holds one row per write trellis reported, so a run
+// in flight counts writes, pending in the engine's colour, and a finished
+// one counts the files they touched, left for the person to review in
+// theirs. A run that rolled back has left nothing, and one that did not
+// say so (a converged run, or an ending that did not report it) has left
+// its files for review. Once the oldest writes are no longer held (#848),
+// their files cannot all be counted, and the count ends in "+".
+func worktree(s State) (word string, tone Role) {
 	if s.Running {
 		if n := len(s.Edits) + s.Dropped.Edits; n > 0 {
-			return fmt.Sprintf("%d edit(s) pending", n)
+			return fmt.Sprintf("%d pending", n), RoleTool
 		}
-		return "clean"
+		return "clean", RoleLabel
 	}
 	if s.Restored != nil && *s.Restored {
-		return "restored"
+		return "restored", RoleLabel
 	}
 	files := map[string]bool{}
 	for _, e := range s.Edits {
@@ -326,11 +327,11 @@ func WorktreeState(s State) string {
 	}
 	switch {
 	case s.Dropped.Edits > 0:
-		return fmt.Sprintf("%d or more file(s) left for review", len(files))
+		return fmt.Sprintf("%d+ to review", len(files)), RoleYou
 	case len(files) > 0:
-		return fmt.Sprintf("%d file(s) left for review", len(files))
+		return fmt.Sprintf("%d to review", len(files)), RoleYou
 	}
-	return "clean"
+	return "clean", RoleLabel
 }
 
 // notKept is the row a pane draws first when the model no longer holds
@@ -551,13 +552,12 @@ func actions(s State, w, h int) []string {
 			wroteN++
 		}
 	}
-	switch {
-	case len(s.Actions) == 0:
+	// ✎ n is how many of the actions held wrote to the tree (#911), as the
+	// recent actions below mark each one that did; /help says so.
+	if len(s.Actions) == 0 {
 		lines = append(lines, Row{Text: "  nothing yet", Role: RoleLabel})
-	case wroteN == 0:
-		lines = append(lines, Row{Text: "  nothing written to the tree", Role: RoleLabel})
-	default:
-		lines = append(lines, Row{Text: fmt.Sprintf("  %d wrote to the tree", wroteN), Role: RoleLabel})
+	} else {
+		lines = append(lines, Row{Text: fmt.Sprintf("  ✎ %d", wroteN), Role: RoleLabel})
 	}
 	// The graph counts the actions held; the ones before them are said,
 	// not counted, so every figure in the pane is of the same actions.
@@ -573,7 +573,7 @@ func actions(s State, w, h int) []string {
 		for _, a := range s.Actions[from:] {
 			mark := "·"
 			if a.Wrote {
-				mark = "*"
+				mark = "✎"
 			}
 			lines = append(lines, Row{Text: Cut("  "+mark+" "+Plain(a.Tool)+" "+Plain(a.Target), inner), Role: RoleTool})
 		}
@@ -581,72 +581,81 @@ func actions(s State, w, h int) []string {
 	return paneBox(s, PanelActions, "actions", "", lines, w, h)
 }
 
-// budgetSegments are the budget line's figures, in order: the iteration
-// against the run's own ceiling, the prompt's size, the time elapsed, and
-// #257's rate and queue wait (nil when not drawn at all). A figure trellis
-// did not report is named as unreported, never drawn as 0 (#641): at
-// launch the line used to read "iteration 0 · 0 B prompt · 0s elapsed",
-// three figures nothing had measured.
-func budgetSegments(s State) (iteration, prompt, elapsed string, rate, queued *string) {
+// budgetSegments are the budget row's segments, in order (#911): a Meter
+// for each limit the TUI holds, which today is the turns against the run's
+// max_iterations (trellis reports a client no other ceiling yet, #799);
+// the prompt's size in kB; the time by this view's clock; and #257's rate
+// and queue wait, nil when not drawn at all. A figure trellis did not
+// report is Dash, never 0 (#641): at launch the line used to read
+// "iteration 0 · 0 B prompt · 0s elapsed", three figures nothing had
+// measured.
+func budgetSegments(s State) [][]Span {
 	b := s.Budget
-	// Turns count from 1: a 0 is a run that has not reported a turn.
-	switch {
-	case b.Iteration == 0 && b.MaxIterations == nil:
-		iteration = "no iteration yet"
-	case b.Iteration == 0:
-		iteration = fmt.Sprintf("no iteration yet of %d", *b.MaxIterations)
-	case b.MaxIterations == nil:
-		iteration = fmt.Sprintf("iteration %d", b.Iteration)
-	default:
-		iteration = fmt.Sprintf("iteration %d/%d", b.Iteration, *b.MaxIterations)
+	labelled := func(label, value string) []Span {
+		return []Span{{Text: label + " ", Role: RoleLabel}, {Text: value}}
 	}
-	// A finished run does not keep presenting an iteration in progress.
-	if !s.Running && s.Outcome != "" {
-		iteration = "finished · " + iteration
+	rate, queued := turnRate(b)
+	segs := [][]Span{
+		meter("TURNS", turnUsed(s), b.MaxIterations, meterCells),
+		labelled("PROMPT", kB(b.PromptBytes)),
+		labelled("TIME", clockText(s)),
+		nil,
+		nil,
 	}
-	prompt = "prompt not reported"
-	if b.PromptBytes != nil {
-		prompt = fmt.Sprintf("%d B prompt", *b.PromptBytes)
+	if rate != nil {
+		segs[3] = []Span{{Text: *rate}}
 	}
-	elapsed = "not started"
-	if b.ElapsedSecs != nil {
-		// This view's clock: the Now strip above says so (#850), and the
-		// line keeps its room for the turn's figures.
-		elapsed = Clock(*b.ElapsedSecs) + " elapsed"
+	if queued != nil {
+		segs[4] = []Span{{Text: *queued}}
 	}
-	rate, queued = turnRate(b)
-	return iteration, prompt, elapsed, rate, queued
+	return segs
 }
 
-// BudgetLine is the budget's whole line, every segment kept.
-func BudgetLine(s State) string { return budgetLabel(s, -1) }
+// BudgetLine is the budget's whole row as text, every segment kept.
+func BudgetLine(s State) string { return spansText(budgetRow(s, -1)) }
 
-// budgetLabel is the budget line joined with "  ·  ", dropping whole
-// segments until it fits width (#655); a negative width keeps them all. A
-// line cut by the box ended mid-word ("· queu"), so a segment that does not
-// fit is left out rather than cut, in this order: the token rate first,
-// since it is the one figure derived from the others; then the queue wait;
-// then the prompt size. The iteration and the elapsed time are never
+// budgetRow is the budget row's segments joined with "  ·  ", dropping
+// whole segments until it fits width (#655); a negative width keeps them
+// all. A row cut by the box ended mid-word ("· queu"), so a segment that
+// does not fit is left out rather than cut, in this order: the token rate
+// first, since it is the one figure derived from the others; then the
+// queue wait; then the prompt size. The turns and the time are never
 // dropped: they are what says the run is moving.
-func budgetLabel(s State, width int) string {
-	iteration, prompt, elapsed, rate, queued := budgetSegments(s)
-	segs := []*string{&iteration, &prompt, &elapsed, rate, queued}
-	join := func() string {
-		var parts []string
-		for _, p := range segs {
-			if p != nil {
-				parts = append(parts, *p)
+func budgetRow(s State, width int) []Span {
+	segs := budgetSegments(s)
+	join := func() []Span {
+		var out []Span
+		for _, seg := range segs {
+			if seg == nil {
+				continue
 			}
+			if out != nil {
+				out = append(out, Span{Text: "  ·  ", Role: RoleLabel})
+			}
+			out = append(out, seg...)
 		}
-		return strings.Join(parts, "  ·  ")
+		return out
 	}
 	for _, drop := range []int{3, 4, 1} {
-		if width < 0 || Width(join()) <= width {
+		if width < 0 || spansWidth(join()) <= width {
 			break
 		}
 		segs[drop] = nil
 	}
 	return join()
+}
+
+// kB is a byte count in kilobytes to one place, the unit after a space as
+// the design system sets a figure; under 1 kB it stays in bytes, where a
+// rounded 0.0 kB would read as nothing. Dash when trellis did not report it.
+func kB(n *uint64) string {
+	switch {
+	case n == nil:
+		return Dash
+	case *n < 1000:
+		return fmt.Sprintf("%d B", *n)
+	}
+	return fmt.Sprintf("%.1f kB", float64(*n)/1000)
 }
 
 // Clock is seconds as m:ss, so a minutes-long model call reads as time
@@ -697,9 +706,11 @@ func turnRate(b Budget) (rate, queued *string) {
 // there is.
 func entryLines(s State, w, room int) []string {
 	lines := []Row{{Text: CutLeft(Plain(s.Input)+"█", w-2), Role: RoleYou}}
-	title := "task  ·  enter to run  ·  /help  ·  esc clears  ·  ^c leaves"
+	// The title says what ⏎ does with the line now (#911: as keycaps; the
+	// status bar has the keys that move between levels and ^C).
+	title := "task  " + keyRow(key{"⏎", "run"}, key{"ESC", "clear"}) + "  /help"
 	if s.Running {
-		title = "running — enter queues a steer for its next turn  ·  ^c stops it"
+		title = "steer  " + keyRow(key{"⏎", "queue for the next turn"})
 	} else {
 		offered := s.Offered
 		hidden := 0
@@ -708,15 +719,19 @@ func entryLines(s State, w, room int) []string {
 			hidden = len(offered) - shown
 			offered = offered[:shown]
 		}
+		// Tab inserts the first path: its keycap marks it, and the rest
+		// line up under it.
+		first := Keycap("TAB") + " "
+		indent := strings.Repeat(" ", Width(first))
 		for i, p := range offered {
-			mark := "    "
+			mark := indent
 			if i == 0 {
-				mark = "tab "
+				mark = first
 			}
 			lines = append(lines, Row{Text: mark + Plain(p), Role: RoleLabel})
 		}
 		if hidden > 0 && room > 0 {
-			lines = append(lines, Row{Text: fmt.Sprintf("    … %d more", hidden), Role: RoleLabel})
+			lines = append(lines, Row{Text: fmt.Sprintf("%s… %d more", indent, hidden), Role: RoleLabel})
 		}
 	}
 	return Box(s.Theme, title, "", lines, w, 2+len(lines))

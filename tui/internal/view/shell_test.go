@@ -52,17 +52,17 @@ func TestShellTrailFirstStatusLastAt120x40And80x24(t *testing.T) {
 				}
 			}
 			top, now, last := rows[0], rows[1], rows[h-1]
-			wantTrail, wantDepth, wantKeys := " Run ", "L1 / 4", "TAB select  ⏎ in  ^C stop"
+			wantTrail, wantDepth, wantKeys := " Run ", "L1 / 4", "[TAB] select  [⏎] in  [^C] stop"
 			if open != "" {
-				wantTrail, wantDepth, wantKeys = " Run ⟩ actions", "L2 / 4  ESC out", "ESC out  ^C stop"
+				wantTrail, wantDepth, wantKeys = " Run ⟩ actions", "L2 / 4  [ESC] out", "[ESC] out  [^C] stop"
 			}
 			if !strings.HasPrefix(top, wantTrail) || !strings.Contains(top, wantDepth) || !strings.Contains(top, "TRELLIS") {
 				t.Fatalf("%dx%d, open %q: the Trail row reads %q", w, h, open, top)
 			}
-			if !strings.HasPrefix(now, " RUNNING") {
+			if !strings.HasPrefix(now, " ● RUNNING") {
 				t.Fatalf("%dx%d, open %q: the Now strip is not under the Trail: %q", w, h, open, now)
 			}
-			if !strings.Contains(last, "worktree") || (w >= FoldWidth && !strings.Contains(last, wantKeys)) || !strings.Contains(last, "^C stop") {
+			if !strings.Contains(last, "● 1 pending") || (w >= FoldWidth && !strings.Contains(last, wantKeys)) || !strings.Contains(last, "[^C] stop") {
 				t.Fatalf("%dx%d, open %q: the status bar reads %q", w, h, open, last)
 			}
 		}
@@ -90,14 +90,14 @@ func TestShellFoldsTheRightColumnAt80(t *testing.T) {
 			folded = r
 		}
 	}
-	if folded == "" || !strings.Contains(folded, "radius") || !strings.Contains(folded, "where") || !strings.Contains(folded, "TAB selects") {
+	if folded == "" || !strings.Contains(folded, "radius") || !strings.Contains(folded, "where") || !strings.Contains(folded, "[TAB] select") {
 		t.Fatalf("no folded row naming every pane:\n%s", out)
 	}
 	s.Nav.Selected = PanelEdits
-	if out := Render(s, 80, 24); !strings.Contains(out, "[edits 1]") || !strings.Contains(out, "⏎ goes in") {
+	if out := Render(s, 80, 24); !strings.Contains(out, "[edits 1]") || !strings.Contains(out, "[⏎] in") {
 		t.Fatalf("the selected pane is not marked:\n%s", out)
 	}
-	if out := Render(shellState(), 120, 40); !strings.Contains(out, "┌ actions") || strings.Contains(out, "TAB selects") {
+	if out := Render(shellState(), 120, 40); !strings.Contains(out, "┌ actions") || strings.Contains(out, "actions 3 · edits 1") {
 		t.Fatalf("at 120x40 the column folded:\n%s", out)
 	}
 	if out := Render(shellState(), 120, FoldHeight-1); strings.Contains(out, "┌ actions") {

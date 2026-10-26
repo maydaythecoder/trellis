@@ -115,7 +115,7 @@ func TestPanesClockKeepsElapsedCurrentWhileRunning(t *testing.T) {
 		t.Fatalf("elapsed %v, want 75", m.Budget.ElapsedSecs)
 	}
 	m.Update(windowSize(120, 24))
-	if v := m.View(); !strings.Contains(v, "1:15 elapsed") || !strings.Contains(v, "no iteration yet of 40") {
+	if v := m.View(); !strings.Contains(v, "TIME 1:15*") || !strings.Contains(v, "TURNS —/40") {
 		t.Fatalf("view:\n%s", v)
 	}
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
@@ -150,7 +150,7 @@ func TestPanesClockTicksOnceASecond(t *testing.T) {
 }
 
 // A turn that did not report its prompt size is not a 0-byte prompt: the
-// figure stays unreported, and the line says so.
+// figure stays unreported, and the line draws it — (#911).
 func TestPanesTurnWithoutAPromptSizeLeavesItUnreported(t *testing.T) {
 	m := running(t)
 	feed(m, turn(3, "read_file a.py", map[string]any{"observation": "..."}))
@@ -158,7 +158,7 @@ func TestPanesTurnWithoutAPromptSizeLeavesItUnreported(t *testing.T) {
 		t.Fatalf("budget %+v", m.Budget)
 	}
 	m.Update(windowSize(120, 24))
-	if v := m.View(); !strings.Contains(v, "prompt not reported") || strings.Contains(v, "0 B prompt") {
+	if v := m.View(); !strings.Contains(v, "PROMPT —") || strings.Contains(v, "PROMPT 0") {
 		t.Fatalf("view:\n%s", v)
 	}
 }

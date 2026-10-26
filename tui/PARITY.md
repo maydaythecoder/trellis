@@ -217,6 +217,7 @@ tests held no colour rule, so the row names no Rust test.
 | none | none | each row is painted in its role's token, and a check row takes ok or down only from the verdict trellis sent, never from its words | #841 | `TestPaintEachRoleTakesItsToken`, `TestViewCheckRowsTakeOkAndDownRoles` |
 | none | none | painted, the only escape sequences on screen are the theme's colours, at every colour depth, and every row is still exactly the screen's width | #841 | `TestViewNoEscapeSequenceReachesTheScreen`, `TestViewWideTextKeepsEveryRowWithinTheWidth`, `TestFrameBoxIsExactlyItsSize` |
 | none | none | every transcript row is written with its role through rows.go, and no role is read from a row's words | #849 | `TestRowsEveryTranscriptLineHasARole`, `TestRowsOnlyRowsGoWritesTheTranscript` |
+| none | none | a row in more than one colour is cut on its plain text and painted piece by piece, and is still exactly the width it is drawn at | #911 | `TestLineCutsAcrossSpansAndPaintsEachPiece` |
 
 ## Run view
 
@@ -234,3 +235,7 @@ of them, so each row names no Rust test.
 | none | none | below 100 columns or 30 rows the right column folds into one row of the panes under a full-width transcript | #851 | `TestShellFoldsTheRightColumnAt80` |
 | none | none | Tab selects a pane, ⏎ on an empty line goes in, ESC comes out and never quits, Tab inside a pane goes across | #851 | `TestNavEnterInEscOut`, `TestShellSelectedPaneAndTheRail` |
 | none | none | the shell's renders at 80x24 and 120x40 match the goldens in tui/internal/view/testdata | #851 | `TestShellGoldenRenders` |
+| none | none | the Now strip draws the state as a dot and its word, the time by this view's clock marked * and the turn as a Meter of █ and ░ against the run's ceiling, never a percentage | #911 | `TestNowStripDrawsTheTurnAsAMeter`, `TestMeterFillsToTheShareAndKeepsTheBudgetTones` |
+| none | none | the budget row is a Meter for each limit the TUI holds, then the prompt in kB and the time | #911 | `TestBudgetLineNamesWhatWasNotReported`, `TestShellGoldenRenders` |
+| none | none | a figure trellis did not report is drawn —, never 0 and never as a Meter's cells, and /help says what — and * mean | #911 | `TestUnreportedFigureIsADash`, `TestBudgetLineUnreportedFiguresAreNamedNotDrawnAsZero` |
+| none | none | the status bar's worktree is a Status in its tone, and every key the screen shows is a keycap, the key in brackets | #911 | `TestStatusBarDrawsTheWorktreeAsAStatusAndTheKeysAsKeycaps`, `TestKeycapsAndStatusDrawTheirCards` |

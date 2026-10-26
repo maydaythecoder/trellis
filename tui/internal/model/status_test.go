@@ -80,12 +80,12 @@ func TestStatusTierWordOnceAndPlain(t *testing.T) {
 // The bar says clean, or how many edits are pending, from the edits pane.
 func TestStatusWorktreeCleanOrEditsPending(t *testing.T) {
 	m := running(t)
-	if bar := barOf(m); !strings.Contains(bar, "worktree clean") {
+	if bar := barOf(m); !strings.Contains(bar, "● clean") {
 		t.Fatalf("%q", bar)
 	}
 	feed(m, turn(1, "edit a.py", map[string]any{"observation": "applied: true"}))
 	feed(m, turn(2, "edit b.py", map[string]any{"observation": "applied: true"}))
-	if bar := barOf(m); !strings.Contains(bar, "worktree 2 edit(s) pending") {
+	if bar := barOf(m); !strings.Contains(bar, "● 2 pending") {
 		t.Fatalf("%q", bar)
 	}
 }
