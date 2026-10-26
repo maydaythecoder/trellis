@@ -240,6 +240,10 @@ func (m *Model) Update(msg tea.Msg) {
 	case ExitedMsg:
 		m.exited(msg.Err)
 	case SendFailedMsg:
+		// A failed write may have been a Stop and send's abort, and nothing
+		// written after it reaches trellis either: the held line is dropped
+		// rather than left holding the task line.
+		m.dropHeld("could not write to trellis rpc")
 		m.push(view.RoleRefusal, "! could not write to trellis rpc: "+view.Plain(msg.Err.Error()))
 	case TickMsg:
 		m.tick()

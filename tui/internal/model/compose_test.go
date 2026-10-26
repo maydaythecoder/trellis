@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -165,6 +166,32 @@ func TestComposeStopAndSendAbortsThenPrompts(t *testing.T) {
 	}
 	if !strings.Contains(lines(m), "· not delivered: start over (the stop was refused)") {
 		t.Fatalf("the transcript does not say it:\n%s", lines(m))
+	}
+
+	// The abort's answer before run_end, then a write that fails: the
+	// line waits on run_end, then is dropped, and the task line is free.
+	m = running(t)
+	typeLine(m, "start over")
+	tabKey(m)
+	tabKey(m)
+	enter(m)
+	abortID = m.TakeOutbox()[0].Cmd["id"]
+	respond(m, abortID, "abort", map[string]any{"undelivered": []any{}})
+	if out := m.TakeOutbox(); len(out) != 0 {
+		t.Fatalf("the abort's answer alone sent %v", kinds(out))
+	}
+	m.Update(SendFailedMsg{Err: errors.New("broken pipe")})
+	feed(m, runEnd(map[string]any{"outcome": "interrupted", "restored": true}))
+	if got := kinds(m.TakeOutbox()); strings.Contains(strings.Join(got, ","), "prompt") {
+		t.Fatalf("sent %v after a failed write dropped the line", got)
+	}
+	if got := queueOf(m); len(got) != 1 || got[0] != "not delivered (could not write to trellis rpc) · prompt: start over" {
+		t.Fatalf("queue after a failed write: %q", got)
+	}
+	typeLine(m, "fix it")
+	enter(m)
+	if got := kinds(m.TakeOutbox()); strings.Join(got, ",") != "classify" {
+		t.Fatalf("a task after the dropped line sent %v, want it classified", got)
 	}
 
 	// The child exits before the run ends: nothing is sent.
