@@ -3,7 +3,7 @@
 //!
 //! A `prompt` runs a task through `cmd_run_with`, the path `trellis run`
 //! takes, on its own thread. The main thread keeps reading, so `abort`,
-//! `approve`, `get_state`, `steer`, `follow_up`, `pause` and `resume` are
+//! `approve`, `get_state`, `steer`, `follow_up`, `pause`, `resume` and `set_budget` are
 //! answered while the run is in flight. One run at a time; the clean-worktree rule is
 //! `cmd_run`'s and is unchanged. A follow-up is the one way a run starts
 //! other than `prompt`: after the run it was sent during ends.
@@ -90,6 +90,12 @@ const COMMANDS: &[(&str, &str)] = &[
     (
         "resume",
         "let a paused run go on, or withdraw a pause it has not reached yet",
+    ),
+    (
+        "set_budget",
+        "raise the run in flight's ceilings, never lower one: any of {max_iterations?, \
+         max_wall_clock_ms?, max_tokens?}; answered with every ceiling after it, in force \
+         from the loop's next budget check, where `run budget` is sent again",
     ),
     (
         "compact",
@@ -302,6 +308,67 @@ fn relative_path_rule(field: &str, value: &str, what: &str) -> Result<(), String
     Ok(())
 }
 
+/// `set_budget`'s ceilings, under the names and units `run budget` sends
+/// them in. Each is refused by the rule it breaks: a client that sent
+/// `max_wall_clock_s`, `"5"` or `-1` learns its request was wrong rather than
+/// seeing a ceiling it did not mean, and nothing is raised.
+fn budget_raise(cmd: &Value) -> Result<trellis_loop::Raise, String> {
+    let Some(fields) = cmd.as_object() else {
+        return Err("a command is a JSON object".into());
+    };
+    let mut raise = trellis_loop::Raise::default();
+    for (name, value) in fields {
+        match name.as_str() {
+            "id" | "type" => {}
+            "max_iterations" => {
+                let v = positive(name, value)?;
+                raise.max_iterations = Some(u32::try_from(v).map_err(|_| {
+                    format!(
+                        "`max_iterations` {v} is past the most a run can count, {}",
+                        u32::MAX
+                    )
+                })?);
+            }
+            "max_wall_clock_ms" => {
+                raise.max_wall_clock =
+                    Some(std::time::Duration::from_millis(positive(name, value)?));
+            }
+            "max_tokens" => raise.max_tokens = Some(positive(name, value)?),
+            // `run budget` carries it, but it is the driver's prompt size,
+            // fixed when the driver is built, and no budget check reads it.
+            "context_bytes" => {
+                return Err(format!(
+                    "`context_bytes` is the driver's prompt size, fixed for the run; \
+                     set_budget raises {SET_BUDGET_FIELDS}"
+                ));
+            }
+            other => {
+                return Err(format!(
+                    "`{other}` is not a set_budget field; it raises {SET_BUDGET_FIELDS}"
+                ));
+            }
+        }
+    }
+    if raise == trellis_loop::Raise::default() {
+        return Err(format!("name a ceiling to raise: {SET_BUDGET_FIELDS}"));
+    }
+    Ok(raise)
+}
+
+/// A ceiling's value: a whole number above zero, as JSON writes one.
+fn positive(name: &str, value: &Value) -> Result<u64, String> {
+    match value.as_u64() {
+        Some(0) => Err(format!(
+            "`{name}` is 0; a ceiling of 0 ends the run, and set_budget only raises"
+        )),
+        Some(v) => Ok(v),
+        None => Err(format!(
+            "`{name}` must be a whole number above 0, at most {}; got {value}",
+            u64::MAX
+        )),
+    }
+}
+
 /// `read_file`'s `path`, refused by the rule it breaks, as `list_paths`
 /// refuses a prefix.
 fn read_file_path(cmd: &Value) -> Result<&str, String> {
@@ -457,6 +524,12 @@ const INPUT_ENDED: &str = "input ended; nothing could resume the run, so it did 
 
 /// What a `pause` the run never reached is answered with once it has ended.
 const HOLD_ENDED: &str = "the run ended before it reached the hold; it did not pause";
+
+/// What a `set_budget` is refused with once the run has ended.
+const BUDGET_ENDED: &str = "the run has ended; nothing changed";
+
+/// The fields `set_budget` reads, as `run budget` names them.
+const SET_BUDGET_FIELDS: &str = "max_iterations, max_wall_clock_ms or max_tokens";
 
 /// What `prompt` and `classify` are refused with while a run is in flight.
 const ONE_AT_A_TIME: &str = "a run is in progress; one at a time (abort it, or wait)";
@@ -723,6 +796,9 @@ struct Current {
     /// `pause` and `resume` (ADR 0058 §1), honoured by the loop at the top
     /// of its next iteration. Closed when the run ends.
     hold: Arc<trellis_loop::Hold>,
+    /// `set_budget` (ADR 0058 §2): the run's whole ceiling, enforced by the
+    /// loop from its next budget check. Closed when the run ends.
+    budget: Arc<trellis_loop::LiveBudget>,
 }
 
 impl Current {
@@ -732,6 +808,7 @@ impl Current {
             compact: Arc::new(trellis_loop::CompactRequests::default()),
             steering: SteeringPort::new(),
             hold: Arc::default(),
+            budget: Arc::default(),
         }
     }
 }
@@ -1415,6 +1492,30 @@ impl Server {
             .map_err(|e| e.to_string())
     }
 
+    /// `set_budget` (ADR 0058 §2): answered at once with every ceiling after
+    /// the raise, which the loop enforces from its next budget check and
+    /// announces there with `run budget`. Refused whole, changing nothing,
+    /// when any value is not a raise or not a ceiling's.
+    fn set_budget(&mut self, cmd: &Value) -> Result<Value, String> {
+        if !self.in_flight() {
+            return Err("no run in flight".into());
+        }
+        let Some(r) = &self.running else {
+            return Err("no run in flight".into());
+        };
+        let raise = budget_raise(cmd)?;
+        let b = r
+            .current()
+            .budget
+            .raise(&raise)
+            .map_err(|e| e.to_string())?;
+        Ok(json!({
+            "max_iterations": b.max_iterations,
+            "max_wall_clock_ms": u64::try_from(b.max_wall_clock.as_millis()).unwrap_or(u64::MAX),
+            "max_tokens": b.max_tokens,
+        }))
+    }
+
     /// `abort`: answered once the run has ended, with everything sent on
     /// the steering channel and never delivered, in the order received.
     ///
@@ -1539,6 +1640,10 @@ impl Server {
             "pause" => self.pause(id),
             "resume" => {
                 let r = self.resume();
+                self.respond(id, kind, r);
+            }
+            "set_budget" => {
+                let r = self.set_budget(cmd);
                 self.respond(id, kind, r);
             }
             "steer" | "follow_up" => self.steer(cmd, id, kind),
@@ -2268,6 +2373,7 @@ impl Chain {
             // Fresh per run, for this run's `run_end` `elapsed_ms` (#799).
             spent: trellis_loop::SpentSlot::default(),
             hold: Some(cur.hold.clone()),
+            budget: Some(cur.budget.clone()),
         };
         // Cleared first, so a run that stops before it decides a tier
         // leaves none, rather than the last run's for another model.
@@ -2311,6 +2417,9 @@ impl Chain {
         // After `run_end`, which `cmd_run_with` framed: a pause the run never
         // reached is answered after the frame that says how it ended.
         cur.hold.close(HOLD_ENDED);
+        // The loop closes it as it returns; this is for a run whose loop
+        // never started or never returned (an error before it, an abort).
+        cur.budget.close(BUDGET_ENDED);
         // Questions still open when the run ended are dropped, which the
         // gate reads as a no; none can be answered now.
         if let Ok(mut a) = self.approvals.lock() {

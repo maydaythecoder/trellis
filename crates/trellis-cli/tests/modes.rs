@@ -5337,6 +5337,237 @@ fn rpc_resume_continues_the_same_run() {
     );
 }
 
+/// What the loop tells the model on the one extra turn an exhausted budget
+/// grants (trellis-loop adapter.rs), the mark that the ceiling in force was
+/// reached.
+const BUDGET_NOTICE: &str = "NOTICE: the budget is exhausted";
+
+/// A fixture whose run is budgeted one iteration, so the request after the
+/// first turn is the escalated one unless a raise reaches the loop first.
+fn one_iteration_budget(name: &str) -> Fixture {
+    let f = fixture(name);
+    std::fs::create_dir_all(f.root.join(".trellis")).unwrap();
+    std::fs::write(
+        f.root.join(".trellis/config.toml"),
+        "[budget]\nmax_iterations = 1\nmax_wall_clock_s = 1200\nmax_tokens = 5000\n",
+    )
+    .unwrap();
+    git(&f.root, &["add", "-A"]);
+    git(&f.root, &["commit", "-qm", "one iteration"]);
+    f
+}
+
+#[test]
+fn rpc_set_budget_sends_run_budget_again() {
+    // The risks (ADR 0058 §2): a raise answered and never enforced, so the
+    // run ends on the ceiling it started with; one enforced without a
+    // `run budget` a client can redraw its meters from; or the escalated
+    // run told its turn is its last after the raise lifted it. The run is
+    // budgeted one iteration, so without the raise the second request
+    // carries the final notice; with it, it does not. Order is read from the
+    // stream, not a clock: the raise is answered while the loop waits on the
+    // edit's question, and only the yes lets it reach its next budget check.
+    let c = contract();
+    let later = &c["rpc"]["not_every_client"];
+    let f = one_iteration_budget("rpc-set-budget-again");
+    let (mut rpc, server, q) = at_the_edit_s_question(
+        &f,
+        "TRELLIS_TEST_RPC_SET_BUDGET_AGAIN_KEY",
+        vec![
+            edit_a(),
+            openai_call("c2", "done", serde_json::json!({"summary": "changed it"})),
+        ],
+    );
+    rpc.send(serde_json::json!({"id": "b", "type": "set_budget",
+                                "max_iterations": 3, "max_tokens": 6000}));
+    let b = rpc.next(|v| v["type"] == "response" && v["id"] == "b");
+    assert_eq!(b["command"], "set_budget");
+    assert_eq!(b["success"], true, "{b}");
+    assert_eq!(
+        b["data"],
+        serde_json::json!({"max_iterations": 3, "max_wall_clock_ms": 1_200_000,
+                           "max_tokens": 6000}),
+        "answered with every ceiling after the raise, the unraised one as it was"
+    );
+    // Equal to the ceiling now in force: accepted, and changes nothing.
+    rpc.send(serde_json::json!({"id": "same", "type": "set_budget", "max_iterations": 3}));
+    let same = rpc.next(|v| v["type"] == "response" && v["id"] == "same");
+    assert_eq!(same["success"], true, "{same}");
+    assert_eq!(same["data"]["max_iterations"], 3, "{same}");
+    rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": true}));
+    let end = rpc.seen_or_next(|v| v["type"] == "run_end");
+    assert_eq!(end["id"], "p", "{end}");
+    rpc.wait_idle();
+    rpc.send(serde_json::json!({"id": "after", "type": "set_budget", "max_iterations": 9}));
+    let after = rpc.next(|v| v["type"] == "response" && v["id"] == "after");
+    assert_eq!(after["error"], "no run in flight", "{after}");
+    let records = rpc.finish();
+
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert!(
+        !requests[1].contains(BUDGET_NOTICE),
+        "the raise was not enforced: the request after it was told the budget ran out: {}",
+        requests[1]
+    );
+    let budgets: Vec<usize> = records
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r["fields"]["message"] == "run budget")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        budgets.len(),
+        2,
+        "sent at the start and once for the raise, not for the equal one: {records:?}"
+    );
+    let (first_b, again) = (
+        &records[budgets[0]]["fields"],
+        &records[budgets[1]]["fields"],
+    );
+    assert_eq!(first_b["max_iterations"], 1, "{first_b}");
+    assert_eq!(again["max_iterations"], 3, "{again}");
+    assert_eq!(again["max_tokens"], 6000, "{again}");
+    assert_eq!(again["max_wall_clock_ms"], 1_200_000, "{again}");
+    let answered = first(&records, "set_budget answer", |r| {
+        r["type"] == "response" && r["id"] == "b"
+    });
+    let turn_1 = first(&records, "turn 1", event_at("turn", 1));
+    let call_2 = first(&records, "model call 2", event_at("model call", 2));
+    assert!(
+        answered < budgets[1] && turn_1 < budgets[1] && budgets[1] < call_2,
+        "answered {answered}, turn 1 {turn_1}, run budget again {}, model call 2 {call_2}: \
+         {records:?}",
+        budgets[1]
+    );
+    let mut gaps = missing(
+        &b["data"],
+        &c["rpc"]["responses"]["set_budget"]["always"],
+        "set_budget",
+    );
+    gaps.extend(missing(
+        again,
+        &c["rpc"]["events"]["run budget"]["always"],
+        "run budget",
+    ));
+    gaps.extend(missing(
+        again,
+        &later["events"]["run budget"]["always"],
+        "run budget",
+    ));
+    gaps.extend(missing(
+        again,
+        &later["events"]["run budget"]["context_driver_only"],
+        "run budget",
+    ));
+    assert!(
+        gaps.is_empty(),
+        "the stream lacks what tests/client_contract.json lists: {gaps:?}\n{records:?}"
+    );
+}
+
+#[test]
+fn rpc_set_budget_refuses_a_lower_limit() {
+    // The risks (ADR 0058 §2): a ceiling lowered mid-run, which ends the run
+    // at the next check without the rollback `abort` gives; a request that
+    // lowers one ceiling and raises another applied by half; and a value a
+    // client meant otherwise (a string, seconds under the wrong name, a
+    // negative or a number past the counter) read as some ceiling. Each is
+    // refused by the rule it breaks and nothing changes: the request after
+    // the first turn is still the escalated one, and `run budget` is sent
+    // once.
+    let f = one_iteration_budget("rpc-set-budget-lower");
+    let mut idle = Rpc::start(trellis(&f));
+    idle.send(serde_json::json!({"id": "none", "type": "set_budget", "max_iterations": 5}));
+    let none = idle.next(|v| v["type"] == "response" && v["id"] == "none");
+    assert_eq!(none["error"], "no run in flight", "{none}");
+    idle.finish();
+    let (mut rpc, server, q) = at_the_edit_s_question(
+        &f,
+        "TRELLIS_TEST_RPC_SET_BUDGET_LOWER_KEY",
+        vec![
+            edit_a(),
+            openai_call("c2", "done", serde_json::json!({"summary": "changed it"})),
+        ],
+    );
+    let refused: &[(Value, &str)] = &[
+        (
+            serde_json::json!({"max_tokens": 4999}),
+            "max_tokens 4999 is below the run's ceiling of 5000",
+        ),
+        (
+            serde_json::json!({"max_iterations": 5, "max_wall_clock_ms": 1000}),
+            "max_wall_clock_ms 1000 is below the run's ceiling of 1200000",
+        ),
+        (serde_json::json!({}), "name a ceiling to raise"),
+        (
+            serde_json::json!({"max_iterations": 0}),
+            "`max_iterations` is 0",
+        ),
+        (
+            serde_json::json!({"max_iterations": -5}),
+            "`max_iterations` must be a whole number above 0",
+        ),
+        (
+            serde_json::json!({"max_iterations": "5"}),
+            "`max_iterations` must be a whole number above 0",
+        ),
+        (
+            serde_json::json!({"max_tokens": 6000.5}),
+            "`max_tokens` must be a whole number above 0",
+        ),
+        (
+            serde_json::json!({"max_iterations": 4_294_967_296_u64}),
+            "past the most a run can count",
+        ),
+        (
+            serde_json::json!({"max_tokens": 1e30}),
+            "`max_tokens` must be a whole number above 0",
+        ),
+        (
+            serde_json::json!({"max_wall_clock_s": 9000}),
+            "`max_wall_clock_s` is not a set_budget field",
+        ),
+        (
+            serde_json::json!({"context_bytes": 999_999}),
+            "`context_bytes` is the driver's prompt size",
+        ),
+    ];
+    for (i, (fields, says)) in refused.iter().enumerate() {
+        let id = format!("r{i}");
+        let mut cmd = fields.clone();
+        cmd["id"] = Value::from(id.clone());
+        cmd["type"] = Value::from("set_budget");
+        rpc.send(cmd);
+        let r = rpc.next(|v| v["type"] == "response" && v["id"] == id.as_str());
+        assert_eq!(r["success"], false, "{fields} was accepted: {r}");
+        let error = r["error"].as_str().unwrap_or_default();
+        assert!(
+            error.contains(says),
+            "{fields}: refused saying {error:?}, not {says:?}"
+        );
+    }
+    rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": true}));
+    rpc.seen_or_next(|v| v["type"] == "run_end");
+    let records = rpc.finish();
+
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert!(
+        requests[1].contains(BUDGET_NOTICE),
+        "a refused request changed the ceiling: the run is in budget past it: {}",
+        requests[1]
+    );
+    let budgets = records
+        .iter()
+        .filter(|r| r["fields"]["message"] == "run budget")
+        .count();
+    assert_eq!(
+        budgets, 1,
+        "nothing changed, so nothing was sent again: {records:?}"
+    );
+}
+
 #[test]
 fn rpc_abort_while_paused_rolls_back_and_hands_back_the_held_steer() {
     // The risk (ADR 0058 §1): a held run that `abort` cannot reach, so the

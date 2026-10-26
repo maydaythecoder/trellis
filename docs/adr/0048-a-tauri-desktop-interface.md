@@ -324,6 +324,24 @@ Held by `rpc_pause_holds_before_the_next_model_request`,
 `rpc_resume_continues_the_same_run` and
 `rpc_abort_while_paused_rolls_back_and_hands_back_the_held_steer` in
 `tests/modes.rs`.
+*Added 2026-10-26 (#807):* `set_budget`, for the Budget card's mid-run
+limits (ADR 0058 §2). It takes any of `max_iterations`,
+`max_wall_clock_ms` and `max_tokens`, the names and units `run budget`
+sends, at least one, and is answered at once with all three after the
+change. It raises and never lowers: a value below the ceiling in force is
+refused naming it, a value equal to it changes nothing, and a request with
+any refused value changes nothing. Also refused: `no run in flight`, a
+value that is not a whole number above 0, `context_bytes` (the driver's,
+fixed for the run), any other field, and a raise before the loop's first
+budget check or once the loop has returned; one accepted during the run's
+last turn reaches no check and changes nothing. The raise takes effect at
+the loop's next budget check, where `run budget` is sent again with every ceiling, before
+that iteration's `model call`; `run budget`'s entries say so and gain no
+field. The answer is under `rpc.responses`, so neither client's contract
+test reads it yet, and the desktop's `rpc_send` does not forward it. Held
+by `rpc_set_budget_refuses_a_lower_limit` and
+`rpc_set_budget_sends_run_budget_again` in `tests/modes.rs`, and by
+`budget_shares_divide_a_raised_budget` in trellis-loop (rule 9).
 
 ### 7. Auditing Tauri's tree
 

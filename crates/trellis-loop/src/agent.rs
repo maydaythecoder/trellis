@@ -16,7 +16,7 @@
 //! "the model claims success" to "the run converged" passes through an
 //! executed check or it does not complete.
 
-use crate::budget::{Budget, Exhaustion, Spend};
+use crate::budget::{Budget, Exhaustion, LiveBudget, Spend};
 use crate::orchestrator::Handle;
 use crate::tools::ToolResult;
 use std::time::{Duration, Instant};
@@ -1094,6 +1094,11 @@ pub struct Seed {
     /// A person's pause (ADR 0058 §1), honoured at the top of each
     /// iteration. `None` never holds.
     pub hold: Option<std::sync::Arc<Hold>>,
+    /// A person's raises to the run's ceilings (ADR 0058 §2), adopted with
+    /// the budget the run is given and enforced from the next budget check
+    /// after each. The whole run's ceiling: a partition's loop is given its
+    /// share and never this (rule 9). `None` is a budget nobody raises.
+    pub budget: Option<std::sync::Arc<LiveBudget>>,
 }
 
 /// The cell [`Seed::spent`] writes into: the budget's own elapsed figure,
@@ -1113,6 +1118,14 @@ pub async fn run_seeded<M: Model>(
     seed: Seed,
 ) -> (Outcome, Transcript) {
     let started = Instant::now();
+    // The ceilings in force, which only a person's raise moves (ADR 0058
+    // §2). Every read of a ceiling below is of this, so a raise reaches the
+    // budget check and the wall clock a check is given alike.
+    let mut budget = budget.clone();
+    let live = seed.budget;
+    if let Some(l) = &live {
+        l.adopt(&budget);
+    }
     // The ceilings this run enforces, once, for an interface that draws
     // progress against them (#243): a constant there drew "3/4" for a run
     // budgeted at 40. Every ceiling, not the iterations alone (#799), so a
@@ -1120,13 +1133,8 @@ pub async fn run_seeded<M: Model>(
     // checks and not ones it read from a config the run may not have used.
     // `max_tokens` is checked against `completion_tokens_used` on each
     // turn; `context_bytes` is the driver's, left off when it has none.
-    tracing::info!(
-        max_iterations = budget.max_iterations,
-        max_wall_clock_ms = millis(budget.max_wall_clock),
-        max_tokens = budget.max_tokens,
-        context_bytes = model.context_bytes(),
-        "run budget"
-    );
+    // Sent again with every ceiling when a raise takes effect.
+    announce_budget(&budget, model.context_bytes());
     // Time spent waiting on a person in approve mode, and time a person held
     // the run paused (ADR 0058 §1). Not charged to the wall-clock budget: a
     // diff read carefully, or a run paused to be read, should not be what
@@ -1159,12 +1167,30 @@ pub async fn run_seeded<M: Model>(
         {
             waited_on_human += held;
         }
+        // A raise takes effect here, at the budget check, after a pause so
+        // one sent while held counts at once. A tool call or check already
+        // dispatched has run out under the ceiling it was dispatched with.
+        let raised = live.as_ref().and_then(|l| l.take_raised());
+        if let Some(r) = &raised {
+            budget = r.clone();
+            announce_budget(&budget, model.context_bytes());
+        }
         let spend = Spend {
             iterations,
             elapsed: started.elapsed().saturating_sub(waited_on_human),
             tokens: model.tokens_used(),
         };
-        if let Some(e) = budget.exceeded(&spend) {
+        let exceeded = budget.exceeded(&spend);
+        // A raise that lifts every ceiling above the spend after the one
+        // extra turn was granted ends the escalation (ADR 0058 §2): the run
+        // is in budget again, and telling the model its turn is its last
+        // would be false.
+        if raised.is_some() && exceeded.is_none() && escalated {
+            tracing::info!("budget raised above the spend; escalation ended");
+            escalated = false;
+            t.final_notice = false;
+        }
+        if let Some(e) = exceeded {
             if escalated {
                 tracing::warn!(exhaustion = ?e, "budget exhausted after escalation");
                 break 'run Outcome::NotConverged {
@@ -1532,6 +1558,7 @@ pub async fn run_seeded<M: Model>(
                 {
                     tracing::info!("the model asked a person a question; stopping");
                     leave_spent(&spent, started.elapsed().saturating_sub(waited_on_human));
+                    close_budget(&live);
                     return (
                         Outcome::NotConverged {
                             reason: NotConverged::AskedHuman {
@@ -1565,7 +1592,27 @@ pub async fn run_seeded<M: Model>(
     // goes back to the caller rather than being dropped with the receiver.
     t.steering.drain(&mut steering, t.turns.len(), true);
     leave_spent(&spent, started.elapsed().saturating_sub(waited_on_human));
+    close_budget(&live);
     (outcome, t)
+}
+
+/// The `run budget` event: every ceiling in force.
+fn announce_budget(budget: &Budget, context_bytes: Option<usize>) {
+    tracing::info!(
+        max_iterations = budget.max_iterations,
+        max_wall_clock_ms = millis(budget.max_wall_clock),
+        max_tokens = budget.max_tokens,
+        context_bytes,
+        "run budget"
+    );
+}
+
+/// The loop checks the budget no more: a raise now would be answered as
+/// taking effect and never would.
+fn close_budget(live: &Option<std::sync::Arc<LiveBudget>>) {
+    if let Some(l) = live {
+        l.close("the run's loop has ended and checks its budget no more; nothing changed");
+    }
 }
 
 /// Writes the run's final spend into the caller's slot, when it gave one.
@@ -3162,6 +3209,86 @@ rank = \"non-negotiable\"
             obs.contains("not a fraction of"),
             "the observation must say outright that the two counts are not a \
              ratio, because the next reader will otherwise compute one: {obs}"
+        );
+    }
+
+    /// The risk (ADR 0058 §2): a person's raise accepted and never enforced,
+    /// so the run ends on the ceiling it started with; or a raise that lands
+    /// on the escalation turn leaves the model told, turn after turn, that
+    /// its turn is its last. The raise is made from inside the escalated
+    /// request, as a person's would land while the model is asked, and is
+    /// seen at the next budget check.
+    #[tokio::test]
+    async fn a_raise_after_escalation_ends_it_at_the_next_budget_check() {
+        struct Raising {
+            live: std::sync::Arc<LiveBudget>,
+            at: usize,
+            notices: Vec<bool>,
+        }
+        impl Model for Raising {
+            async fn next_step(&mut self, t: &Transcript) -> Result<Step, String> {
+                self.notices.push(t.final_notice);
+                if t.final_notice && self.at == 1 {
+                    self.live
+                        .raise(&crate::budget::Raise {
+                            max_iterations: Some(4),
+                            ..Default::default()
+                        })
+                        .map_err(|e| e.to_string())?;
+                }
+                self.at += 1;
+                Ok(if self.at < 4 {
+                    Step::Call(ToolCall::BlastRadius {
+                        symbol: format!("helper{}", self.at),
+                    })
+                } else {
+                    Step::Done {
+                        summary: "looked".into(),
+                    }
+                })
+            }
+        }
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+        let live = std::sync::Arc::new(LiveBudget::default());
+        let mut m = Raising {
+            live: live.clone(),
+            at: 0,
+            notices: Vec::new(),
+        };
+        let one = Budget {
+            max_iterations: 1,
+            ..Budget::default()
+        };
+        let seed = Seed {
+            budget: Some(live.clone()),
+            ..Seed::default()
+        };
+        let (outcome, _) = run_seeded("task", &mut m, &h, &one, seed).await;
+        assert_eq!(
+            m.notices,
+            [false, true, false, false],
+            "escalated once at the first ceiling, then in budget again after the raise"
+        );
+        assert!(
+            !matches!(
+                outcome,
+                Outcome::NotConverged {
+                    reason: NotConverged::BudgetExhausted(_),
+                    ..
+                }
+            ),
+            "the raised ceiling was not enforced: {outcome:?}"
+        );
+        assert!(
+            matches!(
+                live.raise(&crate::budget::Raise {
+                    max_iterations: Some(9),
+                    ..Default::default()
+                }),
+                Err(crate::budget::RaiseRefused::Closed(_))
+            ),
+            "a raise after the loop returned is refused, not answered as taking effect"
         );
     }
 
