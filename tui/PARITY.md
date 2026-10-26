@@ -19,8 +19,8 @@ in the five files the ADR names: `app.rs` (58), `view.rs` (37), `events.rs`
 23 in `view.rs` and 23 in `tui_run.rs` when it was written; the files have
 since grown. Batch 46 added 40 tests, for #634, #635, #636, #639, #640,
 #641, #655, #660 and #661; their rows follow each file's earlier ones, each
-under the ticket whose area it falls in.) The routing rule is listed after
-them.
+under the ticket whose area it falls in.) The routing rule and the colour
+rule are listed after them.
 
 Each row gives the Rust test, the rule it holds (its name, which in this
 repository is written as the rule), the ticket that ports it, and the Go
@@ -202,3 +202,15 @@ are held to it by `crates/trellis-cli/tests/hygiene.rs`.
 | Rust file | Rust test | Rule | Ticket | Go test |
 | --- | --- | --- | --- | --- |
 | `hygiene.rs` | `every_conversational_surface_asks_whether_the_input_is_a_task` | every conversational surface asks whether the input is a task | T6 (#512) | `TestRouteAQuestionSendsNoPrompt`, `TestRouteATaskSendsOnePrompt`, `TestRouteAFailedClassifyRunsNothing` |
+
+## Colour
+
+Every colour the TUI paints comes from `docs/design/system/tokens.json`:
+`scripts/checks/design-tokens.py --write` generates
+`tui/internal/theme/tokens_gen.go` from it, and the check fails when that
+file is stale (`docs/design/DESIGN.md` section 3.4, #840). The ratatui TUI's
+tests held no colour rule, so the row names no Rust test.
+
+| Rust file | Rust test | Rule | Ticket | Go test |
+| --- | --- | --- | --- | --- |
+| none | none | every term-* token reaches the theme with the hex and indexes tokens.json gives it, in both themes | #840 | `TestThemeMatchesTokensJSON`, `TestThemeEveryTokenParses`, `TestThemeNoColourProfilePaintsNothing` |
