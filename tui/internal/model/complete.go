@@ -1,8 +1,10 @@
 package model
 
 import (
+	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
@@ -11,11 +13,21 @@ import (
 // which lists tracked and untracked-not-ignored files through trellis_vcs;
 // this package starts no process and spawns no git (ADR 0023, go-guards.sh).
 
+// OfferedCap is how many paths the @ list shows: ten, as the ratatui TUI
+// offered and as list_paths promises to answer at most (ADR 0025). The
+// client does not lean on that promise for its layout: each listed path is
+// a row the entry box takes from the panes above it, so a longer answer is
+// cut here and a last line says how many more there were.
+const OfferedCap = 10
+
 // atFragment is the @word being typed at the very end of the line, without
 // its @, and whether there is one. A fragment the cursor has moved past
 // (the line ends in a space) is finished and is not offered again.
 func (m *Model) atFragment() (string, bool) {
-	if m.Input == "" || unicode.IsSpace(rune(m.Input[len(m.Input)-1])) {
+	// The last character, not the last byte: read alone, the final byte of
+	// "à" (C3 A0) or "ą" (C4 85) is U+00A0 or U+0085, which IsSpace counts.
+	last, _ := utf8.DecodeLastRuneInString(m.Input)
+	if m.Input == "" || unicode.IsSpace(last) {
 		return "", false
 	}
 	words := strings.Fields(m.Input)
@@ -46,8 +58,9 @@ func (m *Model) tab() {
 }
 
 // pathsAnswered offers what list_paths returned, in its order: one path
-// completes the word, several are listed, none changes nothing. An answer
-// to a fragment no longer being typed is dropped.
+// completes the word, several are listed (at most OfferedCap, then a line
+// saying how many more), none changes nothing. An answer to a fragment no
+// longer being typed is dropped.
 func (m *Model) pathsAnswered(id string, data any) {
 	frag, ok := m.atFragment()
 	if id != m.pathsID || !ok || frag != m.offeredFor {
@@ -67,6 +80,11 @@ func (m *Model) pathsAnswered(id string, data any) {
 	case 1:
 		m.completeWith(paths[0])
 	default:
+		// The count goes last: Tab inserts Offered[0], so it is drawn and
+		// never inserted.
+		if more := len(paths) - OfferedCap; more > 0 {
+			paths = append(paths[:OfferedCap], fmt.Sprintf("%d more path(s) not listed", more))
+		}
 		m.Offered = paths
 	}
 }
