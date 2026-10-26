@@ -19,7 +19,7 @@
 // Every string here is trellis-, model- or repository-supplied, so it
 // reaches the DOM through textContent only (ADR 0007, S10).
 
-import { appendRows, el } from "./dom.js";
+import { drawFeed, el } from "./dom.js";
 import { str } from "./fmt.js";
 
 // The page errors kept for the banner: the newest few, since one fault
@@ -66,11 +66,15 @@ function drawBanner(doc) {
   banner.hidden = lines.length === 0;
 }
 
-// The messages pane is drawn by the actions log's rule (#643), dom.js's
-// appendRows: it follows its end only while the reader is there, so a
-// reader who scrolled back keeps their place.
-function drawStderr(doc, lines) {
-  appendRows(doc, doc.getElementById("messages-log"), lines, "trellis has written nothing to stderr.");
+// The messages pane is a feed, as the actions log is (#827), drawn by
+// dom.js's drawFeed: each line sent once, appended, and the pane follows
+// its end only while the reader is there (#643), so a reader who scrolled
+// back keeps their place. Answers whether lines are missing.
+function drawStderr(doc, feed) {
+  return drawFeed(doc, doc.getElementById("messages-log"), feed, {
+    draw: (row) => el(doc, "div", str(row.text) ?? ""),
+    empty: "trellis has written nothing to stderr.",
+  }).missing;
 }
 
 // Closes the dialog on the question it shows, as no answer: every dialog
@@ -113,14 +117,15 @@ function drawApprovals(doc, list) {
 }
 
 // Draws the dialog's, banner's and pane's keys of one `view` event; any
-// other key is another module's.
-export function drawDialogs(doc, view) {
+// other key is another module's. `onMissing` is called when the messages
+// pane found lines missing, as drawView calls it for the transcript.
+export function drawDialogs(doc, view, onMissing) {
   if (view === null || typeof view !== "object") return;
   if ("alert" in view) {
     viewAlert = str(view.alert);
     drawBanner(doc);
   }
-  if ("stderr" in view) drawStderr(doc, view.stderr);
+  if ("stderr" in view && drawStderr(doc, view.stderr)) onMissing();
   if ("approvals" in view) drawApprovals(doc, view.approvals);
 }
 

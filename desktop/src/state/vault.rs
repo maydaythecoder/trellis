@@ -760,8 +760,8 @@ mod tests {
         use crate::state::DesktopState;
         let mut s = DesktopState::default();
         s.update(parse_stdout("a transcript line"));
-        let all = |s: &DesktopState| s.view(crate::state::Changed::everything());
-        let before = all(&s);
+        let all = |s: &mut DesktopState| s.view(crate::state::Changed::everything());
+        let before = all(&mut s);
 
         let search = json!({"type": "response", "command": "vault_search", "success": true,
                             "id": "desktop-vault-search-1",
@@ -785,7 +785,7 @@ mod tests {
         assert_eq!(v["vault"]["graph"]["note"]["path"], "child.md");
         assert_eq!(v["vault"]["hits"][0]["path"], "child.md", "the hits stay");
 
-        let mut after = all(&s);
+        let mut after = all(&mut s);
         after.as_object_mut().unwrap().remove("vault");
         let mut before = before;
         before.as_object_mut().unwrap().remove("vault");
