@@ -35,8 +35,12 @@ def main():
         m = re.match(r"P\d #(\d+) ([^\x1f]*)\x1f", line)
         if m:
             verdict[int(m.group(1))] = m.group(2)
-    issues = json.loads(gh("issue", "list", "--state", "open", "--limit", "300",
-                           "--json", "number,labels,body"))
+    # REST, not `gh issue list`: cloud sessions refuse GraphQL (#924). One
+    # JSON object per line, pull requests dropped, as issues.sh lists them.
+    issues = [json.loads(line) for line in gh(
+        "api", "--paginate", "repos/{owner}/{repo}/issues?state=open&per_page=100",
+        "--jq", ".[] | select(.pull_request | not) | {number, labels, body: (.body // \"\")}",
+    ).splitlines() if line]
     changed = 0
     for i in issues:
         n = i["number"]
@@ -50,17 +54,19 @@ def main():
         # Issue bodies are CRLF; `.*` would eat the \r and leave a bare \n.
         new = re.sub(r"(?m)^ready: [^\r\n]*", f"ready: {'true' if ready else 'false'}", body, count=1)
         new = re.sub(r"(?m)^ready_failures: [^\r\n]*", f"ready_failures: {failures}", new, count=1)
-        edits = []
-        if ready != has_label:
-            edits += ["--add-label" if ready else "--remove-label", "ready"]
-        if new != body:
-            edits += ["--body-file", "-"]
-        if not edits:
+        if ready == has_label and new == body:
             continue
         changed += 1
         print(f"#{n}: ready={ready} ({reason})")
-        if not DRY:
-            gh("issue", "edit", str(n), *edits, input=new if new != body else None)
+        if DRY:
+            continue
+        if ready != has_label:
+            if ready:
+                gh("api", "-X", "POST", f"repos/{{owner}}/{{repo}}/issues/{n}/labels", "-f", "labels[]=ready")
+            else:
+                gh("api", "-X", "DELETE", f"repos/{{owner}}/{{repo}}/issues/{n}/labels/ready")
+        if new != body:
+            gh("api", "-X", "PATCH", f"repos/{{owner}}/{{repo}}/issues/{n}", "-F", "body=@-", input=new)
     print(f"{changed} issue(s) {'would change' if DRY else 'changed'}")
 
 
