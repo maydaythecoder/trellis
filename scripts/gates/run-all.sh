@@ -86,7 +86,9 @@ done
 if [ -n "$n" ] && [ -z "$only" ]; then
   # Without set -e an unreadable label list is empty, matches nothing, and
   # would let a risk:high ticket pass as ALL GATES PASSED; fail closed instead.
-  labels=$(gh issue view "$n" --json labels -q '[.labels[].name] | join(" ")') \
+  # shellcheck source=../tickets/issues.sh
+  source "$root/scripts/tickets/issues.sh"
+  labels=$(issue_labels "$n") \
     || { echo "GATE: G7"; echo "FAIL: cannot read #$n's labels; whether G7 applies is unknown"; echo "STOPPED at G7"; exit 1; }
   case " $labels " in *" risk:high "*|*" surface:public "*)
     echo "GATE: G7"; echo "HUMAN APPROVAL REQUIRED: #$n is risk:high or surface:public"; exit 3 ;;

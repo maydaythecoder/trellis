@@ -11,18 +11,22 @@
 # decides (docs/BUILD_SYSTEM.md, "Where a person is needed").
 set -euo pipefail
 why="${1:-}"
+# shellcheck source=issues.sh
+source "$(dirname "$0")/issues.sh"
 
 # gh's built-in --jq; unit separator between fields because `read` collapses
-# runs of tab, which drops empty fields.
-gh issue list --state open --limit 300 --json number,title,labels,body --jq '
-  def prio: ([.labels[].name] | if index("P0") then 0 elif index("P1") then 1 else 2 end);
+# runs of tab, which drops empty fields. The filter sees one issue at a time,
+# so the priority order comes from sort: priority, then number.
+open_issues_each '
+  ([.labels[].name] | if index("P0") then 0 elif index("P1") then 1 else 2 end) as $prio |
   # A body edited from Windows is CRLF; parse it as its LF form, as G0 does (#205).
-  sort_by(prio, .number)[] | .body |= gsub("\r"; "") |
-  [(.number | tostring), (prio | tostring), ([.labels[].name] | join(" ")),
+  .body |= gsub("\r"; "") |
+  [(.number | tostring), ($prio | tostring), ([.labels[].name] | join(" ")),
    ([.body | scan("(?m)^blocked_by: \\[([^\\]]*)\\]") | .[0]] | join(" ")),
    (if (.body | test("(?m)^## Done when")) then "y" else "n" end),
    (if (.body | test("(?ms)^## Verify.*?^```")) then "y" else "n" end),
    .title] | join("\u001f")' |
+sort -t $'\x1f' -k2,2n -k1,1n |
 while IFS=$'\x1f' read -r n p labels blocked done_when verify title; do
   reason=""
   case " $labels " in
@@ -47,7 +51,7 @@ while IFS=$'\x1f' read -r n p labels blocked done_when verify title; do
     # A dependency that is not an issue number cannot be looked up, so it blocks.
     for b in $(echo "$blocked" | tr ',"' '  '); do
       case "$b" in *[!0-9]*) reason="blocked_by '$b' is not an issue number"; break ;; esac
-      s=$(gh issue view "$b" --json state -q .state 2>/dev/null || echo UNKNOWN)
+      s=$(issue_state_rest "$b" 2>/dev/null || echo UNKNOWN)
       [ "$s" = "CLOSED" ] || { reason="blocked by #$b ($s)"; break; }
     done
   fi
