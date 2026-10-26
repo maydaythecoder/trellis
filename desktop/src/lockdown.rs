@@ -3238,10 +3238,6 @@ mod tests {
         ("codebase.js", "isCount"),
         ("codebase.js", "start"),
         ("codebase.js", "str"),
-        ("model.js", "el"),
-        ("model.js", "lineId"),
-        ("model.js", "send"),
-        ("model.js", "str"),
         ("queue.js", "el"),
         ("queue.js", "isCount"),
         ("queue.js", "muted"),
@@ -3251,11 +3247,6 @@ mod tests {
         ("radius.js", "isCount"),
         ("radius.js", "start"),
         ("radius.js", "str"),
-        ("settings.js", "el"),
-        ("settings.js", "isCount"),
-        ("settings.js", "lineId"),
-        ("settings.js", "str"),
-        ("status.js", "str"),
         ("trails.js", "el"),
         ("trails.js", "isCount"),
         ("trails.js", "start"),
@@ -4069,12 +4060,18 @@ mod tests {
             assert!(!js.contains(bad), "model.js uses {bad}");
         }
         assert!(js.contains("textContent"), "model.js writes no text");
-        let invokes: Vec<&str> = js
+        // It sends through rpc.js's send (#818), which calls only rpc_send.
+        assert!(
+            !js.contains("invoke(") && js.contains(r#"import { lineId, send } from "./rpc.js";"#),
+            "model.js reaches the core some other way"
+        );
+        let rpc = code_of("rpc.js");
+        let invokes: Vec<&str> = rpc
             .split("invoke(\"")
             .skip(1)
             .map(|r| r.split('"').next().unwrap_or(""))
             .collect();
-        assert_eq!(invokes, ["rpc_send"], "model.js calls only rpc_send");
+        assert_eq!(invokes, ["rpc_send"], "rpc.js calls only rpc_send");
     }
 
     #[test]
@@ -4113,10 +4110,16 @@ mod tests {
         for want in [
             r#"type: "get_session_stats""#,
             r#"listen("rpc-frame""#,
-            r#"f.type === "run_end") askSessionTokens(tauri)"#,
+            "if (runEnded(event.payload)) askSessionTokens(tauri);",
         ] {
             assert!(main.contains(want), "main.js lacks {want}");
         }
+        // rpc.js's runEnded is the one way the page knows a run ended
+        // (#816): the child's run_end frame.
+        assert!(
+            function_body(&code_of("rpc.js"), "runEnded").contains(r#"frame.type === "run_end""#),
+            "runEnded reads something other than the run_end frame"
+        );
         let started = main
             .split(r#"listen("child-started""#)
             .nth(1)
