@@ -42,6 +42,12 @@ func TestPaintEachRoleTakesItsToken(t *testing.T) {
 		RoleFrame:   th.Line,
 		RoleOutput:  th.InkSecondary,
 		RoleRefusal: th.Down,
+		// A Meter's cells (#911): cool, signal past 70% of the ceiling, down
+		// past 90%, and line-strong where empty.
+		RoleMeter:      th.Cool,
+		RoleMeterNear:  th.Signal,
+		RoleMeterOver:  th.Down,
+		RoleMeterEmpty: th.LineStrong,
 	}
 	if len(want) != int(roles) {
 		t.Fatalf("%d roles and %d named here: a new role needs its token named", roles, len(want))

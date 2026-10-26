@@ -11,23 +11,26 @@ import (
 )
 
 // #634: leaving mid-run used to leave the run editing the tree with nobody
-// watching. Esc on an empty line now stops it as ^c does: abort, which
-// rolls the run back, then quit, once, said on screen; Esc with text only
-// clears the line; and the program ends only when the child has exited,
-// after the rollback.
-func TestModelStopMidRunEscOnAnEmptyLineStopsAsCtrlCDoes(t *testing.T) {
+// watching; ^c stops it: abort, which rolls the run back, then quit, once,
+// said on screen; and the program ends only when the child has exited,
+// after the rollback. Since #851 ^c is the only key that stops a run (owner
+// decision, 2026-10-25): Esc with text clears the line, and Esc on an
+// empty line, which goes out one level, has nothing to leave at the top
+// and stops nothing.
+func TestModelStopMidRunOnlyCtrlCStops(t *testing.T) {
 	m := running(t)
 	typeLine(m, "half a steer")
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if m.Input != "" || m.Quitting {
 		t.Fatalf("esc with text: input %q quitting %v", m.Input, m.Quitting)
 	}
-	if out := m.TakeOutbox(); len(out) != 0 {
-		t.Fatalf("esc with text sent %v", kinds(out))
-	}
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if out := m.TakeOutbox(); len(out) != 0 || m.Quitting {
+		t.Fatalf("esc mid-run sent %v, quitting %v; only ^c stops a run", kinds(out), m.Quitting)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if got := kinds(m.TakeOutbox()); strings.Join(got, ",") != "abort,QUIT" {
-		t.Fatalf("esc on an empty line mid-run sent %v, want abort then quit", got)
+		t.Fatalf("^c mid-run sent %v, want abort then quit", got)
 	}
 	if last := texts(m)[len(m.Transcript)-1]; !strings.HasPrefix(last, "· stopping:") {
 		t.Fatalf("the stop is not said: %q", last)

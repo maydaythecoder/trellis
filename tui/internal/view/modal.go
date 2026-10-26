@@ -111,10 +111,11 @@ func Modal(th theme.Theme, question, diff string, scroll, width, height int) str
 		if shown < from+1 {
 			shown = from + 1
 		}
-		body = append(body, Row{Text: fmt.Sprintf("lines %d–%d of %d · ↑↓ PgUp PgDn", from+1, shown, len(lines)), Role: RoleLabel})
+		scrollKeys := Keycap("↑") + Keycap("↓") + " " + Keycap("PGUP") + Keycap("PGDN")
+		body = append(body, Row{Text: fmt.Sprintf("lines %d–%d of %d · %s", from+1, shown, len(lines), scrollKeys), Role: RoleLabel})
 	}
 
-	out := Box(th, question+"?", "[y] accept this "+what+"  [n] reject", body, boxW, boxH)
+	out := Box(th, question+"?", keyRow(key{"y", "accept this " + what}, key{"n", "reject"}), body, boxW, boxH)
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, strings.Join(out, "\n"))
 }
 
