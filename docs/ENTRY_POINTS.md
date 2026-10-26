@@ -148,8 +148,9 @@ In this order (ADR 0048 §6, ADR 0052):
 
 1. `crates/trellis-cli/tests/client_contract.json` first: list the field
    under the event, response or trail entry that carries it. A field not
-   every client reads yet goes under `rpc.not_every_client`, with `read_by`
-   naming the clients that do. Changes to this file merge one at a time.
+   every client reads yet goes under `rpc.not_every_client` (a trail path,
+   `log_json.not_every_client`), with `read_by` naming the clients that do.
+   Changes to this file merge one at a time.
 2. Then the engine: emit the field. The tests that run the binary fail until
    every listed field is carried:
    `crates/trellis-cli/tests/modes.rs` `fn rpc_stream_carries_every_field_the_desktop_reads`,
@@ -160,5 +161,7 @@ In this order (ADR 0048 §6, ADR 0052):
    `fn every_field_in_the_rpc_contract_is_read` and
    `tui/internal/frames/frames_test.go` `func TestFramesReadEveryContractField`
    build a record for every event and framing record the contract lists and
-   fail when a client's parser drops a field; once both read a field under
-   `rpc.not_every_client`, it moves to `rpc.events` or `rpc.framing`.
+   fail when a client's parser drops a field, and `desktop/src/trails.rs`
+   `fn every_trail_field_in_the_log_contract_is_read` does the same for
+   every `log_json` path; once the clients read a field under
+   `not_every_client`, it moves up beside the others.

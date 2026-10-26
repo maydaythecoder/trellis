@@ -3134,8 +3134,10 @@ fn log_json_carries_every_trail_field_the_desktop_reads() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let lines = jsonl(&o);
     assert_eq!(lines.len(), 1, "{lines:?}");
+    let later = &c["log_json"]["not_every_client"];
     let gaps: Vec<&str> = names(&c["log_json"]["always"])
         .into_iter()
+        .chain(names(&later["always"]))
         .filter(|p| !carries(&lines[0], p))
         .collect();
     assert!(
@@ -3144,12 +3146,12 @@ fn log_json_carries_every_trail_field_the_desktop_reads() {
         lines[0]
     );
     // Optional only for trails written before #622: this one has it.
-    let optional = c["log_json"]["optional"].as_object().unwrap();
+    let optional = later["optional"].as_object().unwrap();
     assert!(optional.contains_key("trail.ended_at"));
     assert!(carries(&lines[0], "trail.ended_at"), "{}", lines[0]);
     // A scripted run carries no prompt size, so its context is null, never a
     // measured zero; the contract says when.
-    assert!(c["log_json"]["null_when"]["trail.factual.context"].is_string());
+    assert!(later["null_when"]["trail.factual.context"].is_string());
     assert!(
         lines[0]["trail"]["factual"]["context"].is_null(),
         "{}",
@@ -3368,7 +3370,7 @@ fn rpc_steer_abort_compact_answers_carry_what_the_contract_lists() {
     // The first run's trail keeps the steer and the follow_up (ADR 0034),
     // which the contract lists for log --json as optional.
     assert!(
-        c["log_json"]["optional"]
+        c["log_json"]["not_every_client"]["optional"]
             .as_object()
             .unwrap()
             .contains_key("trail.factual.steering")

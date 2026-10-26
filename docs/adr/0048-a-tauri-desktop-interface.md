@@ -209,9 +209,12 @@ ids; the desktop reads `abort`'s text, `get_commands`' prompts, the
 `get_last_assistant_text` answers and the trail paths) no client reads yet;
 they are listed for the levels story #790 plans. `get_state`'s answer moves
 from `rpc.commands` to `rpc.responses` beside the others. What not every
-client reads yet is under `rpc.not_every_client`, with `read_by` naming the
-clients that read each field, because both clients' contract tests require
-their parsers to keep every field of `rpc.events` and `rpc.framing`. Held by
+client reads yet is under `rpc.not_every_client`, and the trail paths under
+`log_json.not_every_client`, with `read_by` naming the clients that read
+each field, because both clients' contract tests require their parsers to
+keep every field of `rpc.events` and `rpc.framing`, and the desktop's
+`every_trail_field_in_the_log_contract_is_read` (`src/trails.rs`) every
+path of `log_json`'s `always` and `optional`. Held by
 `rpc_stream_carries_every_field_the_desktop_reads`,
 `log_json_carries_every_trail_field_the_desktop_reads` and
 `rpc_steer_abort_compact_answers_carry_what_the_contract_lists` in
