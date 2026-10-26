@@ -3328,6 +3328,70 @@ fn rpc_every_turn_through_the_governance_audit_keeps_the_contract() {
 }
 
 #[test]
+fn rpc_plan_event_keeps_the_contract_and_the_trail_records_the_call_as_an_action() {
+    // The risks (ADR 0058 §5, #810): the `plan` event's fields are renamed
+    // and a client's Plan card goes blank with nothing failing; or the
+    // trail records the plan in a new field (a format change ADR 0058 does
+    // not make) or not at all. The fields are the contract's list; the
+    // trail is held to one `plan` action and nothing new.
+    let c = contract();
+    let listed = &c["rpc"]["not_every_client"]["events"]["plan"];
+    let f = fixture("rpc-plan");
+    std::fs::create_dir_all(f.root.join(".trellis")).unwrap();
+    std::fs::write(
+        f.root.join(".trellis/config.toml"),
+        "[tools]\nenable = [\"plan\"]\n",
+    )
+    .unwrap();
+    git(&f.root, &["add", "-A"]);
+    git(&f.root, &["commit", "-qm", "the plan tool"]);
+    let steps: Vec<Value> = (1..=9)
+        .map(|i| serde_json::json!({"text": format!("step {i}"), "state": "todo"}))
+        .collect();
+    let script = scratch("rpc-plan-steps").join("s.json");
+    std::fs::write(
+        &script,
+        serde_json::json!({"steps": [
+            {"tool": "plan", "steps": steps},
+            {"tool": "done", "summary": "planned"}
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let spec = format!("scripted:{}", script.display());
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.choose(&spec);
+    rpc.send(serde_json::json!({"id": "p", "type": "prompt", "task": "plan it", "model": spec}));
+    let records = rpc.finish();
+    let plans: Vec<&Value> = records
+        .iter()
+        .map(|r| &r["fields"])
+        .filter(|f| f["message"] == "plan")
+        .collect();
+    assert_eq!(plans.len(), 1, "{records:?}");
+    let gaps = missing(plans[0], &listed["always"], "plan");
+    assert!(gaps.is_empty(), "{gaps:?}\n{records:?}");
+    assert_eq!(plans[0]["turn"], 1);
+    assert_eq!(plans[0]["steps_cut"], 1);
+    let kept: Value = serde_json::from_str(plans[0]["steps"].as_str().expect("a string"))
+        .expect("steps is a JSON array");
+    assert_eq!(kept.as_array().map(Vec::len), Some(8), "{kept}");
+
+    let trails = trails(&f);
+    assert_eq!(trails.len(), 1, "{trails:?}");
+    let actions = trails[0]["factual"]["actions"].as_array().unwrap();
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    assert_eq!(actions[0]["tool"], "plan");
+    assert_eq!(actions[0]["wrote"], false);
+    let turn = records
+        .iter()
+        .map(|r| &r["fields"])
+        .find(|f| f["message"] == "turn")
+        .expect("the plan's turn");
+    assert_eq!(actions[0]["target"], turn["target"], "{records:?}");
+}
+
+#[test]
 fn rpc_turn_tool_target_wrote_match_the_trail_actions() {
     // The risk (#800): a client works out what a turn touched by splitting
     // `call` at a space and searching the observation's tail for

@@ -183,6 +183,8 @@ pub(crate) fn may_change_tree(call: &ToolCall, wrote: bool) -> bool {
         // Nothing is written: the question travels back to the loop in the
         // call itself, and the binary records it on the task.
         ToolCall::AskHuman { .. } => false,
+        // A record of the model's intent; nothing on disk changes.
+        ToolCall::Plan { .. } => false,
     }
 }
 
@@ -883,6 +885,11 @@ impl Orchestrator {
                  waits for a person's answer"
                     .into(),
             ),
+            // `Output`, never `Checks` (rule 2): a plan is the model's
+            // account of its own progress, and its `done` steps are words.
+            ToolCall::Plan { steps } => {
+                ToolResult::Output(crate::tools::keep_plan(steps).observation())
+            }
         };
         // Read now, before `post_tool` runs: a hook that rewrites a file would
         // otherwise shift the bytes the line numbers are counted from.

@@ -210,6 +210,7 @@ pub const APPROVABLE_TOOLS: &[&str] = &[
     "callees_of",
     "coverage_report",
     "ask_human",
+    "plan",
 ];
 
 /// Whether each built-in tool only reads, the fact a `pre_tool` or
@@ -230,6 +231,7 @@ pub(crate) const READ_ONLY_TOOLS: &[(&str, bool)] = &[
     ("callees_of", true),
     ("coverage_report", true),
     ("ask_human", true),
+    ("plan", true),
     ("edit", false),
     ("write_file", false),
     ("bash", false),
@@ -274,6 +276,7 @@ pub fn tool_name(call: &ToolCall) -> &str {
         ToolCall::CoverageReport { .. } => "coverage_report",
         ToolCall::Custom { name, .. } => name,
         ToolCall::AskHuman { .. } => "ask_human",
+        ToolCall::Plan { .. } => "plan",
     }
 }
 
@@ -461,6 +464,9 @@ pub(crate) fn call_summary(call: &ToolCall) -> String {
         ToolCall::Custom { name, args } => format!("{name} {args}"),
         // Quoted and cut: model output, on one line of a log or the trail.
         ToolCall::AskHuman { question, .. } => format!("ask_human {:?}", first_line(question)),
+        // A count, not the text: the steps are model output, and the
+        // observation lists them quoted.
+        ToolCall::Plan { steps } => format!("plan ({} steps)", steps.len()),
     }
 }
 
