@@ -214,3 +214,5 @@ tests held no colour rule, so the row names no Rust test.
 | Rust file | Rust test | Rule | Ticket | Go test |
 | --- | --- | --- | --- | --- |
 | none | none | every term-* token reaches the theme with the hex and indexes tokens.json gives it, in both themes | #840 | `TestThemeMatchesTokensJSON`, `TestThemeEveryTokenParses`, `TestThemeNoColourProfilePaintsNothing` |
+| none | none | each row is painted in its role's token, and a check row takes ok or down only from the verdict trellis sent, never from its words | #841 | `TestPaintEachRoleTakesItsToken`, `TestViewCheckRowsTakeOkAndDownRoles` |
+| none | none | painted, the only escape sequences on screen are the theme's colours, at every colour depth, and every row is still exactly the screen's width | #841 | `TestViewNoEscapeSequenceReachesTheScreen`, `TestViewWideTextKeepsEveryRowWithinTheWidth`, `TestFrameBoxIsExactlyItsSize` |
