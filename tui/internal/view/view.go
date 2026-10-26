@@ -28,6 +28,14 @@ const (
 // the ratatui TUI's RIGHT_MIN_WIDTH).
 const RightMinWidth = 36
 
+// MinTranscriptWidth is the transcript's floor: the right column never
+// takes more than the width less this, so a custom tool's long name is cut
+// in its node instead of pushing the column off the screen (#875). It is
+// two fifths of MinWidth: at 80 columns the four built-in tools' rows need
+// up to 48 cells in a run of under a hundred actions, and every built-in
+// label stays whole there.
+const MinTranscriptWidth = MinWidth * 2 / 5
+
 // TranscriptPage is how many rows PgUp and PgDn move the transcript
 // (#660): the arrows move one, and the start of a long run was hundreds of
 // presses away.
@@ -173,6 +181,7 @@ func layout(s State, w, h int) (entry []string, bodyH int) {
 // worse than a narrower transcript that wraps.
 func columns(s State, w int) (left, right int) {
 	right = max(w*2/5, RightMinWidth, actionsWidth(s)+2)
+	right = min(right, w-MinTranscriptWidth)
 	return w - right, right
 }
 
@@ -397,11 +406,17 @@ func widths(ns []node) (labelW, countW int) {
 }
 
 // actionsWidth is the cells the graph's widest row takes, so the layout
-// can give the pane that much (#655): indent, label, the count between two
-// spaces, glyph, edge, and the focus.
+// can give the pane that much (#655).
 func actionsWidth(s State) int {
 	labelW, countW := widths(nodes(s))
-	return 2 + labelW + 1 + countW + 1 + 1 + 2 + Width(focus(s))
+	return labelW + besideLabel(s, countW)
+}
+
+// besideLabel is the cells a node's row takes besides its label: the
+// indent, the count between two spaces, glyph, edge, and the focus that
+// the middle row carries.
+func besideLabel(s State, countW int) int {
+	return 2 + 1 + countW + 1 + 1 + 2 + Width(focus(s))
 }
 
 // actions draws the action graph: every tool a node, filled once called,
@@ -416,6 +431,10 @@ func actions(s State, w, h int) []string {
 	}
 	ns := nodes(s)
 	labelW, countW := widths(ns)
+	// A label that does not fit is cut, so a long name costs its own tail
+	// and the counts, the edge column and the focus keep their places
+	// (#875).
+	labelW = min(labelW, max(1, inner-besideLabel(s, countW)))
 	mid := len(ns) / 2
 	var lines []string
 	for i, n := range ns {
@@ -429,7 +448,7 @@ func actions(s State, w, h int) []string {
 		if n.calls > 0 {
 			glyph = "●"
 		}
-		l := "  " + Pad(n.name, labelW) + " " + strings.Repeat(" ", countW-Width(n.count)) + n.count + " " + glyph + "─" + join
+		l := "  " + Pad(Cut(n.name, labelW), labelW) + " " + strings.Repeat(" ", countW-Width(n.count)) + n.count + " " + glyph + "─" + join
 		if i == mid {
 			l += focus(s)
 		}
