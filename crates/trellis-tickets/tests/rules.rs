@@ -520,3 +520,50 @@ fn a_decision_word_in_prose_beside_a_path_still_fails_ready() {
     );
     assert!(!value(&ready(&t, &no_blockers())).is_ready());
 }
+
+#[test]
+fn a_decision_word_joined_to_prose_by_a_slash_still_fails_ready() {
+    // A bare `/` is not a path: "Decide/consider" leaves two decisions open,
+    // and reading either as a path component would mark the ticket ready
+    // when §1 says to fail to a person. A path needs two separators or a
+    // file extension beside its one.
+    let t = ticket(
+        "Cache scope",
+        &body(
+            "**Files:** docs/plans/cache.md\n\nDecide/consider whether the cache is per-run or global.",
+        ),
+        &["origin:manual"],
+    );
+    assert!(!value(&ready(&t, &no_blockers())).is_ready());
+}
+
+#[test]
+fn a_decision_word_that_ends_a_sentence_still_fails_ready() {
+    // The file-extension rule looks for `.` followed by a letter or digit,
+    // so a full stop at the end of a sentence or line is not an extension.
+    for tail in [
+        "We must decide.",
+        "We must decide.\nThen build it.",
+        "We must decide...",
+    ] {
+        let t = ticket(
+            "Cache scope",
+            &body(&format!("**Files:** docs/plans/cache.md\n\n{tail}")),
+            &["origin:manual"],
+        );
+        assert!(!value(&ready(&t, &no_blockers())).is_ready(), "{tail:?}");
+    }
+}
+
+#[test]
+fn a_decision_word_inside_a_hyphenated_file_name_does_not_fail_ready() {
+    // `cache-design-notes.md` is one file name; the word between its hyphens
+    // is not a decision the work has to make. The path is judged as a whole
+    // token, so the hyphens do not expose it.
+    let t = ticket(
+        "Move the cache notes",
+        &body("**Files:** docs/plans/cache-design-notes.md\n\nMove the file beside its ADR."),
+        &["origin:manual"],
+    );
+    assert!(value(&ready(&t, &no_blockers())).is_ready());
+}

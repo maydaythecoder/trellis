@@ -290,12 +290,12 @@ pub(crate) fn decision_words(title: &str, body: &str) -> Vec<String> {
         }
     }
 
-    // Each word with the character before and after it, so that a path
-    // component is told apart from prose: `docs/design/DESIGN.md` names a
-    // directory and a file, not a decision the work still has to make, and
-    // a ticket that only lists such a path must not fail readiness on it.
-    // A word is a path component when it touches a `/`, or is followed by
-    // `.<ext>` (a file name such as `DESIGN.md`).
+    // Each word, flagged when it is part of a path rather than prose. The
+    // flag is decided on the whitespace-delimited token the word sits in
+    // (`is_path_token`), not on the characters next to the word: a bare `/`
+    // joins prose too ("Decide/consider the cache"), and a decision word in
+    // prose must still be found, so that case fails to a person (§1). A
+    // word followed by `.<ext>` (`DESIGN.md` on its own) is a file name.
     let bytes = text.as_bytes();
     let mut words: Vec<(String, bool)> = Vec::new();
     let mut start: Option<usize> = None;
@@ -307,11 +307,9 @@ pub(crate) fn decision_words(title: &str, body: &str) -> Vec<String> {
         match (start, is_word) {
             (None, true) => start = Some(i),
             (Some(s), false) => {
-                let before = if s == 0 { b' ' } else { bytes[s - 1] };
                 let after = bytes.get(i).copied().unwrap_or(b' ');
                 let after2 = bytes.get(i + 1).copied().unwrap_or(b' ');
-                let in_path = before == b'/'
-                    || after == b'/'
+                let in_path = is_path_token(enclosing_token(&text, s, i))
                     || (after == b'.' && after2.is_ascii_alphanumeric());
                 words.push((text[s..i].to_lowercase(), in_path));
                 start = None;
@@ -339,6 +337,32 @@ pub(crate) fn decision_words(title: &str, body: &str) -> Vec<String> {
     }
     found.sort();
     found
+}
+
+/// The whitespace-delimited token around `text[start..end]`, so a word is
+/// judged with the path it sits in: `design` in `docs/design/DESIGN.md`
+/// gets the whole path, backticks and brackets included.
+fn enclosing_token(text: &str, start: usize, end: usize) -> &str {
+    let from = text[..start]
+        .rfind(char::is_whitespace)
+        .map_or(0, |i| i + 1);
+    let to = text[end..]
+        .find(char::is_whitespace)
+        .map_or(text.len(), |i| end + i);
+    &text[from..to]
+}
+
+/// Whether a token is a path: two separators (`docs/design/`), or one plus
+/// a file extension (`docs/DESIGN.md`). One bare `/` is not enough, because
+/// prose joins words with it too ("Decide/consider") and a decision word
+/// there still has to be found. Only `/` counts: ticket Files lines use it,
+/// and a `\` path is scanned, which is the safe direction.
+fn is_path_token(token: &str) -> bool {
+    let slashes = token.matches('/').count();
+    let has_extension = token
+        .match_indices('.')
+        .any(|(i, _)| token[i + 1..].starts_with(|c: char| c.is_ascii_alphanumeric()));
+    slashes >= 2 || (slashes == 1 && has_extension)
 }
 
 #[cfg(test)]
