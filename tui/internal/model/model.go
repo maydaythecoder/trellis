@@ -115,6 +115,13 @@ type Model struct {
 	runStart time.Time
 	waited   time.Duration
 	askedAt  time.Time
+	// engineMs is the last elapsed_ms trellis sent for the run (#906), the
+	// budget's own spend; engineMark is ownElapsed when it arrived, so the
+	// strip counts on from it by this view's clock, paused as that clock is
+	// while a question waits. nil when trellis has sent none, and the strip
+	// then draws this view's own clock, marked as its own.
+	engineMs   *uint64
+	engineMark time.Duration
 	// strip is what the Now strip and Where it is draw that the panes do
 	// not hold (#850): the run's phase, the runtime, the repository, a
 	// stop on its way, and the last run's own run_end words.
@@ -394,6 +401,11 @@ func (m *Model) frame(f frames.Frame) {
 		m.Outcome = ""
 	case frames.ModelCall:
 		m.strip.Phase = view.Phase{Kind: "model", Turn: *f.ModelCallTurn}
+		if f.ModelCallElapsedMs != nil {
+			m.reportedElapsed(f.ModelCallElapsedMs)
+			secs := uint64(m.elapsed() / time.Second)
+			m.Budget.ElapsedSecs = &secs
+		}
 	case frames.RuntimeIdentified:
 		m.strip.Runtime = runtimeText(f.Runtime)
 	case frames.ApprovalRequest:
@@ -467,13 +479,22 @@ func (m *Model) runEnd(e *frames.RunEndFields) {
 	m.Outcome = OutcomeLine(e)
 	m.restored = e.Restored
 	// The strip names the ending in run_end's own words and exit code, and
-	// keeps the time the run took by this view's clock.
+	// keeps the time the run took: trellis's own figure when run_end carries
+	// one, else this view's clock, marked as its own. A run_end without one
+	// is a run the loop did not finish, and the last turn's figure counted
+	// on would be a total trellis declined to give (#906).
 	m.strip.Phase, m.strip.Stopping = view.Phase{}, false
 	m.strip.Outcome, m.strip.Exit = "", e.Exit
 	if e.Outcome != nil {
 		m.strip.Outcome = *e.Outcome
 	}
-	if !m.runStart.IsZero() {
+	m.engineMs = nil
+	switch {
+	case e.ElapsedMs != nil:
+		m.reportedElapsed(e.ElapsedMs)
+		secs := *e.ElapsedMs / 1000
+		m.Budget.ElapsedSecs = &secs
+	case !m.runStart.IsZero():
 		secs := uint64(m.ownElapsed() / time.Second)
 		m.Budget.ElapsedSecs = &secs
 	}

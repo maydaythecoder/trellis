@@ -9,7 +9,8 @@ import (
 // the Trail that says what is happening right now, the pane that says where
 // the run is, and trellis's newest stderr line. Every figure is one trellis
 // reported or this view's own clock, marked * as its own; one that was not
-// reported is Dash, never 0 or a guess (#911).
+// reported is Dash, never 0 or a guess (#911). The clock is trellis's own
+// once it reports one (#906).
 
 // Phase is what a run is on, as its last event said: the model being
 // called for a turn, or the tool the last turn ran.
@@ -30,6 +31,9 @@ type Now struct {
 	Phase Phase
 	// Waiting is set while a question trellis asked waits on the person.
 	Waiting bool
+	// EngineClock is set when the Budget's elapsed time counts on from an
+	// elapsed_ms trellis sent (#906), and clear when it is this view's own.
+	EngineClock bool
 	// Stopping is set once a stop was sent and the run has not ended.
 	Stopping bool
 	// Outcome and Exit are the last run_end's own words, for an ended run;
@@ -84,7 +88,7 @@ func Activity(p Phase) string {
 }
 
 // nowStrip is the Now strip's row as spans (#911, the NowStrip card): the
-// state as a Status, the time by this view's clock, the turn as a Meter
+// state as a Status, the run's time (clockText), the turn as a Meter
 // against the run's ceiling, what the run is on (the last turn's tool →
 // target when it ran one), and while a question waits the keys that
 // answer it.
@@ -110,12 +114,16 @@ func nowStrip(s State) []Span {
 	return out
 }
 
-// clockText is the run's time by this view's clock, marked * as its own:
-// trellis does not report its own yet (#906), and this one pauses while a
-// question waits on the person. A run in flight reads 0:00* until the
-// clock's first second; a run whose time this view never measured, Dash.
+// clockText is the run's time. Once trellis reports its own (elapsed_ms,
+// #906) it is that figure, counted on between events, and unmarked; until
+// then, and for a run whose run_end carried none, it is this view's clock,
+// marked * as its own. Either pauses while a question waits on the person.
+// A run in flight reads 0:00* until the first figure; a run whose time
+// nothing measured, Dash.
 func clockText(s State) string {
 	switch {
+	case s.Budget.ElapsedSecs != nil && s.Now.EngineClock:
+		return Clock(*s.Budget.ElapsedSecs)
 	case s.Budget.ElapsedSecs != nil:
 		return Clock(*s.Budget.ElapsedSecs) + "*"
 	case s.Running:

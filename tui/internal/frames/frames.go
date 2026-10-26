@@ -67,7 +67,10 @@ type Frame struct {
 	Approval       *ApprovalFields
 	// ModelCallTurn is the turn a ModelCall names.
 	ModelCallTurn *uint64
-	Runtime       *RuntimeFields
+	// ModelCallElapsedMs is the budget's wall-clock spend as the loop
+	// checked it before the call (#799); nil when the event carried none.
+	ModelCallElapsedMs *uint64
+	Runtime            *RuntimeFields
 }
 
 // TurnFields is a turn event. Turn and Call are what make an event a turn,
@@ -97,6 +100,9 @@ type TurnFields struct {
 	ModelMs          *uint64
 	CompletionTokens *uint64
 	QueueWaitMs      *uint64
+	// ElapsedMs is the run's wall-clock spend after the turn as its budget
+	// measures it, waits on a person and pauses left out (#799).
+	ElapsedMs *uint64
 }
 
 // RuntimeFields is the "runtime identified" event (client_contract.json).
@@ -131,6 +137,10 @@ type RunEndFields struct {
 	RunID    *string
 	Restored *bool
 	Error    *string
+	// ElapsedMs is the loop's whole wall-clock spend, as its budget measured
+	// it. Absent for a run the loop did not finish (an interrupt, an error
+	// before it started, a partitioned run), and never a partial figure.
+	ElapsedMs *uint64
 }
 
 type ResponseFields struct {
@@ -173,12 +183,13 @@ func Parse(l rpc.Line) Frame {
 			}}
 		case "run_end":
 			return Frame{Kind: RunEnd, RunEndFields: &RunEndFields{
-				Outcome:  s(o, "outcome"),
-				Exit:     i(o, "exit"),
-				ID:       s(o, "id"),
-				RunID:    s(o, "run_id"),
-				Restored: b(o, "restored"),
-				Error:    s(o, "error"),
+				Outcome:   s(o, "outcome"),
+				Exit:      i(o, "exit"),
+				ID:        s(o, "id"),
+				RunID:     s(o, "run_id"),
+				Restored:  b(o, "restored"),
+				Error:     s(o, "error"),
+				ElapsedMs: u(o, "elapsed_ms"),
 			}}
 		case "response":
 			return Frame{Kind: Response, ResponseFields: &ResponseFields{
@@ -228,6 +239,7 @@ func Parse(l rpc.Line) Frame {
 			ModelMs:          u(f, "model_ms"),
 			CompletionTokens: u(f, "completion_tokens"),
 			QueueWaitMs:      u(f, "queue_wait_ms"),
+			ElapsedMs:        u(f, "elapsed_ms"),
 		}}
 	case msg != nil && *msg == "model call":
 		// Without its turn it names nothing.
@@ -235,7 +247,7 @@ func Parse(l rpc.Line) Frame {
 		if turn == nil {
 			return Frame{Kind: Ignored}
 		}
-		return Frame{Kind: ModelCall, ModelCallTurn: turn}
+		return Frame{Kind: ModelCall, ModelCallTurn: turn, ModelCallElapsedMs: u(f, "elapsed_ms")}
 	case msg != nil && *msg == "runtime identified":
 		served := s(f, "served")
 		if served == nil {

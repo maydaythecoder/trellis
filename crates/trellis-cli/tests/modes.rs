@@ -3087,22 +3087,32 @@ fn rpc_elapsed_excludes_time_waiting_on_an_approval() {
     let mut gaps: Vec<String> = Vec::new();
     for e in &loop_events {
         let what = format!("{} {}", e["message"].as_str().unwrap(), e["turn"]);
-        let spec = &later["events"][e["message"].as_str().unwrap()];
-        gaps.extend(missing(e, &spec["always"], &what));
-        // An approve-mode edit carries its lines and diff as an auto-mode
-        // one does (#802): they come from the write, not the question.
-        if e["tool"] == "edit" && e["wrote"] == true {
-            gaps.extend(missing(e, &spec["edit_applied_only"], &what));
+        let message = e["message"].as_str().unwrap();
+        // elapsed_ms is in rpc.events since both clients read it (#906);
+        // what not every client reads yet is under not_every_client, which
+        // has no record for an event once all of its fields have moved.
+        gaps.extend(missing(e, &c["rpc"]["events"][message]["always"], &what));
+        if let Some(spec) = later["events"].get(message) {
+            gaps.extend(missing(e, &spec["always"], &what));
+            // An approve-mode edit carries its lines and diff as an
+            // auto-mode one does (#802): they come from the write, not the
+            // question.
+            if e["tool"] == "edit" && e["wrote"] == true {
+                gaps.extend(missing(e, &spec["edit_applied_only"], &what));
+            }
         }
     }
-    gaps.extend(
-        later["framing"]["run_end"]["optional"]
-            .as_object()
-            .expect("run_end's optional fields")
-            .keys()
-            .filter(|k| end.get(k.as_str()).is_none())
-            .map(|k| format!("run_end.{k}")),
-    );
+    // Of run_end's optional fields only elapsed_ms is this run's case: a
+    // converged run restores nothing and has no error. Named through the
+    // contract, so a rename there fails here.
+    let run_end_optional = c["rpc"]["framing"]["run_end"]["optional"]
+        .as_object()
+        .expect("run_end's optional fields");
+    match run_end_optional.get_key_value("elapsed_ms") {
+        Some((k, _)) if end.get(k.as_str()).is_none() => gaps.push(format!("run_end.{k}")),
+        Some(_) => {}
+        None => gaps.push("the contract lists no run_end.elapsed_ms".into()),
+    }
     assert!(
         gaps.is_empty(),
         "the stream lacks what tests/client_contract.json lists: {gaps:?}\n{records:?}"
