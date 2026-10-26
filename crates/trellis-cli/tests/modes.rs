@@ -5568,6 +5568,232 @@ fn rpc_set_budget_refuses_a_lower_limit() {
     );
 }
 
+/// The `withdraw` response sent for `id`: a withdrawn steer's own `steer`
+/// response carries the same id, so the command tells the two apart.
+fn withdrawn(rpc: &mut Rpc, id: &str) -> Value {
+    rpc.seen_or_next(|v| v["type"] == "response" && v["command"] == "withdraw" && v["id"] == id)
+}
+
+#[test]
+fn rpc_withdraw_refuses_a_delivered_steer() {
+    // The risks (ADR 0058 §3): a steer the person took back still put in a
+    // model request, or one the model was sent reported as taken back; a
+    // `get_state` read after `steer delivered` still listing the steer as
+    // waiting (#801's window); and a withdraw with a bad id or no run
+    // answered as if it took something back. "Never reached the model" is
+    // read from what the provider was sent, and order from the stream.
+    let c = contract();
+    let entry = &c["rpc"]["responses"]["withdraw"];
+    let f = fixture("rpc-withdraw-steer");
+    let mut idle = Rpc::start(trellis(&f));
+    idle.send(serde_json::json!({"id": "s", "type": "withdraw"}));
+    let none = withdrawn(&mut idle, "s");
+    assert_eq!(none["error"], "no run in flight", "{none}");
+    idle.finish();
+    let (mut rpc, server, q1) = at_the_edit_s_question(
+        &f,
+        "TRELLIS_TEST_RPC_WITHDRAW_STEER_KEY",
+        vec![
+            edit_a(),
+            openai_call(
+                "c2",
+                "edit",
+                serde_json::json!({"path": "a.py", "old": "return 2", "new": "return 3"}),
+            ),
+            openai_call("c3", "done", serde_json::json!({"summary": "changed it"})),
+        ],
+    );
+    // Both wait while the loop is held on the first edit's question.
+    let gone = "STEER-808-WITHDRAWN look at g instead";
+    rpc.send(serde_json::json!({"id": "s1", "type": "steer", "message": "STEER-808-KEPT"}));
+    rpc.send(serde_json::json!({"id": "s2", "type": "steer", "message": gone}));
+    rpc.send(serde_json::json!({"id": "s2", "type": "withdraw"}));
+    let w = withdrawn(&mut rpc, "s2");
+    assert_eq!(w["success"], true, "{w}");
+    assert_eq!(w["data"], serde_json::json!({"id": "s2", "type": "steer"}));
+    let gaps = missing(&w["data"], &entry["always"], "withdraw");
+    assert!(gaps.is_empty(), "{gaps:?}: {w}");
+    assert!(names(&entry["type_values"]).contains(&"steer"), "{entry}");
+    let s2 =
+        rpc.seen_or_next(|v| v["type"] == "response" && v["command"] == "steer" && v["id"] == "s2");
+    assert_eq!(
+        s2["success"], false,
+        "a withdrawn steer was answered delivered: {s2}"
+    );
+    let held = state(&mut rpc, "g1");
+    assert_eq!(
+        held["pending"],
+        serde_json::json!([{"id": "s1", "type": "steer", "message": "STEER-808-KEPT"}]),
+        "{held}"
+    );
+
+    // The yes lets the loop drain s1 into the second request. Once its
+    // event is read, the steer is delivered wherever a client asks.
+    rpc.send(serde_json::json!({"id": q1["id"], "type": "approve", "yes": true}));
+    rpc.next(|v| v["fields"]["message"] == "steer delivered");
+    let after = state(&mut rpc, "g2");
+    assert_eq!(
+        after["pending"],
+        serde_json::json!([]),
+        "listed after its event: {after}"
+    );
+    rpc.send(serde_json::json!({"id": "s1", "type": "withdraw"}));
+    let late = withdrawn(&mut rpc, "s1");
+    assert_eq!(
+        late["success"], false,
+        "a delivered steer was withdrawn: {late}"
+    );
+    assert_eq!(late["error"], "already delivered", "{late}");
+    rpc.send(serde_json::json!({"id": "nobody", "type": "withdraw"}));
+    let unknown = withdrawn(&mut rpc, "nobody");
+    assert!(
+        unknown["error"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("unknown id"),
+        "{unknown}"
+    );
+    rpc.send(serde_json::json!({"type": "withdraw"}));
+    let bare = rpc.seen_or_next(|v| {
+        v["type"] == "response" && v["command"] == "withdraw" && v["id"].is_null()
+    });
+    assert_eq!(bare["success"], false, "{bare}");
+    assert!(
+        bare["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("needs the"),
+        "{bare}"
+    );
+    rpc.send(serde_json::json!({"id": 7, "type": "withdraw"}));
+    let number = rpc.seen_or_next(|v| {
+        v["type"] == "response"
+            && v["command"] == "withdraw"
+            && v["id"].is_null()
+            && v["error"].as_str().is_some_and(|e| e.contains("got 7"))
+    });
+    assert_eq!(number["success"], false, "{number}");
+
+    let q2 = rpc.next(|v| v["type"] == "approval_request");
+    rpc.send(serde_json::json!({"id": q2["id"], "type": "approve", "yes": true}));
+    rpc.seen_or_next(|v| v["type"] == "run_end");
+    let s1 =
+        rpc.seen_or_next(|v| v["type"] == "response" && v["command"] == "steer" && v["id"] == "s1");
+    assert_eq!(s1["success"], true, "{s1}");
+    assert_eq!(s1["data"]["after_step"], 1, "{s1}");
+    rpc.finish();
+
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 3, "{requests:?}");
+    assert!(requests[1].contains("STEER-808-KEPT"), "{}", requests[1]);
+    for (i, r) in requests.iter().enumerate() {
+        assert!(
+            !r.contains("STEER-808-WITHDRAWN"),
+            "a withdrawn steer reached request {}: {r}",
+            i + 1
+        );
+    }
+}
+
+#[test]
+fn rpc_withdraw_removes_an_undelivered_follow_up() {
+    // The risks (ADR 0058 §3): a follow-up the person took back still
+    // started as a run, from the run it was sent during or from the chain's
+    // queue once that run ended; still listed as waiting; or handed back by
+    // `abort` as if it were still queued. One whose run has started is
+    // refused, since that run cannot be taken back by withdrawing it.
+    let f = fixture("rpc-withdraw-follow-up");
+    let script = scratch("rpc-withdraw-follow-up-steps").join("s.json");
+    std::fs::write(
+        &script,
+        r#"{"steps":[
+            {"tool":"edit","path":"a.py","old":"return 1","new":"return 2"},
+            {"tool":"done","summary":"changed it"}
+        ]}"#,
+    )
+    .unwrap();
+    let spec = format!("scripted:{}", script.display());
+    std::fs::write(
+        f.user.join("config.toml"),
+        "[control]\nmode = \"approve\"\n",
+    )
+    .unwrap();
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.choose(&spec);
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                                "model": spec}),
+    );
+    let q1 = rpc.next(|v| v["type"] == "approval_request");
+    rpc.send(serde_json::json!({"id": "u1", "type": "follow_up", "message": "second task"}));
+    rpc.send(serde_json::json!({"id": "u2", "type": "follow_up", "message": "FOLLOW-808-A"}));
+    rpc.send(serde_json::json!({"id": "u3", "type": "follow_up", "message": "FOLLOW-808-B"}));
+    // u2 is still in the record of the run it was sent during.
+    rpc.send(serde_json::json!({"id": "u2", "type": "withdraw"}));
+    let w2 = withdrawn(&mut rpc, "u2");
+    assert_eq!(w2["success"], true, "{w2}");
+    assert_eq!(
+        w2["data"],
+        serde_json::json!({"id": "u2", "type": "follow_up"})
+    );
+    let held = state(&mut rpc, "g1");
+    assert_eq!(
+        held["pending"],
+        serde_json::json!([
+            {"id": "u1", "type": "follow_up", "message": "second task"},
+            {"id": "u3", "type": "follow_up", "message": "FOLLOW-808-B"},
+        ]),
+        "{held}"
+    );
+
+    // p ends and u1's run starts: u3 has moved to the chain's queue.
+    rpc.send(serde_json::json!({"id": q1["id"], "type": "approve", "yes": true}));
+    rpc.next(|v| v["type"] == "run_start" && v["id"] == "u1");
+    rpc.next(|v| v["type"] == "approval_request");
+    rpc.send(serde_json::json!({"id": "u3", "type": "withdraw"}));
+    let w3 = withdrawn(&mut rpc, "u3");
+    assert_eq!(
+        w3["data"],
+        serde_json::json!({"id": "u3", "type": "follow_up"}),
+        "{w3}"
+    );
+    rpc.send(serde_json::json!({"id": "u1", "type": "withdraw"}));
+    let started = withdrawn(&mut rpc, "u1");
+    assert_eq!(started["error"], "already delivered", "{started}");
+    rpc.send(serde_json::json!({"id": "p", "type": "withdraw"}));
+    let prompt = withdrawn(&mut rpc, "p");
+    assert!(
+        prompt["error"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("unknown id"),
+        "a prompt is no queued message: {prompt}"
+    );
+    rpc.send(serde_json::json!({"id": "u4", "type": "follow_up", "message": "fifth task"}));
+    let now = state(&mut rpc, "g2");
+    assert_eq!(
+        now["pending"],
+        serde_json::json!([{"id": "u4", "type": "follow_up", "message": "fifth task"}]),
+        "{now}"
+    );
+    rpc.send(serde_json::json!({"id": "x", "type": "abort"}));
+    let x = rpc.seen_or_next(|v| v["type"] == "response" && v["id"] == "x");
+    assert_eq!(
+        x["data"]["undelivered"],
+        serde_json::json!([{"id": "u4", "type": "follow_up", "message": "fifth task"}]),
+        "abort handed back a withdrawn follow-up: {x}"
+    );
+    let records = rpc.finish();
+    for id in ["u2", "u3"] {
+        assert!(
+            !records
+                .iter()
+                .any(|r| r["type"] == "run_start" && r["id"] == id),
+            "withdrawn follow-up {id} started a run: {records:?}"
+        );
+    }
+}
+
 #[test]
 fn rpc_abort_while_paused_rolls_back_and_hands_back_the_held_steer() {
     // The risk (ADR 0058 §1): a held run that `abort` cannot reach, so the

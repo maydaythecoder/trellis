@@ -342,6 +342,22 @@ test reads it yet, and the desktop's `rpc_send` does not forward it. Held
 by `rpc_set_budget_refuses_a_lower_limit` and
 `rpc_set_budget_sends_run_budget_again` in `tests/modes.rs`, and by
 `budget_shares_divide_a_raised_budget` in trellis-loop (rule 9).
+*Added 2026-10-26 (#808):* `withdraw`, for the Queue card's cancel (ADR
+0058 §3). The command's own `id` names the steer or follow-up to take back,
+by the id it was sent with, as `approve`'s names its question; it is
+answered at once with `{id, type}`. A withdrawn steer is in no model request
+and its `steer` response is answered `success: false`, so a client reads
+two responses with that id, told apart by `command`; a withdrawn follow-up's
+run never starts. Either leaves `get_state`'s `pending` and is not in
+`abort`'s `undelivered`. Refused: `already delivered` once a request
+carries the steer or the follow-up's run has started, `unknown id`, `no run
+in flight`, and a missing or non-string id. The loop now marks a steer
+delivered before its `steer delivered` event, so `pending` no longer lists
+a steer after that event. The answer is under `rpc.responses` and no event
+is added, so neither client's contract test reads it yet, and the
+desktop's `rpc_send` does not forward it. Held by
+`rpc_withdraw_refuses_a_delivered_steer` and
+`rpc_withdraw_removes_an_undelivered_follow_up` in `tests/modes.rs`.
 
 ### 7. Auditing Tauri's tree
 
