@@ -130,11 +130,7 @@ func Render(s State, w, h int) string {
 	if w < MinWidth || h < MinHeight {
 		return tooSmall(w, h)
 	}
-	// The status bar, the budget box, and the task box's two borders and
-	// its input row are always drawn; the completions get what is left of
-	// the rest once the body has its floor.
-	entry := entryLines(s, w, h-1-3-3-MinBodyRows)
-	bodyH := h - 1 - 3 - len(entry)
+	entry, bodyH := layout(s, w, h)
 	leftW, rightW := columns(s, w)
 	rest := bodyH - radiusH
 	actionsH := rest / 2
@@ -156,6 +152,17 @@ func Render(s State, w, h int) string {
 	out = append(out, Box("budget", "", []string{budgetLabel(s, w-2)}, w, 3)...)
 	out = append(out, entry...)
 	return strings.Join(out, "\n")
+}
+
+// layout is the task box's rows and the body's height at w by h, for
+// Render and for the scroll limits the model keeps (TranscriptTop), so
+// the two cannot disagree about how tall the transcript is (#843). The
+// status bar, the budget box, and the task box's two borders and its
+// input row are always drawn; the completions get what is left of the
+// rest once the body has its floor.
+func layout(s State, w, h int) (entry []string, bodyH int) {
+	entry = entryLines(s, w, h-1-3-3-MinBodyRows)
+	return entry, h - 1 - 3 - len(entry)
 }
 
 // columns splits the width between the transcript and the right column.
@@ -181,6 +188,17 @@ func TranscriptRows(s State, w int) int {
 		n += len(WrapWords(Plain(l), left-2))
 	}
 	return n
+}
+
+// TranscriptTop is the scroll back that shows the transcript's first row
+// at the top of its pane, in the layout drawn at w by h: the most Home, PgUp
+// and Up go to. The pane shows a page of rows, so the top is the rows less
+// that page; counted as all the rows, as it was, the first PgDn after Home
+// spent itself on rows above the first and moved nothing (#843).
+func TranscriptTop(s State, w, h int) int {
+	w, h = max(w, MinWidth), max(h, MinHeight)
+	_, bodyH := layout(s, w, h)
+	return max(TranscriptRows(s, w)-max(bodyH-2, 0), 0)
 }
 
 func tooSmall(w, h int) string {
