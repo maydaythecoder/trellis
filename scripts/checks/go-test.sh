@@ -22,13 +22,19 @@
 # GOTOOLCHAIN=local (a `toolchain` line never downloads another toolchain;
 # ADR 0052 decision 2.4). tui/ or go missing fails; there is no skip.
 #
+# Before any of that, the go on PATH is checked against tui/go.mod's `go`
+# line, and a go too old fails naming the version the `toolchain` line
+# asks for. Under GOTOOLCHAIN=local an older go cannot switch, and `go mod
+# verify`'s refusal was reported as a go.sum mismatch (#855).
+#
 # The rpc tests spawn target/debug/trellis; build it first with
 # `cargo build -p trellis-cli`.
 #
 # --self-test builds a throwaway module with one passing and one failing
 # test, and shows that a filter matching nothing fails, that too few
 # matches fail, that a failing match fails, and that enough passing
-# matches pass.
+# matches pass; and that a module asking for a newer go than the one on
+# PATH fails the toolchain check, naming the version.
 #
 # Exit 0: holds. Exit 1: a check failed, too few tests matched, or the
 # self-test did not hold. Exit 2: wrong arguments, or not in a git
@@ -45,6 +51,22 @@ need_go() {
 		echo "FAIL: go is not on PATH (scripts/runners/install-go.sh installs the pinned one)"
 		exit 1
 	}
+}
+
+# The go on PATH against <dir>/go.mod: fail, naming the version to
+# install, when it is older than the module's `go` line. Asked outside any
+# module, since inside one a go too old refuses to say its version.
+toolchain_ok() {
+	local mod=$1/go.mod need want have
+	need=$(sed -n 's/^go \([0-9][0-9.]*\).*/\1/p' "$mod" | head -1)
+	want=$(sed -n 's/^toolchain go\([0-9][0-9.a-z]*\).*/\1/p' "$mod" | head -1)
+	have=$(cd / && go env GOVERSION) || { echo "FAIL: cannot ask go for its version"; return 1; }
+	have=${have#go}
+	[ -n "$need" ] || { echo "FAIL: $mod has no go line"; return 1; }
+	if [ "$(printf '%s\n%s\n' "$need" "$have" | sort -V | head -1)" != "$need" ]; then
+		echo "FAIL: go $have is older than the go $need that $mod requires; install go${want:-$need} (scripts/runners/install-go.sh) and put it first on PATH"
+		return 1
+	fi
 }
 
 # Run the tests matching ^<prefix> in module dir <dir>; fail unless at
@@ -107,8 +129,18 @@ self_test() {
 	expect 1 "a failing match" TestBeta 1
 	expect 1 "a skipped match" TestGamma 1
 	expect 0 "enough passing matches (a subtest is not counted)" TestAlpha 2
+	if ! out=$(toolchain_ok "$tmp/m" 2>&1); then
+		echo "FAIL: self-test: a module asking for go 1.21 failed the toolchain check: $out"
+		fail=1
+	fi
+	mkdir -p "$tmp/new"
+	printf 'module example.invalid/new\n\ngo 99.1\n\ntoolchain go99.1.2\n' >"$tmp/new/go.mod"
+	if out=$(toolchain_ok "$tmp/new" 2>&1) || ! printf '%s\n' "$out" | grep -qF "requires; install go99.1.2"; then
+		echo "FAIL: self-test: a module asking for go 99.1 passed, or failed without naming go99.1.2: $out"
+		fail=1
+	fi
 	[ "$fail" -eq 0 ] || exit 1
-	echo "OK: self-test (a filter matching nothing fails; too few, failing or skipped matches fail; enough passing matches pass)"
+	echo "OK: self-test (a filter matching nothing fails; too few, failing or skipped matches fail; enough passing matches pass; a go older than go.mod asks for fails, naming the toolchain to install)"
 }
 
 if [ "${1:-}" = "--self-test" ]; then
@@ -120,6 +152,7 @@ fi
 root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "FAIL: not in a git repository"; exit 2; }
 [ -f "$root/tui/go.mod" ] || { echo "FAIL: tui/go.mod not found under $root; nothing to test"; exit 1; }
 need_go
+toolchain_ok "$root/tui" || exit 1
 
 if [ $# -eq 2 ]; then
 	case "$1" in '' | *[!A-Za-z0-9_]*) echo "FAIL: prefix must be a Go identifier, not '$1'"; exit 2 ;; esac
