@@ -190,6 +190,32 @@ only for an endpoint identified as colibri, and stays out of the trail.
 Held by `rpc_runtime_identified_carries_every_field_the_contract_lists_once_per_run`
 and `rpc_runtime_identified_leaves_unreported_counts_absent_never_0` in
 `tests/modes.rs`. The desktop pane that draws it is #628.
+*Added 2026-10-26 (#796):* fields trellis already emitted are listed; listing
+them changes no output. They are `approval_request`'s `request_id`; the
+`level` beside every event's fields; the turn's `duration_ms` and
+`summarised`; the `compacted` and `compacted on request` events; the answers
+of `steer`, `abort`, `approve`, `compact`, `get_commands`,
+`get_session_stats`, `get_available_models`, `get_last_assistant_text`,
+`vault_search`, `vault_graph` and `vault_check`; `run_end`'s outcome words
+and the turn's check kinds as `outcome_values` and `check_kind_values`;
+`prompt`, `follow_up` and `quit` as the commands that answer with no data;
+and `log --json`'s `trail.base_commit`, `ended_at`, `factual.radius`,
+`context`, `actions` and `steering`, for the summary level. Some were read
+before: the TUI reads the `level`, a steer's `after_step` and `abort`'s
+ids; the desktop reads `abort`'s text, `get_commands`' prompts, the
+`get_session_stats`, `get_available_models` and vault answers, and
+`run_end`'s outcome words. The rest (`request_id`, `duration_ms`,
+`summarised`, both compaction events, the `approve`, `compact` and
+`get_last_assistant_text` answers and the trail paths) no client reads yet;
+they are listed for the levels story #790 plans. `get_state`'s answer moves
+from `rpc.commands` to `rpc.responses` beside the others. What not every
+client reads yet is under `rpc.not_every_client`, with `read_by` naming the
+clients that read each field, because both clients' contract tests require
+their parsers to keep every field of `rpc.events` and `rpc.framing`. Held by
+`rpc_stream_carries_every_field_the_desktop_reads`,
+`log_json_carries_every_trail_field_the_desktop_reads` and
+`rpc_steer_abort_compact_answers_carry_what_the_contract_lists` in
+`tests/modes.rs`, with the `rpc_vault_` tests there for the vault answers.
 
 ### 7. Auditing Tauri's tree
 
