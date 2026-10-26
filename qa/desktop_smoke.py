@@ -20,7 +20,8 @@ one JSON message per NUL byte), and fails on:
   (`Log.entryAdded`, where a Content-Security-Policy refusal shows up);
 - listeners, nodes or documents that do not come back. After a warm-up
   (one task, and walks until one leaves the counts where the last did), it
-  counts them (`Memory.getDOMCounters`, after `HeapProfiler.collectGarbage`),
+  counts them (`Memory.getDOMCounters`, after `HeapProfiler.collectGarbage`,
+  once every call the page made to the core is answered),
   then walks into every level of the page and out again, N times,
   and the three counts must be where they were; then it runs N tasks to
   their `run_end` with a scripted model (qa/fixtures/scripted-done-only.json:
@@ -49,6 +50,7 @@ is missing, or the arguments are wrong.
 """
 
 import argparse
+import collections
 import http.client
 import http.server
 import json
@@ -204,15 +206,26 @@ def _high(fd):
 
 
 class Page:
-    """One tab, its errors collected as they arrive."""
+    """One tab, its errors collected as they arrive.
 
-    def __init__(self, chrome):
+    `answered` counts, per rpc line id, the answers the child has sent (the
+    desktop's `answered`); `None` for a page that talks to no core."""
+
+    def __init__(self, chrome, answered=None):
         self.chrome = chrome
         target = chrome.send("Target.createTarget", {"url": "about:blank"})["targetId"]
         self.session = chrome.send("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
         self.errors = []
         self.loaded = threading.Event()
-        for domain in ("Runtime", "Log", "Page", "HeapProfiler"):
+        # The page's calls to the core (`invoke/<command>` POSTs) not yet
+        # finished, by the protocol's request id, each with the id of the rpc
+        # line it sends when it is `rpc_send`; and, per line id, how many
+        # lines the core accepted (200: forwarded to the child, which
+        # answers every line), so `quiet` knows which answers to wait for.
+        self.calls = {}
+        self.accepted = collections.Counter()
+        self.answered = answered
+        for domain in ("Runtime", "Log", "Page", "HeapProfiler", "Network"):
             self.send(f"{domain}.enable")
 
     def send(self, method, params=None):
@@ -245,6 +258,23 @@ class Page:
                 self.errors.append(f"log ({e.get('source')}): {e.get('text')} {e.get('url', '')}".rstrip())
             elif method == "Page.loadEventFired":
                 self.loaded.set()
+            elif method == "Network.requestWillBeSent":
+                req = p.get("request", {})
+                url = urllib.parse.urlparse(req.get("url", "")).path
+                if req.get("method") == "POST" and "/invoke/" in url:
+                    line_id = None
+                    if url.endswith("/invoke/rpc_send"):
+                        try:
+                            line_id = (json.loads(req.get("postData") or "{}").get("line") or {}).get("id")
+                        except (ValueError, AttributeError):
+                            line_id = None
+                    self.calls[p["requestId"]] = line_id
+            elif method == "Network.responseReceived" and p.get("requestId") in self.calls:
+                line_id = self.calls[p["requestId"]]
+                if isinstance(line_id, str) and p.get("response", {}).get("status") == 200:
+                    self.accepted[line_id] += 1
+            elif method in ("Network.loadingFinished", "Network.loadingFailed"):
+                self.calls.pop(p.get("requestId"), None)
 
     def settle(self, seconds):
         """Lets the page work for `seconds`, collecting what it reports."""
@@ -270,8 +300,29 @@ class Page:
             raise RuntimeError(f"{expression!r} threw: {r['exceptionDetails'].get('text')}")
         return r.get("result", {}).get("value")
 
+    def quiet(self):
+        """Waits until every call the page made to the core has finished
+        and the child has answered every rpc line the core accepted, then
+        lets the page draw the last answer. A section draws what it fetched
+        when the answer comes; counted before that, on a runner slower than
+        the page's own pauses, its nodes were taken for a leak (#797)."""
+        end = time.monotonic() + WAIT
+        while True:
+            self.drain()
+            waiting = [] if self.answered is None else sorted(
+                i for i, n in self.accepted.items() if self.answered[i] < n)
+            if not self.calls and not waiting:
+                break
+            if time.monotonic() > end:
+                raise RuntimeError(f"after {WAIT} s the page still waits on {len(self.calls)} call(s) "
+                                   f"and the answers to {waiting}")
+            time.sleep(0.05)
+        self.settle(0.5)
+
     def counts(self):
-        """Documents, nodes and listeners once garbage has been collected."""
+        """Documents, nodes and listeners once the page has every answer it
+        asked for and garbage has been collected."""
+        self.quiet()
         for _ in range(2):
             self.send("HeapProfiler.collectGarbage")
         c = self.send("Memory.getDOMCounters")
@@ -345,6 +396,9 @@ class Desktop:
         self.token = urllib.parse.parse_qs(url.query)["t"][0]
         self.page_url = f"http://{self.host}:{self.port}/{self.token}/"
         self.frames = queue.Queue()
+        # Per rpc line id, the answers the child has sent: the page's own
+        # questions included, which `Page.quiet` waits on.
+        self.answered = collections.Counter()
         threading.Thread(target=self._events, daemon=True).start()
         # The desktop writes only its errors to stderr. Read as they come,
         # so one shows in the run's log and the pipe never fills and holds
@@ -358,7 +412,7 @@ class Desktop:
 
     def _events(self):
         """The core's events, as a second page would hear them: the frames
-        that say when a run has ended."""
+        that say when a run has ended, and the answers the page waits on."""
         c = http.client.HTTPConnection(self.host, self.port)
         c.request("GET", f"/{self.token}/events", headers={"Host": f"{self.host}:{self.port}"})
         r = c.getresponse()
@@ -369,9 +423,12 @@ class Desktop:
                 event = line[6:].strip()
             elif line.startswith("data:") and event == "rpc-frame":
                 try:
-                    self.frames.put(json.loads(line[5:].strip()))
+                    frame = json.loads(line[5:].strip())
                 except json.JSONDecodeError:
-                    pass
+                    continue
+                if frame.get("type") == "response" and isinstance(frame.get("id"), str):
+                    self.answered[frame["id"]] += 1
+                self.frames.put(frame)
 
     def send(self, line):
         """rpc_send, as the page sends it: one command for the child."""
@@ -423,25 +480,31 @@ def smoke(chrome_bin, desktop, trellis, prompts, cycles):
         chrome = None
         try:
             chrome = Chrome(chrome_bin)
-            page = Page(chrome)
+            page = Page(chrome, d.answered)
             page.open(d.page_url)
             page.settle(3)
             d.send({"type": "set_model", "model": "scripted:" + SCRIPT.as_posix(), "id": "smoke-model"})
             d.wait_for(lambda f: f.get("type") == "response" and f.get("id") == "smoke-model", "set_model answer")
             # Warm-up: whatever the page creates once for its life is made
-            # here, before anything is counted. A section asks for what it
-            # shows only while it is shown, and the Atlas asks in steps (the
-            # history, HEAD, its symbols, each snapshot), so on a slow
-            # machine one walk can end before the page has drawn all it
-            # will. The warm-up walks again until a walk leaves the counts
-            # where the one before left them, at most WARM_WALKS times; a
-            # page that grows on every walk grows in the counted walks too,
-            # and fails there.
+            # here, before anything is counted.
             task(d, 0)
+            # Twice, the first to all its answers: one section's fetch can
+            # change what another shows (the codebase view's first answer
+            # saves the index the overview's figures are read from), so on a
+            # slow runner a single walk left the overview drawn from before
+            # it, and the walks after it were taken for a leak (#797).
+            page.run(WALK)
+            page.quiet()
             levels = page.run(WALK)
             page.settle(2)
             start = page.counts()
-            for _ in range(WARM_WALKS - 1):
+            # And again while a walk still adds to the page, at most
+            # WARM_WALKS walks in all: a section asks for what it shows only
+            # while it is shown, and the Atlas asks in steps (the history,
+            # HEAD, its symbols, each snapshot), so a walk can end before it
+            # has asked for all it will (#826). A page that grows on every
+            # walk grows in the counted walks too, and fails there.
+            for _ in range(WARM_WALKS - 2):
                 page.run(WALK)
                 page.settle(2)
                 again = page.counts()

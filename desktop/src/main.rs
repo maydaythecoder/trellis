@@ -19,7 +19,10 @@
 //! vault notes view (`state/vault.rs`, the `view` event's `vault` key), and
 //! `get_queue` answers the board's queue view (`queue.rs`, its `queue`
 //! key); the Atlas's `get_history`, `get_codebase`, `get_symbols` and
-//! `get_radius` answers become its view (`atlas.rs`, its `atlas` key). The
+//! `get_radius` answers become its view (`atlas.rs`, its `atlas` key).
+//! Each of those views takes only the answer to the question it asked last
+//! and words a refusal one way (`asked.rs`), and reads an answer's fields
+//! through one set of readers (`json.rs`). The
 //! page has four commands: `rpc_send`, `get_trails`
 //! (the trails view's rows, `trails.rs`), `open_repository` and
 //! `get_overview`.
@@ -37,13 +40,16 @@
 // window. Tests keep the console so their output is seen.
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
+mod asked;
 mod atlas;
 mod capped;
 mod child;
 mod codebase;
 mod commands;
+mod feed;
 mod frames;
 mod graph;
+mod json;
 mod lockdown;
 mod queue;
 mod radius;

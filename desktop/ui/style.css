@@ -605,6 +605,17 @@ h4:first-child {
   white-space: pre-wrap;
 }
 
+/* The actions log is the design system's Transcript (ds.css's .cd-tx,
+   #827): its rows are grids, and only a tool's raw call keeps its spaces. */
+.log.cd-tx {
+  max-height: 640px;
+  white-space: normal;
+}
+
+.log.cd-tx > .empty {
+  padding: var(--space-2) var(--space-3);
+}
+
 .rows {
   margin: 0;
   padding-left: 18px;

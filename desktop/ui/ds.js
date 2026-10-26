@@ -22,7 +22,7 @@
 // (ds_components_draw_the_bundles_markup, page_helpers_live_in_one_module_each).
 
 import { el } from "./dom.js";
-import { isCount } from "./fmt.js";
+import { isCount, str } from "./fmt.js";
 
 // The class list from the names given, without the falsy ones.
 function cx(...names) {
@@ -130,4 +130,75 @@ export function panelMeta(doc, id, ...parts) {
   doc.getElementById(id).replaceChildren(
     ...parts.filter((p) => p !== null && p !== undefined && p !== "").map((p) => (typeof p === "object" ? p : el(doc, "span", String(p)))),
   );
+}
+
+// A glyph that marks a row's kind: drawn, and not read, since the row's
+// words say what it is.
+function glyph(doc, g) {
+  const e = el(doc, "span", g, "cd-tx-g");
+  e.setAttribute("aria-hidden", "true");
+  return e;
+}
+
+// Where a steer stands, as its row's meta says it: pending until a model
+// request carries it, then the step it followed, or that none did.
+function delivery(doc, d) {
+  const state = d && str(d.state);
+  if (state === "delivered" && isCount(d.after_step)) return el(doc, "span", `delivered after turn ${d.after_step}`, "cd-tx-meta");
+  if (state === "not_delivered") {
+    const e = el(doc, "span", "not delivered", "cd-tx-meta");
+    e.title = str(d.why) ?? "trellis gave no reason";
+    return e;
+  }
+  return el(doc, "span", "pending · next model call", "cd-tx-meta");
+}
+
+// Transcript (the design system's): one entry of a run's log, typed by what
+// it came from (#827). The person's task and steers are signal blocks, a
+// steer saying where it stands; a tool call is one line, its raw call and
+// observation shown on demand (render.js's wireLog opens it, on one
+// listener for the whole log); a check row carries trellis-checks' verdict
+// and nothing else; a note and a refusal are trellis's words.
+export function txEntry(doc, row) {
+  const kind = str(row.kind);
+  const text = str(row.text) ?? "";
+  const turn = isCount(row.turn) ? `t${row.turn}` : "";
+  if (kind === "task" || kind === "steer") {
+    const pending = kind === "steer" && !(row.delivery && str(row.delivery.state) !== "pending");
+    const e = el(doc, "div", null, cx("cd-tx-e", `cd-tx-${kind}`, pending && "cd-tx-steer-pending"));
+    const words = el(doc, "div");
+    words.append(el(doc, "span", kind === "task" ? "you · task" : "you · steer", "cd-tx-label"), el(doc, "div", text, "cd-tx-body"));
+    e.append(glyph(doc, "◆"), words, kind === "steer" ? delivery(doc, row.delivery) : el(doc, "span", "", "cd-tx-meta"));
+    return e;
+  }
+  if (kind === "tool") {
+    const e = el(doc, "div", null, "cd-tx-e cd-tx-tool");
+    e.tabIndex = 0;
+    e.setAttribute("aria-expanded", "false");
+    const space = text.indexOf(" ");
+    const sent = el(doc, "span", null, "cd-tx-sent");
+    if (space < 0) sent.append(el(doc, "b", text));
+    else sent.append(el(doc, "b", text.slice(0, space)), text.slice(space));
+    const raw = el(doc, "pre", null, "cd-tx-raw");
+    raw.hidden = true;
+    raw.append(el(doc, "span", "$ ", "k"), text);
+    const detail = str(row.detail);
+    if (detail !== null) raw.append(`\n${detail}`);
+    e.append(glyph(doc, "→"), sent, el(doc, "span", turn, "cd-tx-meta"), raw);
+    return e;
+  }
+  if (kind === "check" && typeof row.passed === "boolean") {
+    const passed = row.passed;
+    const e = el(doc, "div", null, cx("cd-tx-e", passed ? "cd-tx-check-ok" : "cd-tx-check-down"));
+    e.append(glyph(doc, passed ? "✓" : "✗"), el(doc, "span", text, "cd-tx-sent"), el(doc, "span", turn, "cd-tx-meta"));
+    return e;
+  }
+  const e = el(doc, "div", null, cx("cd-tx-e", kind === "refusal" ? "cd-tx-refusal" : "cd-tx-system"));
+  e.append(glyph(doc, kind === "refusal" ? "×" : "!"), el(doc, "span", text, "cd-tx-sent"), el(doc, "span", turn, "cd-tx-meta"));
+  return e;
+}
+
+// The rule a transcript draws ahead of a turn's first row.
+export function txTurn(doc, turn) {
+  return el(doc, "div", `turn ${turn}`, "cd-tx-turn");
 }

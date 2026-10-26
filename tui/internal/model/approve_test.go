@@ -245,6 +245,39 @@ func TestApproveModalALineTallerThanTheBoxIsItsOwnLastPage(t *testing.T) {
 	}
 }
 
+// Below the minimum size the rest of the screen is not drawn, but a
+// question is: the approval box alone, as it was before the strip stayed
+// above it (#850). "terminal too small" in its place left a question
+// waiting unseen while y and n still answered it. Paging stops at the
+// box's own last page, so the first Up after the end moves the view.
+func TestApproveQuestionIsDrawnBelowTheMinimumSize(t *testing.T) {
+	m := running(t)
+	m.Update(tea.WindowSizeMsg{Width: 60, Height: 20})
+	var diff []string
+	for i := 1; i <= 60; i++ {
+		diff = append(diff, fmt.Sprintf("+ line %02d", i))
+	}
+	feed(m, approval("a1", "edit a.py (+60 -0)", strings.Join(diff, "\n")))
+	v := m.View()
+	if strings.Contains(v, "too small") || !strings.Contains(v, " edit a.py (+60 -0)? ") || !strings.Contains(v, "[y] accept this change  [n] reject") {
+		t.Fatalf("the question is not drawn at 60x20:\n%s", v)
+	}
+	if rows := strings.Split(v, "\n"); len(rows) != 20 {
+		t.Fatalf("%d rows at 60x20, want 20", len(rows))
+	}
+	for i := 0; i < 20; i++ {
+		press(m, tea.KeyPgDown)
+	}
+	end := m.View()
+	if !strings.Contains(end, "+ line 60") || !strings.Contains(end, "–60 of 60") {
+		t.Fatalf("paging down did not reach the diff's last line:\n%s", end)
+	}
+	press(m, tea.KeyUp)
+	if m.View() == end {
+		t.Fatalf("the first Up after the end did not move the view:\n%s", end)
+	}
+}
+
 // A gated call that is not an edit is named a call, and a diff that fits
 // says no position.
 func TestApproveModalNamesACallThatIsNotAnEdit(t *testing.T) {

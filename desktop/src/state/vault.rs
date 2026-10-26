@@ -20,7 +20,9 @@
 //! 0049). Titles, paths and issue lines are the notes' own text, which the
 //! page writes through `textContent` only (ADR 0007, S10).
 
+use crate::asked::{self, Asked};
 use crate::frames::Response;
+use crate::json;
 use serde_json::{Map, Value, json};
 
 pub const SEARCH: &str = "vault_search";
@@ -92,31 +94,18 @@ pub struct Check {
 /// A `vault_check` answer's `data`, each line as the CLI prints it.
 pub fn check(data: &Value) -> Result<Check, String> {
     let o = data.as_object().ok_or("it is not an object")?;
-    let strings = |k: &str| -> Result<Vec<String>, String> {
-        list(o, k)?
-            .iter()
-            .map(|s| {
-                s.as_str()
-                    .map(str::to_string)
-                    .ok_or_else(|| format!("an entry of {k} is not text"))
-            })
-            .collect()
-    };
     let gate = o
         .get("gate")
         .and_then(Value::as_object)
         .ok_or("it has no gate")?;
-    let (gate, violations) = match gate.get("accepts").and_then(Value::as_bool) {
+    let (gate, violations) = match json::bool(gate, "accepts") {
         Some(true) => {
             let stats = gate
                 .get("stats")
                 .and_then(Value::as_object)
                 .ok_or("its gate has no stats")?;
             let count = |k: &str| {
-                stats
-                    .get(k)
-                    .and_then(Value::as_u64)
-                    .ok_or_else(|| format!("its gate's stats.{k} is not a count"))
+                json::u64(stats, k).ok_or_else(|| format!("its gate's stats.{k} is not a count"))
             };
             // `Stats`'s Display, as the CLI prints it.
             (
@@ -133,14 +122,7 @@ pub fn check(data: &Value) -> Result<Check, String> {
             )
         }
         Some(false) => {
-            let violations = list(gate, "violations")?
-                .iter()
-                .map(|s| {
-                    s.as_str()
-                        .map(str::to_string)
-                        .ok_or("an entry of violations is not text".to_string())
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let violations = json::texts(gate, "violations", "its gate")?;
             (
                 format!(
                     "run gate: refuses this vault, {} violation(s):",
@@ -152,9 +134,9 @@ pub fn check(data: &Value) -> Result<Check, String> {
         None => return Err("its gate.accepts is not true or false".into()),
     };
     Ok(Check {
-        line: text(o, "line", "it")?,
-        issues: strings("issues")?,
-        warnings: strings("warnings")?,
+        line: json::text(o, "line", "it")?,
+        issues: json::texts(o, "issues", "it")?,
+        warnings: json::texts(o, "warnings", "it")?,
         gate,
         violations,
     })
@@ -194,12 +176,11 @@ pub struct Vault {
     graph: Option<NoteGraph>,
     /// trellis's refusal, or the reason the last answer was bad data.
     error: Option<String>,
-    /// The ids of the last `vault_search` and `vault_graph` the page sent.
-    /// Each is answered from its own thread, so an earlier question's
-    /// answer can come after a later one's; only the last one asked is
-    /// taken. `None` takes any answer: nothing was asked with an id.
-    asked_search: Option<String>,
-    asked_graph: Option<String>,
+    /// The last `vault_search` and `vault_graph` the page sent. Each is
+    /// answered from its own thread, so an earlier question's answer can
+    /// come after a later one's; only the last one asked is taken.
+    asked_search: Asked,
+    asked_graph: Asked,
     /// Set by a search answer when a graph was asked before it: that
     /// question named a note from the last search's hits, so its answer,
     /// however late, is not shown beside the new ones. The next
@@ -209,21 +190,11 @@ pub struct Vault {
     /// why the answer was bad data. `None` until one. A search does not
     /// start it over: the report is the vault's, not a query's.
     check: Option<Result<Check, String>>,
-    asked_check: Option<String>,
-}
-
-fn text(o: &Map<String, Value>, k: &str, what: &str) -> Result<String, String> {
-    match o.get(k) {
-        Some(Value::String(s)) => Ok(s.clone()),
-        None | Some(Value::Null) => Err(format!("{what} has no {k}")),
-        Some(_) => Err(format!("{what}'s {k} is not text")),
-    }
+    asked_check: Asked,
 }
 
 fn list<'a>(o: &'a Map<String, Value>, k: &str) -> Result<&'a Vec<Value>, String> {
-    o.get(k)
-        .and_then(Value::as_array)
-        .ok_or_else(|| format!("its {k} is not a list"))
+    json::array(o, k).ok_or_else(|| format!("its {k} is not a list"))
 }
 
 fn named(v: &Value, what: &str) -> Result<Named, String> {
@@ -231,8 +202,8 @@ fn named(v: &Value, what: &str) -> Result<Named, String> {
         .as_object()
         .ok_or_else(|| format!("{what} is not a note"))?;
     Ok(Named {
-        path: text(o, "path", what)?,
-        title: text(o, "title", what)?,
+        path: json::text(o, "path", what)?,
+        title: json::text(o, "title", what)?,
     })
 }
 
@@ -242,8 +213,8 @@ fn references(o: &Map<String, Value>, k: &str) -> Result<Vec<Reference>, String>
         .map(|r| {
             let what = format!("an entry of {k}");
             let weight = r
-                .get("weight")
-                .and_then(Value::as_u64)
+                .as_object()
+                .and_then(|o| json::u64(o, "weight"))
                 .ok_or_else(|| format!("{what} has no weight that is a count"))?;
             Ok(Reference {
                 note: named(r, &what)?,
@@ -261,11 +232,8 @@ pub fn search(data: &Value) -> Result<(Option<String>, Vec<Hit>), String> {
         .get("mode")
         .and_then(Value::as_object)
         .ok_or("it has no mode")?;
-    let flag = |k: &str| {
-        mode.get(k)
-            .and_then(Value::as_bool)
-            .ok_or_else(|| format!("its mode.{k} is not true or false"))
-    };
+    let flag =
+        |k: &str| json::bool(mode, k).ok_or_else(|| format!("its mode.{k} is not true or false"));
     let (body, trigrams) = (flag("body")?, flag("trigrams")?);
     // The CLI's order of the two lines: titles-only says all there is to
     // say, since it drops trigrams too.
@@ -302,32 +270,17 @@ pub fn graph(data: &Value) -> Result<NoteGraph, String> {
     // under a missing parent or on a cycle.
     let depth = match o.get("depth") {
         Some(Value::Null) => NO_DEPTH.to_string(),
-        Some(v) => v
-            .as_u64()
+        Some(_) => json::u64(o, "depth")
             .map(|d| d.to_string())
             .ok_or("its depth is not a count")?,
         None => return Err("it has no depth".into()),
     };
-    let unresolved_parent = match o.get("unresolved_parent") {
-        Some(Value::Null) => None,
-        Some(Value::String(p)) => Some(format!("[[{p}]] does not resolve")),
-        Some(_) => return Err("its unresolved_parent is not text".into()),
-        None => return Err("it has no unresolved_parent".into()),
-    };
-    let strings = |k: &str| -> Result<Vec<String>, String> {
-        list(o, k)?
-            .iter()
-            .map(|s| {
-                s.as_str()
-                    .map(str::to_string)
-                    .ok_or_else(|| format!("an entry of {k} is not text"))
-            })
-            .collect()
-    };
+    let unresolved_parent = json::text_or_null(o, "unresolved_parent", "it")?
+        .map(|p| format!("[[{p}]] does not resolve"));
     Ok(NoteGraph {
         note,
         depth,
-        lineage: strings("lineage")?,
+        lineage: json::texts(o, "lineage", "it")?,
         unresolved_parent,
         children: list(o, "children")?
             .iter()
@@ -335,7 +288,7 @@ pub fn graph(data: &Value) -> Result<NoteGraph, String> {
             .collect::<Result<_, _>>()?,
         refs_out: references(o, "refs_out")?,
         refs_in: references(o, "refs_in")?,
-        issues: strings("issues")?,
+        issues: json::texts(o, "issues", "it")?,
     })
 }
 
@@ -366,14 +319,13 @@ impl Vault {
     /// The page sent `command` with `id`: from now on only that answer is
     /// taken for it.
     pub fn asked(&mut self, command: &str, id: Option<&str>) {
-        let id = id.map(str::to_string);
         match command {
-            SEARCH => self.asked_search = id,
+            SEARCH => self.asked_search.ask(id),
             GRAPH => {
-                self.asked_graph = id;
+                self.asked_graph.ask(id);
                 self.graph_superseded = false;
             }
-            CHECK => self.asked_check = id,
+            CHECK => self.asked_check.ask(id),
             _ => {}
         }
     }
@@ -391,7 +343,7 @@ impl Vault {
             GRAPH => &self.asked_graph,
             _ => &self.asked_check,
         };
-        if asked.is_some() && r.id != *asked {
+        if !asked.takes(r.id.as_deref()) {
             return false;
         }
         if command == GRAPH && self.graph_superseded {
@@ -399,7 +351,7 @@ impl Vault {
         }
         // A search answer, taken or refused, starts the view over, so a
         // graph asked before it is no longer the one the view waits on.
-        let superseded = command == SEARCH && self.asked_graph.is_some();
+        let superseded = command == SEARCH && self.asked_graph.is_asked();
         let read = match (r.success, &r.data) {
             (Some(true), Some(data)) => {
                 let bad = |why: String| {
@@ -415,10 +367,7 @@ impl Vault {
             (Some(true), None) => Err(format!(
                 "{command} answered with bad data, so nothing from it is shown: it has no data"
             )),
-            _ => Err(r
-                .error
-                .clone()
-                .unwrap_or_else(|| format!("{command} was refused, and trellis gave no reason"))),
+            _ => Err(asked::refusal(command, r)),
         };
         match read {
             // The report is the vault's, not a query's: it sits beside the
@@ -433,11 +382,11 @@ impl Vault {
                     hits: Some(hits),
                     reduced,
                     browse,
-                    asked_search: self.asked_search.take(),
-                    asked_graph: self.asked_graph.take(),
+                    asked_search: std::mem::take(&mut self.asked_search),
+                    asked_graph: std::mem::take(&mut self.asked_graph),
                     graph_superseded: superseded,
                     check: self.check.take(),
-                    asked_check: self.asked_check.take(),
+                    asked_check: std::mem::take(&mut self.asked_check),
                     ..Self::default()
                 };
             }
@@ -451,11 +400,11 @@ impl Vault {
             Err(why) => {
                 *self = Self {
                     error: Some(why),
-                    asked_search: self.asked_search.take(),
-                    asked_graph: self.asked_graph.take(),
+                    asked_search: std::mem::take(&mut self.asked_search),
+                    asked_graph: std::mem::take(&mut self.asked_graph),
                     graph_superseded: superseded || self.graph_superseded,
                     check: self.check.take(),
-                    asked_check: self.asked_check.take(),
+                    asked_check: std::mem::take(&mut self.asked_check),
                     ..Self::default()
                 };
             }
@@ -477,7 +426,7 @@ impl Vault {
             "check": match &self.check {
                 None => Value::Null,
                 Some(Ok(c)) => c.to_json(),
-                Some(Err(why)) => json!({"error": why}),
+                Some(Err(why)) => asked::error(why.as_str()),
             },
         })
     }
@@ -760,8 +709,8 @@ mod tests {
         use crate::state::DesktopState;
         let mut s = DesktopState::default();
         s.update(parse_stdout("a transcript line"));
-        let all = |s: &DesktopState| s.view(crate::state::Changed::everything());
-        let before = all(&s);
+        let all = |s: &mut DesktopState| s.view(crate::state::Changed::everything());
+        let before = all(&mut s);
 
         let search = json!({"type": "response", "command": "vault_search", "success": true,
                             "id": "desktop-vault-search-1",
@@ -785,7 +734,7 @@ mod tests {
         assert_eq!(v["vault"]["graph"]["note"]["path"], "child.md");
         assert_eq!(v["vault"]["hits"][0]["path"], "child.md", "the hits stay");
 
-        let mut after = all(&s);
+        let mut after = all(&mut s);
         after.as_object_mut().unwrap().remove("vault");
         let mut before = before;
         before.as_object_mut().unwrap().remove("vault");

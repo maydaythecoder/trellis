@@ -24,9 +24,11 @@
 //! Module names and paths are repository text: the page writes them through
 //! `textContent` only (ADR 0007, S10).
 
+use crate::asked;
 use crate::frames::Response;
-use crate::graph::{self, CHAR_W, LABEL_ASCENT, LABEL_H, Rect, Text, round};
-use serde_json::{Map, Value, json};
+use crate::graph::{self, CHAR_W, LABEL_ASCENT, LABEL_H, Rect, Text, plural, round};
+use crate::json;
+use serde_json::{Value, json};
 
 /// The overview's coordinate space: regions on a grid of cells, as many
 /// rows as they need. The page scales it to its pane.
@@ -72,42 +74,36 @@ struct Module {
     unresolved: Option<u64>,
 }
 
-fn count(o: &Map<String, Value>, k: &str) -> Option<u64> {
-    o.get(k).and_then(Value::as_u64)
-}
-
 /// The answer's modules. One without a string `module` is left out: there
 /// is nothing to name it by. A call without a string `module` names no
 /// edge.
 fn read_modules(data: &Value) -> Vec<Module> {
-    let Some(list) = data.get("modules").and_then(Value::as_array) else {
+    let Some(list) = data.as_object().and_then(|o| json::array(o, "modules")) else {
         return Vec::new();
     };
     list.iter()
         .filter_map(Value::as_object)
         .filter_map(|o| {
-            let name = o.get("module")?.as_str()?.to_string();
+            let name = json::string(o, "module")?;
             if name.is_empty() {
                 return None;
             }
-            let callees = o
-                .get("calls")
-                .and_then(Value::as_array)
+            let callees = json::array(o, "calls")
                 .map(|calls| {
                     calls
                         .iter()
-                        .filter_map(|c| c.get("module").and_then(Value::as_str))
+                        .filter_map(Value::as_object)
+                        .filter_map(|c| json::string(c, "module"))
                         .filter(|c| *c != name)
-                        .map(str::to_string)
                         .collect()
                 })
                 .unwrap_or_default();
             Some(Module {
-                path: o.get("path").and_then(Value::as_str).map(str::to_string),
+                path: json::string(o, "path"),
                 callees,
-                calls_not_drawn: count(o, "calls_not_drawn"),
-                ambiguous: count(o, "ambiguous"),
-                unresolved: count(o, "unresolved"),
+                calls_not_drawn: json::u64(o, "calls_not_drawn"),
+                ambiguous: json::u64(o, "ambiguous"),
+                unresolved: json::u64(o, "unresolved"),
                 name,
             })
         })
@@ -129,10 +125,6 @@ fn cut_start(s: &str, max: usize) -> String {
     std::iter::once('…')
         .chain(s.chars().skip(n - (max - 1)))
         .collect()
-}
-
-fn plural(n: usize, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
 }
 
 /// A region of the overview: one top-level package.
@@ -223,7 +215,9 @@ pub struct Codebase {
 /// The view for a `get_codebase` answer's `data`.
 pub fn layout(data: &Value) -> Codebase {
     let modules = read_modules(data);
-    let top = |k: &str| data.get(k).and_then(Value::as_u64);
+    // `event` hands over an object; anything else has no fields to read.
+    let fields = data.as_object();
+    let top = |k: &str| fields.and_then(|o| json::u64(o, k));
     let modules_not_drawn = top("modules_not_drawn");
     let edges_in_complete =
         modules_not_drawn == Some(0) && modules.iter().all(|m| m.calls_not_drawn == Some(0));
@@ -259,7 +253,7 @@ pub fn layout(data: &Value) -> Codebase {
     let overview_height = {
         let cols = columns(grouped.len());
         let rows = grouped.len().div_ceil(cols).max(1);
-        round(2.0 * PAD + CELL_H * rows as f64)
+        round(2.0 * PAD + CELL_H * rows as f64, 1)
     };
 
     let mut region_edges: Vec<(usize, usize)> = Vec::new();
@@ -293,11 +287,8 @@ pub fn layout(data: &Value) -> Codebase {
         regions,
         region_edges,
         packages,
-        index_saved: data.get("index_saved").and_then(Value::as_bool),
-        index_not_saved: data
-            .get("index_not_saved")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        index_saved: fields.and_then(|o| json::bool(o, "index_saved")),
+        index_not_saved: fields.and_then(|o| json::string(o, "index_not_saved")),
     }
 }
 
@@ -318,8 +309,8 @@ fn place_regions(grouped: &[(&str, Vec<&Module>)], exact: bool) -> Vec<Region> {
         .enumerate()
         .map(|(i, (p, ms))| {
             let (row, col) = (i / cols, i % cols);
-            let x = round(PAD + cell_w * (col as f64 + 0.5));
-            let y = round(PAD + CELL_H * row as f64 + REGION_CY);
+            let x = round(PAD + cell_w * (col as f64 + 0.5), 1);
+            let y = round(PAD + CELL_H * row as f64 + REGION_CY, 1);
             // Area follows the module count, so a package twice the size
             // does not look four times it.
             let r = REGION_R_MIN + (r_max - REGION_R_MIN) * (ms.len() as f64 / busiest).sqrt();
@@ -327,24 +318,24 @@ fn place_regions(grouped: &[(&str, Vec<&Module>)], exact: bool) -> Vec<Region> {
                 package: p.to_string(),
                 x,
                 y,
-                r: round(r),
+                r: round(r, 1),
                 modules: ms.len(),
                 name: Text {
                     text: graph::cut(p, name_chars),
                     x,
-                    y: round(y + NAME_DY),
+                    y: round(y + NAME_DY, 1),
                     anchor: "middle",
                 },
                 count: Text {
                     // Past rpc's `limit` a package may hold modules the
                     // answer did not list, so the count says what it is.
                     text: if exact {
-                        plural(ms.len(), "module", "modules")
+                        plural(ms.len() as u64, "module", "modules")
                     } else {
                         format!("{} listed", ms.len())
                     },
                     x,
-                    y: round(y + COUNT_DY),
+                    y: round(y + COUNT_DY, 1),
                     anchor: "middle",
                 },
             }
@@ -371,8 +362,8 @@ fn place_package(p: &str, ms: &[&Module], edges_in: &impl Fn(&str) -> u64) -> Pa
             Placed {
                 module: m.name.clone(),
                 path: m.path.clone(),
-                x: round(cx + radius * angle.cos()),
-                y: round(cy + radius * angle.sin()),
+                x: round(cx + radius * angle.cos(), 1),
+                y: round(cy + radius * angle.sin(), 1),
                 edges_in: edges_in(&m.name),
                 edges_out: m
                     .calls_not_drawn
@@ -414,8 +405,8 @@ fn place_package(p: &str, ms: &[&Module], edges_in: &impl Fn(&str) -> u64) -> Pa
             };
             let t = Text {
                 text,
-                x: round(x),
-                y: round(baseline),
+                x: round(x, 1),
+                y: round(baseline, 1),
                 anchor,
             };
             (i, t, rect)
@@ -524,13 +515,8 @@ impl Codebase {
 pub fn event(r: &Response) -> Value {
     match (r.success, &r.data) {
         (Some(true), Some(data)) if data.is_object() => layout(data).to_json(),
-        (Some(true), _) => json!({"error": "get_codebase answered with no graph"}),
-        _ => json!({
-            "error": r
-                .error
-                .clone()
-                .unwrap_or_else(|| "get_codebase was refused, and trellis gave no reason".into()),
-        }),
+        (Some(true), _) => asked::error("get_codebase answered with no graph"),
+        _ => asked::error(asked::refusal("get_codebase", r)),
     }
 }
 
@@ -757,6 +743,21 @@ mod tests {
         assert!(c.edges_in_complete);
         let c = layout(&answer(vec![module("p.q", &[], 0, 0)], 4));
         assert!(!c.edges_in_complete, "four modules past the limit");
+    }
+
+    #[test]
+    fn json_codebase_counts_past_two_to_the_fifty_three_are_not_reported() {
+        // The risk (#822): the summary's counts read past json.rs, so one
+        // the page's numbers cannot hold is drawn as a different figure.
+        let mut data = answer(vec![module("p.q", &[], 0, 0)], 0);
+        data["bound_call_sites"] = json!(json::MAX_SAFE + 1);
+        data["unresolved"] = json!(json::MAX_SAFE);
+        data["modules"][0]["ambiguous"] = json!(u64::MAX);
+        let c = layout(&data);
+        assert_eq!(c.bound_call_sites, None);
+        assert_eq!(c.unresolved, Some(json::MAX_SAFE));
+        assert_eq!(c.packages[0].modules[0].ambiguous, None);
+        assert_eq!(c.modules_indexed, Some(1));
     }
 
     #[test]
