@@ -150,6 +150,30 @@ answers, the map's layout included. The page uses no library and loads
 nothing from a network, writes text through `textContent` only, reads its
 colours from `style.css` at draw time, and takes no animated flight under
 `prefers-reduced-motion` (the `atlas_` tests in `src/lockdown.rs`).
+*Amended 2026-10-26 (#795), owner-directed (the owner's decision of
+2026-10-25, about 22:50 New York time, recorded on story #790: replace the
+desktop's tabs with the Trail and burrowing levels):* the section rail of
+2026-10-11 is replaced by the shell of the owner's brand book
+(`docs/design/system/components/Shell.md` and `Trail.md`;
+`docs/design/DESIGN.md` §1). The page is one overview a person burrows into,
+with no tabs anywhere. Across the top, the Trail: the path from the overview
+to where the person is, each earlier segment a way back, the current one
+marked, then the depth as `L n/4` and an `ESC out` keycap. On the left, the
+sibling rail: the panels of the level the person came from, collapsed, each
+still a way in. In the middle, the stage, which holds the level entered.
+Along the bottom, the status bar: the keys that work at that level as
+keycaps, then the model and the time. `⏎` on a focused panel or row, or a
+panel head's `⤢`, goes in; `ESC` goes out one level and keeps the scroll and
+selection of the level it leaves. The seven sections (overview, run, trails,
+codebase, atlas, board and vault) become panels of the overview, and each
+keeps its fetch-on-show: what a section asks the core for when it is shown,
+its panel asks when it is entered. One module owns the level keys, and
+typing in a field is never taken as navigation. What a level registers (its
+DOM listeners and its Tauri subscriptions) ends when the person leaves it.
+The fonts, the focus ring and the order of stop-and-send that the shell
+needs are rows in `docs/design/DESIGN.md` §2.1. Accepted, not built: #826
+builds the shell and rewrites `page_rail_buttons_control_sections_that_exist`
+for levels.
 
 ### 6. The client contract
 
