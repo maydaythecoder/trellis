@@ -8,6 +8,18 @@
 // There is no bundler, so it reaches Tauri through the global
 // window.__TAURI__ rather than an import of @tauri-apps/api.
 //
+// What index.html loads, in its order (#833):
+// - web.js, first: with `trellis --web` it stands in for window.__TAURI__
+//   over HTTP; in the window it does nothing.
+// - main.js, this module, which starts the page and the modules it imports:
+//   render.js (and graph.js, which render.js imports), overview.js,
+//   composer.js, dialogs.js, model.js, settings.js and status.js.
+// - codebase.js, radius.js, trails.js, vault.js, queue.js and atlas.js,
+//   which each start themselves through rpc.js's start and listen for what
+//   they draw.
+// - dom.js, fmt.js and rpc.js, the shared helpers every module imports.
+// To add a module, follow docs/ENTRY_POINTS.md, "Adding a page module".
+//
 // Every value is trellis- or model-supplied text, so it reaches the DOM only
 // through textContent (ADR 0007, S10): text that carries markup is shown as
 // characters, never parsed.

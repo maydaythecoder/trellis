@@ -1,11 +1,19 @@
-//! What the main window may load and open (ADR 0048 section 5).
+//! What the main window may load and open (ADR 0048 section 5), and the
+//! page's tests.
 //!
 //! The page's one channel is Tauri IPC to the core: it fetches nothing and
 //! links nowhere. So the window may navigate only within the app's own
 //! origin, and may open no second window at all. `main.rs` installs both
-//! predicates on the main window. The tests below also hold the lines
-//! `tauri.conf.json` draws (the CSP, the capability, no dev server or build
-//! hook, a frozen prototype), so an edit that widens one fails here.
+//! predicates on the main window.
+//!
+//! Most of this file is its tests, which hold the page itself, read as text,
+//! since no JavaScript runs under cargo test (`qa/desktop_smoke.py` runs the
+//! page in a headless browser in CI): the lines `tauri.conf.json` draws (the
+//! CSP, the capability, no dev server or build hook); `ui/index.html`'s
+//! elements and every `ui/*.js` module's source (what each draws, sends and
+//! listens for, the helpers that live in one module each, the icons and
+//! their labels); and `ui/style.css`'s rules (the tokens, field contrast,
+//! the minimum window). An edit that widens one of these fails here.
 
 use tauri::Url;
 
