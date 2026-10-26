@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/maydaythecoder/trellis/tui/internal/leaktest"
+	"github.com/maydaythecoder/trellis/tui/internal/ring"
 )
 
 // TestMain lets the test binary stand in for trellis: started as
@@ -17,13 +20,17 @@ import (
 // prints a line that is not JSON, then a JSON line, then answers quit and
 // exits. This keeps a fake child cross-platform without a shell script and
 // without changing any child's environment (go-guards.sh `cmd-env`).
+//
+// After the tests, the goroutineleak profile is read (leaktest.Main): a
+// goroutine of this package blocked forever on a channel fails the run
+// even if every test passed (#846).
 func TestMain(m *testing.M) {
 	if len(os.Args) == 4 && os.Args[1] == "--root" && os.Args[3] == "rpc" &&
 		strings.HasSuffix(os.Args[2], "fake-nonjson") {
 		fakeTrellis()
 		return
 	}
-	os.Exit(m.Run())
+	os.Exit(leaktest.Main(m))
 }
 
 func fakeTrellis() {
@@ -141,11 +148,7 @@ func TestRPCNonJSONLineIsDeliveredAsText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := filepath.Join(t.TempDir(), "fake-nonjson")
-	if err := os.Mkdir(root, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	c, err := Start(self, root)
+	c, err := Start(self, fakeRoot(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,5 +227,64 @@ func TestRPCSeveralLinesAndAnUnterminatedLastOne(t *testing.T) {
 	})
 	if strings.Join(got, "|") != "one|two|three" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+// fakeRoot is a directory whose name makes this test binary, started as
+// trellis, play the fake child (TestMain).
+func fakeRoot(t *testing.T) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "fake-nonjson")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// #846: the client keeps the newest StderrCap stderr lines, in order, and
+// counts the ones it dropped; a chatty child neither grows the buffer nor
+// loses the lines a pane shows last.
+func TestRPCStderrKeepsTheNewest500(t *testing.T) {
+	pr, pw := io.Pipe()
+	c := &Client{stderr: ring.New[string](StderrCap)}
+	const n = 1234
+	go func() {
+		for i := 0; i < n; i++ {
+			fmt.Fprintf(pw, "line %04d\n", i)
+		}
+		pw.Close()
+	}()
+	c.readStderr(pr)
+	got, lost := c.Stderr()
+	if len(got) != StderrCap || lost != n-StderrCap {
+		t.Fatalf("kept %d, lost %d; want %d and %d", len(got), lost, StderrCap, n-StderrCap)
+	}
+	if got[0] != fmt.Sprintf("line %04d", n-StderrCap) || got[len(got)-1] != fmt.Sprintf("line %04d", n-1) {
+		t.Fatalf("not the newest, in order: first %q, last %q", got[0], got[len(got)-1])
+	}
+}
+
+// #846: starting and shutting down a session leaves nothing of it running:
+// the stdout and stderr readers and the waiter end when the child exits,
+// twenty-five times over. A reader left blocked on a pipe is what the
+// goroutineleak profile cannot see, so Check reads the stacks.
+func TestRPCSessionsLeaveNoGoroutineBehind(t *testing.T) {
+	defer leaktest.Check(t)()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := fakeRoot(t)
+	for i := 0; i < 25; i++ {
+		c, err := Start(self, root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if l := next(t, c); l.Parsed() {
+			t.Fatalf("session %d: the fake child's first line parsed: %q", i, l.Text)
+		}
+		if err := c.Shutdown(); err != nil {
+			t.Fatalf("session %d: %v", i, err)
+		}
 	}
 }
