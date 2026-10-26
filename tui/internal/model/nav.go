@@ -70,7 +70,7 @@ func (m *Model) navKey(k tea.KeyMsg) bool {
 		// code level's cursor moves; any other pane does not scroll yet. The
 		// transcript keeps its offset for when the person comes back out.
 		switch {
-		case m.nav.Diff, m.nav.Open == view.PanelSummary:
+		case m.nav.Diff, m.nav.Open == view.PanelSummary, m.nav.Open == view.PanelPlan:
 			m.scrollLevelKey(k.Type)
 		case m.nav.Open == view.PanelEdits && (k.Type == tea.KeyUp || k.Type == tea.KeyDown):
 			if paths := view.CodePaths(m.viewState()); len(paths) > 0 {
@@ -128,8 +128,11 @@ func (m *Model) scrollLevel(d int) {
 // file's diff's.
 func (m *Model) levelTop() int {
 	w, h := m.size()
-	if m.nav.Open == view.PanelSummary {
+	switch m.nav.Open {
+	case view.PanelSummary:
 		return view.SummaryTop(m.viewState(), w, h)
+	case view.PanelPlan:
+		return view.PlanTop(m.viewState(), w, h)
 	}
 	return view.CodeTop(m.viewState(), w, h)
 }

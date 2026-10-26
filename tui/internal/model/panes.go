@@ -19,6 +19,9 @@ import (
 // run's restored goes with them: a run starts from a clean tree, and the
 // last run's ending is not this one's (#636).
 func (m *Model) clearPanes() {
+	// A new run has no hold, no raise and no plan of its own yet; the last
+	// one's hold is closed before this run's clock starts.
+	m.controlsEnded()
 	m.emptyPanes()
 	m.Radius = nil
 	m.Budget = view.Budget{}
@@ -31,6 +34,7 @@ func (m *Model) clearPanes() {
 	m.strip.Outcome, m.strip.Exit = "", nil
 	m.runID = ""
 	m.closing = closing{}
+	m.plan = view.Plan{}
 }
 
 // emptyPanes makes the three lists a run fills, each keeping the newest
@@ -102,11 +106,14 @@ func (m *Model) panesTurn(t *frames.TurnFields) {
 	}
 }
 
-// runBudget is the run's ceilings, from the loop's one run budget event: a
-// new budget with nothing counted yet.
+// runBudget is the run's ceilings, from the loop's run budget event. The
+// loop sends it again, whole, where a set_budget raise takes effect (#807),
+// so it replaces every ceiling, one it lacks included, and leaves what the
+// run has counted so far: replacing the budget whole emptied the turn, the
+// time and the tokens mid-run (#857).
 func (m *Model) runBudget(f frames.Frame) {
-	m.Budget = view.Budget{MaxIterations: f.MaxIterations, MaxWallClockMs: f.MaxWallClockMs,
-		MaxTokens: f.MaxTokens, ContextBytes: f.ContextBytes}
+	m.Budget.MaxIterations, m.Budget.MaxWallClockMs = f.MaxIterations, f.MaxWallClockMs
+	m.Budget.MaxTokens, m.Budget.ContextBytes = f.MaxTokens, f.ContextBytes
 }
 
 // tick keeps the budget's elapsed time current between turns (#641): the
@@ -158,6 +165,11 @@ func (m *Model) ownElapsed() time.Duration {
 	if m.Modal != nil && !m.askedAt.IsZero() {
 		d -= now.Sub(m.askedAt)
 	}
+	// A held run is not charged for its hold, as trellis's elapsed_ms is
+	// not (#806), so the count stops while it is paused (#857).
+	if m.paused && !m.pausedAt.IsZero() {
+		d -= now.Sub(m.pausedAt)
+	}
 	return max(d, 0)
 }
 
@@ -202,6 +214,9 @@ func (m *Model) viewState() view.State {
 		Reviewing:  m.Modal != nil && m.Modal.Reviewing,
 		Compose:    m.composeState(),
 		Summary:    view.Summary{RunID: m.runID, Steers: m.steerItems(), Closing: m.closingState()},
+		Playful:    m.playful,
+		Raise:      m.raising,
+		Plan:       m.planState(),
 	}
 }
 
@@ -224,5 +239,6 @@ func (m *Model) nowState() view.Now {
 	n := m.strip
 	n.Waiting = m.Modal != nil
 	n.EngineClock = m.engineMs != nil
+	n.Paused, n.PauseAsked = m.paused, m.pauseAsked
 	return n
 }

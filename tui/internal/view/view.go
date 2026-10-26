@@ -175,6 +175,15 @@ type State struct {
 	// Summary is what the summary level draws that the panes do not hold
 	// (summary.go, #854).
 	Summary Summary
+	// Playful is the register dial at playful (#857): one Ascii face on
+	// the Now strip where it has no run to show (now.go). It changes no
+	// figure, state word, check, outcome or key.
+	Playful bool
+	// Raise is the budget row a raise is being typed for, "" when none
+	// (#857).
+	Raise Limit
+	// Plan is the plan level's (plan.go, #857).
+	Plan Plan
 }
 
 // radiusH is the radius pane's height: its three counts, the line that
@@ -199,14 +208,17 @@ func Render(s State, w, h int) string {
 	out = append(out, line(s.Theme, trail(s, w), w))
 	now := nowStrip(s)
 	if !folded(w, h) && s.Nav.Open == "" {
-		now = spread(now, summaryWay(s), w)
+		way := levelWays(s)
+		now = spread(withFace(s, now, spansWidth(way), w), way, w)
+	} else {
+		now = withFace(s, now, 0, w)
 	}
 	out = append(out, line(s.Theme, now, w))
 	out = append(out, stage(s, folded(w, h), w, bodyH)...)
 	if m := messages(s, w); m != "" {
 		out = append(out, m)
 	}
-	out = append(out, Box(s.Theme, "budget", "", []Row{{Spans: budgetRow(s, w-2)}}, w, 3)...)
+	out = append(out, budgetBox(s, w)...)
 	out = append(out, entry...)
 	out = append(out, line(s.Theme, statusBar(s, w), w))
 	return strings.Join(out, "\n")
@@ -256,6 +268,9 @@ func nowRole(s State) Role {
 		return RoleNote
 	case s.Running && s.Now.Waiting:
 		return RoleYou
+	case s.Running && s.Now.Paused:
+		// Held: waiting on the person's resume, in warn as a stop is.
+		return RoleNote
 	case s.Running:
 		return RoleTool
 	}
@@ -639,6 +654,76 @@ func budgetSegments(s State) [][]Span {
 		segs[4] = []Span{{Text: *queued}}
 	}
 	return segs
+}
+
+// Limit is a budget row a person may raise (#857): one of the three
+// ceilings set_budget takes, never the context, which the driver fixes for
+// the run (#807).
+type Limit string
+
+const (
+	LimitTurns     Limit = "turns"
+	LimitWallClock Limit = "wall clock"
+	LimitTokens    Limit = "completion tokens"
+)
+
+// Limits is every row a raise may be typed for, in the order ^R visits
+// them.
+var Limits = []Limit{LimitTurns, LimitWallClock, LimitTokens}
+
+// Unit is what a raise for l is typed in: the wall clock in whole seconds,
+// sent in the milliseconds run budget carries (the desktop's #837).
+func (l Limit) Unit() string {
+	switch l {
+	case LimitWallClock:
+		return "seconds"
+	case LimitTokens:
+		return "tokens"
+	}
+	return "turns"
+}
+
+// limitFigures is l's row as the budget draws it: what was used, the
+// ceiling in force, both in the units the cells compare, and the readout.
+// The ceiling is only ever the latest run budget's.
+func limitFigures(s State, l Limit) (label string, used, ceiling *uint64, readout string) {
+	b := s.Budget
+	switch l {
+	case LimitWallClock:
+		// Both in milliseconds for the cells, and in m:ss for the readout:
+		// the elapsed figure is held in seconds, the ceiling as trellis sent it.
+		var usedMs *uint64
+		if b.ElapsedSecs != nil {
+			ms := *b.ElapsedSecs * 1000
+			usedMs = &ms
+		}
+		c := Dash
+		if b.MaxWallClockMs != nil {
+			c = Clock(*b.MaxWallClockMs / 1000)
+		}
+		return "WALL CLOCK", usedMs, b.MaxWallClockMs, clockText(s) + "/" + c
+	case LimitTokens:
+		return "COMPLETION", b.TokensUsed, b.MaxTokens, figure(b.TokensUsed) + "/" + figure(b.MaxTokens) + " tokens"
+	}
+	return "TURNS", turnUsed(s), b.MaxIterations, figure(turnUsed(s)) + "/" + figure(b.MaxIterations)
+}
+
+// budgetBox is the budget box: the row of segments, or, while a raise is
+// typed, the row it is for, so the person sees the ceiling they are
+// raising as trellis last sent it. Its title offers ^R while a run in
+// flight can take a raise.
+func budgetBox(s State, w int) []string {
+	title := "budget"
+	row := Row{Spans: budgetRow(s, w-2)}
+	switch {
+	case s.Raise != "":
+		title = "budget · raise " + string(s.Raise)
+		label, used, ceiling, readout := limitFigures(s, s.Raise)
+		row = limitRow(label, used, ceiling, readout, "", w-2)[0]
+	case s.Running && !s.Now.Stopping:
+		title = "budget  " + keyRow(key{"^R", "raise"})
+	}
+	return Box(s.Theme, title, "", []Row{row}, w, 3)
 }
 
 // BudgetLine is the budget's whole row as text, every segment kept.

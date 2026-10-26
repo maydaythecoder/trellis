@@ -32,6 +32,20 @@ func shellState() State {
 	return s
 }
 
+// planState is a run in flight at the plan level, its plan one the model
+// sent at turn 4 with every state and a cut, offering ^E.
+func planState() State {
+	s := shellState()
+	s.Plan = Plan{Seen: true, Turn: u(4), StepsCut: u(2), TextsCut: u(0), CanEdit: true, Steps: []PlanStep{
+		{Text: "find where parse_expr drops the last token", State: "done"},
+		{Text: "keep the token when the input ends in a comment", State: "current"},
+		{Text: "add a test for the comment case", State: "todo"},
+		{Text: "run the type checker and the tests\x1b[2J", State: "todo"},
+	}}
+	s.Nav = Nav{Open: PanelPlan, Selected: PanelPlan}
+	return s
+}
+
 // #851: the shell is the same at every size: the Trail on the first row,
 // where the person is and how deep, the Now strip under it, and the status
 // bar with the live keys on the last row; every row is the screen's width.
@@ -150,6 +164,9 @@ func TestShellGoldenRenders(t *testing.T) {
 		// The summary level (#854), from summaryState.
 		{"summary-80x24", 80, 24, PanelSummary},
 		{"summary-120x40", 120, 40, PanelSummary},
+		// The plan level (#857), from planState.
+		{"plan-80x24", 80, 24, PanelPlan},
+		{"plan-120x40", 120, 40, PanelPlan},
 	} {
 		s := shellState()
 		s.Nav = Nav{Open: c.open, Selected: c.open}
@@ -159,6 +176,8 @@ func TestShellGoldenRenders(t *testing.T) {
 			s.Nav = Nav{Open: c.open, Selected: c.open, Diff: strings.HasPrefix(c.name, "diff")}
 		case PanelSummary:
 			s = summaryState()
+		case PanelPlan:
+			s = planState()
 		}
 		got := Render(s, c.w, c.h) + "\n"
 		path := filepath.Join("testdata", "shell-"+c.name+".golden")

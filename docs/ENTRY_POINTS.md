@@ -115,7 +115,7 @@ has the crate map.
 
 1. `tui/cmd/trellis-tui/main.go` `func main` calls
    `tui/cmd/trellis-tui/main.go` `func run`, which parses `--root`,
-   `--trellis`, `--model` and `--theme`, takes the trellis beside its own
+   `--trellis`, `--model`, `--theme` and `--register`, takes the trellis beside its own
    executable when none is named (never one on PATH), reads the terminal's
    colours once for the theme (`tui/internal/theme/`), starts the child,
    builds the model and runs the Bubble Tea program until the person quits

@@ -52,6 +52,9 @@ type Options struct {
 	// Theme is the colours the screen is painted in, built from the
 	// terminal before the program starts. The zero Theme paints nothing.
 	Theme theme.Theme
+	// Playful is --register playful (#857): one Ascii face where the Now
+	// strip has no run to show. Serious, the default, draws none.
+	Playful bool
 }
 
 // Model is the TUI's whole state.
@@ -140,6 +143,25 @@ type Model struct {
 	// closing is the model's closing words for the summary (#854).
 	closing closing
 
+	// The run controls (controls.go, #857): the hold the engine's paused
+	// event began, and a pause sent that neither that event nor its answer
+	// has settled; pausedAt is when the hold began, for this view's clock.
+	paused, pauseAsked bool
+	pausedAt           time.Time
+	// raising is the budget row a raise is being typed for, "" when none;
+	// stash is what the task line held when a raise or a plan edit took it.
+	raising view.Limit
+	stash   string
+	// plan is the run's latest plan event, read (plan.go), and planEdit the
+	// person's edit of it while it is typed.
+	plan     view.Plan
+	planEdit *view.PlanEdit
+	// planOrig is the edit's steps as it opened, so an unchanged plan is
+	// not sent.
+	planOrig []string
+	// playful is the register dial (Options).
+	playful bool
+
 	// theme is what the screen and the modal are painted with (Options).
 	theme theme.Theme
 
@@ -169,7 +191,7 @@ type Model struct {
 // New is a model that, once its outbox is drained, has asked trellis for
 // its state, chosen the model and, with a task given, sent it.
 func New(o Options) *Model {
-	m := &Model{now: time.Now, theme: o.Theme}
+	m := &Model{now: time.Now, theme: o.Theme, playful: o.Playful}
 	m.emptyPanes()
 	m.refreshState()
 	if o.ModelSpec != "" {
@@ -238,7 +260,7 @@ func (m *Model) Update(msg tea.Msg) {
 		if m.Modal != nil {
 			m.scrollModal(0)
 		}
-		if m.nav.Diff || m.nav.Open == view.PanelSummary {
+		if m.nav.Diff || m.nav.Open == view.PanelSummary || m.nav.Open == view.PanelPlan {
 			m.scrollLevel(0)
 		}
 	case FrameMsg:
@@ -250,6 +272,12 @@ func (m *Model) Update(msg tea.Msg) {
 		// written after it reaches trellis either: the held line is dropped
 		// rather than left holding the task line.
 		m.dropHeld("could not write to trellis rpc")
+		// Nor does a pause or a withdraw that may have been the failed
+		// write: neither waits on an answer that may never come.
+		m.pauseAsked = false
+		for i := range m.queue {
+			m.queue[i].item.Withdrawing = false
+		}
 		m.push(view.RoleRefusal, "! could not write to trellis rpc: "+view.Plain(msg.Err.Error()))
 	case TickMsg:
 		m.tick()
@@ -265,6 +293,11 @@ func (m *Model) key(k tea.KeyMsg) {
 	// are not the ones on screen.
 	if m.Modal != nil {
 		m.modalKey(k)
+		return
+	}
+	// The run controls and the modes they open take their keys before the
+	// composer and the levels (controls.go).
+	if m.controlKey(k) {
 		return
 	}
 	// A line with text takes Tab for its verb while a run is in flight
@@ -445,6 +478,12 @@ func (m *Model) frame(f frames.Frame) {
 		m.approvalRequested(*f.Approval)
 	case frames.SteerDelivered:
 		m.steerDeliveredEvent(f.AfterStep)
+	case frames.Paused:
+		m.pausedEvent(f.HoldTurn)
+	case frames.Resumed:
+		m.resumedEvent(f.PausedMs)
+	case frames.Plan:
+		m.planEvent(f.PlanFields)
 	case frames.RunBudget:
 		m.runBudget(f)
 	case frames.RunEnd:
@@ -502,6 +541,9 @@ func (m *Model) turn(t *frames.TurnFields) {
 // runEnd hands input back, whatever the ending, and says how it ended from
 // the frame's outcome and exit, never from model text.
 func (m *Model) runEnd(e *frames.RunEndFields) {
+	// A held run's hold ends with it, before this view's clock is read
+	// below; and the raise and the plan edit go with the run.
+	m.controlsEnded()
 	m.Running = false
 	m.promptID = ""
 	m.verb = view.VerbSteer
@@ -656,6 +698,18 @@ func (m *Model) response(r *frames.ResponseFields) {
 	case "steer":
 		m.steerAnswered(r, ok)
 		return
+	case "pause":
+		// Either answer ends the wait for it: held, which the paused event
+		// has already said, or refused, whose reason is said below.
+		m.pauseAsked = false
+	case "withdraw":
+		if ok {
+			m.takenBack(r)
+			return
+		}
+		// Refused: the item stands where it did, and the reason is said
+		// below.
+		m.withdrawSettled(r.ID)
 	case "abort":
 		if ok {
 			m.abortAnswered(r.ID, r.Data)
@@ -774,6 +828,7 @@ func (m *Model) exited(err error) {
 		}
 	}
 	m.dropHeld("trellis rpc exited before the run ended")
+	m.controlsEnded()
 	m.Running = false
 	m.closeModal()
 	m.approvals = nil

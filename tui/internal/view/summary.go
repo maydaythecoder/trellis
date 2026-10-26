@@ -238,28 +238,16 @@ func summaryBudget(s State, w int) []Row {
 	if noBudget && (s.Running || summaryEnded(s)) {
 		rows = append(rows, wrapped("   ", "", "trellis has sent no run budget for this run", RoleLabel, w)...)
 	}
-	rows = append(rows, limitRow("TURNS", turnUsed(s), b.MaxIterations, figure(turnUsed(s))+"/"+figure(b.MaxIterations), "", w)...)
-
-	// Both in milliseconds for the cells, and in m:ss for the readout:
-	// the elapsed figure is held in seconds, the ceiling as trellis sent it.
-	var usedMs *uint64
-	if b.ElapsedSecs != nil {
-		ms := *b.ElapsedSecs * 1000
-		usedMs = &ms
+	for _, l := range Limits {
+		label, used, ceiling, readout := limitFigures(s, l)
+		why := ""
+		if l == LimitTokens && b.TokensUsed == nil && (s.Running || summaryEnded(s)) {
+			why = "no turn has reported completion_tokens_used yet"
+		}
+		rows = append(rows, limitRow(label, used, ceiling, readout, why, w)...)
 	}
-	ceiling := Dash
-	if b.MaxWallClockMs != nil {
-		ceiling = Clock(*b.MaxWallClockMs / 1000)
-	}
-	rows = append(rows, limitRow("WALL CLOCK", usedMs, b.MaxWallClockMs, clockText(s)+"/"+ceiling, "", w)...)
 
 	why := ""
-	if b.TokensUsed == nil && (s.Running || summaryEnded(s)) {
-		why = "no turn has reported completion_tokens_used yet"
-	}
-	rows = append(rows, limitRow("COMPLETION", b.TokensUsed, b.MaxTokens, figure(b.TokensUsed)+"/"+figure(b.MaxTokens)+" tokens", why, w)...)
-
-	why = ""
 	if b.ContextBytes == nil && !noBudget {
 		why = "this run's driver has no prompt ceiling: it elides nothing"
 	}

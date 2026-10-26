@@ -21,7 +21,8 @@ import (
 // event, a follow_up's or the held prompt's own run_start, an abort's
 // undelivered, or the run ending first. An item leaving pending settles
 // nothing, since a steer leaves it before its delivered event is written
-// (#808). Taking an item back (#857) is not built.
+// (#808). ^T takes the newest still queued back (controls.go, #857), and
+// only trellis's success answer to the withdraw takes it off.
 
 // Kinds of queued item.
 const (
@@ -35,6 +36,10 @@ const (
 type queued struct {
 	id   string
 	item view.Queued
+	// sent is the message as trellis listed it, whole up to SentCap, for a
+	// take-back to put back on the task line (#857); item's text is cut
+	// for the list.
+	sent string
 }
 
 // held is the line a Stop and send holds. rpc writes the stopped run's
@@ -218,7 +223,7 @@ func (m *Model) pendingListed(d map[string]any) {
 		if m.listed(kind, id) {
 			continue
 		}
-		item := view.Queued{Kind: kind, Text: capLine(view.Plain(msg))}
+		item := view.Queued{Kind: kind, Text: capLine(view.Plain(oneLine(msg)))}
 		if kind == kindSteer {
 			if i := m.steerIndex(&id); i >= 0 && m.steers[i].told {
 				s := m.steers[i]
@@ -229,7 +234,7 @@ func (m *Model) pendingListed(d map[string]any) {
 				}
 			}
 		}
-		m.enqueue(queued{id: id, item: item})
+		m.enqueue(queued{id: id, item: item, sent: capSent(msg)})
 	}
 }
 
@@ -262,7 +267,8 @@ func (m *Model) composeRunStarted(id *string) {
 
 // composeState is what the view draws of the composer.
 func (m *Model) composeState() view.Compose {
-	c := view.Compose{Verb: m.verb, Cycles: m.composeTabs(), Next: nextVerb(m.verb, false), Holding: m.held != nil}
+	c := view.Compose{Verb: m.verb, Cycles: m.composeTabs(), Next: nextVerb(m.verb, false), Holding: m.held != nil,
+		TakeBack: m.Running && m.withdrawable() >= 0}
 	for _, q := range m.queue {
 		c.Queue = append(c.Queue, q.item)
 	}
