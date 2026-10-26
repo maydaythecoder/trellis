@@ -2997,10 +2997,14 @@ fn rpc_elapsed_excludes_time_waiting_on_an_approval() {
     );
     let last = loop_events.last().unwrap();
     assert!(ms(end) >= ms(last), "{end} before {last}");
+    // Against the edit's turn, which already has the wait taken out, not
+    // against the hold alone: what the rest of the run takes on a slow host
+    // must not decide this, only whether run_end charged the wait.
+    let after_the_wait = ms(end) - ms(loop_events[edit]);
     assert!(
-        ms(end) < HOLD_MS,
-        "run_end's elapsed_ms {} counts the {HOLD_MS} ms approval wait: {end}",
-        ms(end)
+        after_the_wait < HOLD_MS,
+        "run_end's elapsed_ms counts the {HOLD_MS} ms approval wait: \
+         {after_the_wait} ms past the edit's turn\n{end}"
     );
 }
 
