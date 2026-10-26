@@ -74,8 +74,10 @@ has the crate map.
    `rpc-frame`, typed by `desktop/src/frames.rs` `pub fn parse_stdout`, and
    handed to the reducer by `desktop/src/commands.rs` `fn feed`. Stderr
    lines are only ever shown as text (desktop/CLAUDE.md). What the page sends
-   comes back in through `desktop/src/commands.rs` `pub fn rpc_send`, which
-   refuses a command type rpc does not list.
+   reaches the child through `desktop/src/commands.rs` `pub fn rpc_send`,
+   which forwards only the types in `desktop/src/commands.rs`
+   `pub const FORWARDED` and refuses any other, `quit` among them: only the
+   core sends that.
 3. `desktop/src/state.rs` `pub fn update` is the reducer: it folds one frame
    into `desktop/src/state.rs` `pub struct DesktopState` and returns the
    panes it changed, and `desktop/src/state.rs` `pub fn view` turns those
@@ -113,9 +115,13 @@ has the crate map.
 
 1. `tui/cmd/trellis-tui/main.go` `func main` calls
    `tui/cmd/trellis-tui/main.go` `func run`, which parses `--root`,
-   `--trellis` and `--model`, takes the trellis beside its own executable
-   when none is named (never one on PATH), starts the child, builds the model
-   and runs the Bubble Tea program until the person quits or the child exits.
+   `--trellis`, `--model` and `--theme`, takes the trellis beside its own
+   executable when none is named (never one on PATH), reads the terminal's
+   colours once for the theme (`tui/internal/theme/`), starts the child,
+   builds the model and runs the Bubble Tea program until the person quits
+   or the child exits. However it ended, `tui/cmd/trellis-tui/main.go`
+   `func finish` then sends the child `quit` and waits for it, unless it has
+   already exited.
 2. `tui/internal/rpc/rpc.go` `func Start` runs `trellis --root <root> rpc`,
    delivers its stdout lines in order on a channel and keeps its stderr
    apart, capped. `tui/internal/rpc/rpc.go` `func (c *Client) Send` writes
