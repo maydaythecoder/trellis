@@ -111,3 +111,23 @@ export function railRows(doc, rows) {
     return li;
   });
 }
+
+// Rail: `rows` (railRows's) in a timeline of their own, oldest first, for a
+// Rail a level makes inside a pane rather than one index.html serves.
+export function rail(doc, rows) {
+  const ol = el(doc, "ol", null, "cd-rail");
+  ol.append(...railRows(doc, rows));
+  return ol;
+}
+
+// Panel meta: what the design system's Panel draws at the right of its head
+// beside the title (a count, a time, a Status). index.html serves every
+// level's Panels with their heads, so a level writes only this, into the
+// head's `.cd-panel-meta` named `id`, and never a head of its own
+// (every_level_draws_through_ds). Each part is text or an element; an empty
+// one is left out, so `panelMeta(doc, id)` empties it.
+export function panelMeta(doc, id, ...parts) {
+  doc.getElementById(id).replaceChildren(
+    ...parts.filter((p) => p !== null && p !== undefined && p !== "").map((p) => (typeof p === "object" ? p : el(doc, "span", String(p)))),
+  );
+}
