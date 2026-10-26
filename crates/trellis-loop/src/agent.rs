@@ -613,17 +613,112 @@ impl SteeringLog {
     /// Takes everything waiting on the channel. Before a request, a steer is
     /// delivered and a follow-up set aside; at the end of a run (`ending`),
     /// both are set aside, since there is no next request to carry a steer.
-    fn drain(&mut self, rx: &mut Option<SteeringRx>, after_step: usize, ending: bool) {
+    /// A message a person withdrew (`fates`, ADR 0058 §3) is dropped here,
+    /// so the model never receives it.
+    fn drain(
+        &mut self,
+        rx: &mut Option<SteeringRx>,
+        fates: Option<&SteeringFates>,
+        after_step: usize,
+        ending: bool,
+    ) {
         let Some(rx) = rx else { return };
         while let Ok(m) = rx.try_recv() {
+            let deliver = !ending && matches!(m, Steering::Steer(_));
+            // Decided before the event, so a client that has read `steer
+            // delivered` finds the steer marked delivered wherever it asks.
+            if let Some(f) = fates
+                && !f.take(deliver, after_step)
+            {
+                continue;
+            }
             match m {
-                Steering::Steer(text) if !ending => {
+                Steering::Steer(text) if deliver => {
                     tracing::info!(after_step, bytes = text.len(), "steer delivered");
                     self.delivered.push(Steer { text, after_step });
                 }
                 other => self.undelivered.push(other),
             }
         }
+    }
+}
+
+/// What became of each message sent on a steering channel, by its place in
+/// the channel's order (0 for the first sent): ADR 0058 §3's one lock.
+///
+/// The loop marks a steer delivered under it before the steer is put in a
+/// request, and a person's withdrawal marks a message withdrawn under it
+/// only while it is still waiting, so whichever comes first wins and a
+/// steer is either in a request or withdrawn, never both and never neither.
+/// The sender numbers messages in the order it sends them; the loop counts
+/// every message it takes off the channel, whatever becomes of it, so the
+/// two numberings agree because the channel is FIFO.
+#[derive(Debug, Default)]
+pub struct SteeringFates {
+    state: std::sync::Mutex<FatesState>,
+}
+
+#[derive(Debug, Default)]
+struct FatesState {
+    /// How many messages the loop has taken off the channel: the number
+    /// the next one taken carries.
+    taken: u64,
+    /// Steers put in a request, with the step they followed.
+    delivered: std::collections::HashMap<u64, usize>,
+    withdrawn: std::collections::HashSet<u64>,
+}
+
+/// Why [`SteeringFates::withdraw`] was refused.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum WithdrawRefused {
+    #[error("already delivered")]
+    AlreadyDelivered,
+}
+
+impl SteeringFates {
+    fn state(&self) -> std::sync::MutexGuard<'_, FatesState> {
+        // Every holder makes one insertion or one increment, so a poisoned
+        // lock still guards a consistent record.
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Marks message `n` withdrawn, so the loop drops it when it reaches
+    /// it. Refused once the steer it numbers is in a request. A follow-up
+    /// is never marked delivered here: whether its run has started is the
+    /// sender's to know.
+    pub fn withdraw(&self, n: u64) -> Result<(), WithdrawRefused> {
+        let mut s = self.state();
+        if s.delivered.contains_key(&n) {
+            return Err(WithdrawRefused::AlreadyDelivered);
+        }
+        s.withdrawn.insert(n);
+        Ok(())
+    }
+
+    /// The step message `n` followed, once the loop has put it in a
+    /// request.
+    pub fn delivered(&self, n: u64) -> Option<usize> {
+        self.state().delivered.get(&n).copied()
+    }
+
+    /// The drain's half: numbers the next message taken off the channel,
+    /// and marks it delivered after `after_step` when `deliver` is set and
+    /// nobody withdrew it first. `false` when it was withdrawn: drop it.
+    fn take(&self, deliver: bool, after_step: usize) -> bool {
+        let mut s = self.state();
+        // Counted before anything else, so a dropped message still takes
+        // its number and the ones after it keep theirs.
+        let n = s.taken;
+        s.taken += 1;
+        if s.withdrawn.contains(&n) {
+            return false;
+        }
+        if deliver {
+            s.delivered.insert(n, after_step);
+        }
+        true
     }
 }
 
@@ -1099,6 +1194,11 @@ pub struct Seed {
     /// after each. The whole run's ceiling: a partition's loop is given its
     /// share and never this (rule 9). `None` is a budget nobody raises.
     pub budget: Option<std::sync::Arc<LiveBudget>>,
+    /// What became of each message on `steering` (ADR 0058 §3): the drain
+    /// marks a steer delivered here before it is in a request, and drops a
+    /// message a person withdrew. `None` is a channel nothing withdraws
+    /// from.
+    pub fates: Option<std::sync::Arc<SteeringFates>>,
 }
 
 /// The cell [`Seed::spent`] writes into: the budget's own elapsed figure,
@@ -1151,6 +1251,7 @@ pub async fn run_seeded<M: Model>(
     let mut steering = seed.steering;
     let spent = seed.spent;
     let hold = seed.hold;
+    let fates = seed.fates;
     let mut iterations: u32 = 0;
     let mut checks_passed: u32 = 0;
     // The one extra turn the budget grants on exhaustion, so the model can
@@ -1207,7 +1308,8 @@ pub async fn run_seeded<M: Model>(
         // while turn N was in progress is therefore in request N+1 and in no
         // earlier one, and a steer can never land between a call and the
         // observation of its result.
-        t.steering.drain(&mut steering, t.turns.len(), false);
+        t.steering
+            .drain(&mut steering, fates.as_deref(), t.turns.len(), false);
         // Replies are not streamed (ADR 0024), so on a slow local model a
         // client hears nothing between one `turn` and the next and reads
         // the run as hung. Said before the wait, under the number the
@@ -1590,7 +1692,8 @@ pub async fn run_seeded<M: Model>(
 
     // Whatever arrived after the last request, whichever way the run ended,
     // goes back to the caller rather than being dropped with the receiver.
-    t.steering.drain(&mut steering, t.turns.len(), true);
+    t.steering
+        .drain(&mut steering, fates.as_deref(), t.turns.len(), true);
     leave_spent(&spent, started.elapsed().saturating_sub(waited_on_human));
     close_budget(&live);
     (outcome, t)
@@ -4708,6 +4811,59 @@ rank = \"non-negotiable\"
             assert!(!p.contains("FOLLOW-"), "a follow-up reached the model: {p}");
             assert!(!p.contains("STEER-LATE"), "{p}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_withdrawn_steer_never_reaches_the_model_and_a_delivered_one_cannot_be_withdrawn() {
+        // The risks (ADR 0058 §3): a steer the person took back still put in
+        // a request, or one the model was sent reported as taken back; a
+        // withdrawn follow-up handed back as waiting for a later run; and a
+        // dropped message shifting the numbering, so the next withdrawal
+        // lands on the wrong message.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        for m in [
+            steer("STEER-WITHDRAWN"),
+            Steering::FollowUp("FOLLOW-WITHDRAWN".into()),
+            steer("STEER-KEPT"),
+            Steering::FollowUp("FOLLOW-KEPT".into()),
+        ] {
+            tx.send(m).unwrap();
+        }
+        let fates = std::sync::Arc::new(SteeringFates::default());
+        fates.withdraw(0).unwrap();
+        fates.withdraw(1).unwrap();
+        let (mut m, _unused) = Steered::new(vec![read_util()], Vec::new());
+        m.tx = None;
+        let seed = Seed {
+            steering: Some(rx),
+            fates: Some(fates.clone()),
+            ..Seed::default()
+        };
+        let (_, t) = run_seeded("look", &mut m, &h, &budget(), seed).await;
+
+        assert_eq!(
+            t.steering.delivered,
+            vec![Steer {
+                text: "STEER-KEPT".into(),
+                after_step: 0,
+            }]
+        );
+        assert_eq!(
+            t.steering.undelivered,
+            vec![Steering::FollowUp("FOLLOW-KEPT".into())]
+        );
+        assert!(m.prompts[0].contains("STEER-KEPT"), "{}", m.prompts[0]);
+        for p in &m.prompts {
+            assert!(
+                !p.contains("STEER-WITHDRAWN"),
+                "a withdrawn steer reached the model: {p}"
+            );
+        }
+        assert_eq!(fates.delivered(2), Some(0));
+        assert_eq!(fates.withdraw(2), Err(WithdrawRefused::AlreadyDelivered));
+        assert_eq!(fates.delivered(0), None);
     }
 
     #[tokio::test]

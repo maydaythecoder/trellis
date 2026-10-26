@@ -1265,6 +1265,10 @@ fn run_body(
         // rpc's `set_budget` (ADR 0058 §2), raising this one run's whole
         // ceiling; `None` everywhere else.
         budget: extras.budget.clone(),
+        // rpc's `withdraw` (ADR 0058 §3): the port that sends on `steering`
+        // and the loop's drain decide each message's fate under it. `None`
+        // everywhere but rpc, where nothing withdraws.
+        fates: extras.steer_watch.as_ref().map(|p| p.fates()),
     };
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -2460,6 +2464,8 @@ fn run_partitioned(p: Partitioned<'_>, out: &mut (dyn std::io::Write + Send)) ->
             // one raise N times (rule 9). Re-dealt through `Budget::shares`
             // by whatever first lets a partitioned run be raised.
             budget: None,
+            // A partition is given no steering channel to withdraw from.
+            fates: None,
         };
         let results = Arc::clone(&results);
         async move {

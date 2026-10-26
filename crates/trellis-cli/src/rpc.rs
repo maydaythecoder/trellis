@@ -3,7 +3,7 @@
 //!
 //! A `prompt` runs a task through `cmd_run_with`, the path `trellis run`
 //! takes, on its own thread. The main thread keeps reading, so `abort`,
-//! `approve`, `get_state`, `steer`, `follow_up`, `pause`, `resume` and `set_budget` are
+//! `approve`, `get_state`, `steer`, `follow_up`, `pause`, `resume`, `set_budget` and `withdraw` are
 //! answered while the run is in flight. One run at a time; the clean-worktree rule is
 //! `cmd_run`'s and is unchanged. A follow-up is the one way a run starts
 //! other than `prompt`: after the run it was sent during ends.
@@ -96,6 +96,12 @@ const COMMANDS: &[(&str, &str)] = &[
         "raise the run in flight's ceilings, never lower one: any of {max_iterations?, \
          max_wall_clock_ms?, max_tokens?}; answered with every ceiling after it, in force \
          from the loop's next budget check, where `run budget` is sent again",
+    ),
+    (
+        "withdraw",
+        "take back a steer or follow_up not yet delivered: {id}, the id it was sent with; \
+         answered {id, type}, refused once a model request carries the steer or the \
+         follow_up's run has started",
     ),
     (
         "compact",
@@ -518,6 +524,9 @@ impl<S: tracing::Subscriber> Layer<S> for TurnCapture {
 /// loop will read the channel no more.
 const STEER_ENDED: &str = "the run ended before its next model request; not delivered";
 
+/// What a `steer` is answered when a `withdraw` takes it back first.
+const STEER_WITHDRAWN: &str = "withdrawn before a model request carried it; not delivered";
+
 /// What a `pause` is answered with, and a held run released by, when input
 /// ends: nobody is left to send `resume`.
 const INPUT_ENDED: &str = "input ended; nothing could resume the run, so it did not hold";
@@ -549,6 +558,10 @@ const ONE_AT_A_TIME: &str = "a run is in progress; one at a time (abort it, or w
 pub(crate) struct SteeringPort {
     state: Mutex<PortState>,
     receiver: Mutex<Option<trellis_loop::SteeringRx>>,
+    /// The loop's record of what became of each message, by its place in
+    /// the channel's order: where `withdraw` and the drain decide which
+    /// came first (ADR 0058 §3). Taken under `state` when both are.
+    fates: Arc<trellis_loop::SteeringFates>,
 }
 
 struct PortState {
@@ -557,8 +570,12 @@ struct PortState {
     sent: Vec<Sent>,
     /// Steers that have reached a model request. The channel is FIFO and
     /// the loop delivers every steer it takes before a request, so these
-    /// are the first `delivered` steers in `sent`.
+    /// are the first `delivered` steers in `sent`; a withdrawn steer is
+    /// never delivered and leaves `sent` when withdrawn, so that holds.
     delivered: usize,
+    /// How many messages have gone on the channel: the next one's place in
+    /// its order, which the loop counts the same way (`SteeringFates`).
+    next: u64,
 }
 
 /// A steer's answer: the step it was delivered after, or why it was not.
@@ -567,6 +584,8 @@ type SteerAnswer = Result<usize, String>;
 struct Sent {
     id: Option<String>,
     what: Steering,
+    /// Its place in the channel's order.
+    seq: u64,
     /// Set for a steer until it is answered.
     reply: Option<tokio::sync::oneshot::Sender<SteerAnswer>>,
 }
@@ -595,9 +614,17 @@ impl SteeringPort {
                 tx: Some(tx),
                 sent: Vec::new(),
                 delivered: 0,
+                next: 0,
             }),
             receiver: Mutex::new(Some(rx)),
+            fates: Arc::default(),
         })
+    }
+
+    /// The record the run's loop keeps of each message's fate, given to it
+    /// with the receiver.
+    pub(crate) fn fates(&self) -> Arc<trellis_loop::SteeringFates> {
+        self.fates.clone()
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, PortState> {
@@ -640,6 +667,10 @@ impl SteeringPort {
         // run's end. The record below still holds the message, and the
         // close that follows hands it back.
         let _ = tx.send(what.clone());
+        // Numbered under the lock the send was made under, so the numbers
+        // follow the channel's order.
+        let seq = st.next;
+        st.next += 1;
         let (reply, answer) = match what {
             Steering::Steer(_) => {
                 let (t, r) = tokio::sync::oneshot::channel();
@@ -650,6 +681,7 @@ impl SteeringPort {
         st.sent.push(Sent {
             id: id.map(str::to_string),
             what,
+            seq,
             reply,
         });
         Ok(answer)
@@ -677,17 +709,16 @@ impl SteeringPort {
 
     /// Everything sent and not yet delivered, in the order received, for
     /// `get_state` (#801). It takes nothing: it names what `close` would
-    /// hand back now, by the same rule, so the two must agree.
+    /// hand back now, by the same rule, so the two must agree. A steer is
+    /// delivered once the loop has marked it, before its `steer delivered`
+    /// event (#808), so a client that has read the event never finds it
+    /// listed.
     fn pending(&self) -> Vec<Value> {
         let st = self.state();
-        let mut steers = 0;
         let mut out = Vec::new();
         for s in &st.sent {
-            if matches!(s.what, Steering::Steer(_)) {
-                steers += 1;
-                if steers <= st.delivered {
-                    continue;
-                }
+            if self.delivered(s).is_some() {
+                continue;
             }
             out.push(
                 Unsent {
@@ -706,15 +737,17 @@ impl SteeringPort {
     fn close(&self) -> Vec<Unsent> {
         let mut st = self.state();
         st.tx = None;
-        let delivered = st.delivered;
-        let mut steers = 0;
         let mut unsent = Vec::new();
         for mut s in std::mem::take(&mut st.sent) {
-            if matches!(s.what, Steering::Steer(_)) {
-                steers += 1;
-                if steers <= delivered {
-                    continue;
+            if let Some(after_step) = self.delivered(&s) {
+                // `observe` answers it as the request carrying it is made,
+                // with no await between that and the mark. Answered here
+                // too, so a steer the model was sent is never told it was
+                // not.
+                if let Some(r) = s.reply.take() {
+                    let _ = r.send(Ok(after_step));
                 }
+                continue;
             }
             if let Some(r) = s.reply.take() {
                 let _ = r.send(Err(STEER_ENDED.into()));
@@ -726,6 +759,59 @@ impl SteeringPort {
         }
         unsent
     }
+
+    /// The step a steer followed once the loop has put it in a request;
+    /// `None` for one still waiting, and always for a follow-up, which
+    /// is never delivered into the run it was sent during.
+    fn delivered(&self, s: &Sent) -> Option<usize> {
+        match s.what {
+            Steering::Steer(_) => self.fates.delivered(s.seq),
+            Steering::FollowUp(_) => None,
+        }
+    }
+
+    /// Takes back the first message sent with `id` that is still waiting
+    /// (ADR 0058 §3), answering a steer's `steer` as withdrawn. Decided
+    /// under the loop's record, so a steer the drain reaches first is
+    /// refused as delivered and one withdrawn first never reaches it.
+    fn withdraw(&self, id: &str) -> Withdrawal {
+        let mut st = self.state();
+        let mut delivered = false;
+        let mut found = None;
+        for (i, s) in st.sent.iter().enumerate() {
+            if s.id.as_deref() != Some(id) {
+                continue;
+            }
+            match self.fates.withdraw(s.seq) {
+                Ok(()) => {
+                    found = Some(i);
+                    break;
+                }
+                Err(trellis_loop::WithdrawRefused::AlreadyDelivered) => delivered = true,
+            }
+        }
+        let Some(i) = found else {
+            return if delivered {
+                Withdrawal::Delivered
+            } else {
+                Withdrawal::NotHere
+            };
+        };
+        let mut s = st.sent.remove(i);
+        if let Some(r) = s.reply.take() {
+            let _ = r.send(Err(STEER_WITHDRAWN.into()));
+        }
+        Withdrawal::Withdrawn(s.what)
+    }
+}
+
+/// What [`SteeringPort::withdraw`] found.
+enum Withdrawal {
+    Withdrawn(Steering),
+    /// Every message sent with the id is a steer already in a request.
+    Delivered,
+    /// No message sent to this run carries the id.
+    NotHere,
 }
 
 /// A model whose requests are reported to a [`SteeringPort`].
@@ -790,6 +876,9 @@ impl<M: trellis_loop::Model> trellis_loop::Model for Watched<'_, M> {
 struct Current {
     /// The command that started it: the `prompt`, or the `follow_up`.
     id: Option<String>,
+    /// Started by a `follow_up`, so `withdraw` names its id delivered: its
+    /// run has started. The `prompt`'s id names no queued message.
+    follow_up: bool,
     /// `compact` requests, answered by the driver at its next request.
     compact: Arc<trellis_loop::CompactRequests>,
     steering: Arc<SteeringPort>,
@@ -805,6 +894,7 @@ impl Current {
     fn new(id: Option<String>) -> Self {
         Self {
             id,
+            follow_up: false,
             compact: Arc::new(trellis_loop::CompactRequests::default()),
             steering: SteeringPort::new(),
             hold: Arc::default(),
@@ -867,7 +957,37 @@ impl Running {
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
+
+    /// `withdraw` (ADR 0058 §3): takes back the first waiting steer or
+    /// follow-up sent with `id`, answering with its type. Under the queue's
+    /// lock, as `pending` reads, which the chain holds from closing a run's
+    /// port to starting the next run: a follow-up is then in the queue, in
+    /// the port's record, or started, and never between two of them.
+    /// Queued follow-ups come first, since they were sent earlier.
+    fn withdraw(&self, id: &str) -> Result<&'static str, String> {
+        let mut queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(i) = queue.iter().position(|(q, _)| q.as_deref() == Some(id)) {
+            queue.remove(i);
+            return Ok("follow_up");
+        }
+        let cur = self.current();
+        match cur.steering.withdraw(id) {
+            Withdrawal::Withdrawn(Steering::Steer(_)) => Ok("steer"),
+            Withdrawal::Withdrawn(Steering::FollowUp(_)) => Ok("follow_up"),
+            Withdrawal::Delivered => Err(ALREADY_DELIVERED.into()),
+            Withdrawal::NotHere if cur.follow_up && cur.id.as_deref() == Some(id) => {
+                Err(ALREADY_DELIVERED.into())
+            }
+            Withdrawal::NotHere => Err(format!(
+                "unknown id: no steer or follow_up waiting to be delivered was sent with `{id}`"
+            )),
+        }
+    }
 }
+
+/// What `withdraw` is refused with once the message is in a model request,
+/// or its follow-up's run has started.
+const ALREADY_DELIVERED: &str = "already delivered";
 
 /// A `classify` being asked, on its own thread (#518).
 struct Classifying {
@@ -1516,6 +1636,35 @@ impl Server {
         }))
     }
 
+    /// `withdraw` (ADR 0058 §3): answered at once with `{id, type}` once the
+    /// steer or follow-up sent with the command's `id` is taken back, as
+    /// `approve` names its question by its `id`. The withdrawn message is
+    /// gone from `get_state`'s `pending` and `abort`'s `undelivered`.
+    fn withdraw(&mut self, cmd: &Value, id: Option<&str>) -> Result<Value, String> {
+        let id = match (id, cmd.get("id")) {
+            (Some(id), _) if !id.is_empty() => id,
+            (_, None) => {
+                return Err(
+                    "withdraw needs the \"id\" the steer or follow_up was sent with".into(),
+                );
+            }
+            (_, Some(v)) => {
+                return Err(format!(
+                    "withdraw's \"id\" is the id a steer or follow_up was sent with, \
+                     a non-empty string; got {v}"
+                ));
+            }
+        };
+        if !self.in_flight() {
+            return Err("no run in flight".into());
+        }
+        let Some(r) = &self.running else {
+            return Err("no run in flight".into());
+        };
+        let kind = r.withdraw(id)?;
+        Ok(json!({"id": id, "type": kind}))
+    }
+
     /// `abort`: answered once the run has ended, with everything sent on
     /// the steering channel and never delivered, in the order received.
     ///
@@ -1644,6 +1793,10 @@ impl Server {
             }
             "set_budget" => {
                 let r = self.set_budget(cmd);
+                self.respond(id, kind, r);
+            }
+            "withdraw" => {
+                let r = self.withdraw(cmd, id);
                 self.respond(id, kind, r);
             }
             "steer" | "follow_up" => self.steer(cmd, id, kind),
@@ -2295,7 +2448,10 @@ impl Chain {
             // Before the run is replaced, so a `prompt` waiting on this
             // thread sees a run in flight from here on.
             self.ended.store(false, Ordering::SeqCst);
-            *self.current.lock().unwrap_or_else(PoisonError::into_inner) = Current::new(id);
+            *self.current.lock().unwrap_or_else(PoisonError::into_inner) = Current {
+                follow_up: true,
+                ..Current::new(id)
+            };
             task = next;
         }
     }
