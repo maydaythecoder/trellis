@@ -3238,20 +3238,10 @@ mod tests {
         ("codebase.js", "isCount"),
         ("codebase.js", "start"),
         ("codebase.js", "str"),
-        ("composer.js", "el"),
-        ("composer.js", "lineId"),
-        ("composer.js", "send"),
-        ("composer.js", "str"),
-        ("dialogs.js", "el"),
-        ("dialogs.js", "str"),
         ("model.js", "el"),
         ("model.js", "lineId"),
         ("model.js", "send"),
         ("model.js", "str"),
-        ("overview.js", "el"),
-        ("overview.js", "isCount"),
-        ("overview.js", "muted"),
-        ("overview.js", "str"),
         ("queue.js", "el"),
         ("queue.js", "isCount"),
         ("queue.js", "muted"),
@@ -3261,12 +3251,6 @@ mod tests {
         ("radius.js", "isCount"),
         ("radius.js", "start"),
         ("radius.js", "str"),
-        ("render.js", "atEnd"),
-        ("render.js", "el"),
-        ("render.js", "fill"),
-        ("render.js", "isCount"),
-        ("render.js", "str"),
-        ("render.js", "tokens"),
         ("settings.js", "el"),
         ("settings.js", "isCount"),
         ("settings.js", "lineId"),
@@ -3515,7 +3499,7 @@ mod tests {
         let js = code_of("composer.js");
         let submit = composer_submit(&js);
         let sent = submit
-            .split("if (await send(tauri, p, line)) {")
+            .split("if (await forward(tauri, p, line)) {")
             .nth(1)
             .and_then(|r| r.split("\n    }").next())
             .expect("the prompt has a success branch");
@@ -3737,32 +3721,38 @@ mod tests {
         // turn. The end is followed only when the pane was already there,
         // measured before it is redrawn; the one other scroll to the end in
         // render.js is the jump button's own click.
-        let js = code_of("render.js");
-        let at_end = function_body(&js, "atEnd");
+        // The transcript is drawn by dom.js's appendRows (#817), where the
+        // end is measured and followed.
+        let dom = code_of("dom.js");
+        let at_end = function_body(&dom, "atEnd");
         assert!(
             at_end
                 .contains("pane.scrollHeight - pane.clientHeight - pane.scrollTop <= AT_END_SLACK"),
             "atEnd measures something else: {at_end}"
         );
-        let transcript = function_body(&js, "transcript");
-        let measured = transcript
+        let rows = function_body(&dom, "appendRows");
+        let measured = rows
             .find("const follow = atEnd(pane);")
-            .expect("transcript reads the end before drawing");
-        let drawn = transcript.find("pane.append(").expect("transcript appends");
+            .expect("appendRows reads the end before drawing");
+        let drawn = rows.find("pane.append(").expect("appendRows appends");
         assert!(
             measured < drawn,
             "the end is read after the redraw moved it"
         );
         assert_eq!(
-            transcript
-                .matches("pane.scrollTop = pane.scrollHeight;")
-                .count(),
+            rows.matches("pane.scrollTop = pane.scrollHeight;").count(),
             1,
-            "transcript scrolls to the end in more than one place"
+            "appendRows scrolls to the end in more than one place"
         );
         assert!(
-            transcript.contains("if (follow) {\n    pane.scrollTop = pane.scrollHeight;"),
-            "the scroll to the end is not under the at-end check: {transcript}"
+            rows.contains("if (follow) pane.scrollTop = pane.scrollHeight;"),
+            "the scroll to the end is not under the at-end check: {rows}"
+        );
+        let js = code_of("render.js");
+        assert!(
+            function_body(&js, "transcript")
+                .contains(r#"appendRows(doc, pane, lines, "Nothing has run yet.")"#),
+            "render.js draws the transcript some other way"
         );
         let scrolls: Vec<&str> = js
             .lines()
@@ -3771,10 +3761,7 @@ mod tests {
             .collect();
         assert_eq!(
             scrolls,
-            [
-                "pane.scrollTop = pane.scrollHeight;",
-                "pane.scrollTop = pane.scrollHeight;"
-            ],
+            ["pane.scrollTop = pane.scrollHeight;"],
             "render.js scrolls somewhere else too"
         );
         assert!(
@@ -3791,19 +3778,22 @@ mod tests {
         // reader read the whole log again. Lines beyond those drawn are
         // appended; only a list that does not extend the drawn one (the cap
         // dropped lines, or the transcript was cleared) is drawn afresh.
-        let js = code_of("render.js");
-        let transcript = function_body(&js, "transcript");
+        let dom = code_of("dom.js");
+        let rows = function_body(&dom, "appendRows");
         for want in [
             "drawn.every((c, i) => c.textContent === list[i])",
             "list.slice(drawn.length)",
             "if (grows && drawn.length > 0) pane.append(...rows);",
-            "else fill(doc, pane, rows, \"Nothing has run yet.\", \"div\");",
+            "else fill(doc, pane, rows, empty, \"div\");",
         ] {
-            assert!(
-                transcript.contains(want),
-                "transcript lacks {want}: {transcript}"
-            );
+            assert!(rows.contains(want), "appendRows lacks {want}: {rows}");
         }
+        let render = code_of("render.js");
+        let transcript = function_body(&render, "transcript");
+        assert!(
+            transcript.contains(r#"appendRows(doc, pane, lines, "Nothing has run yet.")"#),
+            "render.js draws the transcript some other way: {transcript}"
+        );
         let page = page();
         let log = &page[index_of(&page, "pane-transcript")];
         assert_eq!(
@@ -3843,7 +3833,9 @@ mod tests {
         let transcript = function_body(&js, "transcript");
         assert!(transcript.contains(r#"const jump = doc.getElementById("log-jump");"#));
         assert!(
-            transcript.contains("if (follow) {\n    pane.scrollTop = pane.scrollHeight;\n    jump.hidden = true;\n  } else if (rows.length > 0) {\n    jump.hidden = false;\n  }"),
+            transcript.contains(
+                "if (followed) jump.hidden = true;\n  else if (drawn > 0) jump.hidden = false;"
+            ),
             "the jump button is shown or hidden on something else: {transcript}"
         );
         let wire = function_body(&js, "wireLog");
@@ -3879,32 +3871,21 @@ mod tests {
         // The risk (#643): the messages pane keeping the old rule, so a
         // reader of trellis's stderr is pulled to the end at each view while
         // the actions log is not; or a second, differently measured notion
-        // of "at the end". dialogs.js imports render.js's atEnd and scrolls
-        // only under it.
+        // of "at the end". dialogs.js draws the pane with dom.js's
+        // appendRows, the actions log's own (#817), and scrolls nowhere
+        // else.
         let js = code_of("dialogs.js");
         assert!(
-            js.contains(r#"import { atEnd } from "./render.js";"#),
+            js.contains(r#"import { appendRows, el } from "./dom.js";"#),
             "dialogs.js measures the end its own way"
         );
         let stderr = function_body(&js, "drawStderr");
-        let measured = stderr
-            .find("const follow = atEnd(log);")
-            .expect("drawStderr reads the end before drawing");
-        let drawn = stderr
-            .find("log.replaceChildren(")
-            .expect("drawStderr redraws the pane");
         assert!(
-            measured < drawn,
-            "the end is read after the redraw moved it"
+            stderr.contains(r#"appendRows(doc, doc.getElementById("messages-log"), lines,"#),
+            "drawStderr draws the pane some other way: {stderr}"
         );
-        let scrolls: Vec<&str> = js
-            .lines()
-            .filter(|l| l.contains("scrollTop"))
-            .map(str::trim)
-            .collect();
-        assert_eq!(
-            scrolls,
-            ["if (follow) log.scrollTop = log.scrollHeight;"],
+        assert!(
+            !js.contains("scrollTop"),
             "dialogs.js scrolls somewhere unguarded"
         );
     }
@@ -4106,13 +4087,19 @@ mod tests {
         assert_eq!(page[title].text.trim(), "Session tokens");
         let render = ui_file("render.js");
         for want in [
-            "` · prompt ${tokens(m.prompt_tokens)}`",
-            "` · completion ${tokens(m.completion_tokens)}`",
-            r#"isCount(v) ? String(v) : "unknown""#,
+            "` · prompt ${notReported(m.prompt_tokens)}`",
+            "` · completion ${notReported(m.completion_tokens)}`",
             "el(doc, \"code\", model)",
         ] {
             assert!(render.contains(want), "render.js lacks {want}");
         }
+        // A figure a run did not report is said to be, never drawn as 0:
+        // fmt.js's notReported, which render.js takes (#817).
+        assert!(
+            function_body(&code_of("fmt.js"), "notReported")
+                .contains("if (isCount(v)) return String(v);"),
+            "notReported draws something other than the figure"
+        );
         let main = ui_file("main.js");
         for want in [
             r#"type: "get_session_stats""#,
