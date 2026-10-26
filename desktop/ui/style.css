@@ -1839,3 +1839,21 @@ article.past-run section + section {
     max-height: 560px;
   }
 }
+
+/* The icon set (#835): the sprite of <symbol>s takes no room and is never
+   drawn itself; each icon is drawn where a label uses it, before its word,
+   in the label's own colour (the icons stroke in currentColor). */
+.icon-sprite {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+.icon {
+  width: 16px;
+  height: 16px;
+  margin-right: 6px;
+  vertical-align: -3px;
+  flex: none;
+}

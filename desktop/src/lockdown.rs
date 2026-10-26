@@ -3311,6 +3311,130 @@ mod tests {
     }
 
     #[test]
+    fn page_icons_are_inline_symbols_and_each_has_a_label() {
+        // The risk (#835): an icon drawn as the only carrier of a meaning,
+        // which a screen reader or a reader who does not know the glyph
+        // cannot read; an icon pointing at a symbol the page lacks, drawn as
+        // nothing; the set drifting from the design system's; or an icon
+        // fetched as an <img>, which draws in black rather than the label's
+        // colour. The set is one hidden <svg> of <symbol>s, each the design
+        // system's file's drawing, and every <use> sits in an aria-hidden
+        // icon beside a label with words of its own.
+        let page = page();
+        let sprites: Vec<usize> = (0..page.len())
+            .filter(|&i| page[i].attr("class") == Some("icon-sprite"))
+            .collect();
+        assert_eq!(sprites.len(), 1, "one icon sprite");
+        let sprite = sprites[0];
+        assert_eq!(page[sprite].tag, "svg");
+        assert_eq!(page[sprite].attr("aria-hidden"), Some("true"));
+        let symbols: BTreeMap<&str, usize> = (0..page.len())
+            .filter(|&i| page[i].tag == "symbol")
+            .map(|i| {
+                assert_eq!(page[i].parent, Some(sprite), "a symbol outside the sprite");
+                assert_eq!(page[i].attr("viewbox"), Some("0 0 16 16"));
+                (page[i].attr("id").expect("a symbol has an id"), i)
+            })
+            .collect();
+        let set = Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/design/system/icons");
+        let html = ui_file("index.html");
+        let mut files = 0;
+        for entry in std::fs::read_dir(&set).unwrap() {
+            let p = entry.unwrap().path();
+            if p.extension().is_none_or(|x| x != "svg") {
+                continue;
+            }
+            files += 1;
+            let name = p.file_stem().unwrap().to_string_lossy().to_string();
+            assert!(symbols.contains_key(name.as_str()), "no symbol for {name}");
+            // The drawing inside the file's root, as the symbol holds it.
+            let file = std::fs::read_to_string(&p).unwrap();
+            let inner = file
+                .trim()
+                .split_once('>')
+                .and_then(|(_, r)| r.strip_suffix("</svg>"))
+                .unwrap_or_else(|| panic!("{name} is not one <svg>"));
+            let symbol = format!(
+                r#"<symbol id="{name}" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">{inner}</g></symbol>"#
+            );
+            assert!(
+                html.contains(&symbol),
+                "{name}'s symbol is not the design system's drawing"
+            );
+        }
+        assert_eq!(
+            symbols.len(),
+            files,
+            "a symbol the design system has no file for"
+        );
+        let mut uses = 0;
+        for (i, e) in page.iter().enumerate() {
+            if e.tag == "img" {
+                assert!(
+                    !e.attr("src").unwrap_or("").contains("icon"),
+                    "an icon drawn as an <img>"
+                );
+            }
+            if e.tag != "use" {
+                continue;
+            }
+            uses += 1;
+            let href = e.attr("href").expect("a <use> has an href");
+            let id = href
+                .strip_prefix('#')
+                .expect("a <use> names a symbol in the page");
+            assert!(symbols.contains_key(id), "{href} names no symbol");
+            let icon = e.parent.expect("a <use> sits in an icon");
+            assert_eq!(page[icon].tag, "svg");
+            assert_eq!(page[icon].attr("class"), Some("icon"));
+            assert_eq!(page[icon].attr("aria-hidden"), Some("true"), "{href}");
+            assert!(!within(&page, i, sprite), "a <use> inside the sprite");
+            let label = page[icon].parent.expect("an icon sits in a label");
+            assert!(
+                page[label].text.chars().any(char::is_alphabetic),
+                "{href} is the only carrier of its label's meaning"
+            );
+        }
+        assert!(uses > 0, "the page draws no icon");
+        // The mark is the page's icon too, served as a file of its own.
+        let icon_link = page
+            .iter()
+            .find(|e| e.tag == "link" && e.attr("rel") == Some("icon"))
+            .expect("a <link rel=icon>");
+        assert_eq!(icon_link.attr("href"), Some("favicon.svg"));
+        assert!(
+            !ui_file("favicon.svg").contains("style="),
+            "favicon.svg has a style"
+        );
+    }
+
+    #[test]
+    fn page_icons_app_icon_is_the_design_system_s_mark() {
+        // The risk (#835): the window and the bundle keep an icon that is
+        // not the TRELLIS mark, or an .ico missing the title-bar sizes. The
+        // PNG is the 512px app icon byte for byte, and the .ico holds the
+        // 16, 32, 128 and 256px images (an .ico entry's width byte is 0 for
+        // 256).
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let logos = dir.join("../docs/design/system/logos");
+        assert_eq!(
+            std::fs::read(dir.join("icons/icon.png")).unwrap(),
+            std::fs::read(logos.join("app-icon-512.png")).unwrap(),
+            "icons/icon.png is not app-icon-512.png"
+        );
+        let ico = std::fs::read(dir.join("icons/icon.ico")).unwrap();
+        assert_eq!(&ico[..4], &[0, 0, 1, 0], "not an .ico");
+        let count = usize::from(u16::from_le_bytes([ico[4], ico[5]]));
+        let sizes: BTreeSet<u32> = (0..count)
+            .map(|k| match ico[6 + 16 * k] {
+                0 => 256,
+                w => u32::from(w),
+            })
+            .collect();
+        assert_eq!(sizes, BTreeSet::from([16, 32, 128, 256]));
+    }
+
+    #[test]
     fn page_has_no_style_attribute() {
         // The risk: an inline style, which the CSP's `style-src 'self'`
         // refuses (so the page draws wrongly) or which a later CSP edit
