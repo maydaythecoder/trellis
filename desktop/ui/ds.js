@@ -324,6 +324,56 @@ export function queueVerb(doc, word, { on, cool, title } = {}) {
   return b;
 }
 
+// A change's two line counts, as the Diff card's head draws them: added in
+// diff-add, removed in diff-del, never one figure. Either one trellis did
+// not report draws unreported's dash with `why`, never 0.
+export function lineCounts(doc, added, removed, why) {
+  const s = el(doc, "span", null, "cd-diff-counts");
+  if (!isCount(added) || !isCount(removed)) {
+    s.append(unreported(doc, why));
+    return s;
+  }
+  s.append(el(doc, "span", `+${added}`, "a"), el(doc, "span", `−${removed}`, "d"));
+  return s;
+}
+
+// The class and the sign a diff line is drawn with, by the reducer's sign.
+const DIFF_SIGNS = { added: ["cd-diff-add", "+"], removed: ["cd-diff-del", "-"], context: [null, ""], note: [null, ""] };
+
+// Diff (the design system's, #831): one file, its name and two counts in
+// the head, then each hunk under its label in diff-hunk, each line in a
+// row: the old and the new line number in two gutters, the sign, and the
+// text, added lines in diff-add and removed in diff-del. Every string is
+// the diff's own, repository text and model output, shown as text. A line
+// the reducer gave a reason it takes no comment carries it as its title;
+// `lineEnd(line)`, when given, answers what closes the row.
+export function diff(doc, { file, counts, hunks, lineEnd }) {
+  const root = el(doc, "div", null, "cd-diff");
+  const head = el(doc, "div", null, "cd-diff-file");
+  head.append(el(doc, "span", file), counts);
+  root.append(head);
+  for (const h of hunks) {
+    const block = el(doc, "div");
+    block.append(el(doc, "div", h.label, "cd-diff-hunk"));
+    for (const l of h.lines) {
+      const [cls, sign] = DIFF_SIGNS[str(l.sign)] ?? DIFF_SIGNS.note;
+      const row = el(doc, "div", null, cx("cd-diff-line", cls));
+      row.append(
+        el(doc, "span", isCount(l.old) ? String(l.old) : "", "cd-diff-ln"),
+        el(doc, "span", isCount(l.new) ? String(l.new) : "", "cd-diff-ln"),
+        el(doc, "span", sign, "cd-diff-sign"),
+        el(doc, "span", str(l.text) ?? "", "cd-diff-text"),
+      );
+      if (lineEnd) row.append(lineEnd(l));
+      const why = str(l.why);
+      if (why !== null) row.title = why;
+      block.append(row);
+    }
+    root.append(block);
+  }
+  return root;
+}
+
 // What each kind of queued item is called, and the kind class the card
 // colours it with (a held prompt has none: it is neither).
 const QUEUE_KINDS = {

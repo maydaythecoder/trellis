@@ -118,13 +118,17 @@ pub enum Pane {
     /// `pending` listed, and the prompt a Stop and send holds, with where
     /// each stands.
     Pending,
+    /// The Code level (#831): each file the run wrote or asks to write,
+    /// its line counts, its state word and its diff, derived from the
+    /// panes [`CODE_INPUTS`] names.
+    Code,
 }
 
 /// Every pane the view carries. Each is a key the page must draw:
 /// `view_renders_every_pane_key` in `lockdown.rs` drives a whole run through
 /// [`DesktopState::update`] and fails naming a key here that no module the
 /// page loads reads from the `view` event (ADR 0052 section 1, #513).
-const PANES: [Pane; 27] = [
+const PANES: [Pane; 28] = [
     Pane::Transcript,
     Pane::Actions,
     Pane::Edits,
@@ -152,6 +156,7 @@ const PANES: [Pane; 27] = [
     Pane::Now,
     Pane::Where,
     Pane::Pending,
+    Pane::Code,
 ];
 
 /// The panes a run starts afresh: everything but the transcript, which,
@@ -162,7 +167,7 @@ const PANES: [Pane; 27] = [
 /// the last stopped run's, so a new run drops it, and so is the alert: what
 /// failed before this run started is not this run's failure. The stderr
 /// pane, as the transcript, carries on.
-const RUN_PANES: [Pane; 15] = [
+const RUN_PANES: [Pane; 16] = [
     Pane::Actions,
     Pane::Edits,
     Pane::Checks,
@@ -178,6 +183,7 @@ const RUN_PANES: [Pane; 15] = [
     Pane::Runtime,
     Pane::Now,
     Pane::Where,
+    Pane::Code,
 ];
 
 /// The panes the Now strip and Where it is are drawn from: a change to any
@@ -258,10 +264,21 @@ fn limit_row(
     })
 }
 
-/// `c`, and the Now strip and Where it is when `c` changed what they read.
+/// The panes the Code level is drawn from (#831): the writes the run
+/// applied, the approvals waiting on one, and whether the run is in flight
+/// and how it ended, which decide each file's state word.
+const CODE_INPUTS: [Pane; 4] = [Pane::Edits, Pane::Approvals, Pane::Running, Pane::Outcome];
+
+/// `c`, and the Now strip and Where it is when `c` changed what they read,
+/// and the Code level when it changed what that reads.
 fn with_now(c: Changed) -> Changed {
-    if NOW_INPUTS.iter().any(|&p| c.has(p)) {
+    let c = if NOW_INPUTS.iter().any(|&p| c.has(p)) {
         c.with(Pane::Now).with(Pane::Where)
+    } else {
+        c
+    };
+    if CODE_INPUTS.iter().any(|&p| c.has(p)) {
+        c.with(Pane::Code)
     } else {
         c
     }
@@ -311,6 +328,7 @@ impl Pane {
             Pane::Now => "now",
             Pane::Where => "where",
             Pane::Pending => "pending",
+            Pane::Code => "code",
         }
     }
 
@@ -728,6 +746,202 @@ const QUEUED_CAP: usize = 100;
 /// store's marker.
 const QUEUED_TEXT_BYTES: usize = 4 * 1024;
 
+/// The longest diff the Code level keeps per write or approval (#831):
+/// twice the 8192 bytes trellis cuts a turn's diff at, so a trellis that
+/// sends more cannot grow the view without bound, and the rest is cut with
+/// the store's marker.
+const DIFF_BYTES: usize = 16 * 1024;
+
+/// One write a turn applied (#831): an applied `edit`, with the figures
+/// and the diff #802 put on its turn, or a file `write_file` created, whose
+/// turn carries none of them.
+#[derive(Debug, Clone, PartialEq)]
+struct Write {
+    turn: u64,
+    path: String,
+    added: Option<u64>,
+    removed: Option<u64>,
+    start_line: Option<u64>,
+    diff: Option<String>,
+}
+
+/// What a line of a diff is, as its first character says.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Sign {
+    Context,
+    Added,
+    Removed,
+    /// A line no sign starts: trellis's own line saying the diff was cut,
+    /// or anything else that is not a line of the file.
+    Note,
+}
+
+impl Sign {
+    fn word(self) -> &'static str {
+        match self {
+            Sign::Context => "context",
+            Sign::Added => "added",
+            Sign::Removed => "removed",
+            Sign::Note => "note",
+        }
+    }
+}
+
+/// One line of a hunk the Code level draws: its sign, its numbers in the
+/// file before (`old`) and after (`new`) the edit where the `@@` header
+/// gave them, and its text without the sign.
+#[derive(Debug, Clone, PartialEq)]
+struct DiffLine {
+    sign: Sign,
+    old: Option<u64>,
+    new: Option<u64>,
+    text: String,
+}
+
+/// `@@ -a[,b] +c[,d] @@` as `(a, c)`, the first line of each side.
+fn hunk_start(line: &str) -> Option<(u64, u64)> {
+    let rest = line.strip_prefix("@@ -")?;
+    let (old, rest) = rest.split_once(" +")?;
+    let (new, _) = rest.split_once(" @@")?;
+    let first = |side: &str| side.split(',').next()?.parse::<u64>().ok();
+    Some((first(old)?, first(new)?))
+}
+
+/// An applied edit's diff, as #802 writes it: `--- path` and `+++ path`,
+/// one `@@` header, then each line behind its sign. Read by position: the
+/// lines before the header are the file names, never matched by prefix,
+/// since a removed line `-- x` reads `--- x` too. Each line is numbered
+/// from the header, so a line comment names a line trellis numbered and
+/// not one the desktop guessed. Without a header no line is numbered, and
+/// every line is shown as it came.
+fn applied_lines(diff: &str) -> (Option<String>, Vec<DiffLine>) {
+    let lines: Vec<&str> = diff.lines().collect();
+    let Some((at, (old, new))) = lines
+        .iter()
+        .enumerate()
+        .find_map(|(i, l)| hunk_start(l).map(|n| (i, n)))
+    else {
+        let shown = lines
+            .iter()
+            .map(|l| DiffLine {
+                sign: Sign::Note,
+                old: None,
+                new: None,
+                text: (*l).to_string(),
+            })
+            .collect();
+        return (None, shown);
+    };
+    let (mut old, mut new) = (old, new);
+    let mut out = Vec::new();
+    for l in &lines[at + 1..] {
+        let mut chars = l.chars();
+        let sign = match chars.next() {
+            Some(' ') => Sign::Context,
+            Some('+') => Sign::Added,
+            Some('-') => Sign::Removed,
+            _ => Sign::Note,
+        };
+        let (o, n) = match sign {
+            Sign::Context => (Some(old), Some(new)),
+            Sign::Removed => (Some(old), None),
+            Sign::Added => (None, Some(new)),
+            Sign::Note => (None, None),
+        };
+        old += u64::from(o.is_some());
+        new += u64::from(n.is_some());
+        out.push(DiffLine {
+            sign,
+            old: o,
+            new: n,
+            text: if sign == Sign::Note {
+                (*l).to_string()
+            } else {
+                chars.as_str().to_string()
+            },
+        });
+    }
+    (Some(lines[at].to_string()), out)
+}
+
+/// The file an approval question asks to write, and how many of its
+/// detail's lines name it: the approve gate's `edit <path> (+a -r)` with
+/// `--- <path>` and `+++ <path>` heading its diff, or `write_file <path>
+/// (+n new)` with `+++ <path> (new file)`. The shape is the gate's
+/// (`trellis_loop::gate`), not the contract's, so a question in any other
+/// shape ties to no file and is answered in the approval dialog alone.
+fn approval_file(a: &ApprovalRequest) -> Option<(&str, usize)> {
+    let question = a.question.as_deref()?;
+    let mut lines = a.detail.as_deref()?.lines();
+    let first = lines.next()?;
+    if let Some(path) = first
+        .strip_prefix("+++ ")
+        .and_then(|r| r.strip_suffix(" (new file)"))
+    {
+        return question
+            .starts_with(&format!("write_file {path} ("))
+            .then_some((path, 1));
+    }
+    let path = first.strip_prefix("--- ")?;
+    (lines.next()? == format!("+++ {path}") && question.starts_with(&format!("edit {path} (")))
+        .then_some((path, 2))
+}
+
+/// A pending approval's diff, after the lines that name its file: each
+/// line behind its sign and a space (`- `, `+ `, two spaces for context),
+/// with no `@@` header, so none is numbered until the turn that applies it.
+fn pending_lines(detail: &str, skip: usize) -> Vec<DiffLine> {
+    detail
+        .lines()
+        .skip(skip)
+        .map(|l| {
+            let sign = match l.chars().next() {
+                Some(' ') => Sign::Context,
+                Some('+') => Sign::Added,
+                Some('-') => Sign::Removed,
+                _ => Sign::Note,
+            };
+            let text = match sign {
+                Sign::Note => l.to_string(),
+                _ => l.get(2..).unwrap_or("").to_string(),
+            };
+            DiffLine {
+                sign,
+                old: None,
+                new: None,
+                text,
+            }
+        })
+        .collect()
+}
+
+/// Why a line takes no comment, by the first rule it meets: the hunk's own
+/// reason, then the line's, then the run's; `None` when it takes one. A
+/// comment is a steer naming `file:line`, the line's number in the file as
+/// the hunk's edit left it, so it is offered only for a line the file still
+/// has, at a number trellis gave, while a run can take a steer.
+fn comment_refusal(
+    line: &DiffLine,
+    hunk: Option<&'static str>,
+    running: bool,
+) -> Option<&'static str> {
+    if hunk.is_some() {
+        return hunk;
+    }
+    match (line.sign, line.new) {
+        (Sign::Note, _) => Some("not a line of the file"),
+        (Sign::Removed, _) => Some(
+            "a removed line is not in the file now: comment on the line that replaced it or one \
+             beside it",
+        ),
+        (_, None) => Some("trellis numbered no line here"),
+        _ if !running => {
+            Some("a comment is sent as a steer, and a steer reaches only a run in flight")
+        }
+        _ => None,
+    }
+}
+
 /// The read-only requests a view of its own sends and answers in place: its
 /// refusal is that view's to say (the `codebase` and `radius` events, the
 /// vault, queue, models and session tokens panes), not a line in the run's
@@ -999,6 +1213,9 @@ pub struct DesktopState {
     transcript: Feed<TRANSCRIPT_CAP, TRANSCRIPT_BYTES, Entry>,
     actions: Vec<Action>,
     edits: Vec<String>,
+    /// The run's writes, oldest first, with what each turn said of its
+    /// lines (#831): the Code level's files and diffs.
+    writes: Vec<Write>,
     checks: Vec<Check>,
     radius: Option<Radius>,
     budget: Budget,
@@ -1092,7 +1309,7 @@ impl DesktopState {
     /// the ones it changed.
     fn apply(&mut self, frame: Frame) -> Changed {
         match frame {
-            Frame::Turn(t) => self.turn(t),
+            Frame::Turn(t) => self.turn(*t),
             Frame::ModelCall { turn, elapsed_ms } => {
                 self.phase = Some(Phase::Model { turn });
                 // A call without the figure leaves the last one standing:
@@ -1757,6 +1974,7 @@ impl DesktopState {
             Pane::Atlas => self.atlas.to_json(),
             Pane::Now => self.now(),
             Pane::Where => self.where_it_is(),
+            Pane::Code => self.code(),
             Pane::Pending => Value::Array(
                 self.queued
                     .iter()
@@ -2002,6 +2220,168 @@ impl DesktopState {
         })
     }
 
+    /// A file's state word (#831, DESIGN.md §2.1) as `(state, word, tone,
+    /// why)`, from what trellis reported and nothing else: an approval
+    /// waiting on an edit to it; a run in flight, whose writes are in the
+    /// worktree until run_end; then run_end's outcome and `restored`. A run
+    /// whose end did not say whether the tree was put back is `not
+    /// reported`, with why, never guessed either way.
+    fn file_state(
+        &self,
+        awaiting: bool,
+    ) -> (
+        &'static str,
+        &'static str,
+        &'static str,
+        Option<&'static str>,
+    ) {
+        if self.running && awaiting {
+            return ("awaiting", "awaiting your approval", "warn", None);
+        }
+        if self.running {
+            return ("worktree", "in the worktree", "signal", None);
+        }
+        match &self.outcome {
+            Some(e) if e.outcome.as_deref() == Some("converged") => {
+                ("left", "left in the tree", "ok", None)
+            }
+            Some(e) => match e.restored {
+                Some(true) => ("rolled_back", "rolled back", "down", None),
+                Some(false) => ("left", "left in the tree", "warn", None),
+                None => (
+                    "not_reported",
+                    "not reported",
+                    "idle",
+                    Some("run_end did not say whether the tree was restored"),
+                ),
+            },
+            None => (
+                "not_reported",
+                "not reported",
+                "idle",
+                Some("trellis rpc exited before a run_end said what became of the run's writes"),
+            ),
+        }
+    }
+
+    /// The Code level (#831): one row per file the run wrote or an open
+    /// approval asks to write, in the order each was first touched, with
+    /// its two line counts, its state word, the open approval's id while
+    /// one waits on it, and its hunks, each line numbered from trellis's
+    /// `@@` header and, where it takes a comment, the `file:line` a steer
+    /// names it by. The diff is repository text and model output, sent as
+    /// text for the page to show and never interpret (CLAUDE.md rule 10).
+    fn code(&self) -> Value {
+        let pending: Vec<(&str, &ApprovalRequest, usize)> = self
+            .approvals
+            .iter()
+            .filter_map(|a| approval_file(a).map(|(path, skip)| (path, a, skip)))
+            .collect();
+        let mut paths: Vec<&str> = Vec::new();
+        for p in self
+            .writes
+            .iter()
+            .map(|w| w.path.as_str())
+            .chain(pending.iter().map(|(p, _, _)| *p))
+        {
+            if !paths.contains(&p) {
+                paths.push(p);
+            }
+        }
+        let line = |l: &DiffLine, path: &str, why: Option<&'static str>| {
+            let why = comment_refusal(l, why, self.running);
+            let at = match (why, l.new) {
+                (None, Some(n)) => Some(format!("{path}:{n}")),
+                _ => None,
+            };
+            json!({"sign": l.sign.word(), "old": l.old, "new": l.new, "text": l.text,
+                   "at": at, "why": why})
+        };
+        let files: Vec<Value> = paths
+            .into_iter()
+            .map(|path| {
+                let writes: Vec<&Write> = self.writes.iter().filter(|w| w.path == path).collect();
+                let mut hunks = Vec::new();
+                // Each side counted only while every hunk reported it: a
+                // write_file turn carries no counts, and its file's then
+                // say so rather than count part of the change.
+                let mut added = Some(0u64);
+                let mut removed = Some(0u64);
+                for (i, w) in writes.iter().enumerate() {
+                    added = added.zip(w.added).map(|(a, b)| a.saturating_add(b));
+                    removed = removed.zip(w.removed).map(|(a, b)| a.saturating_add(b));
+                    let (header, lines) = match &w.diff {
+                        Some(d) => applied_lines(d),
+                        None => (None, Vec::new()),
+                    };
+                    let why = match writes.get(i + 1) {
+                        _ if header.is_none() => {
+                            Some("trellis's diff carried no @@ header to number its lines from")
+                        }
+                        Some(_) => Some(
+                            "a later edit to this file may have moved this line: comment on the \
+                             latest edit's lines",
+                        ),
+                        None => None,
+                    };
+                    hunks.push(json!({
+                        "turn": w.turn,
+                        "approval": null,
+                        "header": header,
+                        "start_line": w.start_line,
+                        "added": w.added,
+                        "removed": w.removed,
+                        "why_no_diff": w.diff.is_none().then_some(
+                            "trellis sends a diff only with an applied edit, not with a file \
+                             write_file created"
+                        ),
+                        "lines": lines.iter().map(|l| line(l, path, why)).collect::<Vec<_>>(),
+                    }));
+                }
+                let mut approval = None;
+                for (_, a, skip) in pending.iter().filter(|(p, _, _)| *p == path) {
+                    let detail = a.detail.as_deref().unwrap_or_default();
+                    let detail = detail.to_string().fit(DIFF_BYTES);
+                    let lines = pending_lines(&detail, *skip);
+                    let count = |s: Sign| lines.iter().filter(|l| l.sign == s).count() as u64;
+                    let (a_n, r_n) = (count(Sign::Added), count(Sign::Removed));
+                    added = added.map(|n| n.saturating_add(a_n));
+                    removed = removed.map(|n| n.saturating_add(r_n));
+                    let why = Some("trellis numbers an edit's lines with the turn that applies it");
+                    approval.get_or_insert(a.id.as_str());
+                    hunks.push(json!({
+                        "turn": null,
+                        "approval": a.id,
+                        "header": null,
+                        "start_line": null,
+                        "added": a_n,
+                        "removed": r_n,
+                        "why_no_diff": null,
+                        "lines": lines.iter().map(|l| line(l, path, why)).collect::<Vec<_>>(),
+                    }));
+                }
+                let (state, word, tone, why_state) = self.file_state(approval.is_some());
+                json!({
+                    "path": path,
+                    "added": added,
+                    "removed": removed,
+                    "why_counts": added.is_none().then_some(
+                        "trellis sends line counts only with an applied edit, not with a file \
+                         write_file created"
+                    ),
+                    "writes": writes.len(),
+                    "state": state,
+                    "word": word,
+                    "tone": tone,
+                    "why_state": why_state,
+                    "approval": approval.filter(|_| state == "awaiting"),
+                    "hunks": hunks,
+                })
+            })
+            .collect();
+        json!({"files": files})
+    }
+
     /// A turn, as the `turn` event reports it.
     fn turn(&mut self, t: Turn) -> Changed {
         let mut c = Changed::of(&[
@@ -2059,6 +2439,14 @@ impl DesktopState {
         // path they wrote.
         if wrote {
             self.edits.push(target.clone());
+            self.writes.push(Write {
+                turn: t.turn,
+                path: target.clone(),
+                added: t.lines_added,
+                removed: t.lines_removed,
+                start_line: t.start_line,
+                diff: t.diff.map(|d| d.fit(DIFF_BYTES)),
+            });
             c = c.with(Pane::Edits);
         }
         self.actions.push(Action {
@@ -2113,6 +2501,7 @@ impl DesktopState {
     fn reset_run(&mut self) {
         self.actions.clear();
         self.edits.clear();
+        self.writes.clear();
         self.checks.clear();
         self.radius = None;
         self.budget = Budget::default();
@@ -4895,6 +5284,381 @@ mod tests {
         );
     }
 
+    /// An approve-mode question for an edit to `path`, in the approve
+    /// gate's shape: `edit <path> (+a -r)` with the diff as its detail.
+    fn edit_question(id: &str, path: &str, diff: &str) -> String {
+        json!({"type": "approval_request", "id": id, "request_id": "p",
+               "question": format!("edit {path} (+1 -1)"),
+               "detail": format!("--- {path}\n+++ {path}\n{diff}")})
+        .to_string()
+    }
+
+    /// The turn of an applied edit to `path`, with #802's fields.
+    fn applied_edit(n: u64, path: &str, added: u64, removed: u64, diff: &str) -> String {
+        turn(
+            json!({"turn": n, "call": format!("edit {path}"), "verdict": "None",
+                    "check_kind": "", "observation": "applied: true",
+                    "tool": "edit", "target": path, "wrote": true,
+                    "lines_added": added, "lines_removed": removed, "start_line": 12,
+                    "diff": diff}),
+        )
+    }
+
+    /// The Code level's row for `path`.
+    fn code_file(s: &mut DesktopState, path: &str) -> Option<Value> {
+        all(s)["code"]["files"]
+            .as_array()
+            .expect("the code pane lists files")
+            .iter()
+            .find(|f| f["path"] == path)
+            .cloned()
+    }
+
+    /// A file row's state, word and tone.
+    fn words(f: &Value) -> (String, String, String) {
+        let s = |k: &str| {
+            f[k].as_str()
+                .unwrap_or_else(|| panic!("{k}: {f}"))
+                .to_string()
+        };
+        (s("state"), s("word"), s("tone"))
+    }
+
+    const ONE_HUNK: &str = "--- app/core.py\n+++ app/core.py\n@@ -11,3 +11,3 @@\n def f():\n-    return 1\n+    return 2\n # end\n";
+
+    #[test]
+    fn file_state_words_follow_approval_and_outcome() {
+        // The risk (#831): a file said to be in the tree after its run
+        // rolled back, or awaiting an approval nobody waits on, or a state
+        // the desktop guessed where trellis said nothing. Each word follows
+        // an event: an open approval_request for an edit to the file, a run
+        // in flight, then run_end's outcome and restored.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p"));
+        let c = feed(
+            &mut s,
+            &edit_question(
+                "approval-1",
+                "app/core.py",
+                "  def f():\n-     return 1\n+     return 2\n",
+            ),
+        );
+        assert!(c.has(Pane::Code), "an approval changes the Code level");
+        let f = code_file(&mut s, "app/core.py").expect("the asked-for file is listed");
+        assert_eq!(
+            words(&f),
+            (
+                "awaiting".into(),
+                "awaiting your approval".into(),
+                "warn".into()
+            )
+        );
+        assert_eq!(
+            f["approval"], "approval-1",
+            "Approve and Reject answer this id"
+        );
+        assert_eq!(
+            (f["added"].clone(), f["removed"].clone()),
+            (json!(1), json!(1))
+        );
+        // Its lines are shown, numbered by nothing: the detail has no @@.
+        let lines = f["hunks"][0]["lines"].as_array().unwrap();
+        assert_eq!(
+            lines
+                .iter()
+                .map(|l| l["sign"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["context", "removed", "added"]
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|l| l["new"].is_null() && l["at"].is_null())
+        );
+
+        // A question that is not an edit's, or whose detail names another
+        // file than its question, ties to no file.
+        for (id, question, detail) in [
+            ("approval-2", "bash", "pytest -q"),
+            ("approval-3", "bash", "--- x.py\n+++ x.py\n+ y"),
+            ("approval-4", "edit y.py (+1 -0)", "--- x.py\n+++ x.py\n+ y"),
+            ("approval-5", "edit x.py (+1 -0)", "--- x.py\n+++ y.py\n+ y"),
+        ] {
+            feed(
+                &mut s,
+                &json!({"type": "approval_request", "id": id, "question": question,
+                        "detail": detail})
+                .to_string(),
+            );
+            let files = all(&mut s)["code"]["files"].clone();
+            assert_eq!(files.as_array().unwrap().len(), 1, "{id}: {files}");
+        }
+
+        // Answered and applied: in the worktree, with the turn's counts.
+        let answer = json!({"type": "response", "command": "approve", "success": true,
+                            "id": "approval-1", "data": {"approved": true}});
+        let c = feed(&mut s, &answer.to_string());
+        assert!(c.has(Pane::Code));
+        assert!(
+            code_file(&mut s, "app/core.py").is_none(),
+            "an answered question that wrote nothing yet leaves no file"
+        );
+        feed(&mut s, &applied_edit(2, "app/core.py", 1, 1, ONE_HUNK));
+        let f = code_file(&mut s, "app/core.py").unwrap();
+        assert_eq!(
+            words(&f),
+            ("worktree".into(), "in the worktree".into(), "signal".into())
+        );
+        assert_eq!(f["approval"], Value::Null, "no Approve or Reject now");
+        assert_eq!(
+            (f["added"].clone(), f["removed"].clone()),
+            (json!(1), json!(1))
+        );
+
+        // Converged: left in the tree, and the approvals still open are
+        // dropped with the run, so none is awaited.
+        feed(
+            &mut s,
+            &edit_question("approval-6", "app/core.py", "- a\n+ b\n"),
+        );
+        assert_eq!(
+            words(&code_file(&mut s, "app/core.py").unwrap()).0,
+            "awaiting"
+        );
+        let c = feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p"}).to_string(),
+        );
+        assert!(c.has(Pane::Code));
+        let f = code_file(&mut s, "app/core.py").unwrap();
+        assert_eq!(
+            words(&f),
+            ("left".into(), "left in the tree".into(), "ok".into())
+        );
+        assert_eq!(
+            f["hunks"].as_array().unwrap().len(),
+            1,
+            "the dropped question's hunk is gone"
+        );
+
+        // Each ending, as run_end said it.
+        for (end, want) in [
+            (
+                json!({"outcome": "not_converged", "exit": 2, "restored": true}),
+                ("rolled_back", "rolled back", "down"),
+            ),
+            (
+                json!({"outcome": "interrupted", "exit": 130, "restored": true}),
+                ("rolled_back", "rolled back", "down"),
+            ),
+            (
+                json!({"outcome": "not_converged", "exit": 2, "restored": false}),
+                ("left", "left in the tree", "warn"),
+            ),
+            (
+                json!({"outcome": "error", "exit": 1, "error": "boom"}),
+                ("not_reported", "not reported", "idle"),
+            ),
+        ] {
+            feed(&mut s, &run_start("q"));
+            assert!(
+                code_file(&mut s, "app/core.py").is_none(),
+                "a new run starts with no files"
+            );
+            feed(&mut s, &applied_edit(1, "app/core.py", 1, 1, ONE_HUNK));
+            let mut e = end.as_object().unwrap().clone();
+            e.insert("type".into(), json!("run_end"));
+            e.insert("id".into(), json!("q"));
+            feed(&mut s, &Value::Object(e).to_string());
+            let f = code_file(&mut s, "app/core.py").unwrap();
+            let (a, b, c) = want;
+            assert_eq!(words(&f), (a.into(), b.into(), c.into()), "{end}");
+            assert_eq!(f["why_state"].is_null(), a != "not_reported", "{end}: {f}");
+        }
+
+        // The child gone before its run_end: nothing said what became of
+        // the write, so nothing is claimed.
+        feed(&mut s, &run_start("r"));
+        feed(&mut s, &applied_edit(1, "app/core.py", 1, 1, ONE_HUNK));
+        let c = s.child_exited();
+        assert!(c.has(Pane::Code));
+        let f = code_file(&mut s, "app/core.py").unwrap();
+        assert_eq!(words(&f).0, "not_reported");
+        assert!(f["why_state"].as_str().unwrap().contains("exited"), "{f}");
+
+        // A file write_file created: listed, its counts unreported, not 0.
+        feed(&mut s, &run_start("w"));
+        feed(
+            &mut s,
+            &turn(
+                json!({"turn": 1, "call": "write_file app/new.py", "verdict": "None",
+                         "check_kind": "", "observation": "created",
+                         "tool": "write_file", "target": "app/new.py", "wrote": true}),
+            ),
+        );
+        let f = code_file(&mut s, "app/new.py").unwrap();
+        assert_eq!(
+            (f["added"].clone(), f["removed"].clone()),
+            (Value::Null, Value::Null)
+        );
+        assert!(f["why_counts"].is_string(), "{f}");
+        assert!(f["hunks"][0]["why_no_diff"].is_string(), "{f}");
+    }
+
+    #[test]
+    fn a_line_comment_becomes_a_steer_naming_file_and_line() {
+        // The risk (#831): a comment that names a line the desktop guessed,
+        // or one the file no longer has, so the steer points the model at
+        // the wrong code. A line is named `file:line` only from trellis's
+        // @@ header, in the file as its edit left it; a removed line, a
+        // pending edit's line, an earlier edit's line and any line once the
+        // run has ended take no comment, each saying why; and the steer
+        // sent carries that name as its first words.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p"));
+        feed(&mut s, &applied_edit(2, "app/core.py", 1, 1, ONE_HUNK));
+        let f = code_file(&mut s, "app/core.py").unwrap();
+        let hunk = &f["hunks"][0];
+        assert_eq!(hunk["header"], "@@ -11,3 +11,3 @@");
+        let lines = hunk["lines"].as_array().unwrap();
+        let shape: Vec<(Value, Value, Value, Value)> = lines
+            .iter()
+            .map(|l| {
+                (
+                    l["sign"].clone(),
+                    l["old"].clone(),
+                    l["new"].clone(),
+                    l["at"].clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                (
+                    json!("context"),
+                    json!(11),
+                    json!(11),
+                    json!("app/core.py:11")
+                ),
+                (json!("removed"), json!(12), Value::Null, Value::Null),
+                (
+                    json!("added"),
+                    Value::Null,
+                    json!(12),
+                    json!("app/core.py:12")
+                ),
+                (
+                    json!("context"),
+                    json!(13),
+                    json!(13),
+                    json!("app/core.py:13")
+                ),
+            ]
+        );
+        assert_eq!(
+            lines[2]["text"], "    return 2",
+            "the text without its sign"
+        );
+        assert!(
+            lines[1]["why"]
+                .as_str()
+                .unwrap()
+                .starts_with("a removed line is not in the file now"),
+            "{}",
+            lines[1]
+        );
+
+        // What code.js sends for a comment on the added line: a steer whose
+        // message starts with the line's name. Its row says so.
+        let at = lines[2]["at"].as_str().unwrap();
+        let c = s.steer_sent("desktop-code-steer-1", &format!("{at}: make it 3"));
+        assert!(c.has(Pane::Transcript));
+        let v = all(&mut s);
+        let row = rows(&v["transcript"]).last().cloned().unwrap();
+        assert_eq!(row["kind"], "steer");
+        assert_eq!(row["text"], "app/core.py:12: make it 3");
+
+        // A model line that reads like a header is a line of the file, and
+        // trellis's cut line is not one.
+        let tricky = "--- app/core.py\n+++ app/core.py\n@@ -40,2 +40,2 @@\n x = 1\n-@@ -900 +900 @@\n+--- y\n...(3 more diff lines cut at 8192 bytes)...\n";
+        feed(&mut s, &applied_edit(3, "app/core.py", 1, 1, tricky));
+        let f = code_file(&mut s, "app/core.py").unwrap();
+        let latest = f["hunks"][1]["lines"].as_array().unwrap();
+        let named: Vec<Value> = latest.iter().map(|l| l["at"].clone()).collect();
+        assert_eq!(
+            named,
+            [
+                json!("app/core.py:40"),
+                Value::Null,
+                json!("app/core.py:41"),
+                Value::Null
+            ]
+        );
+        assert_eq!(latest[1]["text"], "@@ -900 +900 @@");
+        assert_eq!(latest[3]["sign"], "note");
+        // The earlier edit's lines may have moved: no comment there now.
+        let earlier = f["hunks"][0]["lines"].as_array().unwrap();
+        assert!(earlier.iter().all(|l| l["at"].is_null()), "{f}");
+        assert!(
+            earlier[0]["why"]
+                .as_str()
+                .unwrap()
+                .starts_with("a later edit to this file"),
+            "{}",
+            earlier[0]
+        );
+        // Without a header, no line is numbered at all.
+        feed(
+            &mut s,
+            &applied_edit(
+                4,
+                "app/other.py",
+                1,
+                0,
+                "--- app/other.py\n+++ app/other.py\n+x\n",
+            ),
+        );
+        let f = code_file(&mut s, "app/other.py").unwrap();
+        let only = &f["hunks"][0]["lines"][2];
+        assert_eq!(
+            (only["new"].clone(), only["at"].clone()),
+            (Value::Null, Value::Null)
+        );
+
+        // A pending edit's lines carry no number until the turn applies it.
+        feed(
+            &mut s,
+            &edit_question("approval-1", "app/core.py", "- x = 1\n+ x = 2\n"),
+        );
+        let f = code_file(&mut s, "app/core.py").unwrap();
+        let pending = f["hunks"][2]["lines"].as_array().unwrap();
+        assert!(pending.iter().all(|l| l["at"].is_null()), "{f}");
+        assert!(
+            pending[1]["why"]
+                .as_str()
+                .unwrap()
+                .contains("with the turn that applies it"),
+            "{f}"
+        );
+
+        // Once the run has ended no steer can reach it.
+        feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p"}).to_string(),
+        );
+        let f = code_file(&mut s, "app/core.py").unwrap();
+        let latest = f["hunks"][1]["lines"].as_array().unwrap();
+        assert!(latest.iter().all(|l| l["at"].is_null()), "{f}");
+        assert!(
+            latest[0]["why"]
+                .as_str()
+                .unwrap()
+                .contains("a steer reaches only a run in flight"),
+            "{f}"
+        );
+    }
+
     /// A value of the shape `field` has on the wire, distinct from every
     /// other value built: numbers are four digits from 7001 up, strings embed
     /// the record and field name. A field this does not know gets a string,
@@ -4928,7 +5692,10 @@ mod tests {
             | "completion_tokens_used"
             | "max_wall_clock_ms"
             | "max_tokens"
-            | "context_bytes" => {
+            | "context_bytes"
+            | "lines_added"
+            | "lines_removed"
+            | "start_line" => {
                 *n += 1;
                 json!(*n)
             }
