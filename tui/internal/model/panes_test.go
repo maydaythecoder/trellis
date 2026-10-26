@@ -63,7 +63,7 @@ func TestPanesOnlyAnAppliedWriteIsAPendingEdit(t *testing.T) {
 		t.Fatalf("wrote %d, edits %+v", wrote, m.Edits.Slice())
 	}
 	m.Update(windowSize(120, 40))
-	if v := m.View(); !strings.Contains(v, "2 edit(s) pending") || !strings.Contains(v, "~ app/calc.py") {
+	if v := m.View(); !strings.Contains(v, "● 2 pending") || !strings.Contains(v, "~ app/calc.py") {
 		t.Fatalf("%s", v)
 	}
 }
@@ -135,7 +135,7 @@ func TestPanesBudgetCarriesTheCeilingTheTurnsFiguresAndElapsed(t *testing.T) {
 	}
 	m.Update(windowSize(140, 30))
 	v := m.View()
-	if !strings.Contains(v, "iteration 2/40  ·  8400 B prompt  ·  0:18 elapsed  ·  30 tok, 2.0 tok/s  ·  queued 10.0 s") {
+	if !strings.Contains(v, "TURNS █░░░░░░░░░░░░░░░ 2/40  ·  PROMPT 8.4 kB  ·  TIME 0:18*  ·  30 tok, 2.0 tok/s  ·  queued 10.0 s") {
 		t.Fatalf("%s", v)
 	}
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
