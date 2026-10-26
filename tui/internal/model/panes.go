@@ -119,5 +119,6 @@ func (m *Model) viewState() view.State {
 		Budget:     m.Budget,
 		Stderr:     m.Stderr,
 		Restored:   m.restored,
+		Theme:      m.theme,
 	}
 }

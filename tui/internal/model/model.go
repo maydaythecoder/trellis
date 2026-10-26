@@ -20,6 +20,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/maydaythecoder/trellis/tui/internal/frames"
+	"github.com/maydaythecoder/trellis/tui/internal/theme"
 	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
@@ -46,6 +47,9 @@ type Options struct {
 	// takes as the user's own choice (ADR 0024 section 3). Empty confirms
 	// the configured model with set_model {configured: true}.
 	ModelSpec string
+	// Theme is the colours the screen is painted in, built from the
+	// terminal before the program starts. The zero Theme paints nothing.
+	Theme theme.Theme
 }
 
 // Model is the TUI's whole state.
@@ -105,6 +109,9 @@ type Model struct {
 	now      func() time.Time
 	runStart time.Time
 
+	// theme is what the screen and the modal are painted with (Options).
+	theme theme.Theme
+
 	// purposes maps a sent command's id to what its answer is read for
 	// (status.go).
 	purposes map[string]string
@@ -128,7 +135,7 @@ type Model struct {
 // New is a model that, once its outbox is drained, has asked trellis for
 // its state, chosen the model and, with a task given, sent it.
 func New(o Options) *Model {
-	m := &Model{now: time.Now}
+	m := &Model{now: time.Now, theme: o.Theme}
 	m.refreshState()
 	if o.ModelSpec != "" {
 		m.setModelID = m.send("set_model", map[string]any{"model": o.ModelSpec})
@@ -608,7 +615,7 @@ func (m *Model) pushLine(l string) {
 func (m *Model) View() string {
 	w, h := m.size()
 	if m.Modal != nil {
-		return view.Modal(m.Modal.Question, m.Modal.Diff, m.Modal.Scroll, w, h)
+		return view.Modal(m.theme, m.Modal.Question, m.Modal.Diff, m.Modal.Scroll, w, h)
 	}
 	return view.Render(m.viewState(), w, h)
 }
