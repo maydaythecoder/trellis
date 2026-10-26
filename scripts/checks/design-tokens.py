@@ -1,35 +1,48 @@
 #!/usr/bin/env python3
-"""design-tokens.py: docs/design/DESIGN.md's token tables match the wireframe.
+"""design-tokens.py: every copy of the design tokens matches tokens.json.
 
-    scripts/checks/design-tokens.py               check
-    scripts/checks/design-tokens.py --write       regenerate the tables from the wireframe
-    scripts/checks/design-tokens.py --self-test   prove the check bites on a drifted value
+    scripts/checks/design-tokens.py               check every copy
+    scripts/checks/design-tokens.py --write       regenerate DESIGN.md's tables
+    scripts/checks/design-tokens.py --self-test   prove each check bites
 
-The source of truth for every design token is the first <style> block of
-docs/design/run-view-wireframe.html (DESIGN.md section 3). DESIGN.md carries
-a copy of the values for reading; a copy that drifts is worse than none, so
-this check regenerates the two tables from the wireframe and fails when
-either differs from what the document holds. Values are compared as text,
-so a token added, removed, renamed or recoloured in either file fails here.
+docs/design/system/tokens.json is the one source of every token value: the
+owner's design system, vendored into the repository (DESIGN.md section 3).
+Everything else is a copy that must agree with it:
 
-Exit 0: the tables match (or were written). Exit 1: they differ, with a
-diff, or the self-test failed. Exit 2: a file or a marker is missing.
+- the three tables in docs/design/DESIGN.md (colour, base, terminal), which
+  --write regenerates from tokens.json;
+- the token block at the top of docs/design/run-view-wireframe.html (the
+  dark rule, the light rule and the theme-free rule of its first <style>),
+  checked name by name and in order, and never rewritten by this script.
+
+A client that keeps its own copy (desktop/ui/style.css, the TUI's theme
+table) is added here by the ticket that creates that copy, so a value has one
+place to change and one check that names where it drifted.
+
+Exit 0: every copy matches (or the tables were written). Exit 1: a copy
+differs, each difference printed, or the self-test failed. Exit 2: a file, a
+selector or a marker is missing, or tokens.json lacks a section.
 """
 import difflib
+import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SOURCE = os.path.join(ROOT, "docs", "design", "system", "tokens.json")
 WIREFRAME = os.path.join(ROOT, "docs", "design", "run-view-wireframe.html")
 DESIGN = os.path.join(ROOT, "docs", "design", "DESIGN.md")
 
-# The three selectors the wireframe's token block declares, in order: the
-# dark theme (also :root), the light theme, and the theme-free base tokens.
-DARK = ":root,[data-theme=dark]"
-LIGHT = "[data-theme=light]"
-BASE = ":root"
+# The wireframe's three token rules, by the selector each is written under.
+RULES = (("dark", ":root,[data-theme=dark]"), ("light", "[data-theme=light]"), ("base", ":root"))
+TABLES = ("colour", "base", "terminal")
+
+
+class Missing(Exception):
+    """A file, selector, marker or section this check needs is absent (exit 2)."""
 
 
 def read(path):
@@ -37,132 +50,179 @@ def read(path):
         with open(path, encoding="utf-8") as f:
             return f.read()
     except OSError as e:
-        print(f"FAIL: cannot read {path}: {e}")
-        sys.exit(2)
+        raise Missing(f"cannot read {path}: {e}") from e
 
 
-def token_block(html):
-    """The first <style> block, where the tokens live (docs/design/README.md)."""
-    m = re.search(r"<style[^>]*>(.*?)</style>", html, re.S)
-    if not m:
-        print(f"FAIL: no <style> block in {WIREFRAME}")
-        sys.exit(2)
-    return m.group(1)
+def load(source_path):
+    """tokens.json as ordered (name, value) lists: dark, light, base, terminal."""
+    try:
+        data = json.loads(read(source_path))
+        dark, light = [], []
+        for t in data["color"]["tokens"] + data["shadow"]["tokens"]:
+            v = t["value"]
+            # A value with no per-theme split (cool-fill) is the same in both.
+            d, l = (v["dark"], v["light"]) if isinstance(v, dict) else (v, v)
+            dark.append(("--" + t["name"], d))
+            light.append(("--" + t["name"], l))
+        base = [("--" + t["name"], t["value"])
+                for t in data["spacing"]["tokens"] + data["radius"]["tokens"]]
+        base += [("--font-" + fam, stack) for fam, stack in data["type"]["families"].items()]
+        terminal = [(t["name"], t["value"], t["usage"]) for t in data["terminal"]["tokens"]]
+    except json.JSONDecodeError as e:
+        raise Missing(f"{source_path} is not JSON: {e}") from e
+    except (KeyError, TypeError) as e:
+        raise Missing(f"{source_path} lacks a section this check reads: {e}") from e
+    return {"dark": dark, "light": light, "base": base, "terminal": terminal}
 
 
-def tokens(block, selector):
-    """{name: value} for the one rule whose selector is exactly `selector`."""
-    m = re.search(re.escape(selector) + r"\{(.*?)\}", block, re.S)
-    if not m:
-        print(f"FAIL: no rule for {selector} in the wireframe's token block")
-        sys.exit(2)
-    pairs = re.findall(r"(--[\w\\.-]+)\s*:\s*([^;]+);", m.group(1))
-    # CSS escapes the dot in --space-0.5; the document shows the plain name.
-    return {k.replace("\\", ""): v.strip() for k, v in pairs}
-
-
-def tables(html):
-    """The two markdown tables DESIGN.md holds, generated from the wireframe."""
-    block = token_block(html)
-    dark, light, base = tokens(block, DARK), tokens(block, LIGHT), tokens(block, BASE)
+def tables(tok):
+    """The markdown tables DESIGN.md holds, generated from the tokens."""
+    light = dict(tok["light"])
     colour = ["| Token | Dark | Light |", "|---|---|---|"]
-    for k, v in dark.items():
-        colour.append(f"| `{k}` | `{v}` | `{light.get(k, '')}` |")
-    for k in light:
-        if k not in dark:
-            colour.append(f"| `{k}` | `` | `{light[k]}` |")
-    plain = ["| Token | Value |", "|---|---|"]
-    for k, v in base.items():
-        plain.append(f"| `{k}` | `{v}` |")
-    return {"colour": "\n".join(colour), "base": "\n".join(plain)}
+    colour += [f"| `{n}` | `{d}` | `{light[n]}` |" for n, d in tok["dark"]]
+    base = ["| Token | Value |", "|---|---|"]
+    base += [f"| `{n}` | `{v}` |" for n, v in tok["base"]]
+    terminal = ["| Token | 256-colour index | Usage, with the 16-colour fallback |", "|---|---|---|"]
+    for n, v, usage in tok["terminal"]:
+        cell = usage.replace("|", "\\|")
+        terminal.append(f"| `{n}` | `{v}` | {cell} |")
+    return {"colour": "\n".join(colour), "base": "\n".join(base), "terminal": "\n".join(terminal)}
 
 
 def section(doc, name):
     """The text between <!-- tokens:name --> and <!-- /tokens:name -->."""
-    m = re.search(
-        rf"<!-- tokens:{name} -->\n(.*?)\n<!-- /tokens:{name} -->", doc, re.S
-    )
+    # The body is empty (a new section) or whole lines ending in a newline.
+    m = re.search(rf"<!-- tokens:{name} -->\n((?:.*?\n)?)<!-- /tokens:{name} -->", doc, re.S)
     if not m:
-        print(f"FAIL: no <!-- tokens:{name} --> section in {DESIGN}")
-        sys.exit(2)
+        raise Missing(f"no <!-- tokens:{name} --> section in DESIGN.md")
     return m
 
 
-def check(wireframe_path, design_path):
+def wireframe_rules(html):
+    """{dark, light, base}: the wireframe's token rules as (name, value) lists."""
+    m = re.search(r"<style[^>]*>(.*?)</style>", html, re.S)
+    if not m:
+        raise Missing("no <style> block in the wireframe")
+    out = {}
+    for key, selector in RULES:
+        r = re.search(re.escape(selector) + r"\{(.*?)\}", m.group(1), re.S)
+        if not r:
+            raise Missing(f"no rule for {selector} in the wireframe's token block")
+        # CSS escapes the dot in --space-0.5; tokens.json spells it plainly.
+        out[key] = [(k.replace("\\", ""), v.strip())
+                    for k, v in re.findall(r"(--[\w\\.-]+)\s*:\s*([^;]+);", r.group(1))]
+    return out
+
+
+def compare(label, want, have):
+    """Each way two ordered (name, value) lists differ, as printable lines."""
+    wd, hd = dict(want), dict(have)
+    found = [f"{label}: {n} is missing" for n in wd if n not in hd]
+    found += [f"{label}: {n} is not in tokens.json" for n in hd if n not in wd]
+    found += [f"{label}: {n} is {hd[n]}, tokens.json says {wd[n]}"
+              for n in wd if n in hd and hd[n] != wd[n]]
+    if not found and [n for n, _ in want] != [n for n, _ in have]:
+        found.append(f"{label}: the same tokens in a different order")
+    return found
+
+
+def check(source_path, wireframe_path, design_path, out=sys.stdout):
+    """True when the wireframe and DESIGN.md both agree with tokens.json."""
+    tok = load(source_path)
+    problems = []
+    rules = wireframe_rules(read(wireframe_path))
+    for key, _ in RULES:
+        problems += compare(f"wireframe {key} rule", tok[key], rules[key])
     doc = read(design_path)
-    want = tables(read(wireframe_path))
-    ok = True
-    for name, table in want.items():
+    for name, table in tables(tok).items():
         have = section(doc, name).group(1)
-        if have != table:
-            ok = False
-            print(f"FAIL: DESIGN.md tokens:{name} differs from the wireframe")
-            sys.stdout.writelines(
-                difflib.unified_diff(
-                    have.splitlines(True), table.splitlines(True),
-                    "DESIGN.md", "run-view-wireframe.html",
-                )
-            )
-    return ok
+        if have != table + "\n":
+            problems.append(f"DESIGN.md tokens:{name} differs from tokens.json "
+                            "(scripts/checks/design-tokens.py --write regenerates it)")
+            out.writelines(difflib.unified_diff(
+                have.splitlines(True), (table + "\n").splitlines(True), "DESIGN.md", "tokens.json"))
+            out.write("\n")
+    for p in problems:
+        out.write(f"FAIL: {p}\n")
+    return not problems
 
 
-def write(wireframe_path, design_path):
+def write(source_path, design_path):
     doc = read(design_path)
-    for name, table in tables(read(wireframe_path)).items():
+    for name, table in tables(load(source_path)).items():
         m = section(doc, name)
-        doc = doc[: m.start(1)] + table + doc[m.end(1):]
+        doc = doc[: m.start(1)] + table + "\n" + doc[m.end(1):]
     with open(design_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(doc)
     print(f"wrote {design_path}")
 
 
 def self_test():
-    """A drifted value, a missing token and an extra token must each fail."""
-    html = read(WIREFRAME)
-    doc = read(DESIGN)
-    if not check(WIREFRAME, DESIGN):
-        print("FAIL: self-test needs the committed files to match first")
-        return False
+    """Plant each kind of drift in a copy of the three files; each must fail."""
+    with open(os.devnull, "w") as quiet:
+        if not check(SOURCE, WIREFRAME, DESIGN, out=quiet):
+            print("FAIL: self-test needs the committed files to agree first")
+            return False
+    source, html, doc = read(SOURCE), read(WIREFRAME), read(DESIGN)
     cases = {
-        "drifted value": html.replace("--ground:#0b0b0d", "--ground:#000000", 1),
-        "missing token": html.replace("--scrim:#000000b3;", "", 1),
-        "extra token": html.replace("--scrim:", "--extra:#ffffff;--scrim:", 1),
+        "a value drifted in tokens.json": (source.replace('"#0b0b0d"', '"#000001"', 1), html, doc),
+        "a value drifted in the wireframe": (source, html.replace("--ground:#0b0b0d", "--ground:#000001", 1), doc),
+        "a token missing from the wireframe": (source, html.replace("--scrim:#000000b3;", "", 1), doc),
+        "a token only the wireframe has": (source, html.replace("--scrim:", "--extra:#ffffff;--scrim:", 1), doc),
+        "a DESIGN.md row edited by hand": (source, html, doc.replace("| `--ground` | `#0b0b0d`", "| `--ground` | `#000001`", 1)),
     }
     with tempfile.TemporaryDirectory() as d:
-        dpath = os.path.join(d, "DESIGN.md")
-        with open(dpath, "w", encoding="utf-8") as f:
-            f.write(doc)
-        for label, variant in cases.items():
-            if variant == html:
+        paths = [os.path.join(d, n) for n in ("tokens.json", "wireframe.html", "DESIGN.md")]
+        for label, files in cases.items():
+            if files == (source, html, doc):
                 print(f"FAIL: self-test could not plant '{label}'")
                 return False
-            wpath = os.path.join(d, "wireframe.html")
-            with open(wpath, "w", encoding="utf-8") as f:
-                f.write(variant)
-            # Quietly: the planted diff is expected output, not a finding.
-            out, sys.stdout = sys.stdout, open(os.devnull, "w")
+            for path, body in zip(paths, files):
+                with open(path, "w", encoding="utf-8", newline="\n") as f:
+                    f.write(body)
+            with open(os.devnull, "w") as quiet:
+                if check(*paths, out=quiet):
+                    print(f"FAIL: self-test: '{label}' was not caught")
+                    return False
+        # --write repairs DESIGN.md after tokens.json moves, and touches
+        # nothing else: the wireframe still fails until a person edits it.
+        shutil.copyfile(DESIGN, paths[2])
+        with open(paths[0], "w", encoding="utf-8", newline="\n") as f:
+            f.write(cases["a value drifted in tokens.json"][0])
+        with open(paths[1], "w", encoding="utf-8", newline="\n") as f:
+            f.write(html)
+        with open(os.devnull, "w") as quiet:
+            stdout, sys.stdout = sys.stdout, quiet
             try:
-                passed = check(wpath, dpath)
+                write(paths[0], paths[2])
             finally:
-                sys.stdout.close()
-                sys.stdout = out
-            if passed:
-                print(f"FAIL: self-test: '{label}' was not caught")
+                sys.stdout = stdout
+            tok = load(paths[0])
+            regenerated = read(paths[2])
+            if any(section(regenerated, n).group(1) != t + "\n" for n, t in tables(tok).items()):
+                print("FAIL: self-test: --write did not regenerate the tables")
+                return False
+            if check(*paths, out=quiet):
+                print("FAIL: self-test: the drifted wireframe passed after --write")
                 return False
     print("self-test: ok")
     return True
 
 
 def main(argv):
-    if argv == ["--self-test"]:
-        return 0 if self_test() else 1
-    if argv == ["--write"]:
-        write(WIREFRAME, DESIGN)
-        return 0
-    if argv:
-        print(__doc__)
+    try:
+        if argv == ["--self-test"]:
+            return 0 if self_test() else 1
+        if argv == ["--write"]:
+            write(SOURCE, DESIGN)
+            return 0
+        if argv:
+            print(__doc__)
+            return 2
+        return 0 if check(SOURCE, WIREFRAME, DESIGN) else 1
+    except Missing as e:
+        print(f"FAIL: {e}")
         return 2
-    return 0 if check(WIREFRAME, DESIGN) else 1
 
 
 if __name__ == "__main__":
