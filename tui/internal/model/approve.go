@@ -6,6 +6,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/maydaythecoder/trellis/tui/internal/frames"
+	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
 // ModalPage is how far PgUp and PgDn move the approval modal's diff: the
@@ -24,9 +25,9 @@ type Approval struct {
 	Question string
 	// Diff is the request's detail, line breaks kept.
 	Diff string
-	// Scroll is the first line of Diff in view. It is held below the line
-	// count here; the view stops short of it once the rest fits, since how
-	// much fits is layout (as ScrollBack is for the transcript).
+	// Scroll is the first line of Diff in view, held between the first line
+	// and the start of the last full page at the current size, the view's
+	// own limit (view.ModalLastFrom, #843).
 	Scroll int
 }
 
@@ -45,7 +46,7 @@ func (m *Model) approvalRequested(a frames.ApprovalFields) {
 	if a.Detail != nil {
 		d = *a.Detail
 	}
-	ap := Approval{ID: a.ID, Question: Plain(q), Diff: plainLines(strings.TrimRight(d, " \t\r\n"))}
+	ap := Approval{ID: a.ID, Question: view.Plain(q), Diff: plainLines(strings.TrimRight(d, " \t\r\n"))}
 	if m.Modal == nil {
 		m.Modal = &ap
 		return
@@ -80,18 +81,14 @@ func (m *Model) modalKey(k tea.KeyMsg) {
 	}
 }
 
-// scrollModal moves the modal's first line by d, within the diff: never
-// above its first line, never past its last.
+// scrollModal moves the modal's first line by d, never above the diff's
+// first line and never past the start of its last full page, the view's
+// own limit. Stopped at the diff's last line instead, the offset ran a page
+// past what the view shows, and the first Up after the end moved nothing
+// (#843).
 func (m *Model) scrollModal(d int) {
-	last := len(strings.Split(m.Modal.Diff, "\n")) - 1
-	s := m.Modal.Scroll + d
-	if s > last {
-		s = last
-	}
-	if s < 0 {
-		s = 0
-	}
-	m.Modal.Scroll = s
+	w, h := m.size()
+	m.Modal.Scroll = max(min(m.Modal.Scroll+d, view.ModalLastFrom(m.Modal.Diff, w, h)), 0)
 }
 
 // answer sends approve {id, yes} for the question on screen, says which,
@@ -119,7 +116,7 @@ func (m *Model) answer(yes bool) {
 func plainLines(s string) string {
 	lines := strings.Split(s, "\n")
 	for i, l := range lines {
-		lines[i] = Plain(l)
+		lines[i] = view.Plain(l)
 	}
 	return strings.Join(lines, "\n")
 }

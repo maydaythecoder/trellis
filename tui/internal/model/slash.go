@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
 // Slash commands are addressed to this view and start no run. Each answer
@@ -22,8 +24,8 @@ func (m *Model) local(line string) bool {
 		if f := strings.Fields(rest); len(f) > 0 {
 			sub = f[0]
 		}
-		m.pushLine("· `" + Plain(line) + "` is a shell command, and this is not a shell.")
-		m.pushLine("  Leave with esc and run it, or use /" + Plain(sub) + " if this view has one — /help lists what it does.")
+		m.pushLine("· `" + view.Plain(line) + "` is a shell command, and this is not a shell.")
+		m.pushLine("  Leave with esc and run it, or use /" + view.Plain(sub) + " if this view has one — /help lists what it does.")
 		return true
 	}
 	if !strings.HasPrefix(line, "/") {
@@ -36,11 +38,15 @@ func (m *Model) local(line string) bool {
 	}
 	args := fields[min(1, len(fields)):]
 	if name == "clear" {
+		// Following again: a scroll back kept from the cleared transcript
+		// pointed above an empty pane, and the line saying it was cleared
+		// was not in view (#855).
 		m.Transcript = nil
+		m.ScrollBack = 0
 		m.pushLine("· transcript cleared")
 		return true
 	}
-	m.pushLine("> " + Plain(line))
+	m.pushLine("> " + view.Plain(line))
 	switch name {
 	case "help", "?":
 		for _, l := range helpLines {
@@ -57,7 +63,7 @@ func (m *Model) local(line string) bool {
 	case "codebase":
 		m.ask("get_codebase", forCodebase, nil)
 	default:
-		m.pushLine("· `/" + Plain(name) + "` is not a command here. /help lists them.")
+		m.pushLine("· `/" + view.Plain(name) + "` is not a command here. /help lists them.")
 	}
 	return true
 }
@@ -128,7 +134,7 @@ func (m *Model) radiusAnswered(data any) {
 	doubt, _ := d["doubt"].(map[string]any)
 	sym, _ := d["symbol"].(string)
 	m.pushLine(fmt.Sprintf("· %s: reach %s resolved · %s ambiguous · %s symbols reached",
-		Plain(sym), count(reach["resolved"]), count(reach["ambiguous"]), count(reach["symbols_reached"])))
+		view.Plain(sym), count(reach["resolved"]), count(reach["ambiguous"]), count(reach["symbols_reached"])))
 	m.pushLine(fmt.Sprintf("  doubt: %s unbound call sites in %s touched files",
 		count(doubt["unbound_in_touched_files"]), count(doubt["touched_files"])))
 	m.neverARatio()
@@ -151,10 +157,10 @@ func (m *Model) codebaseAnswered(data any) {
 		for _, cv := range cs {
 			c, _ := cv.(map[string]any)
 			callee, _ := c["module"].(string)
-			calls = append(calls, fmt.Sprintf("%s (%s)", Plain(callee), count(c["call_sites"])))
+			calls = append(calls, fmt.Sprintf("%s (%s)", view.Plain(callee), count(c["call_sites"])))
 		}
 		sort.Strings(calls)
-		line := fmt.Sprintf("  %s  defines %s", Plain(name), count(mod["defines"]))
+		line := fmt.Sprintf("  %s  defines %s", view.Plain(name), count(mod["defines"]))
 		if len(calls) > 0 {
 			line += " · calls " + strings.Join(calls, ", ")
 		}

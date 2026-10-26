@@ -93,8 +93,8 @@ func TestViewSixRegionsAtEightyByTwentyFour(t *testing.T) {
 		t.Fatalf("%d rows, want 24", len(lines))
 	}
 	for i, l := range lines {
-		if n := len([]rune(l)); n > 80 {
-			t.Fatalf("row %d is %d wide:\n%s", i, n, l)
+		if n := Width(l); n > 80 {
+			t.Fatalf("row %d is %d cells wide:\n%s", i, n, l)
 		}
 	}
 }
@@ -166,6 +166,81 @@ func TestViewTaskLineShowsWhatIsTypedAndHowToSendIt(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("%q missing:\n%s", want, out)
 		}
+	}
+}
+
+// #842: sixteen @ completions at 80x24 left the body one row, and the
+// transcript sliced past its own end: `slice bounds out of range [1:0]`.
+// However many are offered, at every size, the screen is laid out whole:
+// h rows, none wider than w, the radius pane's counts drawn, and a list
+// that does not fit says how many it leaves out.
+func TestViewManyCompletionsNeverPanic(t *testing.T) {
+	for _, size := range [][2]int{{80, 24}, {80, 25}, {100, 30}, {120, 40}} {
+		w, h := size[0], size[1]
+		room := h - 1 - 3 - 3 - MinBodyRows
+		for n := 0; n <= 40; n++ {
+			s := populated()
+			for i := 0; i < n; i++ {
+				s.Offered = append(s.Offered, fmt.Sprintf("src/file_%02d.py", i))
+			}
+			out := Render(s, w, h)
+			lines := strings.Split(out, "\n")
+			if len(lines) != h {
+				t.Fatalf("%dx%d, %d offered: %d rows:\n%s", w, h, n, len(lines), out)
+			}
+			for i, l := range lines {
+				if Width(l) > w {
+					t.Fatalf("%dx%d, %d offered: row %d is %d cells:\n%s", w, h, n, i, Width(l), out)
+				}
+			}
+			if !strings.Contains(out, "resolved") || !strings.Contains(out, "a floor on reach") {
+				t.Fatalf("%dx%d, %d offered: the radius pane was cut:\n%s", w, h, n, out)
+			}
+			more := fmt.Sprintf("… %d more", n-(room-1))
+			if n > room && !strings.Contains(out, more) {
+				t.Fatalf("%dx%d, %d offered: %q missing:\n%s", w, h, n, more, out)
+			}
+			if n <= room && strings.Contains(out, " more") {
+				t.Fatalf("%dx%d, %d offered fit, yet a row says more:\n%s", w, h, n, out)
+			}
+			if n > 0 && !strings.Contains(out, "tab src/file_00.py") {
+				t.Fatalf("%dx%d, %d offered: the first completion is not drawn:\n%s", w, h, n, out)
+			}
+		}
+	}
+}
+
+// #842: once the typed line was wider than its box, its end and the
+// cursor were cut off, so what was being typed could not be seen. The
+// line now keeps its end in view and marks what scrolled off the left.
+func TestViewLongInputKeepsTheCursorVisible(t *testing.T) {
+	for _, w := range []int{80, 120} {
+		s := populated()
+		s.Input = strings.Repeat("refactor the resolver ", 12) + "and the end is here"
+		out := Render(s, w, 24)
+		var row string
+		for _, l := range strings.Split(out, "\n") {
+			if strings.Contains(l, "█") {
+				row = l
+			}
+		}
+		if row == "" {
+			t.Fatalf("%d columns: no row holds the cursor:\n%s", w, out)
+		}
+		if !strings.Contains(row, "and the end is here█") {
+			t.Fatalf("%d columns: the end and the cursor are not in view: %q", w, row)
+		}
+		if !strings.Contains(row, "│…") {
+			t.Fatalf("%d columns: what scrolled off the left is not marked: %q", w, row)
+		}
+		if Width(row) != w {
+			t.Fatalf("%d columns: the task row is %d cells: %q", w, Width(row), row)
+		}
+	}
+	s := populated()
+	s.Input = "short"
+	if out := Render(s, 80, 24); !strings.Contains(out, "│short█") {
+		t.Fatalf("a line that fits is drawn whole from its start:\n%s", out)
 	}
 }
 
