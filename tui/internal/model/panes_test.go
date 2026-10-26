@@ -160,7 +160,7 @@ func TestPanesAWarningIsALineAndNotATurn(t *testing.T) {
 func TestPanesObservationLinesFollowTheTurn(t *testing.T) {
 	m := running(t)
 	feed(m, turn(1, "read_file a.py", map[string]any{"observation": "1\n2\n3\n4\n5\n6\n7\x1b[2J"}))
-	tail := m.Transcript[len(m.Transcript)-7:]
+	tail := texts(m)[len(m.Transcript)-7:]
 	if tail[0] != "· read_file a.py" || tail[1] != "    1" || tail[6] != "    6" {
 		t.Fatalf("%q", tail)
 	}

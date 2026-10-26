@@ -16,7 +16,7 @@ func u(n uint64) *uint64 { return &n }
 // edit, a passing check, a radius and a budget two turns in.
 func populated() State {
 	return State{
-		Transcript: []string{"Reading blast radius"},
+		Transcript: rowsOf(RoleText, "Reading blast radius"),
 		Edits:      []Edit{{Path: "src/index/resolve.rs", Status: Proposed}},
 		Checks:     []Check{{Name: "typecheck", Passed: true}},
 		Radius:     &Radius{Resolved: 47, Candidates: 3, Unresolved: 2},
@@ -129,9 +129,9 @@ func TestViewTooSmallSaysSoInsteadOfLayingOut(t *testing.T) {
 func long() State {
 	s := State{Running: true}
 	for i := 0; i < 200; i++ {
-		s.Transcript = append(s.Transcript, fmt.Sprintf("step %d of the run", i))
+		s.Transcript = append(s.Transcript, Row{Text: fmt.Sprintf("step %d of the run", i)})
 	}
-	s.Transcript = append(s.Transcript, "THE LAST LINE")
+	s.Transcript = append(s.Transcript, Row{Text: "THE LAST LINE"})
 	return s
 }
 
@@ -335,7 +335,7 @@ func TestViewRadiusIsThreeCountsNeverARatio(t *testing.T) {
 // carried cannot move the cursor, clear the screen or recolour a row.
 func TestViewNoEscapeSequenceReachesTheScreen(t *testing.T) {
 	s := populated()
-	s.Transcript = append(s.Transcript, "checking\x1b[2K\x1b[Aconverged\r\x07 done")
+	s.Transcript = append(s.Transcript, Row{Text: "checking\x1b[2K\x1b[Aconverged\r\x07 done", Role: RoleNote})
 	s.Edits = append(s.Edits, Edit{Path: "a\x1b]0;x\x07.py"})
 	s.Checks = append(s.Checks, Check{Name: "tests\x1b[31m", Passed: false})
 	s.Actions = []Action{{Tool: "edit\x1b", Target: "\x9b2J", Wrote: true}}
