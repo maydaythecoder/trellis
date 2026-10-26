@@ -69,8 +69,8 @@ func TestStatusWorktreeASecondTaskClearsTheFourPanes(t *testing.T) {
 	worked(m)
 	feed(m, runEnd(map[string]any{"outcome": "not_converged", "exit": 2, "restored": true}))
 	submit(m, "second")
-	if len(m.Actions) != 0 || len(m.Edits) != 0 || len(m.Checks) != 0 || m.Radius != nil {
-		t.Fatalf("actions %v edits %v checks %v radius %v", m.Actions, m.Edits, m.Checks, m.Radius)
+	if m.Actions.Len() != 0 || m.Edits.Len() != 0 || m.Checks.Len() != 0 || m.Radius != nil {
+		t.Fatalf("actions %v edits %v checks %v radius %v", m.Actions.Slice(), m.Edits.Slice(), m.Checks.Slice(), m.Radius)
 	}
 	if m.restored != nil {
 		t.Fatal("the last run's ending is kept for this one")
