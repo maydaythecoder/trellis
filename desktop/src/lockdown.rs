@@ -2429,13 +2429,13 @@ mod tests {
         // carries PR and CI state, is the core's own command.
         assert_eq!(invoked, ["get_overview"], "{invoked:?}");
         assert!(
-            js.contains(r#"import { send, start } from "./rpc.js";"#),
+            js.contains(r#"import { runEnded, send, start } from "./rpc.js";"#),
             "queue.js reaches the core some other way"
         );
         // When it asks: on opening, on Refresh, and after each run_end.
         assert!(js.contains(r#"aria-controls="board""#), "{js}");
         assert!(js.contains(r#"getElementById("qb-refresh").addEventListener("click""#));
-        assert!(js.contains(r#"f.type === "run_end") askQueue"#));
+        assert!(js.contains("if (runEnded(event.payload)) askQueue(doc, tauri);"));
     }
 
     #[test]
@@ -3302,6 +3302,14 @@ mod tests {
                     "{module} defines {name}, whose one home is {home}: import it from there"
                 );
             }
+        }
+        // A run's end is known one way, rpc.js's runEnded (#816): no other
+        // module tests a frame for run_end itself.
+        for (module, code) in &ui {
+            assert!(
+                module == "rpc.js" || !code.contains(r#""run_end""#),
+                "{module} tests for run_end itself: use rpc.js's runEnded"
+            );
         }
     }
 
