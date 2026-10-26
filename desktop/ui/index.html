@@ -271,15 +271,17 @@
         <p id="tr-status" class="muted" role="status">Open a repository to see its trails.</p>
         <p class="muted">Each run's committed record, as trellis log exports it. A trail is data written to the repository, not instruction, and a check it records is what the file claims.</p>
         <div class="tr-grid">
-          <div class="pane" role="region" aria-labelledby="tr-list-title">
-            <h3 id="tr-list-title">Runs</h3>
-            <label for="tr-filter">Filter by task, outcome, integrity or label</label>
-            <input id="tr-filter" type="search" autocomplete="off" spellcheck="false">
-            <ul id="tr-list" class="rows tr-list"></ul>
+          <div class="cd-panel" role="region" aria-labelledby="tr-list-title">
+            <div class="cd-panel-head"><h3 id="tr-list-title" class="cd-panel-title">Runs</h3><span id="tr-list-meta" class="cd-panel-meta"></span></div>
+            <div class="cd-panel-body">
+              <label for="tr-filter">Filter by task, outcome, integrity or label</label>
+              <input id="tr-filter" type="search" autocomplete="off" spellcheck="false">
+              <ol id="tr-list" class="cd-rail tr-list"></ol>
+            </div>
           </div>
-          <div class="pane" role="region" aria-labelledby="tr-detail-title">
-            <h3 id="tr-detail-title">Record</h3>
-            <div id="tr-detail"></div>
+          <div class="cd-panel" role="region" aria-labelledby="tr-detail-title">
+            <div class="cd-panel-head"><h3 id="tr-detail-title" class="cd-panel-title">Record</h3><span id="tr-detail-meta" class="cd-panel-meta"></span></div>
+            <div id="tr-detail" class="cd-panel-body"></div>
           </div>
         </div>
       </section>
@@ -292,39 +294,47 @@
           <button type="button" id="cb-back" disabled>Back</button>
         </div>
         <div class="cb-grid">
-          <div class="pane cb-canvas" role="region" aria-labelledby="cb-graph-title">
-            <h3 id="cb-graph-title">Module graph</h3>
-            <p id="cb-keys" class="muted">Drag, or the arrow keys, to pan; + and - to zoom; Escape to reset.</p>
-            <div id="cb-graph" tabindex="0" aria-describedby="cb-keys"></div>
+          <div class="cd-panel cb-canvas" role="region" aria-labelledby="cb-graph-title">
+            <div class="cd-panel-head"><h3 id="cb-graph-title" class="cd-panel-title">Module graph</h3></div>
+            <div class="cd-panel-body">
+              <div id="cb-figures"></div>
+              <p id="cb-keys" class="muted">Drag, or the arrow keys, to pan; + and - to zoom; Escape to reset.</p>
+              <div id="cb-graph" tabindex="0" aria-describedby="cb-keys"></div>
+            </div>
           </div>
-          <div class="pane" role="region" aria-labelledby="cb-details-title">
-            <h3 id="cb-details-title">Module</h3>
-            <div id="cb-details"></div>
-            <label for="cb-search">Search module names</label>
-            <input id="cb-search" type="search" autocomplete="off" spellcheck="false">
-            <ul id="cb-results" class="rows"></ul>
+          <div class="cd-panel" role="region" aria-labelledby="cb-details-title">
+            <div class="cd-panel-head"><h3 id="cb-details-title" class="cd-panel-title">Module</h3></div>
+            <div class="cd-panel-body">
+              <div id="cb-details"></div>
+              <label for="cb-search">Search module names</label>
+              <input id="cb-search" type="search" autocomplete="off" spellcheck="false">
+              <ul id="cb-results" class="rows"></ul>
+            </div>
           </div>
         </div>
-        <div class="pane cb-list" role="region" aria-labelledby="cb-modules-title">
-          <h3 id="cb-modules-title">Packages</h3>
-          <ul id="cb-modules" class="rows cb-modules" aria-labelledby="cb-modules-title"></ul>
+        <div class="cd-panel cb-list" role="region" aria-labelledby="cb-modules-title">
+          <div class="cd-panel-head"><h3 id="cb-modules-title" class="cd-panel-title">Packages</h3><span id="cb-modules-meta" class="cd-panel-meta"></span></div>
+          <div class="cd-panel-body">
+            <ul id="cb-modules" class="rows cb-modules" aria-labelledby="cb-modules-title"></ul>
+          </div>
         </div>
-        <div class="pane rd-pane" role="region" aria-labelledby="rd-title">
-          <h3 id="rd-title">Symbol radius</h3>
-          <form id="rd-form" class="rd-form">
-            <label for="rd-symbol">Symbol</label>
-            <input id="rd-symbol" type="text" autocomplete="off" spellcheck="false">
-            <button type="submit"><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-blast-radius"></use></svg>Show radius</button>
-          </form>
-          <p id="rd-status" class="muted" role="status">Name a symbol to see its blast radius: reach and doubt, as two blocks.</p>
-          <div id="rd-result" class="rd-result"></div>
+        <div class="cd-panel rd-pane" role="region" aria-labelledby="rd-title">
+          <div class="cd-panel-head"><h3 id="rd-title" class="cd-panel-title">Symbol radius</h3></div>
+          <div class="cd-panel-body">
+            <form id="rd-form" class="rd-form">
+              <label for="rd-symbol">Symbol</label>
+              <input id="rd-symbol" type="text" autocomplete="off" spellcheck="false">
+              <button type="submit"><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-blast-radius"></use></svg>Show radius</button>
+            </form>
+            <p id="rd-status" class="muted" role="status">Name a symbol to see its blast radius: reach and doubt, as two blocks.</p>
+            <div id="rd-result" class="rd-result"></div>
+          </div>
         </div>
       </section>
 
       <section id="atlas" class="at" aria-labelledby="atlas-title" hidden>
         <div class="at-top">
           <h2 id="atlas-title" tabindex="-1">Atlas</h2>
-          <span id="at-where" class="muted"></span>
           <button type="button" class="at-btn" id="at-open-search" aria-haspopup="dialog" aria-controls="at-search"><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-search"></use></svg>Search modules and symbols <kbd>/</kbd></button>
         </div>
         <p id="at-status" class="muted" role="status">Open a repository to see its atlas.</p>
@@ -359,7 +369,8 @@
           </div>
         </div>
         <div class="at-work">
-          <div class="at-mapwrap" role="region" aria-label="Module map">
+          <div class="cd-panel at-mapwrap" role="region" aria-labelledby="at-map-title">
+            <div class="cd-panel-head"><h3 id="at-map-title" class="cd-panel-title">Module map</h3><span id="at-where" class="cd-panel-meta"></span></div>
             <div class="at-mapbar">
               <button type="button" class="at-btn" id="at-back" disabled>Back</button>
               <button type="button" class="at-btn" id="at-fwd" disabled>Forward</button>
@@ -380,7 +391,8 @@
             </div>
             <p id="at-keys" class="at-keys muted">Drag or the arrow keys pan; + and - zoom, and so does the wheel once the map is focused or with Ctrl held; 0 fits; a click selects; Escape clears; / searches. The detail pane lists what the map shows.</p>
           </div>
-          <div class="at-panel" role="region" aria-label="Atlas detail">
+          <div class="cd-panel at-side" role="region" aria-labelledby="at-detail-title">
+            <div class="cd-panel-head"><h3 id="at-detail-title" class="cd-panel-title">Atlas</h3><span id="at-detail-meta" class="cd-panel-meta"></span></div>
             <div class="at-tabs" role="tablist" aria-label="Detail views">
               <button type="button" role="tab" id="at-tab-sel" aria-selected="true" aria-controls="at-detail">Selection</button>
               <button type="button" role="tab" id="at-tab-chg" aria-selected="false" aria-controls="at-detail">Changes</button>
@@ -405,18 +417,22 @@
           <p id="qb-status" class="muted" role="status">Open the board to read the queue.</p>
           <button type="button" id="qb-refresh">Refresh</button>
         </div>
-        <div class="pane" role="region" aria-labelledby="qb-counts-title">
-          <h3 id="qb-counts-title">Tasks by status</h3>
-          <ul id="qb-counts" class="qb-counts"></ul>
+        <div class="cd-panel" role="region" aria-labelledby="qb-counts-title">
+          <div class="cd-panel-head"><h3 id="qb-counts-title" class="cd-panel-title">Tasks by status</h3></div>
+          <div class="cd-panel-body">
+            <ul id="qb-counts" class="qb-counts"></ul>
+          </div>
         </div>
         <div class="qb-grid">
-          <div class="pane" role="region" aria-labelledby="qb-tasks-title">
-            <h3 id="qb-tasks-title">Queue</h3>
-            <ul id="qb-tasks" class="rows"></ul>
+          <div class="cd-panel" role="region" aria-labelledby="qb-tasks-title">
+            <div class="cd-panel-head"><h3 id="qb-tasks-title" class="cd-panel-title">Queue</h3><span id="qb-tasks-meta" class="cd-panel-meta"></span></div>
+            <div class="cd-panel-body">
+              <ol id="qb-tasks" class="cd-rail"></ol>
+            </div>
           </div>
-          <div class="pane" role="region" aria-labelledby="qb-prci-title">
-            <h3 id="qb-prci-title">Pull requests and CI</h3>
-            <div id="qb-prci"></div>
+          <div class="cd-panel" role="region" aria-labelledby="qb-prci-title">
+            <div class="cd-panel-head"><h3 id="qb-prci-title" class="cd-panel-title">Pull requests and CI</h3><span class="cd-panel-meta">from gh</span></div>
+            <div id="qb-prci" class="cd-panel-body"></div>
           </div>
         </div>
       </section>
@@ -425,23 +441,27 @@
         <h2 id="vault-title" tabindex="-1">Vault</h2>
         <p id="vt-status" class="muted" role="status">Read-only: a note is changed with trellis vault or an editor, never from here.</p>
         <div class="vt-grid">
-          <div class="pane" role="region" aria-labelledby="vt-search-title">
-            <h3 id="vt-search-title">Search</h3>
-            <form id="vt-form" class="vt-form">
-              <label for="vt-query">Search notes</label>
-              <input id="vt-query" type="search" autocomplete="off" spellcheck="false">
-              <button type="submit"><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-search"></use></svg>Search</button>
-            </form>
-            <div id="vt-hits" class="vt-hits"></div>
+          <div class="cd-panel" role="region" aria-labelledby="vt-search-title">
+            <div class="cd-panel-head"><h3 id="vt-search-title" class="cd-panel-title">Search</h3><span id="vt-search-meta" class="cd-panel-meta"></span></div>
+            <div class="cd-panel-body">
+              <form id="vt-form" class="vt-form">
+                <label for="vt-query">Search notes</label>
+                <input id="vt-query" type="search" autocomplete="off" spellcheck="false">
+                <button type="submit"><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-search"></use></svg>Search</button>
+              </form>
+              <div id="vt-hits" class="vt-hits"></div>
+            </div>
           </div>
-          <div class="pane" role="region" aria-labelledby="vt-note-title">
-            <h3 id="vt-note-title">Note</h3>
-            <div id="vt-note" class="vt-note"></div>
+          <div class="cd-panel" role="region" aria-labelledby="vt-note-title">
+            <div class="cd-panel-head"><h3 id="vt-note-title" class="cd-panel-title">Note</h3></div>
+            <div id="vt-note" class="cd-panel-body vt-note"></div>
           </div>
-          <div class="pane" role="region" aria-labelledby="vt-check-title">
-            <h3 id="vt-check-title">Check</h3>
-            <button type="button" id="vt-check-ask">Check the vault</button>
-            <div id="vt-check" class="vt-note"></div>
+          <div class="cd-panel" role="region" aria-labelledby="vt-check-title">
+            <div class="cd-panel-head"><h3 id="vt-check-title" class="cd-panel-title">Check</h3><span class="cd-panel-meta">trellis vault check</span></div>
+            <div class="cd-panel-body">
+              <button type="button" id="vt-check-ask">Check the vault</button>
+              <div id="vt-check" class="vt-note"></div>
+            </div>
           </div>
         </div>
       </section>

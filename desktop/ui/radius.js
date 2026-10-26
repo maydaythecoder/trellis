@@ -7,14 +7,15 @@
 // different population and is never divided into the reach (CLAUDE.md rule
 // 3, ADR 0014). The core collapses the doubt's reasons and files as the
 // printed report does and refuses an answer carrying a ratio-shaped key, so
-// this module computes no figure: it shows the counts the event carries,
-// and "not reported" for one it lacks.
+// this module computes no figure: it shows the counts the event carries
+// as Stats, and the unreported dash for one it lacks.
 //
 // The symbol, the paths, the reasons and trellis's messages are repository
 // or trellis text (ADR 0007, S10): every value is written with textContent.
 //
 // index.html loads this as a module of its own.
 
+import { figure, stats } from "./ds.js";
 import { el } from "./dom.js";
 import { isCount, notReported, str } from "./fmt.js";
 import { send, start } from "./rpc.js";
@@ -30,13 +31,13 @@ function status(doc, text) {
   doc.getElementById("rd-status").textContent = text;
 }
 
+// One of the two blocks: its heading, then each count as a Stat, or the
+// dash with why where trellis sent none. The blocks sit side by side in
+// the panel's body, a sub-region and not a frame of their own.
 function block(doc, heading, rows) {
-  const div = el(doc, "div");
-  div.className = "rd-block";
+  const div = el(doc, "section");
   div.append(el(doc, "h4", heading));
-  const dl = el(doc, "dl");
-  for (const [label, value] of rows) dl.append(el(doc, "dt", label), el(doc, "dd", value));
-  div.append(dl);
+  div.append(stats(doc, rows.map(([label, value]) => ({ label, value: figure(doc, value, "the radius answer did not carry it") }))));
   return div;
 }
 
@@ -87,13 +88,13 @@ export function drawRadius(doc, payload) {
   status(doc, `${str(payload.symbol) ?? "symbol not reported"} (${str(payload.file) ?? "file not reported"})`);
 
   const reach = block(doc, "reach — call sites that reach this symbol", [
-    ["resolved", notReported(r.resolved)],
-    ["ambiguous", notReported(r.ambiguous)],
-    ["symbols reached", notReported(r.symbols_reached)],
+    ["resolved", r.resolved],
+    ["ambiguous", r.ambiguous],
+    ["symbols reached", r.symbols_reached],
   ]);
   const doubt = block(doc, "doubt — a different population, not a fraction of the reach", [
-    ["unbound sites in touched files", notReported(d.unbound_in_touched_files)],
-    ["touched files", notReported(d.touched_files)],
+    ["unbound sites in touched files", d.unbound_in_touched_files],
+    ["touched files", d.touched_files],
   ]);
   if (Array.isArray(d.reasons) && d.reasons.length > 0) {
     doubt.append(el(doc, "h5", "top reasons"), counted(doc, d.reasons, d.reasons_not_shown, "reasons", true));

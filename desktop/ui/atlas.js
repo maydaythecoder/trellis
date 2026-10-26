@@ -28,6 +28,7 @@
 // shown for a repository: the history, HEAD, HEAD's symbols, then each
 // earlier snapshot the core planned, newest first.
 
+import { stats, unreported } from "./ds.js";
 import { el } from "./dom.js";
 import { isCount, plural, str } from "./fmt.js";
 import { onEscape, typing } from "./keys.js";
@@ -1529,22 +1530,30 @@ function src(A, s) {
   return e;
 }
 
+// A count and where it came from, for figs: the count as text, or the
+// unreported dash when trellis sent none (DESIGN.md rule 2).
 function nv(A, v, s) {
-  const e = el(A.doc, "span");
-  e.append(el(A.doc, "span", n(v)));
-  if (s) e.append(src(A, s));
-  return e;
+  return { value: isCount(v) ? n(v) : unreported(A.doc, "trellis did not report it"), src: s ?? null };
 }
 
-function dl(A, rows) {
-  const d = el(A.doc, "dl");
-  for (const r of rows) {
-    if (!r) continue;
-    const dd = el(A.doc, "dd");
-    dd.append(r[1]);
-    d.append(el(A.doc, "dt", r[0]), dd);
-  }
-  return d;
+// Counts as Stats side by side (#910), each `[label, figure]` with the
+// figure an nv, or text for one the page says in words ("read at HEAD
+// only"); its source, when it has one, is the Stat's meta.
+function figs(A, rows) {
+  return stats(
+    A.doc,
+    rows.filter(Boolean).map(([label, f]) =>
+      f !== null && typeof f === "object" && "src" in f
+        ? { label, value: f.value, meta: f.src ? src(A, f.src) : null }
+        : { label, value: f },
+    ),
+  );
+}
+
+// A view's title and its source, which renderPanel writes into the detail
+// Panel's head; the views never draw a head themselves.
+function titled(title, s) {
+  return { title, src: s ?? null };
 }
 
 function h4(A, text, s, sw) {
@@ -1626,7 +1635,7 @@ function presence(A, m) {
 
 function overviewView(A) {
   const S = snap(A, A.si);
-  if (!S) return [el(A.doc, "h3", "Atlas"), note(A, progressText(A))];
+  if (!S) return [titled("Atlas"), note(A, progressText(A))];
   const s = S.s;
   // get_symbols reads HEAD: its definitions and the sites bound to them by
   // a Resolved edge (each definition's calls_in, summed by the core). At an
@@ -1635,28 +1644,28 @@ function overviewView(A) {
   const defs = sy ? nv(A, sy.definitions, "trellis") : nv(A, s.definitions, "derived");
   const resolved = sy
     ? nv(A, sy.resolved_call_sites, "derived")
-    : el(A.doc, "span", isHead(A) ? "not read yet" : "read at HEAD only");
+    : unreported(A.doc, isHead(A) ? "not read yet" : "read at HEAD only");
   const out = [
-    el(A.doc, "h3", `Snapshot ${s.label}`),
+    titled(`Snapshot ${s.label}`),
     (() => {
       const p = el(A.doc, "p");
       p.append(el(A.doc, "code", short(s.commit)), ` ${day(s.date)} `, el(A.doc, "span", str(s.subject) ?? "", "muted"));
       return p;
     })(),
-    dl(A, [
+    figs(A, [
       ["modules indexed", nv(A, s.modules_indexed, "trellis")],
       ["definitions", defs],
       ["module edges", nv(A, s.module_edges, "trellis")],
     ]),
     h4(A, "First-party call sites"),
-    dl(A, [
+    figs(A, [
       ["resolved call sites", resolved],
       ["ambiguous", nv(A, s.ambiguous, "trellis")],
       ["unresolved", nv(A, s.unresolved, "trellis")],
     ]),
     note(A, "Each line counts its own sites. The panel draws no total and no share."),
     h4(A, "The map's edges"),
-    dl(A, [["call sites bound across modules", nv(A, s.bound_call_sites, "trellis")]]),
+    figs(A, [["call sites bound across modules", nv(A, s.bound_call_sites, "trellis")]]),
     note(A, "Click a module for what calls it and what it calls, a package header for its figures, a symbol (zoom in on a module) for its radius. Press / to search."),
   ];
   if (isCount(s.modules_not_drawn) && s.modules_not_drawn > 0) {
@@ -1684,7 +1693,7 @@ function moduleView(A, m) {
   open.addEventListener("click", () => flyTo(A, { t: "module", m }, true));
   actions.append(pin, open);
   const out = [
-    el(A.doc, "h3", "Module"),
+    titled("Module"),
     el(A.doc, "p", mod.module, "at-title"),
     (() => {
       const p = el(A.doc, "p");
@@ -1701,12 +1710,12 @@ function moduleView(A, m) {
     const floor = isCount(r[4]) && r[4] > 0;
     out.push(
       h4(A, `At ${here}`),
-      dl(A, [
+      figs(A, [
         ["definitions", nv(A, r[1], "trellis")],
         ["call sites bound in, from other modules", nv(A, r[5], "derived")],
       ]),
       h4(A, "Call sites made here"),
-      dl(A, [
+      figs(A, [
         [floor ? "bound to another module, at least" : "bound to another module", nv(A, r[7], "derived")],
         ["ambiguous", nv(A, r[2], "trellis")],
         ["unresolved", nv(A, r[3], "trellis")],
@@ -1721,11 +1730,13 @@ function moduleView(A, m) {
   if (A.D.history === null) out.push(note(A, "The history was not read."));
   else if (c) {
     out.push(
-      dl(A, [
-        ["commits, last 30 / 90 / 365 days", el(A.doc, "span", `${n(c.d30)} / ${n(c.d90)} / ${n(c.d365)}`)],
+      figs(A, [
+        ["commits, 30 days", nv(A, c.d30)],
+        ["commits, 90 days", nv(A, c.d90)],
+        ["commits, 365 days", nv(A, c.d365)],
         since === null ? null : [`commits since ${since}`, nv(A, c.commits)],
-        ["last change", el(A.doc, "span", day(c.last_date))],
       ]),
+      note(A, `Last changed ${day(c.last_date)}.`),
     );
   } else {
     out.push(note(A, since === null ? "No commit changed it in the last 365 days." : `No commit changed it in the last 365 days, nor since ${since}.`));
@@ -1763,11 +1774,13 @@ function moduleDiff(A, m) {
     out.push(note(A, `Not in ${label(A, b)}.`));
     return out;
   }
+  // Each count at the snapshot shown, with the baseline's beside it.
+  const was = `at ${label(A, b)}: `;
   out.push(
-    dl(A, [
-      ["definitions", el(A.doc, "span", `${n(o[1])} → ${n(r[1])}`)],
-      ["ambiguous call sites", el(A.doc, "span", `${n(o[2])} → ${n(r[2])}`)],
-      ["unresolved call sites", el(A.doc, "span", `${n(o[3])} → ${n(r[3])}`)],
+    stats(A.doc, [
+      { label: "definitions", value: nv(A, r[1]).value, footnote: `${was}${n(o[1])}` },
+      { label: "ambiguous call sites", value: nv(A, r[2]).value, footnote: `${was}${n(o[2])}` },
+      { label: "unresolved call sites", value: nv(A, r[3]).value, footnote: `${was}${n(o[3])}` },
     ]),
   );
   const D = diff(A);
@@ -1860,11 +1873,11 @@ function symbolView(A, i) {
   const where = el(A.doc, "p");
   where.append("in ", modLink(A, s.m), `, lines ${n(s.line)}–${n(s.end)}`, src(A, "trellis"));
   const out = [
-    el(A.doc, "h3", "Symbol"),
+    titled("Symbol"),
     title,
     where,
     h4(A, "Call sites, three counts", "trellis"),
-    dl(A, [
+    figs(A, [
       ["bound to it (in)", nv(A, s.cin)],
       ["naming it among several (ambiguous in)", nv(A, s.camb)],
       ["bound from it (out)", nv(A, s.cout)],
@@ -1897,22 +1910,22 @@ function symbolView(A, i) {
   const reach = a.reach || {};
   const doubt = a.doubt || {};
   const blocks = el(A.doc, "div", null, "at-rd");
-  const rb = el(A.doc, "section", null, "at-rd-block reach");
+  const rb = el(A.doc, "section");
   rb.setAttribute("aria-label", "Reach");
   rb.append(
     h4(A, "Reach", null, "reach"),
-    dl(A, [
+    figs(A, [
       ["resolved call sites", nv(A, reach.resolved, "trellis")],
       ["ambiguous call sites", nv(A, reach.ambiguous, "trellis")],
       ["symbols reached", nv(A, reach.symbols_reached, "trellis")],
       ["modules reached", nv(A, list(a.reached_modules).length, "derived")],
     ]),
   );
-  const db = el(A.doc, "section", null, "at-rd-block doubt");
+  const db = el(A.doc, "section");
   db.setAttribute("aria-label", "Doubt");
   db.append(
     h4(A, "Doubt", null, "doubt"),
-    dl(A, [
+    figs(A, [
       ["unbound call sites in touched files", nv(A, doubt.unbound_in_touched_files, "trellis")],
       ["touched files", nv(A, doubt.touched_files, "trellis")],
     ]),
@@ -1939,7 +1952,7 @@ function symbolView(A, i) {
   const reasons = list(doubt.reasons);
   if (reasons.length > 0) {
     out.push(h4(A, "Doubt by reason", "trellis"));
-    out.push(dl(A, reasons.map((x) => [str(x.reason) ?? "reason", nv(A, x.call_sites)])));
+    out.push(figs(A, reasons.map((x) => [str(x.reason) ?? "reason", nv(A, x.call_sites)])));
   }
   return out;
 }
@@ -1949,18 +1962,18 @@ function regionView(A, g) {
   const c = S ? list(S.s.regions)[g.idx] : null;
   const v = Array.isArray(c) ? c : [];
   return [
-    el(A.doc, "h3", "Package"),
+    titled("Package"),
     (() => {
       const p = el(A.doc, "p", null, "at-title");
       p.append(el(A.doc, "code", g.path));
       return p;
     })(),
-    dl(A, [
+    figs(A, [
       [`modules at ${label(A, A.si)}`, nv(A, v[0], "trellis")],
       ["definitions", nv(A, v[1], "derived")],
     ]),
     h4(A, "Call sites made inside, two of the three counts", "derived"),
-    dl(A, [
+    figs(A, [
       ["ambiguous", nv(A, v[2])],
       ["unresolved", nv(A, v[3])],
     ]),
@@ -1972,10 +1985,8 @@ function commitView(A, ci) {
   const c = A.D.commits[ci];
   const ms = list(c.modules);
   const others = list(c.other_paths);
-  const head = el(A.doc, "h3", "Commit");
-  head.append(src(A, "git"));
   const out = [
-    head,
+    titled("Commit", "git"),
     el(A.doc, "p", str(c.subject) ?? "subject not reported", "at-title"),
     (() => {
       const p = el(A.doc, "p");
@@ -2010,10 +2021,10 @@ function changesView(A) {
   const out = [];
   if (A.lens === "diff") {
     const D = diff(A);
-    out.push(el(A.doc, "h3", `Diff ${label(A, D.b)} → ${label(A, D.t)}`));
+    out.push(titled(`Diff ${label(A, D.b)} → ${label(A, D.t)}`));
     if (D.b === D.t) out.push(note(A, "Baseline and snapshot are the same. Pick another baseline or move the snapshot."));
     out.push(
-      dl(A, [
+      figs(A, [
         ["modules added", nv(A, D.added.size, "trellis")],
         ["modules removed", nv(A, D.removed.size, "trellis")],
         ["modules with changed counts", nv(A, D.changed.length, "trellis")],
@@ -2074,7 +2085,7 @@ function changesView(A) {
 }
 
 function pinsView(A) {
-  const out = [el(A.doc, "h3", "Working set")];
+  const out = [titled("Working set")];
   const s = A.sel;
   if (s && s.t === "module" && !A.pins.has(A.D.modules[s.m].path)) {
     const b = el(A.doc, "button", `Pin ${A.D.modules[s.m].module}`, "at-btn");
@@ -2110,7 +2121,7 @@ function renderPanel(A) {
   const pane = byId(A, "at-detail");
   pane.setAttribute("aria-labelledby", `at-tab-${A.tab}`);
   let kids;
-  if (A.D === null) kids = [el(A.doc, "h3", "Atlas"), note(A, progressText(A))];
+  if (A.D === null) kids = [titled("Atlas"), note(A, progressText(A))];
   else if (A.tab === "chg") kids = changesView(A);
   else if (A.tab === "pin") kids = pinsView(A);
   else if (!A.sel) kids = overviewView(A);
@@ -2118,7 +2129,11 @@ function renderPanel(A) {
   else if (A.sel.t === "symbol") kids = symbolView(A, A.sel.i);
   else if (A.sel.t === "region") kids = regionView(A, A.D.regions[A.sel.r]);
   else kids = commitView(A, A.sel.c);
-  pane.replaceChildren(...kids.filter(Boolean));
+  // Each view answers its title first, for the Panel's head.
+  const [head, ...body] = kids;
+  byId(A, "at-detail-title").textContent = head.title;
+  byId(A, "at-detail-meta").replaceChildren(...(head.src ? [src(A, head.src)] : []));
+  pane.replaceChildren(...body.filter(Boolean));
   pane.scrollTop = 0;
 }
 

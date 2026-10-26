@@ -28,7 +28,8 @@
 // stale: no graph yet, a new child, or a run that has ended since.
 
 // make(doc, tag, attrs) is dom.js's svg: an SVG element with its attributes.
-import { el, svg as make } from "./dom.js";
+import { figure, stats } from "./ds.js";
+import { el, muted, svg as make } from "./dom.js";
 import { isCount, notReported, str } from "./fmt.js";
 import { onShown, send, start } from "./rpc.js";
 
@@ -86,22 +87,44 @@ function status(doc, text) {
 
 // What the whole answer says, as trellis counted it: modules, then call
 // sites as three counts that are never divided (ADR 0014).
-function summary(d) {
-  const parts = [`${notReported(d.modules_indexed)} modules indexed, ${notReported(d.modules_listed)} listed`];
-  if (isCount(d.modules_not_drawn) && d.modules_not_drawn > 0) {
-    parts[0] += ` (${d.modules_not_drawn} past the limit, not drawn)`;
+// The answer's figures as Stats (#910): the modules, then the call sites
+// as three counts from different populations, with no ratio and no total
+// (CLAUDE.md rule 3). `d` null empties them.
+function drawFigures(doc, d) {
+  const pane = doc.getElementById("cb-figures");
+  if (d === null) {
+    pane.replaceChildren();
+    return;
   }
-  parts.push(
-    `${notReported(d.bound_call_sites)} call sites bound across modules, ${notReported(d.ambiguous)} ambiguous, ` +
-      `${notReported(d.unresolved)} unresolved: three counts, not a ratio`,
+  const why = "the codebase answer did not carry it";
+  pane.replaceChildren(
+    stats(doc, [
+      { label: "modules", value: figure(doc, d.modules_indexed, why), unit: "indexed" },
+      { label: "listed", value: figure(doc, d.modules_listed, why), unit: "modules" },
+    ]),
+    stats(doc, [
+      { label: "bound across modules", value: figure(doc, d.bound_call_sites, why), unit: "call sites" },
+      { label: "ambiguous", value: figure(doc, d.ambiguous, why) },
+      { label: "unresolved", value: figure(doc, d.unresolved, why) },
+    ]),
+    muted(doc, "p", "Three counts from different populations, not a ratio; no share of one is drawn."),
   );
+}
+
+// The status line under the figures: what was left off the graph, and
+// whether the index was saved.
+function summary(d) {
+  const parts = [];
+  if (isCount(d.modules_not_drawn) && d.modules_not_drawn > 0) {
+    parts.push(`${d.modules_not_drawn} modules past the limit, not drawn`);
+  }
   // Whether trellis saved this index where the overview reads it (#654).
   // Said only as trellis said it; an answer that said nothing says nothing.
   if (d.index_saved === true) parts.push("saved to .trellis/index.bin");
   else if (d.index_saved === false && typeof d.index_not_saved === "string") {
     parts.push(`not saved: ${d.index_not_saved}`);
   }
-  return parts.join(" · ");
+  return parts.length === 0 ? "The module graph trellis indexed." : parts.join(" · ");
 }
 
 // Whether a drag just ended: the click that follows it is not a click.
@@ -299,10 +322,12 @@ function edgesIn(ctx, m) {
 function drawList(doc, ctx) {
   const head = doc.getElementById("cb-modules-title");
   const out = doc.getElementById("cb-modules");
+  const meta = doc.getElementById("cb-modules-meta");
   ctx.items = [];
   const p = openPackage(ctx);
   head.textContent = p === null ? "Packages" : `Modules in ${str(p.package) ?? "this package"}`;
   if (ctx.data === null) {
+    meta.textContent = "";
     out.replaceChildren();
     return;
   }
@@ -333,6 +358,7 @@ function drawList(doc, ctx) {
       return li;
     });
   }
+  meta.textContent = `${rows.length} listed`;
   if (rows.length === 0) {
     const li = el(doc, "li", "Nothing listed.");
     li.className = "empty";
@@ -383,12 +409,13 @@ function drawDetails(doc, ctx) {
   const head = el(doc, "h4", str(m.module) ?? "module");
   const path = el(doc, "p");
   path.append(el(doc, "code", str(m.path) ?? "path not reported"));
-  const dl = el(doc, "dl");
-  const row = (name, value) => dl.append(el(doc, "dt", name), el(doc, "dd", value));
+  // Three Stats side by side, never combined.
+  const figures = [];
+  const row = (name, value) => figures.push({ label: name, value });
   const complete = ctx.data.edges_in_complete === true;
   row("edges in", edgesIn(ctx, m));
-  row("edges out", notReported(m.edges_out));
-  row("doubt", notReported(m.doubt));
+  row("edges out", figure(doc, m.edges_out, "the codebase answer did not carry it"));
+  row("doubt", figure(doc, m.doubt, "the codebase answer did not carry it"));
   const note = el(
     doc,
     "p",
@@ -397,7 +424,7 @@ function drawDetails(doc, ctx) {
       "not divided. An edge's absence is the absence of a binding, not of a call.",
   );
   note.className = "muted";
-  const parts = [head, path, dl, note];
+  const parts = [head, path, stats(doc, figures), note];
   if (!complete) {
     const floor = el(
       doc,
@@ -484,6 +511,7 @@ function clear(doc, ctx, said) {
   ctx.pkg = null;
   ctx.selected = null;
   status(doc, said);
+  drawFigures(doc, null);
   doc.getElementById("cb-graph").replaceChildren();
   ctx.svg = null;
   ctx.view = null;
@@ -521,6 +549,7 @@ export function drawCodebase(doc, ctx, payload) {
     });
   });
   status(doc, summary(payload));
+  drawFigures(doc, payload);
   draw(doc, ctx);
   drawResults(doc, ctx);
 }
