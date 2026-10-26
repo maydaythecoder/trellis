@@ -150,10 +150,17 @@ func TestSlashHelpHasNoRowEndingMidWord(t *testing.T) {
 	// 0, to its bottom border.
 	var pane []string
 	rows := strings.Split(m.View(), "\n")
-	if !strings.HasPrefix(rows[1], "┌ transcript") {
-		t.Fatalf("no transcript pane at row 1:\n%s", m.View())
+	top := -1
+	for i, row := range rows {
+		if strings.HasPrefix(row, "┌ transcript") {
+			top = i
+			break
+		}
 	}
-	for _, row := range rows[2:] {
+	if top < 0 {
+		t.Fatalf("no transcript pane:\n%s", m.View())
+	}
+	for _, row := range rows[top+1:] {
 		r := []rune(row)
 		if r[0] != '│' {
 			break

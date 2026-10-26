@@ -135,6 +135,7 @@ func TestViewWideTextKeepsEveryRowWithinTheWidth(t *testing.T) {
 			screens := map[string]string{
 				"render": Render(s, w, h),
 				"modal":  Modal(th, "edit 应用/计算.py 把所有的类型错误都修复好并且保留原来的行为", diff, 0, w, h),
+				"asking": Asking(s, "edit 应用/计算.py 把所有的类型错误都修复好并且保留原来的行为", diff, 0, w, h),
 			}
 			for name, screen := range screens {
 				rows := strings.Split(screen, "\n")
