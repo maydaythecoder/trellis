@@ -19,6 +19,7 @@ func TestCapsActionsEditsAndChecksHold(t *testing.T) {
 	for i := 1; i <= PaneCap+over; i++ {
 		feed(m, turn(i, fmt.Sprintf("edit app/f%d.py", i), map[string]any{
 			"observation": "applied: true", "verdict": "Some(true)", "check_kind": "pytest",
+			"tool": "edit", "target": fmt.Sprintf("app/f%d.py", i), "wrote": true,
 		}))
 	}
 	for name, got := range map[string][2]int{

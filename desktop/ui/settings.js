@@ -30,6 +30,10 @@
 // Recent repositories, not under the model pane, which folds after the
 // first choice (#645).
 //
+// The register dial (#836; the brand book's Principles, DESIGN.md §3.1) is
+// a page preference, kept in localStorage as the Atlas's pins are: serious
+// by default and whenever storage is refused or holds anything else.
+//
 // Every spec, name, licence and error is trellis- or configuration-supplied
 // text, so it reaches the DOM through textContent only (ADR 0007, S10).
 
@@ -174,4 +178,53 @@ export function wireRepositorySwitch(doc, tauri) {
     }
   });
   drawCatalog(doc, null);
+}
+
+// The register dial's two positions; the first is the default.
+const REGISTERS = ["serious", "playful"];
+
+const REGISTER_KEY = "trellis-desktop.register.v1";
+
+// The dial's position this visit.
+let register = REGISTERS[0];
+
+// Where the register dial is set: what now.js draws the face for.
+export function currentRegister() {
+  return register;
+}
+
+// The stored position, or serious: a page where storage is refused, or
+// that holds a value this page does not know, is in the default register.
+function loadRegister(win) {
+  try {
+    const stored = win.localStorage.getItem(REGISTER_KEY);
+    return REGISTERS.includes(stored) ? stored : REGISTERS[0];
+  } catch {
+    return REGISTERS[0];
+  }
+}
+
+function saveRegister(win, value) {
+  try {
+    win.localStorage.setItem(REGISTER_KEY, value);
+  } catch {
+    // Storage refused: the position lasts this visit.
+  }
+}
+
+// The dial's two radios: set from storage, then enabled (the page serves
+// them disabled), and on a change kept and the screen that draws a face
+// redrawn (`redraw`), since no event comes.
+export function wireRegister(doc, win, redraw) {
+  register = loadRegister(win);
+  doc.getElementById("register-dial").disabled = false;
+  for (const input of [doc.getElementById("register-serious"), doc.getElementById("register-playful")]) {
+    input.checked = input.value === register;
+    input.addEventListener("change", () => {
+      if (!input.checked || !REGISTERS.includes(input.value)) return;
+      register = input.value;
+      saveRegister(win, register);
+      redraw();
+    });
+  }
 }

@@ -390,6 +390,14 @@ jobs:
           python3 -I scripts/checks/design-tokens.py --self-test
           python3 -I scripts/checks/design-tokens.py
 
+      # docs/design/events.md says the mark each record client_contract.json
+      # lists makes in each face; a record the contract gains with no row, or
+      # a row for one it dropped, fails here (#804). Self-test first.
+      - name: Every contract record has a row in docs/design/events.md
+        run: |
+          python3 -I scripts/checks/design-events.py --self-test
+          python3 -I scripts/checks/design-events.py
+
       # docs/ENTRY_POINTS.md tells a reader where each program starts, by
       # file and symbol; a rename that leaves it behind fails here rather
       # than sending the next reader to code that is gone. Self-test first.

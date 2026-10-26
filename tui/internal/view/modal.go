@@ -71,8 +71,8 @@ func ModalLastFrom(diff string, width, height int) int {
 // of the box with its own tail, so a change was answered unseen; on the
 // border it is drawn whatever the diff's length. When the diff does not
 // fit, a row of its own says which lines are in view. th paints it as Box
-// paints a pane; the diff's lines are text until the code level colours
-// them by line role (#853).
+// paints a pane; the diff's lines are text here, and coloured by line
+// role at the code level, where c sets the question aside (#853).
 func Modal(th theme.Theme, question, diff string, scroll, width, height int) string {
 	boxW, boxH, inner := modalBox(width, height)
 

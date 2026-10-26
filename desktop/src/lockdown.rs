@@ -239,6 +239,14 @@ mod tests {
         "run", "overview", "codebase", "trails", "vault", "board", "atlas",
     ];
 
+    /// The levels below a section (#831), after the seven in page order:
+    /// each with the section it is burrowed into from, through a
+    /// `data-burrow` way in there rather than a panel of the overview. The
+    /// summary (#832) is the last section in page order, after the Code
+    /// levels.
+    const SUB_LEVELS: [(&str, &str); 3] =
+        [("code", "run"), ("code-file", "code"), ("summary", "run")];
+
     #[test]
     fn csp_has_no_unsafe_source_and_no_network_origin() {
         // The risk: a CSP edit that lets inline or eval'd script run, or
@@ -404,7 +412,40 @@ mod tests {
         );
         let sections: Vec<&Element> = page.iter().filter(|e| e.tag == "section").collect();
         let ids: Vec<&str> = sections.iter().filter_map(|s| s.attr("id")).collect();
-        assert_eq!(ids, SECTIONS, "every section, each with a way in");
+        let below: Vec<&str> = SUB_LEVELS.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            ids,
+            [&SECTIONS[..], &below[..]].concat(),
+            "every section, each with a way in"
+        );
+        // A level below a section is hidden at load, and entered from its
+        // section: the Code level by a way in the run section serves, a
+        // file by the rows code.js draws in the Code level.
+        for (id, from) in SUB_LEVELS {
+            let s = &page[index_of(&page, id)];
+            assert!(s.attrs.contains_key("hidden"), "#{id} is shown at load");
+            assert!(
+                !s.text.contains("Not built yet"),
+                "#{id} says it is not built"
+            );
+            let ways: Vec<usize> = (0..page.len())
+                .filter(|&i| page[i].attr("data-burrow") == Some(id))
+                .collect();
+            if from == "run" {
+                assert_eq!(ways.len(), 1, "one way into #{id}");
+                assert!(
+                    within(&page, ways[0], index_of(&page, from)),
+                    "#{id}'s way in is outside #{from}"
+                );
+                assert_eq!(page[ways[0]].tag, "button", "#{id}'s way in is a button");
+            } else {
+                assert!(ways.is_empty(), "#{id}'s ways in are drawn per file");
+                assert!(
+                    code_of("code.js").contains(&format!("pick.dataset.burrow = \"{id}\";")),
+                    "code.js draws no way into #{id}"
+                );
+            }
+        }
         let stage = index_of(&page, "stage");
         for &i in &(0..page.len())
             .filter(|&i| page[i].tag == "section")
@@ -674,6 +715,79 @@ mod tests {
                 .any(|s| s.trim() == ".approval-detail:focus-visible")
                 && squeeze(d).contains("outline:2px")),
             "focus on the details draws no outline"
+        );
+    }
+
+    #[test]
+    fn code_level_answers_and_comments_through_the_core_s_checks() {
+        // The risk (#831): Approve and Reject beside a diff that send their
+        // own `approve`, a second path that could answer a question twice or
+        // skip the dialog's bookkeeping; a Review in Code close taken as a
+        // no; or a line comment sent as something other than a steer naming
+        // the line the reducer named. No JavaScript runs under cargo test,
+        // so this holds the text; the reducer's side is
+        // a_line_comment_becomes_a_steer_naming_file_and_line.
+        let code = code_of("code.js");
+        let dialogs = code_of("dialogs.js");
+        assert!(
+            !code.contains("type: \"approve\"") && !code.contains("invoke("),
+            "code.js sends an answer itself"
+        );
+        assert!(
+            function_body(&code, "wireCode")
+                .contains("answerApproval(doc, bar.dataset.id, b.dataset.answer === \"approve\");"),
+            "Approve and Reject do not answer through dialogs.js"
+        );
+        assert_eq!(
+            dialogs.matches("type: \"approve\"").count(),
+            1,
+            "dialogs.js sends an answer from more than one place"
+        );
+        let answer = function_body(&dialogs, "answerApproval");
+        for want in [
+            "if (answered.has(id) || sendAnswer === null) return;",
+            "answered.add(id);",
+            "if (shown === id) withdraw(",
+            "sendAnswer(id, yes);",
+        ] {
+            assert!(answer.contains(want), "answerApproval lacks {want}");
+        }
+        // Review in Code answers nothing, and is decided before any answer.
+        let close = dialogs
+            .split("dialog.addEventListener(\"close\"")
+            .nth(1)
+            .expect("dialogs.js listens for the dialog's close");
+        let review = close
+            .find("dialog.returnValue === \"review\"")
+            .expect("the close reads Review in Code");
+        let answered = close.find("answered.add(id);").expect("the close answers");
+        assert!(review < answered, "Review in Code is taken as an answer");
+        assert!(
+            function_body(&dialogs, "forgetChild").contains("deferred.clear();"),
+            "a replaced child's deferred questions are kept"
+        );
+        let page = page();
+        let dialog = index_of(&page, "approval");
+        let b = index_of(&page, "approval-review");
+        assert!(within(&page, b, dialog) && page[b].attrs.contains_key("hidden"));
+        assert_eq!(page[b].attr("value"), Some("review"));
+        let bar = index_of(&page, "code-approve");
+        assert!(within(&page, bar, index_of(&page, "code-file")));
+        assert!(
+            page[bar].attrs.contains_key("hidden"),
+            "Approve and Reject show at load"
+        );
+        // A comment is a steer whose message starts with the line's name.
+        let send = function_body(&code, "sendComment");
+        for want in [
+            "type: \"steer\", message: `${at}: ${text}`",
+            "await send(tauri, line,",
+        ] {
+            assert!(send.contains(want), "sendComment lacks {want}");
+        }
+        assert!(
+            function_body(&code, "commentControl").contains("const at = str(l.at);"),
+            "a comment is offered on a line the reducer did not name"
         );
     }
 
@@ -1194,21 +1308,28 @@ mod tests {
                 "turn",
                 json!({"turn": 1, "call": "blast_radius app.core.f", "verdict": "None",
                        "check_kind": "", "observation": "4 callers resolved",
+                       "tool": "blast_radius", "target": "app.core.f", "wrote": false,
                        "resolved": 4, "candidates": 1, "unresolved": 2,
-                       "model_ms": 1200, "prompt_bytes": 2048, "completion_tokens": 40}),
+                       "model_ms": 1200, "prompt_bytes": 2048, "completion_tokens": 40,
+                       "elapsed_ms": 1400}),
             ),
             loop_event(
                 "turn",
                 json!({"turn": 2, "call": "edit app/core.py", "verdict": "None",
                        "check_kind": "", "observation": "applied: true (+1 -1)",
+                       "tool": "edit", "target": "app/core.py", "wrote": true,
                        "model_ms": 900, "prompt_bytes": 2300, "completion_tokens": 55,
-                       "queue_wait_ms": 100}),
+                       "queue_wait_ms": 100, "elapsed_ms": 2500,
+                       "lines_added": 1, "lines_removed": 1, "start_line": 3,
+                       "diff": "--- app/core.py\n+++ app/core.py\n@@ -2,3 +2,3 @@\n def f():\n-    return 1\n+    return 2\n \n"}),
             ),
             loop_event(
                 "turn",
                 json!({"turn": 3, "call": "run_checks app/core.py", "verdict": "Some(true)",
                        "check_kind": "Tests", "observation": "3 passed",
-                       "model_ms": 700, "prompt_bytes": 2500, "completion_tokens": 12}),
+                       "tool": "run_checks", "target": "Tests on app/core.py", "wrote": false,
+                       "model_ms": 700, "prompt_bytes": 2500, "completion_tokens": 12,
+                       "elapsed_ms": 3600}),
             ),
             json!({"type": "approval_request", "id": "approval-1",
                    "question": "Run bash?", "detail": "pytest -q"})
@@ -1216,7 +1337,8 @@ mod tests {
         ];
         let end = [
             json!({"type": "run_end", "outcome": "converged", "exit": 0,
-                   "id": "desktop-prompt-1", "run_id": "20261010-120000-000"})
+                   "id": "desktop-prompt-1", "run_id": "20261010-120000-000",
+                   "elapsed_ms": 61_000})
             .to_string(),
             json!({"type": "response", "command": "get_state", "success": true,
                    "id": "desktop-state",
@@ -1269,6 +1391,9 @@ mod tests {
         assert_eq!(view["budget"]["turn"], 3, "{view}");
         assert_eq!(view["outcome"]["outcome"], "converged", "{view}");
         assert_eq!(view["tier"], "scripted", "{view}");
+        assert_eq!(view["now"]["word"], "ended · converged", "{view}");
+        assert_eq!(view["now"]["elapsed"], "01:01", "{view}");
+        assert_eq!(view["where"]["root"], "/w/app", "{view}");
         assert!(view["alert"].is_string(), "{view}");
         assert_eq!(
             view["stderr"]["rows"][0]["text"], "trellis: indexed 12 modules",
@@ -1492,6 +1617,16 @@ mod tests {
         for id in ["repo-form", "repo-path", "repo-note"] {
             assert!(
                 switch.contains(&format!("getElementById(\"{id}\")")),
+                "settings.js no longer wires #{id}"
+            );
+            written.insert(id.to_string());
+        }
+        // The register dial (#836) sits under the form, and is settings.js's
+        // in the same way.
+        let dial = function_body(&ui["settings.js"], "wireRegister");
+        for id in ["register-dial", "register-serious", "register-playful"] {
+            assert!(
+                dial.contains(&format!("getElementById(\"{id}\")")),
                 "settings.js no longer wires #{id}"
             );
             written.insert(id.to_string());
@@ -1878,7 +2013,7 @@ mod tests {
         }));
         let overview_pane = overview["last_run"]["outcome"].clone();
 
-        assert_eq!(run_pane, json!("not converged"), "the Run pane's word");
+        assert_eq!(run_pane, json!("not_converged"), "the Run pane's word");
         assert_eq!(
             trails_pane, run_pane,
             "the Trails list's word differs from the Run pane's"
@@ -1889,7 +2024,7 @@ mod tests {
         );
         // The trail's word stays the trail's text: mapping it does not
         // promote it out of the untrusted wrapper (ADR 0007).
-        assert_eq!(trail_row["outcome"], json!({"untrusted": "not converged"}));
+        assert_eq!(trail_row["outcome"], json!({"untrusted": "not_converged"}));
     }
 
     #[test]
@@ -1900,7 +2035,7 @@ mod tests {
         // arms; the trail's are query.rs's Entry::outcome arms.
         let rpc = ["converged", "not_converged", "interrupted", "error"];
         let trail = ["converged", "not converged", "no check ran"];
-        let shown = ["converged", "not converged", "interrupted", "error"];
+        let shown = ["converged", "not_converged", "interrupted", "error"];
         for w in rpc.iter().chain(trail.iter()) {
             let out = crate::state::outcome_words(w);
             assert!(
@@ -3573,13 +3708,24 @@ mod tests {
         }
     }
 
-    /// The levels #910 moved to the design system's components.
-    const DS_SECTIONS: [&str; 5] = ["trails", "codebase", "board", "vault", "atlas"];
+    /// The levels #910 moved to the design system's components, and the
+    /// ones added after it on them: Code and its file (#831) and the
+    /// summary (#832).
+    const DS_SECTIONS: [&str; 8] = [
+        "trails",
+        "codebase",
+        "board",
+        "vault",
+        "atlas",
+        "code",
+        "code-file",
+        "summary",
+    ];
 
     /// Each module that draws one of them, and what it draws with from
     /// ds.js: its Panels' meta, its figures as Stats, its states as
     /// Statuses and its sequences as Rails.
-    const DS_MODULES: [(&str, &[&str]); 6] = [
+    const DS_MODULES: [(&str, &[&str]); 9] = [
         (
             "trails.js",
             &[
@@ -3596,6 +3742,22 @@ mod tests {
         ("queue.js", &["figure", "panelMeta", "railRows", "stat"]),
         ("vault.js", &["panelMeta", "stats"]),
         ("atlas.js", &["panelMeta", "stats", "unreported"]),
+        (
+            "code.js",
+            &["diff", "dsStatus", "lineCounts", "railRows", "wholeFile"],
+        ),
+        ("plan.js", &["planEditor", "planSteps"]),
+        (
+            "summary.js",
+            &[
+                "budgetRows",
+                "dsStatus",
+                "lineCounts",
+                "modelWords",
+                "railRows",
+                "stats",
+            ],
+        ),
     ];
 
     /// What is wrong with the regions of `section` in `page`: a region that
@@ -3763,6 +3925,33 @@ mod tests {
             ui["radius.js"].contains(r#""a floor on reach, not a boundary""#),
             "the radius pane lost its caption"
         );
+
+        // The levels added after #910 draw each part with the component
+        // it is: a file's rows and a summary's sequences as Rails, a diff
+        // and a whole file through ds.js, a state as a Status, the budget
+        // as its rows, and the model's closing words fenced as its own.
+        for (module, f, want) in [
+            ("code.js", "drawFiles", "railRows(doc, rows)"),
+            ("code.js", "drawFile", "diff(doc, {"),
+            ("code.js", "stateOf", "dsStatus(doc, "),
+            ("code.js", "countsOf", "lineCounts(doc, "),
+            ("code.js", "drawWhole", "wholeFile(doc, {"),
+            ("plan.js", "drawPlan", "planEditor(doc, draft)"),
+            ("plan.js", "planBody", "planSteps(doc, steps)"),
+            ("summary.js", "drawChecks", "railRows(doc, rows)"),
+            ("summary.js", "drawRadius", "stats(doc, ["),
+            ("summary.js", "drawFiles", "lineCounts(doc, "),
+            ("summary.js", "drawTrail", "dsStatus(doc, INTEGRITY_TONES"),
+            ("summary.js", "drawSteers", "railRows(doc, rows)"),
+            ("summary.js", "drawPath", "railRows(doc, rows)"),
+            ("summary.js", "drawSummary", "budgetRows(doc, "),
+            ("summary.js", "drawClosing", "modelWords(doc, "),
+        ] {
+            assert!(
+                function_body(&ui[module], f).contains(want),
+                "{module}'s {f} lacks {want}"
+            );
+        }
     }
 
     #[test]
@@ -3799,12 +3988,25 @@ mod tests {
                 assert!(!code.contains(bad), "{name} falls back to 0: {bad}");
             }
         }
-        // The page draws no clock, so the budget's elapsed is the dash.
+        // The page draws no clock: the budget's elapsed is the wall-clock
+        // row the core built from trellis's elapsed_ms (#829), and each side
+        // of a row the core sent null is the dash with its reason.
+        let render = code_of("render.js");
+        let budget = function_body(&render, "budget");
         assert!(
-            function_body(&code_of("render.js"), "budget")
-                .contains(r#"{ label: "elapsed", value: unreported(doc,"#),
-            "the budget draws an elapsed time the core did not send"
+            budget.contains("budgetRows(doc, Array.isArray(v.limits) ? v.limits : [], v.raise)"),
+            "the budget draws rows the core did not send"
         );
+        for clock in ["Date", "performance", "setInterval", "setTimeout"] {
+            assert!(!budget.contains(clock), "the budget keeps a clock: {clock}");
+        }
+        let rows = function_body(&ds, "budgetRows");
+        for want in [
+            "used === null ? unreported(doc, str(r.why_used)",
+            "ceiling === null ? unreported(doc, str(r.why_ceiling)",
+        ] {
+            assert!(rows.contains(want), "budgetRows lacks {want}");
+        }
         let rules = css_rules();
         let dash: Vec<String> = rules
             .iter()
@@ -4314,6 +4516,136 @@ mod tests {
     }
 
     #[test]
+    fn composer_queue_draws_pending_through_ds_and_sends_its_prompt_only_with_the_abort() {
+        // The risk (#830): the queue drawn by composer.js's own markup,
+        // drifting from the Queue card; or Stop and send writing its prompt
+        // from the page, on a timer or before the run has ended, rather than
+        // as the abort's `then` the core sequences. And (#838) Take back
+        // putting the text back in the textarea on its click, before trellis
+        // has said it took the message back, so a steer a model request
+        // already carries is sent twice; or a withdraw sent from anywhere
+        // but the queue's own control. The queue is ds.js's queueItems over
+        // the view's `pending`; its one listener sends the one withdraw,
+        // naming the item by its own id, and touches no text; the text
+        // returns only in the core's `taken-back` listener; edit and
+        // reorder are marked not built; and the Stop and send branch of
+        // Send only opens the Stop dialog.
+        let js = code_of("composer.js");
+        assert!(
+            function_body(&js, "drawPending").contains("queueItems(doc, items)"),
+            "the queue is not drawn through ds.js"
+        );
+        assert!(
+            js.contains(r#"if ("pending" in view) drawPending(doc, view.pending);"#),
+            "the queue is not the view's pending"
+        );
+        for bad in ["setTimeout", "setInterval"] {
+            assert!(!js.contains(bad), "composer.js holds {bad}");
+        }
+        assert_eq!(
+            js.matches("type: \"withdraw\"").count(),
+            1,
+            "composer.js sends withdraw from more than one place"
+        );
+        let take = click_handler(&js, "p.queueList");
+        assert!(
+            take.contains("forward(tauri, p, { id: b.dataset.takeBack, type: \"withdraw\""),
+            "Take back does not send the item's withdraw: {take}"
+        );
+        assert!(
+            !take.contains("p.text"),
+            "Take back puts the text back on the click: {take}"
+        );
+        assert!(
+            listener(&js, "taken-back").contains("p.text.value ="),
+            "the text does not come back on trellis's answer"
+        );
+        assert_eq!(
+            js.matches("p.text.value = ").count(),
+            js.matches("p.text.value = \"\"").count() + 1,
+            "composer.js fills the textarea somewhere other than taken-back"
+        );
+        let submit = composer_submit(&js);
+        let stop = submit
+            .split("if (running && verb === \"stop\") {")
+            .nth(1)
+            .and_then(|r| r.split("\n    }\n").next())
+            .expect("Send has a Stop and send branch");
+        for bad in ["forward(", "send(", "invoke("] {
+            assert!(!stop.contains(bad), "Stop and send sends from Send: {stop}");
+        }
+        for want in ["p.stopConfirm.showModal();", "p.stopCancel.focus();"] {
+            assert!(stop.contains(want), "Stop and send lacks {want}: {stop}");
+        }
+        let close = js
+            .split("p.stopConfirm.addEventListener(\"close\"")
+            .nth(1)
+            .and_then(|r| r.split("});").next())
+            .expect("composer.js listens for the dialog's close");
+        assert!(
+            close.contains("if (then !== null) line.then = then;"),
+            "{close}"
+        );
+        let page = page();
+        let queue = index_of(&page, "composer-queue");
+        assert!(within(&page, queue, index_of(&page, "composer")));
+        assert!(page[queue].attrs.contains_key("hidden"), "shown as served");
+        assert!(
+            (0..page.len()).any(|i| within(&page, i, queue)
+                && page[i].attr("class") == Some("unbuilt")
+                && page[i].text.contains("not built")),
+            "edit and reorder are not marked not built"
+        );
+        assert!(
+            !page[queue].text.contains("Take back"),
+            "take back is still marked not built"
+        );
+    }
+
+    #[test]
+    fn a_plan_edit_is_sent_as_a_steer_through_rpc_js_alone() {
+        // The risk (#838, ADR 0058 section 5): the Plan panel sending its
+        // edit some other way than the composer's steer (a command of its
+        // own, a second send, a call around rpc.js), so the core's rules do
+        // not hold for it or the trail does not keep it as the person's; or
+        // offering Edit when no steer can reach the run. The core's side is
+        // a_plan_edit_is_sent_as_a_steer in commands.rs. The panel is
+        // render.js's `plan` pane, its one send is a steer whose message is
+        // steerHead's words then the edited lines, and Edit shows only
+        // while the reducer's can_steer says a steer reaches the run.
+        let js = code_of("plan.js");
+        assert!(
+            code_of("render.js").contains("plan: [\"pane-plan\", drawPlan],"),
+            "render.js does not draw the plan pane"
+        );
+        for bad in ["invoke(", "type: \"plan\"", "withdraw", "setTimeout"] {
+            assert!(!js.contains(bad), "plan.js holds {bad}");
+        }
+        assert_eq!(
+            js.matches("send(").count(),
+            1,
+            "plan.js sends from more than one place"
+        );
+        assert!(
+            function_body(&js, "sendEdit").contains(
+                "{ id: lineId(\"plan\", \"steer\"), type: \"steer\", message: `${steerHead(plan.turn)}\\n${edited}` }"
+            ),
+            "the edit is not one steer of steerHead and the edited lines"
+        );
+        assert!(
+            function_body(&js, "drawPlan").contains(
+                "const editable = steps !== null && steps.length > 0 && plan.can_steer === true;"
+            ),
+            "Edit is offered without the reducer's can_steer"
+        );
+        assert_eq!(
+            imports_of(&js).get("send").map(String::as_str),
+            Some("rpc.js"),
+            "plan.js sends around rpc.js"
+        );
+    }
+
+    #[test]
     fn stop_confirm_dialog_has_named_cancel_and_stop_buttons() {
         // The risk (#637): the confirmation is a dialog whose buttons a
         // screen reader names only as "button", or whose text does not say
@@ -4444,6 +4776,124 @@ mod tests {
                 && parts.contains("stopCancel: doc.getElementById(\"stop-confirm-cancel\")"),
             "composer.js looks up another dialog: {parts}"
         );
+    }
+
+    #[test]
+    fn now_strip_stop_only_opens_the_stop_confirm_dialog() {
+        // The risk (#828, #637): the Now strip's Stop is a second path to
+        // `abort` beside the composer's, which walks around the
+        // confirmation; or "Summary so far" (#832) sends something, or
+        // opens anything but the summary level. The strip's Stop opens the
+        // one dialog whose close sends the abort, and sends nothing itself;
+        // Summary so far, and Summary once the run has ended, only burrows
+        // into the summary level, and no not-built mark is left for it.
+        // Pause and Resume (#837) are the strip's only sends: one call to
+        // rpc.js's send, its type `pause` or `resume` and nothing else, so
+        // no abort or other line leaves the strip.
+        let js = code_of("now.js");
+        for bad in ["abort", "invoke(", "set_budget"] {
+            assert!(!js.contains(bad), "now.js sends something: {bad}");
+        }
+        assert_eq!(
+            js.matches("send(").count(),
+            1,
+            "now.js sends more than its controls"
+        );
+        let control = function_body(&js, "control");
+        assert!(
+            control
+                .contains("await send(nowTauri, { id: lineId(\"now\", type), type }, (why) => {"),
+            "the strip's one send is not its control's: {control}"
+        );
+        let calls: Vec<&str> = js.matches("control(doc, \"").collect();
+        assert_eq!(calls.len(), 2, "the strip sends more than pause and resume");
+        for want in [r#"control(doc, "pause")"#, r#"control(doc, "resume")"#] {
+            assert!(js.contains(want), "now.js lacks {want}");
+        }
+        let draw = function_body(&js, "drawNow");
+        for want in [
+            r#"doc.getElementById("stop-confirm")"#,
+            r#"dialog.returnValue = "";"#,
+            "dialog.showModal();",
+            r#"doc.getElementById("stop-confirm-cancel").focus();"#,
+            r#"stop.setAttribute("aria-controls", "stop-confirm");"#,
+            "if (v.can_stop === true) {",
+            r#"state === "ended" ? "Summary" : "Summary so far""#,
+            r#"summary.addEventListener("click", () => burrow(doc, ["run", "summary"]));"#,
+        ] {
+            assert!(draw.contains(want), "drawNow lacks {want}");
+        }
+        assert!(
+            !js.contains("not built") && !js.contains("unbuilt"),
+            "the summary is still marked not built"
+        );
+    }
+
+    #[test]
+    fn summary_page_draws_the_model_s_words_fenced_and_the_modes_apart() {
+        // The risk (#832; CLAUDE.md rules 4 and 10): the summary level draws
+        // the model's closing words as markup, unlabelled, or in a check's
+        // tone, so they read as the desktop's or as a verdict; or draws
+        // Verified and Reviewed as one figure. The words are read only from
+        // the reducer's `{untrusted}` fence and drawn by ds.js's modelWords
+        // as text under the label saying whose they are; the two counts are
+        // two Stats on two rows; and no outcome is drawn but run_end's.
+        let js = code_of("summary.js");
+        let closing = function_body(&js, "drawClosing");
+        for want in [
+            "const words = untrusted(c.words);",
+            "modelWords(doc, str(c.label) ?? \"the model's words, not a verdict\", words)",
+        ] {
+            assert!(closing.contains(want), "drawClosing lacks {want}");
+        }
+        let fence = function_body(&js, "untrusted");
+        assert!(
+            fence.contains("typeof v.untrusted === \"string\" ? v.untrusted : null"),
+            "{fence}"
+        );
+        let ds = code_of("ds.js");
+        let words = function_body(&ds, "modelWords");
+        for want in [
+            r#"el(doc, "div", null, "cd-tx-e cd-tx-model")"#,
+            r#"el(doc, "span", label, "cd-tx-label")"#,
+            r#"el(doc, "div", text, "cd-tx-body")"#,
+        ] {
+            assert!(words.contains(want), "modelWords lacks {want}");
+        }
+        for tone in ["cd-tx-check", "cd-status", "ok", "down"] {
+            assert!(!words.contains(tone), "modelWords takes a tone: {tone}");
+        }
+        let modes = function_body(&js, "drawModes");
+        assert!(
+            modes.contains(r#"stats(doc, [{ label: "Verified", value: figure(doc, m.verified, "#)
+                && modes.contains(
+                    r#"stats(doc, [{ label: "Reviewed", value: figure(doc, m.reviewed, "#
+                ),
+            "Verified and Reviewed are not two rows of one Stat each: {modes}"
+        );
+        for joined in [
+            "m.verified +",
+            "+ m.reviewed",
+            "m.reviewed +",
+            "+ m.verified",
+            "/",
+        ] {
+            assert!(!modes.contains(joined), "drawModes joins the two: {joined}");
+        }
+        let end = function_body(&js, "drawEnd");
+        assert!(
+            end.contains("const o = s.outcome !== null && typeof s.outcome === \"object\" ? s.outcome : null;"),
+            "drawEnd draws an outcome the reducer did not send"
+        );
+        for bad in [
+            "innerHTML",
+            "insertAdjacentHTML",
+            "outerHTML",
+            "send(",
+            "invoke(",
+        ] {
+            assert!(!js.contains(bad), "summary.js uses {bad}");
+        }
     }
 
     #[test]

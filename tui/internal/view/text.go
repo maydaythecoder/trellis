@@ -18,18 +18,29 @@ import (
 
 // Plain removes control characters (C0, DEL and C1, ESC among them, and
 // line breaks), so served text can never move the cursor, recolour the
-// screen or start an escape sequence in the terminal. Everything the model
-// or trellis wrote passes through it before it is kept or drawn.
+// screen or start an escape sequence in the terminal, and the bidirectional
+// embeddings, overrides and isolates, so it can never draw in an order
+// other than the one it is stored in (a filename or a line of code that
+// reads as something else, #803). Everything the model or trellis wrote
+// passes through it before it is kept or drawn.
 func Plain(s string) string {
-	if strings.IndexFunc(s, unicode.IsControl) < 0 {
+	if strings.IndexFunc(s, droppedRune) < 0 {
 		return s
 	}
 	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
+		if droppedRune(r) {
 			return -1
 		}
 		return r
 	}, s)
+}
+
+// droppedRune is a rune Plain drops. The bidirectional controls are format
+// characters (Cf), not controls (Cc), so unicode.IsControl misses them:
+// U+202A-U+202E (LRE, RLE, PDF, LRO, RLO) and U+2066-U+2069 (LRI, RLI,
+// FSI, PDI).
+func droppedRune(r rune) bool {
+	return unicode.IsControl(r) || (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069)
 }
 
 // Width is how many terminal cells s takes on one row, as lipgloss.Width

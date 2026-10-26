@@ -16,8 +16,12 @@ case "$found" in
   "$debug"/trellis|"$debug"/trellis.exe) ;;
   *) fail "trellis resolves to '${found:-nothing}', not this build in $debug" ;;
 esac
-curl -fsS -o /dev/null --max-time 5 http://127.0.0.1:11434/api/tags \
-  || fail "no model runtime at 127.0.0.1:11434 (start Ollama); dirty_worktree needs it"
+# A TCP connect, as RuntimeClient::reachable checks and as ci.yml's guard job
+# relies on: dirty_worktree needs the port to answer, not a model behind it.
+# So Ollama on the owner's host and scripts/cloud-setup.sh's plain listener
+# in a cloud session both satisfy it (#924).
+$PY -c 'import socket; socket.create_connection(("127.0.0.1", 11434), timeout=5).close()' 2>/dev/null \
+  || fail "nothing listening on 127.0.0.1:11434 (start Ollama, or scripts/cloud-setup.sh in a cloud session); dirty_worktree needs it"
 out=$($PY qa/run-guards.py 2>&1) || true
 git checkout -- qa/guards-latest.json 2>/dev/null || true
 printf '%s\n' "$out" | tail -15

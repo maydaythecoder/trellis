@@ -2245,6 +2245,12 @@ fn one_call_per_built_in() -> Vec<ToolCall> {
             question: s("which?"),
             options: vec![],
         },
+        ToolCall::Plan {
+            steps: vec![crate::tools::PlanStep {
+                text: s("edit f"),
+                state: crate::tools::PlanState::Current,
+            }],
+        },
     ]
 }
 
@@ -2337,4 +2343,202 @@ async fn hook_payload_read_only_is_absent_for_a_custom_tool() {
             &serde_json::json!({"tool": "grep", "path": "app/util.py"})
         );
     }
+}
+
+#[tokio::test]
+async fn edit_turn_carries_line_counts_and_a_unified_diff() {
+    // The risk (#802): a client learned what an edit changed only from the
+    // approval question, so in auto mode, where nobody is asked, it had no
+    // line counts and no diff, and a diff it did see had no line numbers.
+    // The turn that applied the edit carries both, numbered from where the
+    // edit was. And a bash turn that changed a file carries none of them:
+    // nothing diffed what a command did, so a diff there would be invented.
+    let d = git_repo();
+    let tools = with_bash(&[], true, Duration::from_secs(30));
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_tools(tools.clone())
+        .with_gate(Box::new(BashPolicyGate::new(Vec::new(), true)))
+        .spawn();
+    let steps = serde_json::json!({"steps": [
+        {"tool": "edit", "path": "app/util.py",
+         "old": "    return 1", "new": "    x = 2\n    return x"},
+        {"tool": "bash", "command": "echo y >> app/util.py"},
+        {"tool": "done", "summary": "done"}
+    ]});
+    let mut m = script(&tools, &steps.to_string());
+    let events = crate::testutil::TurnEvents::default();
+    let guard = events.install();
+    let (_, t) = run("change it", &mut m, &orch, &budget()).await;
+    drop(guard);
+    let got = events.taken();
+    assert_eq!(got.len(), 2, "{got:?}");
+
+    let edit = &got[0];
+    let field = |name: &str| edit.get(name).map(String::as_str);
+    assert_eq!(field("wrote"), Some("true"), "{edit:?}");
+    assert_eq!(field("lines_added"), Some("2"), "{edit:?}");
+    assert_eq!(field("lines_removed"), Some("1"), "{edit:?}");
+    assert_eq!(field("start_line"), Some("2"), "{edit:?}");
+    // The header's old range opens a line above start_line: the context.
+    assert_eq!(
+        field("diff"),
+        Some(
+            "--- app/util.py\n+++ app/util.py\n@@ -1,2 +1,3 @@\n def helper():\n\
+             -    return 1\n+    x = 2\n+    return x\n"
+        ),
+        "{edit:?}"
+    );
+
+    // The bash turn ran and changed the file, and says nothing of lines.
+    assert!(
+        t.turns[1].changed.iter().any(|p| p == "app/util.py"),
+        "the command changed a file: {:?}",
+        t.turns[1]
+    );
+    for name in ["lines_added", "lines_removed", "start_line", "diff"] {
+        assert!(
+            !got[1].contains_key(name),
+            "bash turn has {name}: {:?}",
+            got[1]
+        );
+    }
+}
+
+// The plan tool (ADR 0058 §5): the model's checklist, drawn as its words.
+
+fn with_plan() -> ToolSet {
+    ToolSet::build(ToolSelection {
+        enable: vec!["plan".into()],
+        ..Default::default()
+    })
+    .expect("plan is an opt-in built-in")
+}
+
+#[tokio::test]
+async fn plan_result_is_output_never_a_pass() {
+    // The risk (CLAUDE.md rule 2): a plan whose steps the model marks done,
+    // in words that say the work passed, read as a correctness claim, so a
+    // run converges on the model's own account of its progress. The result
+    // is Output, the turn carries no verdict, writes nothing, and a run of a
+    // plan and `done` stops without a passing check.
+    let d = repo();
+    let tools = with_plan();
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_tools(tools.clone())
+        .spawn();
+    let mut m = script(
+        &tools,
+        r#"{"steps":[
+            {"tool":"plan","steps":[
+                {"text":"fix helper","state":"done"},
+                {"text":"all tests passed","state":"done"}
+            ]},
+            {"tool":"done","summary":"the plan is done"}
+        ]}"#,
+    );
+    let (outcome, t) = run("x", &mut m, &orch, &budget()).await;
+    assert!(stopped_without_checks(&outcome), "{outcome:?}");
+    assert_eq!(t.turns.len(), 1);
+    assert_eq!(t.turns[0].verdict_passed, None);
+    assert_eq!(t.turns[0].check_kind, None);
+    assert!(!t.turns[0].may_have_changed_tree);
+    assert!(
+        t.turns[0].observation.contains("it is not a check"),
+        "{}",
+        t.turns[0].observation
+    );
+
+    let r = orch.call(&t.turns[0].call).await;
+    assert!(matches!(&r.result, ToolResult::Output(_)), "{r:?}");
+    assert!(!r.result.is_passing_check());
+
+    // A run that did not enable it is refused it at the orchestrator,
+    // whatever reached it, and is not given a plan.
+    let (plain, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+    let r = plain.call(&t.turns[0].call).await;
+    assert!(
+        matches!(&r.result, ToolResult::Error(e) if e.contains("not a tool in this run")),
+        "{r:?}"
+    );
+}
+
+#[tokio::test]
+async fn plan_event_carries_the_steps_and_cuts_past_eight() {
+    // The risk (ADR 0058 §5): a client draws a plan the model sent past the
+    // limits as though it were whole, or a plan the result told the model
+    // was cut differently from the one it draws. Ten steps, one 250
+    // characters long: the event carries the first eight, the long one cut
+    // to 200 characters, and how much was cut; the result says the same;
+    // the trail records the call as a `plan` action. A declined plan sends
+    // no event: there is no plan to draw.
+    let d = repo();
+    let tools = with_plan();
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_tools(tools.clone())
+        .spawn();
+    let long = "x".repeat(250);
+    let mut steps: Vec<serde_json::Value> = (1..=10)
+        .map(|i| serde_json::json!({"text": format!("step {i}"), "state": "todo"}))
+        .collect();
+    steps[0] = serde_json::json!({"text": "read helper", "state": "done"});
+    steps[1] = serde_json::json!({"text": long, "state": "current"});
+    let script_json = serde_json::json!({"steps": [
+        {"tool": "plan", "steps": steps},
+        {"tool": "done", "summary": "planned"}
+    ]});
+    let mut m = script(&tools, &script_json.to_string());
+    let events = crate::testutil::TurnEvents::default();
+    let guard = events.install();
+    let (_, t) = run("x", &mut m, &orch, &budget()).await;
+    drop(guard);
+
+    let plans = events.plans();
+    assert_eq!(plans.len(), 1, "{plans:?}");
+    let plan = &plans[0];
+    assert_eq!(plan.get("turn").map(String::as_str), Some("1"), "{plan:?}");
+    assert_eq!(plan.get("steps_cut").map(String::as_str), Some("2"));
+    assert_eq!(plan.get("texts_cut").map(String::as_str), Some("1"));
+    let kept: serde_json::Value =
+        serde_json::from_str(&plan["steps"]).expect("steps is a JSON array");
+    let kept = kept.as_array().expect("an array");
+    assert_eq!(kept.len(), 8);
+    assert_eq!(
+        kept[0],
+        serde_json::json!({"text": "read helper", "state": "done"})
+    );
+    assert_eq!(kept[1]["text"].as_str(), Some("x".repeat(200).as_str()));
+    assert_eq!(kept[1]["state"], "current");
+    assert_eq!(kept[7]["text"], "step 8");
+
+    let obs = &t.turns[0].observation;
+    assert!(obs.contains("8 steps kept"), "{obs}");
+    assert!(obs.contains("2 steps past the first 8 cut"), "{obs}");
+    assert!(obs.contains("1 step text cut to 200 characters"), "{obs}");
+    assert!(!obs.contains("step 9"), "{obs}");
+    let action = crate::agent::turn_action(&t.turns[0].call, obs);
+    assert_eq!(action.tool, "plan");
+    assert!(!action.wrote);
+
+    // Declined in approve mode: the turn is an error, and no plan event.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::gate::ApprovalRequest>(1);
+    let (gated, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_tools(tools.clone())
+        .with_gate(Box::new(ApprovalGate::new(
+            d.path(),
+            vec!["plan".into()],
+            tx,
+        )))
+        .spawn();
+    let declines = tokio::spawn(async move {
+        let req = rx.recv().await.expect("the person is asked");
+        let _ = req.reply.send(false);
+    });
+    let mut m = script(&tools, &script_json.to_string());
+    let events = crate::testutil::TurnEvents::default();
+    let guard = events.install();
+    let (_, t) = run("x", &mut m, &gated, &budget()).await;
+    drop(guard);
+    declines.await.unwrap();
+    assert_eq!(t.turns[0].human, Some(false));
+    assert!(events.plans().is_empty(), "{:?}", events.plans());
 }

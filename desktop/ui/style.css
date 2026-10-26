@@ -401,8 +401,12 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* .cd-bud-in: the Budget card's raise input (#837), whose ds.css rule
+   drops the outline on focus with a class selector that outranks
+   input:focus-visible; named here, after ds.css, it keeps the ring. */
 button:focus-visible,
 input:focus-visible,
+.cd-bud-in:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
 summary:focus-visible,
@@ -501,6 +505,25 @@ h3,
 .stat-row .cd-stat,
 .qb-cell .cd-stat {
   gap: var(--space-1);
+}
+
+/* The budget's rows (ds.js's budgetRows, #829) share one grid, so every
+   Meter starts in the same column whatever its label: the bundle's 56px
+   label column is narrower than "completion tokens", and a grid per row
+   would set each Meter where its own label ends. */
+#pane-budget .cd-bud {
+  display: grid;
+  grid-template-columns: max-content max-content 1fr;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+#pane-budget .cd-bud-row {
+  display: contents;
+}
+
+#pane-budget .cd-bud + .stat-row {
+  margin-top: var(--space-3);
 }
 
 /* A long name on one line, ending in an ellipsis; the element's title
@@ -767,6 +790,32 @@ code {
   margin-top: 8px;
 }
 
+/* The verbs (#830) are the Queue card's mode options (ds.css's .cd-q-opt):
+   the composer's own button look above is not theirs. */
+.composer .cd-q-opt {
+  padding: 2px var(--space-2);
+  box-shadow: var(--frame);
+  color: var(--ink-secondary);
+  font: 500 12px/16px var(--font-mono);
+}
+
+.composer .cd-q-opt.cd-q-opt-on {
+  color: var(--signal);
+  background: var(--signal-soft);
+  box-shadow: var(--frame-signal);
+}
+
+/* The bundle's cool ring, inset: no frame token is cool. */
+.composer .cd-q-opt-cool.cd-q-opt-on {
+  color: var(--cool);
+  background: var(--cool-soft);
+  box-shadow: inset 0 0 0 1px var(--cool);
+}
+
+#composer-verbs {
+  margin-bottom: var(--space-2);
+}
+
 .chips {
   display: flex;
   flex-wrap: wrap;
@@ -996,6 +1045,59 @@ code {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+/* The Now strip (#828): the NowStrip card says it never scrolls away, so
+   it stays at the top of the stage while the Run level scrolls. The card's
+   one row wraps here rather than running past a narrow window, as the
+   run-view wireframe's strip does. */
+.now {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin-bottom: var(--space-4);
+}
+
+.now .cd-now {
+  flex-wrap: wrap;
+  row-gap: var(--space-2);
+  white-space: normal;
+}
+
+/* The playful register's face under the strip (#836). */
+.now .cd-ascii {
+  margin-top: var(--space-3);
+}
+
+/* The register dial (#836): two radios under Open another repository. */
+.register-dial {
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  border: 0;
+}
+
+/* Where it is (#828): a label and its value per row, the labels in one
+   column (ds.js's facts). */
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  font: 400 12px/18px var(--font-mono);
+}
+
+.facts > div {
+  display: contents;
+}
+
+.facts dt {
+  color: var(--ink-muted);
+}
+
+.facts dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 /* The action graph (#303): SVG graph.js builds from the core's layout. It
@@ -2249,4 +2351,106 @@ article.past-run section + section {
   margin-right: 6px;
   vertical-align: -3px;
   flex: none;
+}
+
+/* The Code level (#831). A file's way in is its path, drawn as the Rail
+   row's label; its counts and state word are the row's meta. */
+#code,
+#code-file {
+  display: grid;
+  gap: var(--space-4);
+  align-content: start;
+}
+
+.code-pick {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.code-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* The diff's gutters in px, not the bundle's ch (#831): the old and the
+   new line number, the sign, the text, and the comment button's cell. */
+.code-diff .cd-diff-line {
+  grid-template-columns: 48px 48px 24px minmax(0, 1fr) 32px;
+}
+
+.code-diff .cd-diff-text {
+  overflow-wrap: anywhere;
+}
+
+.code-comment {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-muted);
+  font: 400 12px/20px var(--font-mono);
+  cursor: pointer;
+}
+
+.code-comment:hover {
+  color: var(--signal);
+}
+
+/* While the run waits on this edit: what the person is asked, in the
+   signal colour, the user's (DESIGN.md §3.1). */
+.code-approve {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--signal-soft);
+  box-shadow: var(--frame-signal);
+}
+
+.code-approve p {
+  margin: 0 auto 0 0;
+}
+
+.code-comment-form {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.code-comment-form input {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--control-border);
+  background: var(--panel-inset);
+  color: var(--ink);
+  font: 400 13px/20px var(--font-mono);
+}
+
+/* The summary level (#832): its Panels in two columns where the window
+   has room for them, one where it has not. A check kind's runs and a
+   file's meta wrap as the Code level's do. */
+#summary {
+  display: grid;
+  gap: var(--space-4);
+  align-content: start;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.summary-runs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
 }

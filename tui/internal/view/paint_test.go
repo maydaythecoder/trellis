@@ -48,6 +48,12 @@ func TestPaintEachRoleTakesItsToken(t *testing.T) {
 		RoleMeterNear:  th.Signal,
 		RoleMeterOver:  th.Down,
 		RoleMeterEmpty: th.LineStrong,
+		// A diff's lines (#853): the Diff card's three tokens.
+		RoleDiffAdd:  th.DiffAdd,
+		RoleDiffDel:  th.DiffDel,
+		RoleDiffHunk: th.DiffHunk,
+		// The playful register's face (#857).
+		RolePlay: th.Play,
 	}
 	if len(want) != int(roles) {
 		t.Fatalf("%d roles and %d named here: a new role needs its token named", roles, len(want))

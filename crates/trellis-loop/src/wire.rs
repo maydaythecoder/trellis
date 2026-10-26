@@ -12,6 +12,7 @@
 //! run *may* enable; the tool set decides what one does.
 
 use crate::agent::{Step, ToolCall};
+use crate::tools::PlanStep;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use trellis_checks::CheckKind;
@@ -87,6 +88,10 @@ pub enum ToolCallWire {
     /// The call sites in the named files that bound to no definition, by
     /// reason. Required: an empty or missing list is not "every file".
     CoverageReport { paths: Vec<String> },
+    /// Your plan for this task, as a short checklist: each step's `text`
+    /// and `state` (`todo`, `current` or `done`). At most eight steps of at
+    /// most 200 characters are kept. A record for the person, not a check.
+    Plan { steps: Vec<PlanStep> },
     /// Stop. Not a claim of success: the loop decides that from the checks.
     Done {
         #[serde(default)]
@@ -122,6 +127,26 @@ fn ask_human(question: String, options: Vec<String>) -> Result<Step, String> {
         ));
     }
     Ok(Step::Call(ToolCall::AskHuman { question, options }))
+}
+
+/// Validates a `plan` call. Too many steps or too long a text is cut later,
+/// and the result says so (ADR 0058 §5); what is refused here is what no
+/// cut makes into a step: no steps at all, a blank step, and a control
+/// character, which a one-line checklist entry has no use for and which a
+/// client drawing the text as given would otherwise be handed.
+fn plan(steps: Vec<PlanStep>) -> Result<Step, String> {
+    if steps.is_empty() {
+        return Err("`plan` needs at least one step".into());
+    }
+    if steps.iter().any(|s| s.text.trim().is_empty()) {
+        return Err("each `plan` step needs a non-empty `text`".into());
+    }
+    if steps.iter().any(|s| s.text.chars().any(char::is_control)) {
+        return Err(
+            "a `plan` step's `text` is one line, with no newline or other control character".into(),
+        );
+    }
+    Ok(Step::Call(ToolCall::Plan { steps }))
 }
 
 /// Every check kind, in the order the protocol lists them.
@@ -191,6 +216,7 @@ impl ToolCallWire {
             ToolCallWire::CoverageReport { paths } => {
                 Step::Call(ToolCall::CoverageReport { paths })
             }
+            ToolCallWire::Plan { steps } => plan(steps)?,
             ToolCallWire::Done { summary } => Step::Done { summary },
         })
     }
@@ -261,6 +287,7 @@ mod tests {
                 "callers_of",
                 "callees_of",
                 "coverage_report",
+                "plan",
                 "done",
             ]
         );

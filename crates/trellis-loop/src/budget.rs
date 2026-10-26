@@ -164,6 +164,167 @@ impl Budget {
     }
 }
 
+/// The ceilings a person asks to raise during a run (ADR 0058 §2). `None`
+/// leaves a ceiling as it is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Raise {
+    pub max_iterations: Option<u32>,
+    pub max_wall_clock: Option<Duration>,
+    pub max_tokens: Option<u64>,
+}
+
+/// Why a [`Raise`] changed nothing.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RaiseRefused {
+    #[error("name a ceiling to raise: max_iterations, max_wall_clock_ms or max_completion_tokens")]
+    NothingNamed,
+    /// Lowering is refused whole: a limit below the spend ends the run,
+    /// which `abort` already does, and a lowered ceiling has no defined
+    /// share for partitions part-way through a stage (ADR 0058).
+    #[error(
+        "{ceiling} {asked} is below the run's ceiling of {current}; a ceiling is raised \
+         during a run, never lowered, and nothing changed"
+    )]
+    Lower {
+        ceiling: &'static str,
+        asked: u64,
+        current: u64,
+    },
+    /// No loop has adopted the budget yet, so nothing knows the ceiling a
+    /// raise would be measured against.
+    #[error("the run has not reached its first budget check yet; nothing changed")]
+    NotStarted,
+    /// No loop will check the budget again: the reason, as given.
+    #[error("{0}")]
+    Closed(String),
+}
+
+impl Budget {
+    /// This budget with `r`'s ceilings, or the first one `r` would lower.
+    /// All or nothing, so a refused request leaves no ceiling half-moved; a
+    /// value equal to the ceiling changes nothing. The regime is kept.
+    pub fn raised(&self, r: &Raise) -> Result<Budget, RaiseRefused> {
+        if *r == Raise::default() {
+            return Err(RaiseRefused::NothingNamed);
+        }
+        let lower = |ceiling, asked: u64, current: u64| {
+            (asked < current).then_some(RaiseRefused::Lower {
+                ceiling,
+                asked,
+                current,
+            })
+        };
+        let ms = |d: Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+        let refused = [
+            r.max_iterations.and_then(|v| {
+                lower(
+                    "max_iterations",
+                    u64::from(v),
+                    u64::from(self.max_iterations),
+                )
+            }),
+            r.max_wall_clock
+                .and_then(|v| lower("max_wall_clock_ms", ms(v), ms(self.max_wall_clock))),
+            r.max_tokens
+                .and_then(|v| lower("max_completion_tokens", v, self.max_tokens)),
+        ];
+        if let Some(e) = refused.into_iter().flatten().next() {
+            return Err(e);
+        }
+        Ok(Budget {
+            max_iterations: r.max_iterations.unwrap_or(self.max_iterations),
+            max_wall_clock: r.max_wall_clock.unwrap_or(self.max_wall_clock),
+            max_tokens: r.max_tokens.unwrap_or(self.max_tokens),
+            regime: self.regime,
+        })
+    }
+}
+
+/// A run's whole ceiling as a person may raise it while the run goes on
+/// (ADR 0058 §2), shared between the loop and whoever takes the person's
+/// request.
+///
+/// It is the **whole run's** ceiling, never a partition's share: a loop that
+/// adopted it with a share would let one raise be granted to every
+/// partition, ADR 0008's "multiply". A partitioned run deals the raised
+/// whole through [`Budget::shares`], as it dealt the first, so the shares sum
+/// to the raised ceiling (rule 9).
+///
+/// Refused until a loop adopts it, since until then nothing knows the
+/// ceiling a raise would be measured against, and refused once closed, as
+/// the loop closes it on return. A raise accepted during the run's last
+/// turn reaches no check and changes nothing: nothing can know which turn
+/// is the last until the model has chosen its call.
+#[derive(Debug, Default)]
+pub struct LiveBudget {
+    state: std::sync::Mutex<LiveState>,
+}
+
+#[derive(Debug, Default)]
+struct LiveState {
+    /// The whole run's ceiling, with every raise accepted so far.
+    current: Option<Budget>,
+    /// A raise accepted and not yet taken by the loop.
+    raised: bool,
+    /// Set once; from then on every raise is refused with it.
+    closed: Option<String>,
+}
+
+impl LiveBudget {
+    fn state(&self) -> std::sync::MutexGuard<'_, LiveState> {
+        // Every holder writes the state whole, so a poisoned lock still
+        // guards a consistent one.
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Raises the run's ceilings, answered with all of them after the
+    /// change. The loop enforces them from its next budget check.
+    pub fn raise(&self, r: &Raise) -> Result<Budget, RaiseRefused> {
+        let mut s = self.state();
+        if let Some(why) = &s.closed {
+            return Err(RaiseRefused::Closed(why.clone()));
+        }
+        let Some(current) = &s.current else {
+            return Err(RaiseRefused::NotStarted);
+        };
+        let next = current.raised(r)?;
+        if !same_ceilings(&next, current) {
+            s.raised = true;
+            s.current = Some(next.clone());
+        }
+        Ok(next)
+    }
+
+    /// Ends raising for good; later raises are refused with `why`. The
+    /// first reason stands.
+    pub fn close(&self, why: &str) {
+        let mut s = self.state();
+        s.closed.get_or_insert_with(|| why.to_string());
+    }
+
+    /// The loop's start: the ceiling raises are measured against.
+    pub(crate) fn adopt(&self, whole: &Budget) {
+        self.state().current = Some(whole.clone());
+    }
+
+    /// The raised ceiling, once per raise, for the loop's budget check.
+    pub(crate) fn take_raised(&self) -> Option<Budget> {
+        let mut s = self.state();
+        if !std::mem::take(&mut s.raised) {
+            return None;
+        }
+        s.current.clone()
+    }
+}
+
+fn same_ceilings(a: &Budget, b: &Budget) -> bool {
+    a.max_iterations == b.max_iterations
+        && a.max_wall_clock == b.max_wall_clock
+        && a.max_tokens == b.max_tokens
+}
+
 /// A plan with more partitions than the run has iterations or tokens.
 ///
 /// Every partition needs at least one of each to do anything, and granting
@@ -234,6 +395,108 @@ mod tests {
                 "partitions run concurrently, so wall-clock is shared not divided"
             );
         }
+    }
+
+    /// The risk (rule 9, ADR 0058 §2): a person's raise granted to every
+    /// partition, so raising a four-partition run's ceiling by 20 iterations
+    /// spends 80 more. The raise is to the run's whole ceiling, and the
+    /// shares are dealt from that whole, so they sum to the raised ceiling.
+    #[test]
+    fn budget_shares_divide_a_raised_budget() {
+        let first = Budget {
+            max_iterations: 40,
+            max_wall_clock: Duration::from_secs(600),
+            max_tokens: 1_000,
+            regime: CostRegime::Metered,
+        };
+        let live = LiveBudget::default();
+        live.adopt(&first);
+        let whole = live
+            .raise(&Raise {
+                max_iterations: Some(60),
+                max_wall_clock: Some(Duration::from_secs(900)),
+                max_tokens: Some(3_001),
+            })
+            .unwrap();
+        assert_eq!(
+            live.take_raised().map(|b| b.max_iterations),
+            Some(60),
+            "the loop takes the raised whole"
+        );
+        let shares = whole.shares(4).unwrap();
+        let its: u32 = shares.iter().map(|s| s.max_iterations).sum();
+        let toks: u64 = shares.iter().map(|s| s.max_tokens).sum();
+        assert_eq!(
+            (its, toks),
+            (60, 3_001),
+            "the shares sum to the raised ceiling, never to four times it"
+        );
+        for s in &shares {
+            assert_eq!(s.max_wall_clock, Duration::from_secs(900));
+        }
+        // Each share is the raised whole's, not the first share plus the raise.
+        let first_shares = first.shares(4).unwrap();
+        assert_eq!(first_shares[0].max_iterations, 10);
+        assert_eq!(shares[0].max_iterations, 15);
+    }
+
+    /// The risk (ADR 0058 §2): a request that lowers one ceiling and raises
+    /// another half-applied, or a lower ceiling accepted, so a run ends on a
+    /// limit the person never meant to set.
+    #[test]
+    fn a_raise_that_lowers_any_ceiling_changes_nothing() {
+        let first = Budget {
+            max_iterations: 40,
+            max_wall_clock: Duration::from_secs(600),
+            max_tokens: 1_000,
+            regime: CostRegime::Local,
+        };
+        let live = LiveBudget::default();
+        assert_eq!(
+            live.raise(&Raise {
+                max_iterations: Some(50),
+                ..Raise::default()
+            })
+            .err(),
+            Some(RaiseRefused::NotStarted),
+            "nothing to measure a raise against before the loop adopts it"
+        );
+        live.adopt(&first);
+        assert_eq!(
+            live.raise(&Raise {
+                max_iterations: Some(50),
+                max_tokens: Some(999),
+                ..Raise::default()
+            })
+            .err(),
+            Some(RaiseRefused::Lower {
+                ceiling: "max_completion_tokens",
+                asked: 999,
+                current: 1_000,
+            })
+        );
+        assert_eq!(
+            live.raise(&Raise::default()).err(),
+            Some(RaiseRefused::NothingNamed)
+        );
+        // Equal is not lower, and changes nothing for the loop to take.
+        let same = live
+            .raise(&Raise {
+                max_iterations: Some(40),
+                ..Raise::default()
+            })
+            .unwrap();
+        assert_eq!(same.max_iterations, 40);
+        assert!(live.take_raised().is_none(), "nothing was raised");
+        live.close("the run ended");
+        assert_eq!(
+            live.raise(&Raise {
+                max_iterations: Some(50),
+                ..Raise::default()
+            })
+            .err(),
+            Some(RaiseRefused::Closed("the run ended".into()))
+        );
     }
 
     /// The risk: a floored share leaves iterations nobody may spend.
