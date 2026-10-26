@@ -5674,7 +5674,10 @@ fn rpc_withdraw_refuses_a_delivered_steer() {
     });
     assert_eq!(number["success"], false, "{number}");
 
-    let q2 = rpc.next(|v| v["type"] == "approval_request");
+    // The second edit's question is written by the run's thread once the
+    // steer is delivered, so it can arrive while the waits above are still
+    // reading for their answers; q1 is in `seen` too, hence the id.
+    let q2 = rpc.seen_or_next(|v| v["type"] == "approval_request" && v["id"] != q1["id"]);
     rpc.send(serde_json::json!({"id": q2["id"], "type": "approve", "yes": true}));
     rpc.seen_or_next(|v| v["type"] == "run_end");
     let s1 =
