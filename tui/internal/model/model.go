@@ -20,6 +20,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/maydaythecoder/trellis/tui/internal/frames"
+	"github.com/maydaythecoder/trellis/tui/internal/ring"
 	"github.com/maydaythecoder/trellis/tui/internal/theme"
 	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
@@ -84,11 +85,12 @@ type Model struct {
 
 	Width, Height int
 
-	// The run panes (panes.go): what the agent did, the edits it made, the
-	// checks trellis ran, the last blast radius and the budget.
-	Actions []view.Action
-	Edits   []view.Edit
-	Checks  []view.Check
+	// The run panes (panes.go): what the agent did, the edits it made and
+	// the checks trellis ran, each the newest PaneCap of the run (caps.go);
+	// the last blast radius; and the budget.
+	Actions *ring.Ring[view.Action]
+	Edits   *ring.Ring[view.Edit]
+	Checks  *ring.Ring[view.Check]
 	Radius  *view.Radius
 	Budget  view.Budget
 	// ScrollBack is how many rows above the transcript's end the view is
@@ -113,8 +115,11 @@ type Model struct {
 	theme theme.Theme
 
 	// purposes maps a sent command's id to what its answer is read for
-	// (status.go).
-	purposes map[string]string
+	// (status.go); asked holds those ids, newest last, so the oldest can be
+	// forgotten past UnansweredCap, and forgotten counts the ones that were.
+	purposes  map[string]string
+	asked     *ring.Ring[string]
+	forgotten int
 	// offeredFor is the @fragment Offered was listed for, and pathsID the
 	// list_paths request in flight (complete.go).
 	offeredFor, pathsID string
@@ -136,6 +141,7 @@ type Model struct {
 // its state, chosen the model and, with a task given, sent it.
 func New(o Options) *Model {
 	m := &Model{now: time.Now, theme: o.Theme}
+	m.emptyPanes()
 	m.refreshState()
 	if o.ModelSpec != "" {
 		m.setModelID = m.send("set_model", map[string]any{"model": o.ModelSpec})
@@ -603,9 +609,9 @@ func (m *Model) pushText(s string) {
 	}
 }
 
-// pushLine adds one whole line and keeps the cap.
+// pushLine adds one whole line, cut past LineCap bytes, and keeps the cap.
 func (m *Model) pushLine(l string) {
-	m.Transcript = append(m.Transcript, l)
+	m.Transcript = append(m.Transcript, capLine(l))
 	if over := len(m.Transcript) - TranscriptCap; over > 0 {
 		m.Transcript = append([]string(nil), m.Transcript[over:]...)
 	}

@@ -100,6 +100,13 @@ type Budget struct {
 	QueueWaitMs      *uint64
 }
 
+// Dropped is how many of a run pane's oldest rows the model no longer
+// holds: it keeps the newest of each, and the pane says how many went
+// (#848).
+type Dropped struct {
+	Actions, Edits, Checks int
+}
+
 // State is everything the screen draws. Every string in it is served text
 // and is made plain again here before it is drawn.
 type State struct {
@@ -114,6 +121,9 @@ type State struct {
 	Edits   []Edit
 	Checks  []Check
 	Actions []Action
+	// Dropped counts the rows of Edits, Checks and Actions the model no
+	// longer holds.
+	Dropped Dropped
 	Radius  *Radius
 	Budget  Budget
 	// Stderr is trellis's stderr, the newest last, for the capped messages
@@ -244,10 +254,12 @@ func status(s State, w int) string {
 // write trellis reported, so a run in flight counts writes and a finished
 // one counts the files they touched. A run that rolled back has left
 // nothing, and one that did not say so (a converged run, or an ending that
-// did not report it) has left its files for the person to review.
+// did not report it) has left its files for the person to review. Once
+// the oldest writes are no longer held (#848), their files cannot be
+// counted, and the bar says "or more".
 func WorktreeState(s State) string {
 	if s.Running {
-		if n := len(s.Edits); n > 0 {
+		if n := len(s.Edits) + s.Dropped.Edits; n > 0 {
 			return fmt.Sprintf("%d edit(s) pending", n)
 		}
 		return "clean"
@@ -259,10 +271,22 @@ func WorktreeState(s State) string {
 	for _, e := range s.Edits {
 		files[e.Path] = true
 	}
-	if len(files) > 0 {
+	switch {
+	case s.Dropped.Edits > 0:
+		return fmt.Sprintf("%d or more file(s) left for review", len(files))
+	case len(files) > 0:
 		return fmt.Sprintf("%d file(s) left for review", len(files))
 	}
 	return "clean"
+}
+
+// notKept is the row a pane draws first when the model no longer holds
+// its n oldest rows, or nothing when it holds them all.
+func notKept(n int, what string) []Row {
+	if n == 0 {
+		return nil
+	}
+	return []Row{{Text: fmt.Sprintf("… %d earlier %s not kept", n, what), Role: RoleLabel}}
 }
 
 // transcript draws the transcript, following its end unless scrolled
@@ -300,7 +324,7 @@ func transcript(s State, w, h int) []string {
 }
 
 func edits(s State, w, h int) []string {
-	var rows []Row
+	rows := notKept(s.Dropped.Edits, "edits")
 	for _, e := range s.Edits {
 		rows = append(rows, Row{Text: "~ " + Plain(e.Path)})
 	}
@@ -311,7 +335,7 @@ func edits(s State, w, h int) []string {
 // verdict: Check.Passed is set only from one (model/panes.go), and a row is
 // never coloured from what its words say.
 func checks(s State, w, h int) []string {
-	var rows []Row
+	rows := notKept(s.Dropped.Checks, "checks")
 	for _, c := range s.Checks {
 		r := Row{Text: Plain(c.Name) + " failed", Role: RoleFailed}
 		if c.Passed {
@@ -480,6 +504,11 @@ func actions(s State, w, h int) []string {
 		lines = append(lines, Row{Text: "  nothing written to the tree", Role: RoleLabel})
 	default:
 		lines = append(lines, Row{Text: fmt.Sprintf("  %d wrote to the tree", wroteN), Role: RoleLabel})
+	}
+	// The graph counts the actions held; the ones before them are said,
+	// not counted, so every figure in the pane is of the same actions.
+	if n := s.Dropped.Actions; n > 0 {
+		lines = append(lines, Row{Text: fmt.Sprintf("  %d earlier actions not kept", n), Role: RoleLabel})
 	}
 	room := h - 2 - len(lines)
 	if room > 0 && len(s.Actions) > 0 {
