@@ -25,12 +25,12 @@ func TestPanesCheckRowsComeOnlyFromASomeVerdict(t *testing.T) {
 	feed(m, turn(4, "edit a.py", map[string]any{"verdict": "None"}))
 	feed(m, turn(5, "read_file a.py", map[string]any{"verdict": "true"}))
 	want := []view.Check{{Name: "pytest", Passed: true}, {Name: "mypy", Passed: false}, {Name: "check", Passed: false}}
-	if len(m.Checks) != len(want) {
-		t.Fatalf("checks %+v", m.Checks)
+	if m.Checks.Len() != len(want) {
+		t.Fatalf("checks %+v", m.Checks.Slice())
 	}
 	for i := range want {
-		if m.Checks[i] != want[i] {
-			t.Fatalf("check %d: %+v, want %+v", i, m.Checks[i], want[i])
+		if m.Checks.Slice()[i] != want[i] {
+			t.Fatalf("check %d: %+v, want %+v", i, m.Checks.Slice()[i], want[i])
 		}
 	}
 	m.Update(windowSize(120, 40))
@@ -50,20 +50,20 @@ func TestPanesOnlyAnAppliedWriteIsAPendingEdit(t *testing.T) {
 	feed(m, turn(3, "edit app/calc.py", map[string]any{"observation": "applied: true\n1 line changed"}))
 	feed(m, turn(4, "write_file app/new.py", map[string]any{"observation": "created app/new.py"}))
 	feed(m, turn(5, "write_file app/x.py", map[string]any{"observation": "error: exists"}))
-	if len(m.Actions) != 5 {
-		t.Fatalf("%d actions, want every turn", len(m.Actions))
+	if m.Actions.Len() != 5 {
+		t.Fatalf("%d actions, want every turn", m.Actions.Len())
 	}
 	wrote := 0
-	for _, a := range m.Actions {
+	for _, a := range m.Actions.Slice() {
 		if a.Wrote {
 			wrote++
 		}
 	}
-	if wrote != 2 || len(m.Edits) != 2 || m.Edits[0].Path != "app/calc.py" || m.Edits[1].Path != "app/new.py" {
-		t.Fatalf("wrote %d, edits %+v", wrote, m.Edits)
+	if wrote != 2 || m.Edits.Len() != 2 || m.Edits.Slice()[0].Path != "app/calc.py" || m.Edits.Slice()[1].Path != "app/new.py" {
+		t.Fatalf("wrote %d, edits %+v", wrote, m.Edits.Slice())
 	}
 	m.Update(windowSize(120, 40))
-	if v := m.View(); !strings.Contains(v, "2 edit(s) pending") || !strings.Contains(v, "~ app/calc.py") {
+	if v := m.View(); !strings.Contains(v, "● 2 pending") || !strings.Contains(v, "~ app/calc.py") {
 		t.Fatalf("%s", v)
 	}
 }
@@ -84,8 +84,8 @@ func TestPanesAnApprovalAnswerKeepsTheEditsAsReported(t *testing.T) {
 		feed(m, turn(1, "edit a.py", map[string]any{"observation": "applied: true"}))
 		feed(m, approval("a1", "edit a.py (+1 -1)", "apply the edit?"))
 		key(m, c.key)
-		if len(m.Edits) != 1 || m.Edits[0] != (view.Edit{Path: "a.py", Status: view.Proposed}) {
-			t.Fatalf("%c: %+v", c.key, m.Edits)
+		if m.Edits.Len() != 1 || m.Edits.Slice()[0] != (view.Edit{Path: "a.py", Status: view.Proposed}) {
+			t.Fatalf("%c: %+v", c.key, m.Edits.Slice())
 		}
 		out := m.TakeOutbox()
 		if len(out) != 1 || out[0].Cmd["yes"] != c.yes {
@@ -135,11 +135,11 @@ func TestPanesBudgetCarriesTheCeilingTheTurnsFiguresAndElapsed(t *testing.T) {
 	}
 	m.Update(windowSize(140, 30))
 	v := m.View()
-	if !strings.Contains(v, "iteration 2/40  ·  8400 B prompt  ·  0:18 elapsed  ·  30 tok, 2.0 tok/s  ·  queued 10.0 s") {
+	if !strings.Contains(v, "TURNS █░░░░░░░░░░░░░░░ 2/40  ·  PROMPT 8.4 kB  ·  TIME 0:18*  ·  30 tok, 2.0 tok/s  ·  queued 10.0 s") {
 		t.Fatalf("%s", v)
 	}
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
-	if m.Budget.Iteration != 2 || len(m.Actions) != 1 {
+	if m.Budget.Iteration != 2 || m.Actions.Len() != 1 {
 		t.Fatal("the run's end cleared what it did")
 	}
 }
@@ -150,8 +150,8 @@ func TestPanesAWarningIsALineAndNotATurn(t *testing.T) {
 	m := running(t)
 	feed(m, warn("no progress; stopping"))
 	feed(m, jsonLine(map[string]any{"level": "INFO", "fields": map[string]any{"message": "resolving imports", "call": "Edit"}}))
-	if last(m) != "no progress; stopping" || len(m.Actions) != 0 || m.Budget.Iteration != 0 {
-		t.Fatalf("last %q actions %d budget %+v", last(m), len(m.Actions), m.Budget)
+	if last(m) != "no progress; stopping" || m.Actions.Len() != 0 || m.Budget.Iteration != 0 {
+		t.Fatalf("last %q actions %d budget %+v", last(m), m.Actions.Len(), m.Budget)
 	}
 }
 
@@ -160,7 +160,7 @@ func TestPanesAWarningIsALineAndNotATurn(t *testing.T) {
 func TestPanesObservationLinesFollowTheTurn(t *testing.T) {
 	m := running(t)
 	feed(m, turn(1, "read_file a.py", map[string]any{"observation": "1\n2\n3\n4\n5\n6\n7\x1b[2J"}))
-	tail := m.Transcript[len(m.Transcript)-7:]
+	tail := texts(m)[len(m.Transcript)-7:]
 	if tail[0] != "· read_file a.py" || tail[1] != "    1" || tail[6] != "    6" {
 		t.Fatalf("%q", tail)
 	}
@@ -247,11 +247,11 @@ func TestPanesANewRunStartsClean(t *testing.T) {
 	m := running(t)
 	feed(m, turn(1, "edit a.py", map[string]any{"observation": "applied: true", "verdict": "Some(true)"}))
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
-	if len(m.Edits) != 1 || len(m.Checks) != 1 {
+	if m.Edits.Len() != 1 || m.Checks.Len() != 1 {
 		t.Fatal("the panes were cleared at the run's end")
 	}
 	submit(m, "next")
-	if len(m.Edits)+len(m.Checks)+len(m.Actions) != 0 || m.Radius != nil {
+	if m.Edits.Len()+m.Checks.Len()+m.Actions.Len() != 0 || m.Radius != nil {
 		t.Fatal("the last run's panes were carried into this one")
 	}
 }

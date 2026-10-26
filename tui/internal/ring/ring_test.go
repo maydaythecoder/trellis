@@ -59,3 +59,25 @@ func TestRingBelowOneKeepsOne(t *testing.T) {
 		t.Fatalf("%v, dropped %d", got, r.Dropped())
 	}
 }
+
+// Oldest names the value the next push drops, only once the ring is full,
+// so an owner can let go of what it keeps about that value (#848).
+func TestRingOldestIsWhatTheNextPushDrops(t *testing.T) {
+	r := New[int](3)
+	for i := 0; i < 3; i++ {
+		if _, full := r.Oldest(); full {
+			t.Fatalf("full after %d of 3", i)
+		}
+		r.Push(i)
+	}
+	for i := 3; i < 10; i++ {
+		old, full := r.Oldest()
+		if !full || old != i-3 {
+			t.Fatalf("before pushing %d: oldest %d, full %v; want %d", i, old, full, i-3)
+		}
+		r.Push(i)
+		if got := r.Slice(); got[0] != i-2 {
+			t.Fatalf("after pushing %d the oldest kept is %d, want %d", i, got[0], i-2)
+		}
+	}
+}

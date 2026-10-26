@@ -20,6 +20,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/maydaythecoder/trellis/tui/internal/frames"
+	"github.com/maydaythecoder/trellis/tui/internal/ring"
+	"github.com/maydaythecoder/trellis/tui/internal/theme"
 	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
@@ -46,12 +48,16 @@ type Options struct {
 	// takes as the user's own choice (ADR 0024 section 3). Empty confirms
 	// the configured model with set_model {configured: true}.
 	ModelSpec string
+	// Theme is the colours the screen is painted in, built from the
+	// terminal before the program starts. The zero Theme paints nothing.
+	Theme theme.Theme
 }
 
 // Model is the TUI's whole state.
 type Model struct {
-	// Transcript holds whole lines, oldest first, capped at TranscriptCap.
-	Transcript []string
+	// Transcript holds whole rows, oldest first, each typed by its role
+	// (rows.go) and capped at TranscriptCap.
+	Transcript []view.Row
 	// Input is the line being typed.
 	Input string
 	// Running is true from a prompt being sent until its run_end, or a
@@ -80,11 +86,12 @@ type Model struct {
 
 	Width, Height int
 
-	// The run panes (panes.go): what the agent did, the edits it made, the
-	// checks trellis ran, the last blast radius and the budget.
-	Actions []view.Action
-	Edits   []view.Edit
-	Checks  []view.Check
+	// The run panes (panes.go): what the agent did, the edits it made and
+	// the checks trellis ran, each the newest PaneCap of the run (caps.go);
+	// the last blast radius; and the budget.
+	Actions *ring.Ring[view.Action]
+	Edits   *ring.Ring[view.Edit]
+	Checks  *ring.Ring[view.Check]
 	Radius  *view.Radius
 	Budget  view.Budget
 	// ScrollBack is how many rows above the transcript's end the view is
@@ -101,13 +108,29 @@ type Model struct {
 	restored *bool
 
 	// now is the clock the budget's elapsed time is read from; tests set
-	// it. runStart is when the run in flight started.
+	// it. runStart is when the run in flight started; waited is the time
+	// this run's questions waited on the person, and askedAt when the one
+	// on screen was asked (ownElapsed, panes.go).
 	now      func() time.Time
 	runStart time.Time
+	waited   time.Duration
+	askedAt  time.Time
+	// strip is what the Now strip and Where it is draw that the panes do
+	// not hold (#850): the run's phase, the runtime, the repository, a
+	// stop on its way, and the last run's own run_end words.
+	strip view.Now
+	// nav is the level shown and the pane selected (nav.go, #851).
+	nav view.Nav
+
+	// theme is what the screen and the modal are painted with (Options).
+	theme theme.Theme
 
 	// purposes maps a sent command's id to what its answer is read for
-	// (status.go).
-	purposes map[string]string
+	// (status.go); asked holds those ids, newest last, so the oldest can be
+	// forgotten past UnansweredCap, and forgotten counts the ones that were.
+	purposes  map[string]string
+	asked     *ring.Ring[string]
+	forgotten int
 	// offeredFor is the @fragment Offered was listed for, and pathsID the
 	// list_paths request in flight (complete.go).
 	offeredFor, pathsID string
@@ -128,7 +151,8 @@ type Model struct {
 // New is a model that, once its outbox is drained, has asked trellis for
 // its state, chosen the model and, with a task given, sent it.
 func New(o Options) *Model {
-	m := &Model{now: time.Now}
+	m := &Model{now: time.Now, theme: o.Theme}
+	m.emptyPanes()
 	m.refreshState()
 	if o.ModelSpec != "" {
 		m.setModelID = m.send("set_model", map[string]any{"model": o.ModelSpec})
@@ -201,7 +225,7 @@ func (m *Model) Update(msg tea.Msg) {
 	case ExitedMsg:
 		m.exited(msg.Err)
 	case SendFailedMsg:
-		m.pushLine("! could not write to trellis rpc: " + view.Plain(msg.Err.Error()))
+		m.push(view.RoleRefusal, "! could not write to trellis rpc: "+view.Plain(msg.Err.Error()))
 	case TickMsg:
 		m.tick()
 	}
@@ -218,16 +242,11 @@ func (m *Model) key(k tea.KeyMsg) {
 		m.modalKey(k)
 		return
 	}
+	// ESC, Tab and ⏎ on an empty line move between levels (nav.go).
+	if m.navKey(k) {
+		return
+	}
 	switch k.Type {
-	case tea.KeyEsc:
-		// Esc clears the line; on an empty line it leaves as ^c does,
-		// stopping a run in flight first (#634): leaving mid-run used to
-		// be ^c's alone, and the ratatui TUI now stops on both.
-		if m.Input != "" {
-			m.Input = ""
-		} else {
-			m.ctrlC()
-		}
 	case tea.KeyEnter:
 		m.submit()
 	case tea.KeyTab:
@@ -253,16 +272,18 @@ func (m *Model) key(k tea.KeyMsg) {
 		// it was one Down spent before the view moved again (#843).
 		m.ScrollBack = min(m.ScrollBack+1, m.transcriptTop())
 	case tea.KeyDown:
-		// Saturating: Down at the end stays at the end, following.
-		if m.ScrollBack > 0 {
-			m.ScrollBack--
-		}
+		// From the top as the view now draws it: when the pane has grown
+		// under a scroll back (an @ offer closed), the held offset is past
+		// the top, and Down spent presses there before the view moved
+		// (#904). Saturating: Down at the end stays at the end, following.
+		m.ScrollBack = max(min(m.ScrollBack, m.transcriptTop())-1, 0)
 	case tea.KeyPgUp:
 		// Held at the top, so PgDn after it moves at once rather than
 		// first spending presses on rows above the first (#660).
 		m.ScrollBack = min(m.ScrollBack+view.TranscriptPage, m.transcriptTop())
 	case tea.KeyPgDown:
-		m.ScrollBack = max(m.ScrollBack-view.TranscriptPage, 0)
+		// From the top as the view now draws it, as Down (#904).
+		m.ScrollBack = max(min(m.ScrollBack, m.transcriptTop())-view.TranscriptPage, 0)
 	case tea.KeyHome:
 		m.ScrollBack = m.transcriptTop()
 	case tea.KeyEnd:
@@ -297,11 +318,12 @@ func (m *Model) ctrlC() {
 	if m.Quitting {
 		return
 	}
-	m.Modal = nil
+	m.closeModal()
 	m.approvals = nil
 	if m.Running {
 		m.send("abort", nil)
-		m.pushLine("· stopping: the run rolls back before trellis exits")
+		m.strip.Stopping = true
+		m.push(view.RoleNote, "· stopping: the run rolls back before trellis exits")
 	} else if m.classifying {
 		// abort also drops a pending classify, unanswered.
 		m.send("abort", nil)
@@ -333,7 +355,7 @@ func (m *Model) submit() {
 		return
 	}
 	if m.classifying {
-		m.pushLine("· still asking trellis whether the last line was a question or a task; wait for its answer")
+		m.push(view.RoleNote, "· still asking trellis whether the last line was a question or a task; wait for its answer")
 		return
 	}
 	m.Input = ""
@@ -370,6 +392,10 @@ func (m *Model) frame(f frames.Frame) {
 		m.runStart = m.now()
 		m.Running = true
 		m.Outcome = ""
+	case frames.ModelCall:
+		m.strip.Phase = view.Phase{Kind: "model", Turn: *f.ModelCallTurn}
+	case frames.RuntimeIdentified:
+		m.strip.Runtime = runtimeText(f.Runtime)
 	case frames.ApprovalRequest:
 		m.approvalRequested(*f.Approval)
 	case frames.SteerDelivered:
@@ -380,8 +406,12 @@ func (m *Model) frame(f frames.Frame) {
 		m.runEnd(f.RunEndFields)
 	case frames.Response:
 		m.response(f.ResponseFields)
-	case frames.Warning, frames.Unparsed:
-		m.pushText(f.Text)
+	case frames.Warning:
+		m.pushText(view.RoleNote, f.Text)
+	case frames.Unparsed:
+		// A stdout line that is no frame is shown as it is, with no role
+		// claimed for it.
+		m.pushText(view.RoleText, f.Text)
 	case frames.Human:
 		m.Stderr = append(m.Stderr, view.Plain(f.Text))
 		if over := len(m.Stderr) - StderrCap; over > 0 {
@@ -390,19 +420,22 @@ func (m *Model) frame(f frames.Frame) {
 	}
 }
 
-// turn adds the turn's line: what was called and, when a check ran, what
-// trellis said it returned. The verdict is shown, never computed (ADR 0004).
+// turn adds the turn's row: what was called and, when a check ran, what
+// trellis said it returned. The verdict is shown, never computed (ADR 0004),
+// and it alone makes the row a passed or a failed check.
 func (m *Model) turn(t *frames.TurnFields) {
-	line := "· " + view.Plain(t.Call)
+	row := view.Row{Text: "· " + view.Plain(t.Call), Role: view.RoleTool, Turn: int(t.Turn)}
 	if t.Verdict != nil {
 		switch *t.Verdict {
 		case "Some(true)":
-			line += "  ✓ check passed"
+			row.Text += "  ✓ check passed"
+			row.Role = view.RolePassed
 		case "Some(false)":
-			line += "  ✗ check FAILED"
+			row.Text += "  ✗ check FAILED"
+			row.Role = view.RoleFailed
 		}
 	}
-	m.pushLine(line)
+	m.pushRow(row)
 	// The observation's first lines under it, as tui_bridge.rs shows them.
 	if t.Observation != nil {
 		n := 0
@@ -413,7 +446,7 @@ func (m *Model) turn(t *frames.TurnFields) {
 			if strings.TrimSpace(l) == "" && n == 0 {
 				continue
 			}
-			m.pushLine("    " + view.Plain(l))
+			m.pushRow(view.Row{Text: "    " + view.Plain(l), Role: view.RoleOutput, Turn: row.Turn})
 			n++
 		}
 	}
@@ -428,18 +461,29 @@ func (m *Model) runEnd(e *frames.RunEndFields) {
 	m.refreshState()
 	m.steersNotDelivered()
 	// A question its run no longer waits on cannot be answered.
-	m.Modal = nil
+	m.closeModal()
 	m.approvals = nil
 	m.Outcome = OutcomeLine(e)
 	m.restored = e.Restored
+	// The strip names the ending in run_end's own words and exit code, and
+	// keeps the time the run took by this view's clock.
+	m.strip.Phase, m.strip.Stopping = view.Phase{}, false
+	m.strip.Outcome, m.strip.Exit = "", e.Exit
+	if e.Outcome != nil {
+		m.strip.Outcome = *e.Outcome
+	}
+	if !m.runStart.IsZero() {
+		secs := uint64(m.ownElapsed() / time.Second)
+		m.Budget.ElapsedSecs = &secs
+	}
 	if e.Outcome != nil && *e.Outcome == "error" {
 		m.errorLines(e.Error)
 		return
 	}
 	if e.Exit != nil {
-		m.pushLine(fmt.Sprintf("· run finished, exit %d", *e.Exit))
+		m.push(view.RoleNote, fmt.Sprintf("· run finished, exit %d", *e.Exit))
 	} else {
-		m.pushLine("· run finished; trellis reported no exit code")
+		m.push(view.RoleNote, "· run finished; trellis reported no exit code")
 	}
 }
 
@@ -452,12 +496,12 @@ func (m *Model) errorLines(e *string) {
 			if strings.TrimSpace(l) == "" {
 				continue
 			}
-			m.pushLine("! " + view.Plain(l))
+			m.push(view.RoleRefusal, "! "+view.Plain(l))
 			said = true
 		}
 	}
 	if !said {
-		m.pushLine("! the run failed and reported no reason")
+		m.push(view.RoleRefusal, "! the run failed and reported no reason")
 	}
 }
 
@@ -559,7 +603,7 @@ func (m *Model) response(r *frames.ResponseFields) {
 	if cmd == "" {
 		cmd = "a command"
 	}
-	m.pushLine("! " + view.Plain(cmd) + ": " + view.Plain(view.FirstLine(why)))
+	m.push(view.RoleRefusal, "! "+view.Plain(cmd)+": "+view.Plain(view.FirstLine(why)))
 }
 
 // exited ends the program. A child that exits without having been asked to
@@ -567,13 +611,13 @@ func (m *Model) response(r *frames.ResponseFields) {
 // trellis knew, and it has gone.
 func (m *Model) exited(err error) {
 	if !m.Quitting {
-		m.pushLine("! trellis rpc exited unexpectedly" + exitReason(err))
+		m.push(view.RoleRefusal, "! trellis rpc exited unexpectedly"+exitReason(err))
 		if m.Running {
-			m.pushLine("! whether the run in flight rolled back is not known here; check `git status` before rerunning")
+			m.push(view.RoleRefusal, "! whether the run in flight rolled back is not known here; check `git status` before rerunning")
 		}
 	}
 	m.Running = false
-	m.Modal = nil
+	m.closeModal()
 	m.approvals = nil
 	m.Done = true
 }
@@ -585,30 +629,11 @@ func exitReason(err error) string {
 	return ": " + view.Plain(err.Error())
 }
 
-// pushText adds served text as lines, skipping blank ones: spacing lines
-// carry nothing and would push what does off the screen.
-func (m *Model) pushText(s string) {
-	for _, l := range strings.Split(s, "\n") {
-		if strings.TrimSpace(l) == "" {
-			continue
-		}
-		m.pushLine(view.Plain(l))
-	}
-}
-
-// pushLine adds one whole line and keeps the cap.
-func (m *Model) pushLine(l string) {
-	m.Transcript = append(m.Transcript, l)
-	if over := len(m.Transcript) - TranscriptCap; over > 0 {
-		m.Transcript = append([]string(nil), m.Transcript[over:]...)
-	}
-}
-
 // View draws the screen: the six regions, or the approval modal over them.
 func (m *Model) View() string {
 	w, h := m.size()
 	if m.Modal != nil {
-		return view.Modal(m.Modal.Question, m.Modal.Diff, m.Modal.Scroll, w, h)
+		return view.Asking(m.viewState(), m.Modal.Question, m.Modal.Diff, m.Modal.Scroll, w, h)
 	}
 	return view.Render(m.viewState(), w, h)
 }

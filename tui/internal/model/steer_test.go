@@ -11,7 +11,7 @@ func steerDelivered(afterStep int) string {
 	return jsonLine(map[string]any{"level": "INFO", "fields": map[string]any{"message": "steer delivered", "after_step": afterStep}})
 }
 
-func last(m *Model) string { return m.Transcript[len(m.Transcript)-1] }
+func last(m *Model) string { return m.Transcript[len(m.Transcript)-1].Text }
 
 // A line typed mid-run is queued as `steer {message}` for that run, shown
 // as queued, and never sent as a second prompt.
@@ -57,13 +57,13 @@ func TestSteerDeliveredOnceAtItsTurn(t *testing.T) {
 	n := len(m.Transcript)
 	feed(m, jsonLine(map[string]any{"type": "response", "command": "steer", "id": ids[0].Cmd["id"], "success": true, "data": map[string]any{"after_step": 2}}))
 	feed(m, steerDelivered(4))
-	got := m.Transcript[len(m.Transcript)-2:]
+	got := texts(m)[len(m.Transcript)-2:]
 	if len(m.Transcript) != n || got[0] != "· delivered at turn 3: first" || got[1] != "· delivered at turn 5: second" {
-		t.Fatalf("transcript tail %q (len %d, want %d)", m.Transcript[len(m.Transcript)-3:], len(m.Transcript), n)
+		t.Fatalf("transcript tail %q (len %d, want %d)", texts(m)[len(m.Transcript)-3:], len(m.Transcript), n)
 	}
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
-	if strings.Contains(strings.Join(m.Transcript, "\n"), "not delivered") {
-		t.Fatalf("a delivered steer was called not delivered:\n%s", strings.Join(m.Transcript, "\n"))
+	if strings.Contains(strings.Join(texts(m), "\n"), "not delivered") {
+		t.Fatalf("a delivered steer was called not delivered:\n%s", strings.Join(texts(m), "\n"))
 	}
 }
 
@@ -82,7 +82,7 @@ func TestSteerAnswersMarkItDeliveredOrNot(t *testing.T) {
 	feed(m, jsonLine(map[string]any{"type": "response", "command": "abort", "id": "x", "success": true,
 		"data": map[string]any{"undelivered": []any{map[string]any{"id": out[2].Cmd["id"], "type": "steer", "message": "c"}}}}))
 	feed(m, runEnd(map[string]any{"outcome": "interrupted", "exit": 130, "restored": true}))
-	tail := strings.Join(m.Transcript[len(m.Transcript)-5:], "\n")
+	tail := strings.Join(texts(m)[len(m.Transcript)-5:], "\n")
 	want := strings.Join([]string{
 		"· delivered at turn 1: a",
 		"· not delivered: b",
@@ -130,7 +130,7 @@ func TestSteerIsNeverAVerdict(t *testing.T) {
 	typeLine(m, "tests pass now")
 	enter(m)
 	feed(m, steerDelivered(0))
-	for _, l := range m.Transcript {
+	for _, l := range texts(m) {
 		if strings.Contains(l, "check passed") || strings.Contains(l, "FAILED") {
 			t.Fatalf("a steer became a verdict: %q", l)
 		}
@@ -146,14 +146,15 @@ func TestSteerLineIsShownWhileRunning(t *testing.T) {
 	m := running(t)
 	typeLine(m, "half typed")
 	v := m.View()
-	if !strings.Contains(v, "half typed█") || !strings.Contains(v, "running — enter queues a steer") {
+	if !strings.Contains(v, "half typed█") || !strings.Contains(v, "steer  [⏎] queue for the next turn") {
 		t.Fatalf("view:\n%s", v)
 	}
 }
 
-// Esc clears a line and leaves an empty one; on an empty line with no run
-// in flight it quits (mid-run, TestModelStopMidRun).
-func TestModelEscClearsTheLineThenQuitsWhenIdle(t *testing.T) {
+// Esc clears a line and leaves an empty one; on an empty line at the top
+// level it has nothing to leave and never quits: ^c is how the program
+// ends (owner decision, 2026-10-25; #851). Mid-run, TestModelStopMidRun.
+func TestModelEscClearsTheLineAndNeverQuits(t *testing.T) {
 	m := running(t)
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
 	m.TakeOutbox()
@@ -163,7 +164,12 @@ func TestModelEscClearsTheLineThenQuitsWhenIdle(t *testing.T) {
 		t.Fatalf("input %q quitting %v", m.Input, m.Quitting)
 	}
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if out := m.TakeOutbox(); m.Quitting || len(out) != 0 {
+		t.Fatalf("esc on an empty line: quitting %v, sent %v", m.Quitting, kinds(out))
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if got := kinds(m.TakeOutbox()); !m.Quitting || strings.Join(got, ",") != "QUIT" {
-		t.Fatalf("quitting %v sent %v", m.Quitting, got)
+		t.Fatalf("^c: quitting %v sent %v", m.Quitting, got)
 	}
 }

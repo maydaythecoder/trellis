@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -27,7 +28,7 @@ type Approval struct {
 	Diff string
 	// Scroll is the first line of Diff in view, held between the first line
 	// and the start of the last full page at the current size, the view's
-	// own limit (view.ModalLastFrom, #843).
+	// own limit (view.AskingLastFrom, #843).
 	Scroll int
 }
 
@@ -35,6 +36,9 @@ type Approval struct {
 // screen: one question at a time, as the gate asks them. Once leaving has
 // been asked for, a question is not shown: the run is stopping, trellis
 // drops the question once it has, and a dropped question is a no (#634).
+// With ApprovalsCap already waiting, the question is declined at once and
+// the transcript says so (#848): dropped unanswered, it would hold the run
+// forever, and a no changes nothing in the tree.
 func (m *Model) approvalRequested(a frames.ApprovalFields) {
 	if m.Quitting {
 		return
@@ -48,7 +52,12 @@ func (m *Model) approvalRequested(a frames.ApprovalFields) {
 	}
 	ap := Approval{ID: a.ID, Question: view.Plain(q), Diff: plainLines(strings.TrimRight(d, " \t\r\n"))}
 	if m.Modal == nil {
-		m.Modal = &ap
+		m.showModal(&ap)
+		return
+	}
+	if len(m.approvals) >= ApprovalsCap {
+		m.send("approve", map[string]any{"id": ap.ID, "yes": false})
+		m.push(view.RoleNote, fmt.Sprintf("· %s declined unseen: %d questions were already waiting", ap.Question, len(m.approvals)+1))
 		return
 	}
 	m.approvals = append(m.approvals, ap)
@@ -88,7 +97,7 @@ func (m *Model) modalKey(k tea.KeyMsg) {
 // (#843).
 func (m *Model) scrollModal(d int) {
 	w, h := m.size()
-	m.Modal.Scroll = max(min(m.Modal.Scroll+d, view.ModalLastFrom(m.Modal.Diff, w, h)), 0)
+	m.Modal.Scroll = max(min(m.Modal.Scroll+d, view.AskingLastFrom(m.Modal.Diff, w, h)), 0)
 }
 
 // answer sends approve {id, yes} for the question on screen, says which,
@@ -102,12 +111,12 @@ func (m *Model) answer(yes bool) {
 	if yes {
 		word = "approved"
 	}
-	m.pushLine("· " + a.Question + " " + word)
-	m.Modal = nil
+	m.push(view.RoleNote, "· "+a.Question+" "+word)
+	m.closeModal()
 	if len(m.approvals) > 0 {
 		next := m.approvals[0]
 		m.approvals = m.approvals[1:]
-		m.Modal = &next
+		m.showModal(&next)
 	}
 }
 

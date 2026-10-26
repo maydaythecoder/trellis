@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 	"unicode"
+
+	"github.com/maydaythecoder/trellis/tui/internal/theme"
+	"github.com/maydaythecoder/trellis/tui/internal/theme/themetest"
 )
 
 func u(n uint64) *uint64 { return &n }
@@ -13,7 +16,7 @@ func u(n uint64) *uint64 { return &n }
 // edit, a passing check, a radius and a budget two turns in.
 func populated() State {
 	return State{
-		Transcript: []string{"Reading blast radius"},
+		Transcript: rowsOf(RoleText, "Reading blast radius"),
 		Edits:      []Edit{{Path: "src/index/resolve.rs", Status: Proposed}},
 		Checks:     []Check{{Name: "typecheck", Passed: true}},
 		Radius:     &Radius{Resolved: 47, Candidates: 3, Unresolved: 2},
@@ -48,7 +51,7 @@ func TestBudgetLineUnknownQueueWaitIsZeroAndNotDrawn(t *testing.T) {
 // Without reported tokens there is no rate and no wait; the rest stays.
 func TestBudgetLineWithoutTokensDrawsNoRateAndNoWait(t *testing.T) {
 	out := afterTurn(nil, u(25000), u(10000))
-	if strings.Contains(out, "tok") || strings.Contains(out, "queued") || !strings.Contains(out, "iteration 3/40") {
+	if strings.Contains(out, "tok") || strings.Contains(out, "queued") || !strings.Contains(out, "TURNS █░░░░░░░░░░░░░░░ 3/40") {
 		t.Fatalf("%s", out)
 	}
 }
@@ -64,26 +67,26 @@ func TestBudgetLineWithNoModelTimeLeftDrawsNoRate(t *testing.T) {
 	}
 }
 
-// A figure trellis did not report is named as unreported, never drawn as
-// 0 (#641); the iteration is against the run's own ceiling once it is
-// known, and the elapsed time is a clock.
+// A figure trellis did not report is Dash, never drawn as 0 (#641, #911);
+// the turns are a Meter against the run's own ceiling once it is known,
+// the prompt is in kB, and the elapsed time is a clock, this view's own.
 func TestBudgetLineNamesWhatWasNotReported(t *testing.T) {
 	s := State{Running: true, Budget: Budget{Iteration: 1}}
-	if got := BudgetLine(s); got != "iteration 1  ·  prompt not reported  ·  not started" {
+	if got := BudgetLine(s); got != "TURNS 1/—  ·  PROMPT —  ·  TIME 0:00*" {
 		t.Fatalf("got %q", got)
 	}
 	s.Budget = Budget{Iteration: 2, MaxIterations: u(40), PromptBytes: u(8400), ElapsedSecs: u(18)}
-	if got := BudgetLine(s); got != "iteration 2/40  ·  8400 B prompt  ·  0:18 elapsed" {
+	if got := BudgetLine(s); got != "TURNS █░░░░░░░░░░░░░░░ 2/40  ·  PROMPT 8.4 kB  ·  TIME 0:18*" {
 		t.Fatalf("got %q", got)
 	}
 }
 
-// The six regions are on screen at 80x24, with the budget against its own
-// ceiling, prompt bytes as bytes, and the elapsed time.
+// The six regions are on screen at 80x24, with the budget's turns against
+// their own ceiling, the prompt's size, and the elapsed time.
 func TestViewSixRegionsAtEightyByTwentyFour(t *testing.T) {
 	out := Render(populated(), 80, 24)
 	for _, want := range []string{"TRELLIS", "transcript", "edits", "checks", "radius", "budget",
-		"Reading blast radius", "resolved", "8400 B prompt", "iteration 2/40", "0:18 elapsed"} {
+		"Reading blast radius", "PROMPT 8.4 kB", "TURNS █░░░░░░░░░░░░░░░ 2/40", "TIME 0:18*"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("%q missing from:\n%s", want, out)
 		}
@@ -126,9 +129,9 @@ func TestViewTooSmallSaysSoInsteadOfLayingOut(t *testing.T) {
 func long() State {
 	s := State{Running: true}
 	for i := 0; i < 200; i++ {
-		s.Transcript = append(s.Transcript, fmt.Sprintf("step %d of the run", i))
+		s.Transcript = append(s.Transcript, Row{Text: fmt.Sprintf("step %d of the run", i)})
 	}
-	s.Transcript = append(s.Transcript, "THE LAST LINE")
+	s.Transcript = append(s.Transcript, Row{Text: "THE LAST LINE"})
 	return s
 }
 
@@ -150,19 +153,22 @@ func TestViewTranscriptFollowsScrollsBackAndKeepsTheOutcome(t *testing.T) {
 	s.Outcome = "did not converge; worktree restored: true"
 	s.Budget = Budget{Iteration: 3, MaxIterations: u(6), PromptBytes: u(2435), ElapsedSecs: u(42)}
 	out = Render(s, 120, 30)
+	// The Now strip says the run ended (#850); the budget row keeps the
+	// turns it used against its ceiling.
 	if !strings.Contains(out, "last run: did not converge; worktree restored: true") ||
-		!strings.Contains(out, "finished · iteration 3/6") {
+		!strings.Contains(out, "TURNS ████████░░░░░░░░ 3/6") {
 		t.Fatalf("outcome:\n%s", out)
 	}
 }
 
 // The task line shows what is typed with a block cursor, the key that
-// sends it and the one that leaves.
+// sends it and the one that clears it, and the status bar the one that
+// leaves, each as its keycap (#911).
 func TestViewTaskLineShowsWhatIsTypedAndHowToSendIt(t *testing.T) {
 	s := populated()
 	s.Input = "fix the type error"
 	out := Render(s, 80, 24)
-	for _, want := range []string{"fix the type error█", "enter to run", "esc"} {
+	for _, want := range []string{"fix the type error█", "[⏎] run", "[ESC] clear", "[^C] leave"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("%q missing:\n%s", want, out)
 		}
@@ -177,7 +183,7 @@ func TestViewTaskLineShowsWhatIsTypedAndHowToSendIt(t *testing.T) {
 func TestViewManyCompletionsNeverPanic(t *testing.T) {
 	for _, size := range [][2]int{{80, 24}, {80, 25}, {100, 30}, {120, 40}} {
 		w, h := size[0], size[1]
-		room := h - 1 - 3 - 3 - MinBodyRows
+		room := completionRoom(populated(), h)
 		for n := 0; n <= 40; n++ {
 			s := populated()
 			for i := 0; i < n; i++ {
@@ -193,7 +199,9 @@ func TestViewManyCompletionsNeverPanic(t *testing.T) {
 					t.Fatalf("%dx%d, %d offered: row %d is %d cells:\n%s", w, h, n, i, Width(l), out)
 				}
 			}
-			if !strings.Contains(out, "resolved") || !strings.Contains(out, "a floor on reach") {
+			// Folded (#851), the panes are a row under the transcript and
+			// the radius is reached by going in.
+			if !folded(w, h) && (!strings.Contains(out, "resolved") || !strings.Contains(out, "a floor on reach")) {
 				t.Fatalf("%dx%d, %d offered: the radius pane was cut:\n%s", w, h, n, out)
 			}
 			more := fmt.Sprintf("… %d more", n-(room-1))
@@ -203,7 +211,7 @@ func TestViewManyCompletionsNeverPanic(t *testing.T) {
 			if n <= room && strings.Contains(out, " more") {
 				t.Fatalf("%dx%d, %d offered fit, yet a row says more:\n%s", w, h, n, out)
 			}
-			if n > 0 && !strings.Contains(out, "tab src/file_00.py") {
+			if n > 0 && !strings.Contains(out, "[TAB] src/file_00.py") {
 				t.Fatalf("%dx%d, %d offered: the first completion is not drawn:\n%s", w, h, n, out)
 			}
 		}
@@ -265,14 +273,15 @@ func TestViewEveryToolIsANodeBeforeAnyIsCalled(t *testing.T) {
 }
 
 // A refused edit is on the graph as an action and not counted as a write;
-// a run that only looked says so; one action is not "1 actions".
+// a run that only looked says so, ✎ 0 (#911); one action is not
+// "1 actions".
 func TestViewActionsCountWritesNotRefusals(t *testing.T) {
 	out := Render(acted(Action{"edit", "app/calc.py", false}, Action{"edit", "app/calc.py", false}, Action{"edit", "app/calc.py", true}), 100, 40)
-	if !strings.Contains(out, "3 actions") || !strings.Contains(out, "1 wrote to the tree") {
+	if !strings.Contains(out, "3 actions") || !strings.Contains(out, "  ✎ 1 ") || !strings.Contains(out, "✎ edit app/calc.py") {
 		t.Fatalf("%s", out)
 	}
 	out = Render(acted(Action{"read_file", "app/calc.py", false}), 100, 40)
-	if !strings.Contains(out, "1 action") || strings.Contains(out, "1 actions") || !strings.Contains(out, "nothing written to the tree") {
+	if !strings.Contains(out, "1 action") || strings.Contains(out, "1 actions") || !strings.Contains(out, "  ✎ 0 ") {
 		t.Fatalf("%s", out)
 	}
 }
@@ -325,22 +334,46 @@ func TestViewRadiusIsThreeCountsNeverARatio(t *testing.T) {
 	}
 }
 
-// No control character in served text reaches the screen, in any pane.
+// No control character in served text reaches the screen, in any pane or
+// in the approval modal: the only escape sequences drawn are the colours
+// the theme paints with (#841), at every colour depth and on either
+// background. Served text is made plain before it is painted, so what it
+// carried cannot move the cursor, clear the screen or recolour a row.
 func TestViewNoEscapeSequenceReachesTheScreen(t *testing.T) {
 	s := populated()
-	s.Transcript = append(s.Transcript, "checking\x1b[2K\x1b[Aconverged\r\x07 done")
+	s.Transcript = append(s.Transcript, Row{Text: "checking\x1b[2K\x1b[Aconverged\r\x07 done", Role: RoleNote})
 	s.Edits = append(s.Edits, Edit{Path: "a\x1b]0;x\x07.py"})
 	s.Checks = append(s.Checks, Check{Name: "tests\x1b[31m", Passed: false})
 	s.Actions = []Action{{Tool: "edit\x1b", Target: "\x9b2J", Wrote: true}}
 	s.Input = "typed\x1b"
 	s.Outcome = "failed: \x1b[1mbold"
-	out := Render(s, 100, 40)
-	for _, r := range out {
-		if r != '\n' && unicode.IsControl(r) {
-			t.Fatalf("control character %U reached the screen:\n%q", r, out)
+	s.Stderr = []string{"probe\x1b]0;t\x07 done"}
+	s.Running = true
+	s.Now = Now{Phase: Phase{Kind: "tool", Turn: 2, Tool: "edit\x1b[31m", Target: "a\x9b2J.py"},
+		Runtime: "ollama\x1b[2K", Root: "/w/re\x07po"}
+	for _, depth := range themetest.Depths {
+		for _, dark := range []bool{true, false} {
+			th := theme.New(themetest.Renderer(t, depth, dark))
+			s.Theme = th
+			screens := map[string]string{
+				"render": Render(s, 100, 40),
+				"modal":  Modal(th, "edit a\x1b[2J.py", "+ok\x1b]0;t\x07\n-\x9b2Jgone", 0, 100, 40),
+				"asking": Asking(s, "edit a\x1b[2J.py", "+ok\x1b]0;t\x07\n-\x9b2Jgone", 0, 100, 40),
+			}
+			for name, out := range screens {
+				rest := unpainted(th, out)
+				for _, r := range rest {
+					if r != '\n' && unicode.IsControl(r) {
+						t.Fatalf("%s, %s, dark %v: control character %U reached the screen:\n%q", name, depth, dark, r, out)
+					}
+				}
+				if depth == "TrueColor" && !strings.Contains(out, "\x1b[") {
+					t.Fatalf("%s, dark %v: nothing was painted at truecolor, so the check above proved nothing:\n%q", name, dark, out)
+				}
+			}
+			if !strings.Contains(unpainted(th, screens["render"]), "checking") {
+				t.Fatalf("%s, dark %v: the line's text was lost with its control characters:\n%s", depth, dark, screens["render"])
+			}
 		}
-	}
-	if !strings.Contains(out, "checking") {
-		t.Fatalf("%s", out)
 	}
 }
