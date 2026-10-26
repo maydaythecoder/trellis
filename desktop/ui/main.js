@@ -35,7 +35,8 @@ import { drawOpenRefusal, drawOverview, drawOverviewChild } from "./overview.js"
 import { askStarters, composerStopped, drawComposer, wireComposer } from "./composer.js";
 import { drawDialogs, wireDialogs } from "./dialogs.js";
 import { askModels, drawModelPane, modelPaneStopped, wireModelPane } from "./model.js";
-import { drawSettings, wireRepositorySwitch } from "./settings.js";
+import { drawSettings, wireRegister, wireRepositorySwitch } from "./settings.js";
+import { redrawNow } from "./now.js";
 import { drawStatus, exitText, wireStatus } from "./status.js";
 import { drawCode, wireCode } from "./code.js";
 import { drawSummary, wireSummary } from "./summary.js";
@@ -123,6 +124,7 @@ async function main() {
   await wireModelPane(document, tauri);
   await wireStatus(document, tauri);
   wireRepositorySwitch(document, tauri);
+  wireRegister(document, window, () => redrawNow(document));
   wireCode(document, tauri);
   wireSummary(document);
   // A feed that finds rows missing: this page fell behind its event stream

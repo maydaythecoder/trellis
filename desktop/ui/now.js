@@ -18,9 +18,10 @@
 // textContent only (ADR 0007, S10).
 
 import { el } from "./dom.js";
-import { dsButton, dsStatus, facts, nowStrip, unreported } from "./ds.js";
+import { asciiFace, dsButton, dsStatus, facts, nowStrip, unreported } from "./ds.js";
 import { isCount, str } from "./fmt.js";
 import { burrow } from "./keys.js";
+import { currentRegister } from "./settings.js";
 
 // The bundle's NowStrip state each of the reducer's states is coloured as.
 // The word drawn is the reducer's, never the bundle's: an ended run reads
@@ -47,8 +48,29 @@ function onNow(doc, n) {
   return str(n.phase) === "model" ? "calling the model" : null;
 }
 
+// The register dial's face and copy (#836), from the reducer's `register`
+// for the position the dial is in: nothing else in this module reads the
+// dial, so moving it changes no figure, state word or control. At most one
+// face, since the reducer sends at most one per position.
+function registerFace(doc, r) {
+  const said = r !== null && typeof r === "object" ? r[currentRegister()] : null;
+  if (said === null || typeof said !== "object" || str(said.face) === null) return [];
+  return [asciiFace(doc, { face: said.face, caption: str(said.copy) })];
+}
+
+// The last `now` drawn, so the dial redraws the strip without an event;
+// undefined until the first view.
+let lastNow;
+
+// Redraws the Now strip from the last `now`, for the register dial.
+export function redrawNow(doc) {
+  const pane = doc.getElementById("pane-now");
+  if (pane && lastNow !== undefined) drawNow(doc, pane, lastNow);
+}
+
 // The Now strip, from the view's `now`.
 export function drawNow(doc, pane, n) {
+  lastNow = n;
   const v = n !== null && typeof n === "object" ? n : {};
   const state = str(v.state) ?? "idle";
   const word = str(v.word) ?? "idle";
@@ -92,6 +114,7 @@ export function drawNow(doc, pane, n) {
       model,
       controls,
     }),
+    ...registerFace(doc, v.register),
   );
 }
 

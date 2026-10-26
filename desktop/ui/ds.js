@@ -249,6 +249,20 @@ export function nowStrip(doc, { tone, word, clock, turn, where, wait, model, con
   return root;
 }
 
+// Ascii (the design system's, #836): the playful register's one face on a
+// screen, in play, with its line of copy as the caption. The face is
+// decoration, hidden from a screen reader, and says no state: the reducer
+// chooses it from nothing a figure, a state word or a check row says
+// differently. The caption is read as written.
+export function asciiFace(doc, { face, caption }) {
+  const root = el(doc, "pre", null, "cd-ascii cd-ascii-play");
+  const glyphs = el(doc, "span", face);
+  glyphs.setAttribute("aria-hidden", "true");
+  root.append(glyphs);
+  if (caption) root.append(el(doc, "span", caption, "cd-ascii-caption"));
+  return root;
+}
+
 // The Meter tones ds.css colours; signal is the bundle's default fill, so
 // it takes no class of its own.
 const METER_TONES = { cool: "cd-meter-cool", down: "cd-meter-down" };

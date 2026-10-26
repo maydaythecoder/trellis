@@ -1071,6 +1071,18 @@ code {
   white-space: normal;
 }
 
+/* The playful register's face under the strip (#836). */
+.now .cd-ascii {
+  margin-top: var(--space-3);
+}
+
+/* The register dial (#836): two radios under Open another repository. */
+.register-dial {
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  border: 0;
+}
+
 /* Where it is (#828): a label and its value per row, the labels in one
    column (ds.js's facts). */
 .facts {
