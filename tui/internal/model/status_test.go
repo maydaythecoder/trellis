@@ -83,8 +83,8 @@ func TestStatusWorktreeCleanOrEditsPending(t *testing.T) {
 	if bar := barOf(m); !strings.Contains(bar, "● clean") {
 		t.Fatalf("%q", bar)
 	}
-	feed(m, turn(1, "edit a.py", map[string]any{"observation": "applied: true"}))
-	feed(m, turn(2, "edit b.py", map[string]any{"observation": "applied: true"}))
+	feed(m, turn(1, "edit a.py", map[string]any{"observation": "applied: true", "tool": "edit", "target": "a.py", "wrote": true}))
+	feed(m, turn(2, "edit b.py", map[string]any{"observation": "applied: true", "tool": "edit", "target": "b.py", "wrote": true}))
 	if bar := barOf(m); !strings.Contains(bar, "● 2 pending") {
 		t.Fatalf("%q", bar)
 	}

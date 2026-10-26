@@ -58,7 +58,7 @@ func fieldsOf(spec map[string]any) []string {
 	return out
 }
 
-var booleans = map[string]bool{"success": true, "restored": true}
+var booleans = map[string]bool{"success": true, "restored": true, "wrote": true}
 
 var numeric = map[string]bool{
 	"turn": true, "resolved": true, "candidates": true, "unresolved": true,
@@ -111,18 +111,44 @@ func TestFramesReadEveryContractField(t *testing.T) {
 		isEvent bool
 	}
 	var records []record
+	later := rpcSpec["not_every_client"].(map[string]any)
 	for _, group := range []string{"events", "framing"} {
+		laterGroup, _ := later[group].(map[string]any)
 		for name, sp := range rpcSpec[group].(map[string]any) {
 			spec := sp.(map[string]any)
-			m := map[string]any{}
+			type field struct {
+				name string
+				spec map[string]any
+			}
+			var fields []field
 			for _, f := range fieldsOf(spec) {
+				fields = append(fields, field{f, spec})
+			}
+			// The fields not every client reads yet, but whose read_by names
+			// the TUI: a claim the contract makes for this parser, held here
+			// as the rest are. They go on the same record, since without its
+			// always fields the line is no event at all.
+			if extra, ok := laterGroup[name].(map[string]any); ok {
+				readBy, _ := extra["read_by"].(map[string]any)
+				for _, f := range fieldsOf(extra) {
+					by, _ := readBy[f].([]any)
+					for _, c := range by {
+						if c == "tui" {
+							fields = append(fields, field{f, extra})
+							break
+						}
+					}
+				}
+			}
+			m := map[string]any{}
+			for _, f := range fields {
 				switch {
-				case f == "type":
-					m[f] = name
-				case booleans[f]:
-					m[f] = true
+				case f.name == "type":
+					m[f.name] = name
+				case booleans[f.name]:
+					m[f.name] = true
 				default:
-					m[f] = sample(f, name, spec)
+					m[f.name] = sample(f.name, name, f.spec)
 				}
 			}
 			records = append(records, record{name, m, group == "events"})
@@ -224,7 +250,7 @@ func TestFramesWrongTypesAreAbsent(t *testing.T) {
 }
 
 // A WARN event that is not a turn is a Warning carrying its message, the
-// line tui_bridge.rs puts in the transcript; an INFO one is not.
+// line the transcript shows; an INFO one is not.
 func TestFramesWarningCarriesItsMessage(t *testing.T) {
 	b, _ := json.Marshal(map[string]any{"level": "WARN", "fields": map[string]any{"message": "no progress; stopping"}})
 	if fr := parse(t, string(b)); fr.Kind != Warning || fr.Text != "no progress; stopping" {

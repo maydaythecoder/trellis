@@ -436,7 +436,8 @@ func (m *Model) turn(t *frames.TurnFields) {
 		}
 	}
 	m.pushRow(row)
-	// The observation's first lines under it, as tui_bridge.rs shows them.
+	// The observation's first six lines under it, so a turn's result is
+	// in the transcript without one long observation filling the screen.
 	if t.Observation != nil {
 		n := 0
 		for _, l := range strings.Split(*t.Observation, "\n") {

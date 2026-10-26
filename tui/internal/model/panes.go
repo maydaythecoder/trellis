@@ -10,9 +10,9 @@ import (
 )
 
 // The panes are drawn from the same turn, run budget, run_start and run_end
-// frames the desktop reads, as tui_bridge.rs turned the loop's events into
-// the ratatui TUI's messages. Nothing here computes a verdict: a check row
-// comes only from a verdict trellis sent (ADR 0004).
+// frames the desktop reads, so the two clients draw one run the same way.
+// Nothing here computes a verdict: a check row comes only from a verdict
+// trellis sent (ADR 0004).
 
 // clearPanes empties the run panes for a new run. They are kept after a run
 // ends, so what it did stays on screen until the next one starts. The last
@@ -40,28 +40,30 @@ func (m *Model) emptyPanes() {
 
 // panesTurn adds a turn to the panes.
 func (m *Model) panesTurn(t *frames.TurnFields) {
-	obs := ""
-	if t.Observation != nil {
-		obs = *t.Observation
-	}
 	// Every turn is an action, whatever it was and however it went: a run
 	// that tried four times and wrote once is the run the graph exists to
 	// show. Only an applied edit, or a file write_file created, changed the
-	// tree; the observation is the only place that says so.
-	call := t.Call
-	wrote := (strings.HasPrefix(call, "edit ") && strings.Contains(obs, "applied: true")) ||
-		(strings.HasPrefix(call, "write_file ") && strings.HasPrefix(obs, "created "))
-	tool, target, _ := strings.Cut(call, " ")
+	// tree, and the event's wrote says which, as the trail records it
+	// (#800). Read from the call and observation instead, the live view and
+	// the trail could disagree about what a turn touched. A turn whose event
+	// carried no wrote is not counted as one.
+	wrote := t.Wrote != nil && *t.Wrote
+	tool, target := "", ""
+	if t.Tool != nil {
+		tool = *t.Tool
+	}
+	if t.Target != nil {
+		target = *t.Target
+	}
 	m.Actions.Push(view.Action{Tool: tool, Target: target, Wrote: wrote})
 	m.strip.Phase = view.Phase{Kind: "tool", Turn: t.Turn, Tool: tool, Target: target}
 
 	// A refused edit is not a proposal at all: listing one made the panes
 	// contradict each other ("3 edit(s) pending" for a run that changed one
-	// line).
+	// line). Only an edit or a write_file sets wrote, and both target the
+	// path they wrote.
 	if wrote {
-		if f := strings.Fields(call); len(f) > 1 {
-			m.Edits.Push(view.Edit{Path: f[1], Status: view.Proposed})
-		}
+		m.Edits.Push(view.Edit{Path: target, Status: view.Proposed})
 	}
 
 	// A check row only from Some(true) or Some(false): None is a turn that

@@ -3,7 +3,7 @@
   "rpc": {
     "events": {
       "turn": {
-        "always": ["turn", "call", "verdict", "check_kind", "observation"],
+        "always": ["turn", "call", "verdict", "check_kind", "observation", "tool", "target", "wrote"],
         "model_call_only": ["model_ms"],
         "blast_radius_only": ["resolved", "candidates", "unresolved"],
         "prompt_driver_only": ["prompt_bytes", "completion_tokens"],
@@ -16,7 +16,8 @@
         },
         "verdict_values": ["None", "Some(true)", "Some(false)"],
         "check_kind_values": ["", "Typecheck", "Tests", "Import", "Governance"],
-        "check_kind": "\"\" on a turn that ran no check; otherwise the kind of check behind the turn's verdict, as trellis-checks names it (CheckKind, crates/trellis-checks/src/verdict.rs); the governance audit's turn is Governance"
+        "check_kind": "\"\" on a turn that ran no check; otherwise the kind of check behind the turn's verdict, as trellis-checks names it (CheckKind, crates/trellis-checks/src/verdict.rs); the governance audit's turn is Governance",
+        "about": "tool, target and wrote are the trail's record of the turn, from the function the trail's action uses (#800): tool is the tool's name, target what it was pointed at, and wrote is true only for an edit that applied or a file write_file created, so a bash or custom tool's changes are not counted in it. A client takes what a turn touched from these, never from call or observation (#834, #856)."
       },
       "model call": {
         "always": ["turn"],
@@ -85,7 +86,7 @@
       },
       "events": {
         "turn": {
-          "always": ["elapsed_ms", "completion_tokens_used", "duration_ms", "tool", "target", "wrote"],
+          "always": ["elapsed_ms", "completion_tokens_used", "duration_ms"],
           "model_call_only": [],
           "blast_radius_only": ["summarised"],
           "edit_applied_only": ["lines_added", "lines_removed", "start_line", "diff"],
@@ -95,8 +96,8 @@
             "start_line": "as lines_added",
             "diff": "as lines_added"
           },
-          "read_by": {"elapsed_ms": [], "completion_tokens_used": [], "duration_ms": [], "summarised": [], "tool": ["desktop"], "target": ["desktop"], "wrote": ["desktop"], "lines_added": [], "lines_removed": [], "start_line": [], "diff": []},
-          "about": "lines_added and lines_removed are the whole lines an applied edit added and removed, in every control mode, computed from the text the edit read and wrote, the same hunk an approve-mode question counts (#802); start_line is the 1-based line, in the file before the edit, of the first line it removed or replaced, or with nothing removed the line the added lines went before; diff is a unified diff of that one hunk (--- and +++ naming the path, one @@ -a,b +c,d @@ header, a line of context either side), cut at a line once it passes 8192 bytes with a last line saying how many diff lines were cut, while the counts stay the whole edit's. diff is repository text and model output: a client shows it as text and never interprets it (CLAUDE.md rule 10). duration_ms is the tool call's time in milliseconds by the monotonic clock, with any wait on a person in approve mode taken out, and on the governance audit's turn the audit's own time (#800); tool, target and wrote are the trail's record of the turn, from the function the trail's action uses (#800): tool is the tool's name, target what it was pointed at, and wrote is true only for an edit that applied or a file write_file created, so a bash or custom tool's changes are not counted in it; summarised is how many of the radius's call sites its observation summarised by file instead of listing them, 0 when it listed every one. elapsed_ms is the run's wall-clock spend after the turn as its budget measures it (#799): milliseconds by the monotonic clock since the loop started, with every wait on a person in approve mode and every pause (the paused and resumed events) taken out, the figure checked against run budget's max_wall_clock_ms. completion_tokens_used is the counter run budget's max_tokens is checked against: completion (output) tokens over every reply so far, format retries included, never prompt tokens and never a sum of the two; a hosted driver counts a reply that reported none at its request's max_tokens, so the ceiling trips early rather than never; 0 for a driver that reads no reply (the scripted one)."
+          "read_by": {"elapsed_ms": [], "completion_tokens_used": [], "duration_ms": [], "summarised": [], "lines_added": [], "lines_removed": [], "start_line": [], "diff": []},
+          "about": "lines_added and lines_removed are the whole lines an applied edit added and removed, in every control mode, computed from the text the edit read and wrote, the same hunk an approve-mode question counts (#802); start_line is the 1-based line, in the file before the edit, of the first line it removed or replaced, or with nothing removed the line the added lines went before; diff is a unified diff of that one hunk (--- and +++ naming the path, one @@ -a,b +c,d @@ header, a line of context either side), cut at a line once it passes 8192 bytes with a last line saying how many diff lines were cut, while the counts stay the whole edit's. diff is repository text and model output: a client shows it as text and never interprets it (CLAUDE.md rule 10). duration_ms is the tool call's time in milliseconds by the monotonic clock, with any wait on a person in approve mode taken out, and on the governance audit's turn the audit's own time (#800); summarised is how many of the radius's call sites its observation summarised by file instead of listing them, 0 when it listed every one. elapsed_ms is the run's wall-clock spend after the turn as its budget measures it (#799): milliseconds by the monotonic clock since the loop started, with every wait on a person in approve mode and every pause (the paused and resumed events) taken out, the figure checked against run budget's max_wall_clock_ms. completion_tokens_used is the counter run budget's max_tokens is checked against: completion (output) tokens over every reply so far, format retries included, never prompt tokens and never a sum of the two; a hosted driver counts a reply that reported none at its request's max_tokens, so the ceiling trips early rather than never; 0 for a driver that reads no reply (the scripted one)."
         },
         "model call": {
           "always": ["elapsed_ms"],
