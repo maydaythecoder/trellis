@@ -24,8 +24,9 @@
 //! Module names and paths are repository text: the page writes them through
 //! `textContent` only (ADR 0007, S10).
 
+use crate::asked;
 use crate::frames::Response;
-use crate::graph::{self, CHAR_W, LABEL_ASCENT, LABEL_H, Rect, Text, round};
+use crate::graph::{self, CHAR_W, LABEL_ASCENT, LABEL_H, Rect, Text, plural, round};
 use crate::json;
 use serde_json::{Value, json};
 
@@ -126,10 +127,6 @@ fn cut_start(s: &str, max: usize) -> String {
     std::iter::once('…')
         .chain(s.chars().skip(n - (max - 1)))
         .collect()
-}
-
-fn plural(n: usize, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
 }
 
 /// A region of the overview: one top-level package.
@@ -256,7 +253,7 @@ pub fn layout(data: &Value) -> Codebase {
     let overview_height = {
         let cols = columns(grouped.len());
         let rows = grouped.len().div_ceil(cols).max(1);
-        round(2.0 * PAD + CELL_H * rows as f64)
+        round(2.0 * PAD + CELL_H * rows as f64, 1)
     };
 
     let mut region_edges: Vec<(usize, usize)> = Vec::new();
@@ -315,8 +312,8 @@ fn place_regions(grouped: &[(&str, Vec<&Module>)], exact: bool) -> Vec<Region> {
         .enumerate()
         .map(|(i, (p, ms))| {
             let (row, col) = (i / cols, i % cols);
-            let x = round(PAD + cell_w * (col as f64 + 0.5));
-            let y = round(PAD + CELL_H * row as f64 + REGION_CY);
+            let x = round(PAD + cell_w * (col as f64 + 0.5), 1);
+            let y = round(PAD + CELL_H * row as f64 + REGION_CY, 1);
             // Area follows the module count, so a package twice the size
             // does not look four times it.
             let r = REGION_R_MIN + (r_max - REGION_R_MIN) * (ms.len() as f64 / busiest).sqrt();
@@ -324,24 +321,24 @@ fn place_regions(grouped: &[(&str, Vec<&Module>)], exact: bool) -> Vec<Region> {
                 package: p.to_string(),
                 x,
                 y,
-                r: round(r),
+                r: round(r, 1),
                 modules: ms.len(),
                 name: Text {
                     text: graph::cut(p, name_chars),
                     x,
-                    y: round(y + NAME_DY),
+                    y: round(y + NAME_DY, 1),
                     anchor: "middle",
                 },
                 count: Text {
                     // Past rpc's `limit` a package may hold modules the
                     // answer did not list, so the count says what it is.
                     text: if exact {
-                        plural(ms.len(), "module", "modules")
+                        plural(ms.len() as u64, "module", "modules")
                     } else {
                         format!("{} listed", ms.len())
                     },
                     x,
-                    y: round(y + COUNT_DY),
+                    y: round(y + COUNT_DY, 1),
                     anchor: "middle",
                 },
             }
@@ -368,8 +365,8 @@ fn place_package(p: &str, ms: &[&Module], edges_in: &impl Fn(&str) -> u64) -> Pa
             Placed {
                 module: m.name.clone(),
                 path: m.path.clone(),
-                x: round(cx + radius * angle.cos()),
-                y: round(cy + radius * angle.sin()),
+                x: round(cx + radius * angle.cos(), 1),
+                y: round(cy + radius * angle.sin(), 1),
                 edges_in: edges_in(&m.name),
                 edges_out: m
                     .calls_not_drawn
@@ -411,8 +408,8 @@ fn place_package(p: &str, ms: &[&Module], edges_in: &impl Fn(&str) -> u64) -> Pa
             };
             let t = Text {
                 text,
-                x: round(x),
-                y: round(baseline),
+                x: round(x, 1),
+                y: round(baseline, 1),
                 anchor,
             };
             (i, t, rect)
@@ -521,13 +518,8 @@ impl Codebase {
 pub fn event(r: &Response) -> Value {
     match (r.success, &r.data) {
         (Some(true), Some(data)) if data.is_object() => layout(data).to_json(),
-        (Some(true), _) => json!({"error": "get_codebase answered with no graph"}),
-        _ => json!({
-            "error": r
-                .error
-                .clone()
-                .unwrap_or_else(|| "get_codebase was refused, and trellis gave no reason".into()),
-        }),
+        (Some(true), _) => asked::error("get_codebase answered with no graph"),
+        _ => asked::error(asked::refusal("get_codebase", r)),
     }
 }
 
