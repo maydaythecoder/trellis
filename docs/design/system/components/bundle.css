@@ -1,7 +1,8 @@
-/* Reference only, vendored 2026-10-25 from the design system's React bundle.
-   Neither client loads this file: the desktop's styles are desktop/ui/style.css
-   (CSP without 'unsafe-inline', no bundler) and the TUI draws with Lip Gloss.
-   Read it for measurements and states; take values from tokens.json. */
+/* Vendored 2026-10-25 from the design system's React bundle. The desktop
+   loads this file as desktop/ui/ds.css, the same bytes below this comment
+   (ds_css_is_the_design_systems_bundle, #909), and draws each component's
+   markup in desktop/ui/ds.js; the TUI draws the same components with Lip
+   Gloss. Values come from tokens.json. */
 /* TRELLIS — component styles. Every colour, length and radius is a token from tokens.css. */
 .cd-stage { padding: var(--space-6); background: var(--ground); font-family: var(--font-sans); color: var(--ink);
   background-image: radial-gradient(var(--grid-dot) 1px, transparent 1px); background-size: var(--space-6) var(--space-6); background-position: calc(var(--space-6) / 2) calc(var(--space-6) / 2); }
