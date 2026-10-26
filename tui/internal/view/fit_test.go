@@ -199,3 +199,58 @@ func TestViewWroteInTextOnTheEditNodeAtEightyColumns(t *testing.T) {
 		t.Fatalf("the edge column is %d columns:\n%s", len(cols), strings.Join(rows, "\n"))
 	}
 }
+
+// #875: a tool name of 59 cells or more widened the right column past the
+// screen at 80 columns (#839's review). The column stops at the
+// transcript's floor and the name is cut in its node: every row is the
+// screen's width, the transcript keeps MinTranscriptWidth, and the node's
+// count and the edge column are drawn.
+func TestViewALongToolNameIsCutNotTheLayout(t *testing.T) {
+	for _, n := range []int{20, 59, 120} {
+		name := strings.Repeat("x", n)
+		s := acted(
+			Action{Tool: "read_file", Target: "app/calc.py"},
+			Action{Tool: name, Target: "app/calc.py"},
+			Action{Tool: name, Target: "app/calc.py", Wrote: true},
+		)
+		// Tall enough that the actions pane shows every node.
+		for _, size := range [][2]int{{80, 40}, {120, 40}} {
+			w, h := size[0], size[1]
+			screen := Render(s, w, h)
+			for i, r := range strings.Split(screen, "\n") {
+				if got := Width(r); got != w {
+					t.Fatalf("name of %d at %dx%d: row %d is %d cells, want %d:\n%s", n, w, h, i, got, w, screen)
+				}
+			}
+			if left, _ := columns(s, w); left < MinTranscriptWidth {
+				t.Fatalf("name of %d at %d columns: the transcript is %d cells, under %d", n, w, left, MinTranscriptWidth)
+			}
+			rows := paneRows(t, s, "actions", w, h)
+			var node string
+			cols := map[int]bool{}
+			for _, r := range rows {
+				if strings.HasPrefix(r, "  xx") && node == "" {
+					node = r
+				}
+				for i, c := range []rune(r) {
+					if c == '●' || c == '○' {
+						cols[i] = true
+						break
+					}
+				}
+			}
+			if !strings.Contains(node, "2 · 1 wrote ●") {
+				t.Fatalf("name of %d at %d columns: node %q lost its count or edge:\n%s", n, w, node, strings.Join(rows, "\n"))
+			}
+			// Only the 20-cell name at 120 columns fits beside its count
+			// and the focus; every other is cut, and says so.
+			want := n == 20 && w == 120
+			if whole := strings.Contains(node, name+" "); whole != want || (!whole && !strings.Contains(node, "…")) {
+				t.Fatalf("name of %d at %d columns: node %q, whole %v, want %v", n, w, node, whole, want)
+			}
+			if len(cols) != 1 {
+				t.Fatalf("name of %d at %d columns: the edge column is %d columns:\n%s", n, w, len(cols), strings.Join(rows, "\n"))
+			}
+		}
+	}
+}

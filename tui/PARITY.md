@@ -19,8 +19,8 @@ in the five files the ADR names: `app.rs` (58), `view.rs` (37), `events.rs`
 23 in `view.rs` and 23 in `tui_run.rs` when it was written; the files have
 since grown. Batch 46 added 40 tests, for #634, #635, #636, #639, #640,
 #641, #655, #660 and #661; their rows follow each file's earlier ones, each
-under the ticket whose area it falls in.) The routing rule is listed after
-them.
+under the ticket whose area it falls in.) The routing rule and the colour
+rule are listed after them.
 
 Each row gives the Rust test, the rule it holds (its name, which in this
 repository is written as the rule), the ticket that ports it, and the Go
@@ -54,7 +54,7 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `app.rs` | `tokens_join_into_lines_rather_than_one_line_each` | tokens join into lines rather than one line each | T2 (#508) | not ported: token streaming is excluded from parity (#281); rpc sends whole frames, never tokens |
 | `app.rs` | `y_accepts_the_modal_and_n_rejects_it` | y accepts the modal and n rejects it | T3 (#509) | `TestApproveYesAndNoSendTheirAnswer` |
 | `app.rs` | `while_the_modal_is_up_q_does_not_quit` | while the modal is up q does not quit | T3 (#509) | `TestApproveModalTakesTheKeys` |
-| `app.rs` | `transcript_scrolling_back_stops_at_the_end_and_resumes_following` | transcript scrolling back stops at the end and resumes following | T4 (#510) | `TestPanesScrollingBackStopsAtTheEndAndResumesFollowing` |
+| `app.rs` | `transcript_scrolling_back_stops_at_the_end_and_resumes_following` | transcript scrolling back stops at the end and resumes following | T4 (#510) / #843 | `TestPanesScrollingBackStopsAtTheEndAndResumesFollowing`; Up stops at the top and PgDn moves at once after Home (`TestPanesUpStopsAtTheTop`, `TestPanesPageDownMovesAtOnceAfterHome`) |
 | `app.rs` | `transcript_outcome_is_held_until_the_next_run_starts` | transcript outcome is held until the next run starts | T2 (#508) | `TestModelRunEndSetsTheOutcome` |
 | `app.rs` | `work_events_land_where_they_belong` | work events land where they belong | T4 (#510) | `TestPanesBudgetCarriesTheCeilingTheTurnsFiguresAndElapsed`, `TestPanesRadiusTurnCarriesThreeCounts` |
 | `app.rs` | `at_file_offers_matches_case_insensitively_shortest_first` | at file offers matches case insensitively shortest first | R4 (#502) / T5 (#511) | not ported: which paths match is trellis's since R4 (#502): list_paths offers the paths starting with the prefix, shortest first, held by rpc.rs's list_paths tests; the client offers them in the order returned (TestCompleteOneChoiceCompletesSeveralAreListed) |
@@ -79,7 +79,7 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `app.rs` | `approval_answer_keeps_edits_as_reported_on_y` | approval answer keeps edits as reported on y | T4 (#510) | `TestPanesAnApprovalAnswerKeepsTheEditsAsReported` |
 | `app.rs` | `budget_unreported_elapsed_follows_the_drivers_clock_while_running` | budget unreported elapsed follows the drivers clock while running | T4 (#510) | `TestPanesClockKeepsElapsedCurrentWhileRunning` |
 | `app.rs` | `budget_unreported_prompt_size_stays_none_through_a_turn_without_one` | budget unreported prompt size stays none through a turn without one | T4 (#510) | `TestPanesTurnWithoutAPromptSizeLeavesItUnreported` |
-| `app.rs` | `approval_modal_scroll_stays_inside_the_diff_and_other_keys_do_nothing` | approval modal scroll stays inside the diff and other keys do nothing | T3 (#509) | `TestApproveModalScrollStaysInsideTheDiff` |
+| `app.rs` | `approval_modal_scroll_stays_inside_the_diff_and_other_keys_do_nothing` | approval modal scroll stays inside the diff and other keys do nothing | T3 (#509) / #843 | `TestApproveModalScrollStaysInsideTheDiff`; never past the last full page, so Up moves at once after the end (`TestApproveModalUpMovesAtOnceAfterTheEnd`), and never past the last line when that line is taller than the box (`TestApproveModalALineTallerThanTheBoxIsItsOwnLastPage`) |
 | `app.rs` | `page_keys_page_up_moves_ten_rows_back` | page keys page up moves ten rows back | T4 (#510) | `TestPanesPageUpMovesTenRowsBack` |
 | `app.rs` | `page_keys_page_down_moves_ten_rows_forward_and_stops_at_the_end` | page keys page down moves ten rows forward and stops at the end | T4 (#510) | `TestPanesPageDownMovesTenRowsForwardAndStopsAtTheEnd` |
 | `app.rs` | `page_keys_home_shows_the_first_line_and_page_up_stops_there` | page keys home shows the first line and page up stops there | T4 (#510) | `TestPanesHomeShowsTheFirstLineAndPageUpStopsThere` |
@@ -105,7 +105,7 @@ T6 #512, R4 #502 (`list_paths`, whose client side is T5).
 | `view.rs` | `below_eighty_by_twentyfour_it_says_so_instead_of_laying_out` | below eighty by twentyfour it says so instead of laying out | T4 (#510) | `TestViewTooSmallSaysSoInsteadOfLayingOut` |
 | `view.rs` | `the_modal_covers_what_is_under_it` | the modal covers what is under it | T3 (#509) | `TestApproveModalCoversTheScreen` |
 | `view.rs` | `the_task_line_shows_what_is_typed_and_how_to_send_it` | the task line shows what is typed and how to send it | T4 (#510) | `TestViewTaskLineShowsWhatIsTypedAndHowToSendIt` |
-| `view.rs` | `at_file_candidates_are_drawn_under_the_input_line` | at file candidates are drawn under the input line | T5 (#511) | `TestCompleteCandidatesAreDrawnUnderTheInput` |
+| `view.rs` | `at_file_candidates_are_drawn_under_the_input_line` | at file candidates are drawn under the input line | T5 (#511) / #842 | `TestCompleteCandidatesAreDrawnUnderTheInput`; in at most the rows the body can spare, the last saying how many more there are (`TestViewManyCompletionsNeverPanic`) |
 | `view.rs` | `at_file_candidates_are_not_drawn_while_a_run_holds_the_input` | at file candidates are not drawn while a run holds the input | T5 (#511) | `TestCompleteNothingOfferedOrStaleChangesNothing` |
 | `view.rs` | `while_running_the_task_line_shows_the_steer_being_typed` | while running the task line shows the steer being typed | T3 (#509) | `TestSteerLineIsShownWhileRunning` |
 | `view.rs` | `every_tool_is_a_node_before_any_of_them_is_called` | every tool is a node before any of them is called | T4 (#510) | `TestViewEveryToolIsANodeBeforeAnyIsCalled` |
@@ -202,3 +202,15 @@ are held to it by `crates/trellis-cli/tests/hygiene.rs`.
 | Rust file | Rust test | Rule | Ticket | Go test |
 | --- | --- | --- | --- | --- |
 | `hygiene.rs` | `every_conversational_surface_asks_whether_the_input_is_a_task` | every conversational surface asks whether the input is a task | T6 (#512) | `TestRouteAQuestionSendsNoPrompt`, `TestRouteATaskSendsOnePrompt`, `TestRouteAFailedClassifyRunsNothing` |
+
+## Colour
+
+Every colour the TUI paints comes from `docs/design/system/tokens.json`:
+`scripts/checks/design-tokens.py --write` generates
+`tui/internal/theme/tokens_gen.go` from it, and the check fails when that
+file is stale (`docs/design/DESIGN.md` section 3.4, #840). The ratatui TUI's
+tests held no colour rule, so the row names no Rust test.
+
+| Rust file | Rust test | Rule | Ticket | Go test |
+| --- | --- | --- | --- | --- |
+| none | none | every term-* token reaches the theme with the hex and indexes tokens.json gives it, in both themes | #840 | `TestThemeMatchesTokensJSON`, `TestThemeEveryTokenParses`, `TestThemeNoColourProfilePaintsNothing` |
