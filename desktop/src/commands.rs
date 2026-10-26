@@ -72,7 +72,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 pub const LINE_CAP: usize = 65_536;
 
 /// The `type`s `rpc_send` forwards: `rpc.rs`'s `COMMANDS` as #296 lists
-/// them, `list_models` (#564) and the read-only `get_session_stats` (#313),
+/// them, `list_models` (#564), the read-only `get_session_stats` (#313) and
+/// `get_last_assistant_text`, which the summary level reads (#825),
 /// without `quit`, which only the core sends, and with each read-only
 /// command a desktop view reads through (ADR 0048 section 10) as that view
 /// is built: `get_codebase` (#307), `get_radius` (#308), `vault_search` and
@@ -81,7 +82,7 @@ pub const LINE_CAP: usize = 65_536;
 /// write is among them: rpc has none, every vault write stays a `trellis
 /// vault` command the person runs (#70), and the queue's writes are
 /// `trellis queue` and `trellis work` (ADR 0020 section 5).
-pub const FORWARDED: [&str; 21] = [
+pub const FORWARDED: [&str; 22] = [
     "prompt",
     "abort",
     "get_state",
@@ -95,6 +96,7 @@ pub const FORWARDED: [&str; 21] = [
     "compact",
     "get_commands",
     "get_session_stats",
+    "get_last_assistant_text",
     "get_codebase",
     "get_radius",
     "vault_search",
@@ -674,9 +676,10 @@ fn check_arguments(o: &serde_json::Map<String, Value>) -> Result<(), String> {
 
 /// The composer's rule (#301), from the view's own record of whether a run
 /// is in flight (`run_start` to `run_end`, or the child's exit): a `prompt`
-/// only while none is, and a `steer` or `abort` only while one is. `rpc.rs`
-/// refuses the same lines itself; the page draws the composer from the same
-/// view, and this holds the rule when the page is wrong.
+/// only while none is, and a `steer`, a `follow_up` (#825) or an `abort`
+/// only while one is. `rpc.rs` refuses the same lines itself; the page
+/// draws the composer from the same view, and this holds the rule when the
+/// page is wrong.
 fn check_run_state(line: &Value, running: bool) -> Result<(), String> {
     match (line.get("type").and_then(Value::as_str), running) {
         (Some("prompt"), true) => Err(
@@ -687,6 +690,13 @@ fn check_run_state(line: &Value, running: bool) -> Result<(), String> {
         (Some(ty @ ("steer" | "abort")), false) => Err(format!(
             "rpc_send: no run is in flight, so there is nothing to {ty}; send a prompt to start one"
         )),
+        // A follow_up runs after the run it is sent during; with none in
+        // flight there is nothing for it to follow.
+        (Some("follow_up"), false) => Err(
+            "rpc_send: no run is in flight, so there is nothing to follow; send a prompt to start \
+             one"
+            .into(),
+        ),
         _ => Ok(()),
     }
 }
@@ -974,6 +984,53 @@ mod tests {
             .send(&json!({"id": "x", "type": "get_session_totals"}))
             .unwrap_err();
         assert!(err.contains("is not one rpc_send forwards"), "{err}");
+        finish(&core).unwrap();
+        for d in &dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn follow_up_is_refused_with_no_run_in_flight() {
+        // The risk (#825): a follow_up the page sends while nothing runs is
+        // forwarded as if a run would pick it up, and the person's words
+        // wait behind a run that is not there.
+        let (core, _rec, dirs) = with_child("follow-idle");
+        let l = json!({"id": "f", "type": "follow_up", "message": "then rename it"});
+        let err = core.send(&l).unwrap_err();
+        assert!(err.contains("no run is in flight"), "{err}");
+        assert!(err.contains("nothing to follow"), "{err}");
+        // While one runs it is forwarded; once it has ended it is refused.
+        run_started(&core);
+        assert_eq!(core.send(&l), Ok(()));
+        run_ended(&core);
+        let err = core.send(&l).unwrap_err();
+        assert!(err.contains("no run is in flight"), "after run_end: {err}");
+        finish(&core).unwrap();
+        for d in &dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn rpc_send_forwards_get_last_assistant_text() {
+        // The risk (#825): the summary level asks for the run's closing
+        // words and rpc_send refuses the line, so the summary says nothing;
+        // or the core answers it itself. The child answers, and its text is
+        // model output, null until a run ends on done.
+        let (core, rec, dirs) = with_child("last-text");
+        assert_eq!(
+            core.send(&json!({"id": "desktop-last", "type": "get_last_assistant_text"})),
+            Ok(())
+        );
+        let answer = rec.wait_for("rpc-frame", |f| f["id"] == "desktop-last");
+        assert_eq!(answer["command"], "get_last_assistant_text", "{answer}");
+        assert_eq!(answer["success"], true, "{answer}");
+        assert_eq!(
+            answer["data"],
+            json!({"text": null}),
+            "no run yet: {answer}"
+        );
         finish(&core).unwrap();
         for d in &dirs {
             let _ = std::fs::remove_dir_all(d);

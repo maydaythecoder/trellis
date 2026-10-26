@@ -146,14 +146,15 @@ func TestSteerLineIsShownWhileRunning(t *testing.T) {
 	m := running(t)
 	typeLine(m, "half typed")
 	v := m.View()
-	if !strings.Contains(v, "half typed█") || !strings.Contains(v, "running — enter queues a steer") {
+	if !strings.Contains(v, "half typed█") || !strings.Contains(v, "steer  [⏎] queue for the next turn") {
 		t.Fatalf("view:\n%s", v)
 	}
 }
 
-// Esc clears a line and leaves an empty one; on an empty line with no run
-// in flight it quits (mid-run, TestModelStopMidRun).
-func TestModelEscClearsTheLineThenQuitsWhenIdle(t *testing.T) {
+// Esc clears a line and leaves an empty one; on an empty line at the top
+// level it has nothing to leave and never quits: ^c is how the program
+// ends (owner decision, 2026-10-25; #851). Mid-run, TestModelStopMidRun.
+func TestModelEscClearsTheLineAndNeverQuits(t *testing.T) {
 	m := running(t)
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
 	m.TakeOutbox()
@@ -163,7 +164,12 @@ func TestModelEscClearsTheLineThenQuitsWhenIdle(t *testing.T) {
 		t.Fatalf("input %q quitting %v", m.Input, m.Quitting)
 	}
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if out := m.TakeOutbox(); m.Quitting || len(out) != 0 {
+		t.Fatalf("esc on an empty line: quitting %v, sent %v", m.Quitting, kinds(out))
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if got := kinds(m.TakeOutbox()); !m.Quitting || strings.Join(got, ",") != "QUIT" {
-		t.Fatalf("quitting %v sent %v", m.Quitting, got)
+		t.Fatalf("^c: quitting %v sent %v", m.Quitting, got)
 	}
 }
