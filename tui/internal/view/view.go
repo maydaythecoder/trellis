@@ -113,15 +113,29 @@ type State struct {
 	Restored *bool
 }
 
+// radiusH is the radius pane's height: its three counts, the line that
+// says what they are a floor on, and two borders.
+const radiusH = 6
+
+// MinBodyRows is the fewest rows the body between the status bar and the
+// budget keeps, whatever the task box below it holds: the radius pane's,
+// so its three counts are never cut, and the transcript keeps four rows.
+// The @ completion list takes what is left above it, and no more (#842):
+// sixteen completions at 80x24 left the body one row, and the transcript
+// sliced past its own end.
+const MinBodyRows = radiusH
+
 // Render draws the whole screen at width by height.
 func Render(s State, w, h int) string {
 	if w < MinWidth || h < MinHeight {
 		return tooSmall(w, h)
 	}
-	entry := entryLines(s, w)
+	// The status bar, the budget box, and the task box's two borders and
+	// its input row are always drawn; the completions get what is left of
+	// the rest once the body has its floor.
+	entry := entryLines(s, w, h-1-3-3-MinBodyRows)
 	bodyH := h - 1 - 3 - len(entry)
 	leftW, rightW := columns(s, w)
-	const radiusH = 6
 	rest := bodyH - radiusH
 	actionsH := rest / 2
 	editsH := rest / 4
@@ -227,7 +241,9 @@ func transcript(s State, w, h int) []string {
 	for _, l := range s.Transcript {
 		rows = append(rows, WrapWords(Plain(l), inner)...)
 	}
-	innerH := h - 2
+	// A pane too short for an inside shows no rows: h-2 below zero made
+	// start pass end and the slice panicked (#842).
+	innerH := max(h-2, 0)
 	// Scrolled back past the first row, the first page is shown: the view
 	// stops at the top rather than drawing an empty pane.
 	end := max(len(rows)-s.ScrollBack, min(innerH, len(rows)))
@@ -532,21 +548,40 @@ func turnRate(b Budget) (rate, queued *string) {
 	return rate, queued
 }
 
-// entryLines is the task entry: the typed line with a block cursor, the @
-// candidates under it (none while a run holds the input: what is typed then
-// is a steer), and what Enter does now.
-func entryLines(s State, w int) []string {
-	lines := []string{Plain(s.Input) + "█"}
+// entryLines is the task box: the typed line with a block cursor, the @
+// candidates under it in at most room rows (none while a run holds the
+// input: what is typed then is a steer), and what Enter does now, on its
+// top border.
+//
+// The line keeps its end in view, where the cursor is: wider than the box,
+// it was cut at the right and the cursor went with it (#842). What scrolled
+// off the left is marked "…".
+//
+// The completions take at most room rows. When there are more, the last
+// row says how many are not shown, so a short list is never read as all
+// there is.
+func entryLines(s State, w, room int) []string {
+	lines := []string{CutLeft(Plain(s.Input)+"█", w-2)}
 	title := "task  ·  enter to run  ·  /help  ·  esc to clear, esc again to quit"
 	if s.Running {
 		title = "running — enter queues a steer for its next turn  ·  ^c stops it"
 	} else {
-		for i, p := range s.Offered {
+		offered := s.Offered
+		hidden := 0
+		if len(offered) > room {
+			shown := max(room-1, 0)
+			hidden = len(offered) - shown
+			offered = offered[:shown]
+		}
+		for i, p := range offered {
 			mark := "    "
 			if i == 0 {
 				mark = "tab "
 			}
 			lines = append(lines, mark+Plain(p))
+		}
+		if hidden > 0 && room > 0 {
+			lines = append(lines, fmt.Sprintf("    … %d more", hidden))
 		}
 	}
 	return Box(title, "", lines, w, 2+len(lines))
