@@ -16,7 +16,7 @@
 // (CLAUDE.md rules 3 and 4).
 
 import { el, muted } from "./dom.js";
-import { dsStatus, figure, railRows, stats, unreported } from "./ds.js";
+import { dsStatus, figure, rail, stats, unreported } from "./ds.js";
 import { isCount, notReported, str } from "./fmt.js";
 
 function list(v) {
@@ -150,8 +150,6 @@ function lastRun(doc, pane, o) {
     const result = c && c.passed === true ? "passed" : c && c.passed === false ? "failed" : "unknown";
     return { label: str(c && c.kind) ?? "check", meta: el(doc, "strong", result, result), tone: result === "passed" ? "ok" : result === "failed" ? "down" : null };
   });
-  const checkRail = el(doc, "ol", null, "cd-rail");
-  checkRail.append(...railRows(doc, checks));
   pane.replaceChildren(
     head,
     el(doc, "p", str(t.task) ?? "task not reported"),
@@ -164,7 +162,7 @@ function lastRun(doc, pane, o) {
       { label: "budget", value: unreported(doc, "the overview carries no budget") },
       { label: "approvals", value: unreported(doc, "the overview carries no approvals") },
     ]),
-    checks.length > 0 ? checkRail : muted(doc, "p", "no checks ran"),
+    checks.length > 0 ? rail(doc, checks) : muted(doc, "p", "no checks ran"),
     muted(doc, "p", `trail ${str(t.run_id) ?? "not reported"} · started ${str(t.started_at) ?? "not recorded"} · tier ${str(t.tier) ?? "not recorded"}`),
   );
 }
@@ -197,79 +195,83 @@ function codebase(doc, pane, o) {
   );
 }
 
-// One queue task: its status, id and priority, its words, and its chain:
-// the task it is part of and the ones it waits on. The status is the word
-// the board's cells and rows use, so a task reads the same in both views
-// (#656).
-function task(doc, t) {
-  const li = el(doc, "li");
+// The tone a queue task's status is drawn in (#910): in_progress is work
+// under way, in_review waits on the person, blocked waits, and failed
+// failed. The rest take none, since ok is a passed check's alone (DESIGN.md
+// section 3.1).
+const TASK_TONES = { in_progress: "cool", in_review: "signal", blocked: "warn", failed: "down" };
+
+// One queue task as a Rail row (#910): its id and words over its priority
+// and chain (the task it is part of and the ones it waits on), and its
+// status as a Status. `full` adds its labels and assignee, as the board
+// shows them. The overview and the board both draw a task through here, so
+// a task reads the same in both (#656).
+export function taskRow(doc, t, full = false) {
   const id = str(t && t.id) ?? "?";
+  const label = el(doc, "span");
+  label.append(el(doc, "code", id), " ");
   if (str(t && t.error) !== null) {
-    li.append(el(doc, "code", id), " ", muted(doc, "span", `unreadable: ${t.error}`));
-    return li;
+    label.append(el(doc, "span", `unreadable: ${t.error}`, "failed"));
+    return { label, meta: muted(doc, "span", str(t.state) ?? "?") };
   }
-  li.append(
-    el(doc, "span", str(t.status) ?? "?"),
-    " ",
-    el(doc, "code", id),
-    " ",
-    muted(doc, "span", str(t.priority) ?? "?"),
-    " ",
-    el(doc, "span", str(t.task) ?? ""),
-  );
-  const chain = [];
-  if (str(t.parent) !== null) chain.push(`part of ${t.parent}`);
+  label.append(el(doc, "span", str(t.task) ?? "task not reported"));
+  const said = [str(t.priority) ?? "priority not reported"];
+  if (full) {
+    const labels = list(t.labels).filter((l) => typeof l === "string");
+    if (labels.length > 0) said.push(`labels: ${labels.join(", ")}`);
+    if (str(t.assignee) !== null) said.push(`assignee: ${t.assignee}`);
+  }
+  if (str(t.parent) !== null) said.push(`part of ${t.parent}`);
   const blockers = list(t.blockers).filter((b) => typeof b === "string");
-  if (blockers.length > 0) chain.push(`after ${blockers.join(", ")}`);
-  if (str(t.waiting) !== null) chain.push(`waiting: ${t.waiting}`);
-  if (chain.length > 0) li.append(muted(doc, "div", chain.join(" · ")));
-  return li;
+  if (blockers.length > 0) said.push(`after ${blockers.join(", ")}`);
+  if (str(t.waiting) !== null) said.push(`waiting: ${t.waiting}`);
+  label.append(muted(doc, "div", said.join(" · ")));
+  const status = str(t.status);
+  return { label, meta: dsStatus(doc, TASK_TONES[status] ?? "idle", status ?? "status not reported") };
 }
 
+// One open pull request: its number, title and branch, draft as a Status,
+// and its checks as gh counted them, four counts and no sum.
 function pullRequest(doc, p) {
   const li = el(doc, "li");
   li.append(el(doc, "span", isCount(p.number) ? `#${p.number}` : "#?"), " ");
   li.append(el(doc, "span", str(p.title) ?? ""), " ");
   li.append(el(doc, "code", str(p.head) ?? "?"));
-  if (p.draft === true) li.append(" ", muted(doc, "span", "draft"));
+  if (p.draft === true) li.append(" ", dsStatus(doc, "idle", "draft"));
   const c = p.checks && typeof p.checks === "object" ? p.checks : {};
   li.append(
     muted(
       doc,
       "div",
-      `checks: ${notReported(c.passed)} passed, ${notReported(c.failed)} failed, ` +
-        `${notReported(c.pending)} pending, ${notReported(c.other)} other`,
+      `checks ${notReported(c.passed)} passed · ${notReported(c.failed)} failed · ` +
+        `${notReported(c.pending)} pending · ${notReported(c.other)} other`,
     ),
   );
   return li;
 }
 
+// One CI run as a Rail row: its workflow and branch, gh's status and
+// conclusion as a Status, and its start as the row's meta. gh's words take
+// no tone: a passed or failed check's tones are trellis-checks' own
+// (DESIGN.md section 3.1).
 function ciRun(doc, r) {
-  const li = el(doc, "li");
-  li.append(el(doc, "span", str(r.workflow) ?? "?"), " ");
-  li.append(el(doc, "code", str(r.branch) ?? "?"), " ");
-  li.append(el(doc, "span", `${str(r.status) ?? "?"}/${str(r.conclusion) ?? "none"}`));
-  const when = str(r.created_at) ?? "start not reported";
-  li.append(muted(doc, "div", isCount(r.id) ? `run ${r.id} · ${when}` : when));
-  return li;
+  const label = el(doc, "span");
+  label.append(el(doc, "span", str(r.workflow) ?? "?"), " ", el(doc, "code", str(r.branch) ?? "?"), " ");
+  label.append(dsStatus(doc, "idle", `${str(r.status) ?? "?"}/${str(r.conclusion) ?? "none"}`));
+  if (isCount(r.id)) label.append(" ", muted(doc, "span", `run ${r.id}`));
+  return { label, meta: str(r.created_at) ?? "start not reported" };
 }
 
-// A headed list, or one muted line when it is empty.
-function block(doc, title, items, empty) {
-  const ul = el(doc, "ul");
-  ul.className = "rows";
-  if (items.length === 0) {
-    const e = el(doc, "li", empty);
-    e.className = "empty";
-    ul.append(e);
-  } else {
-    ul.append(...items);
-  }
-  return [el(doc, "h4", title), ul];
+// A headed list (a `ul.rows`, or a Rail), with one muted row when it is
+// empty.
+function block(doc, title, rows, empty) {
+  if (rows.childElementCount === 0) rows.append(el(doc, "li", empty, "empty"));
+  return [el(doc, "h4", title), rows];
 }
 
-// board: the queue's chains, then PR and CI state from the user's own `gh`,
-// or why it is not shown (`pr_ci.available` false and its `reason`).
+// board: the queue's chains as a Rail, then PR and CI state from the
+// user's own `gh`, or why it is not shown (`pr_ci.available` false and its
+// `reason`).
 function board(doc, pane, o) {
   if (!("root" in o)) {
     only(doc, pane, NO_ROOT_PANE);
@@ -278,7 +280,7 @@ function board(doc, pane, o) {
   const b = o.board && typeof o.board === "object" ? o.board : {};
   const out = [];
   if (Array.isArray(b.tasks)) {
-    out.push(...block(doc, "Queue", b.tasks.map((t) => task(doc, t)), "No tasks queued."));
+    out.push(...block(doc, "Queue", rail(doc, b.tasks.map((t) => taskRow(doc, t))), "No tasks queued."));
   } else {
     out.push(el(doc, "h4", "Queue"));
     out.push(muted(doc, "p", `The queue could not be read: ${str(b.tasks_error) ?? "no reason given"}`));
@@ -288,19 +290,20 @@ function board(doc, pane, o) {
 }
 
 // PR and CI state from the user's own `gh` (`board.pr_ci`), as nodes: the
-// open pull requests and recent runs when `available` is true, or the
-// reason it is not shown. Shared with the board section (queue.js, #311),
-// so the two never draw it differently.
+// open pull requests, and the recent runs as a Rail, oldest first (gh lists
+// the newest first), when `available` is true; or the reason it is not
+// shown. Shared with the board section (queue.js, #311), so the two never
+// draw it differently.
 export function drawPrCi(doc, value) {
   const pr = value && typeof value === "object" ? value : {};
   const out = [];
   if (pr.available === true) {
-    const prs = list(pr.pull_requests).map((p) => pullRequest(doc, p || {}));
-    const runs = list(pr.runs).map((r) => ciRun(doc, r || {}));
-    out.push(...block(doc, "Open pull requests (from gh)", prs, "No open pull requests."));
-    out.push(...block(doc, "Recent CI runs (from gh), newest first", runs, "No CI runs."));
+    const prs = el(doc, "ul", null, "rows");
+    prs.append(...list(pr.pull_requests).map((p) => pullRequest(doc, p || {})));
+    const runs = rail(doc, list(pr.runs).map((r) => ciRun(doc, r || {})).reverse());
+    out.push(...block(doc, "Open pull requests, from gh", prs, "No open pull requests."));
+    out.push(...block(doc, "CI runs, from gh", runs, "No CI runs."));
   } else {
-    out.push(el(doc, "h4", "Pull requests and CI"));
     out.push(muted(doc, "p", `PR and CI state unavailable: ${str(pr.reason) ?? "no reason given"}`));
   }
   return out;
