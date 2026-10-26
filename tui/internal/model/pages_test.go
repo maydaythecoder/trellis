@@ -126,19 +126,25 @@ func TestPanesClockKeepsElapsedCurrentWhileRunning(t *testing.T) {
 }
 
 // The program's clock (tui_run.rs's send_elapsed): a TickMsg after a
-// measured second, and another scheduled each time one arrives.
+// measured second, and another scheduled each time one arrives; once the
+// App is closed, a waiting tick ends at once with nothing (#847).
 func TestPanesClockTicksOnceASecond(t *testing.T) {
+	a := NewApp(fresh(t), &fakeClient{lines: make(chan rpc.Line)})
 	start := time.Now()
-	msg := tick()()
+	msg := a.tick()()
 	if _, ok := msg.(TickMsg); !ok {
 		t.Fatalf("got %T, want TickMsg", msg)
 	}
 	if d := time.Since(start); d < 900*time.Millisecond {
 		t.Fatalf("ticked after %v, not a second", d)
 	}
-	a := NewApp(fresh(t), &fakeClient{lines: make(chan rpc.Line)})
 	if _, next := a.Update(TickMsg{}); next == nil {
 		t.Fatal("no next tick was scheduled")
+	}
+	a.Close()
+	start = time.Now()
+	if msg := a.tick()(); msg != nil || time.Since(start) > 500*time.Millisecond {
+		t.Fatalf("a tick after Close gave %T after %v", msg, time.Since(start))
 	}
 }
 
