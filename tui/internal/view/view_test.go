@@ -93,8 +93,8 @@ func TestViewSixRegionsAtEightyByTwentyFour(t *testing.T) {
 		t.Fatalf("%d rows, want 24", len(lines))
 	}
 	for i, l := range lines {
-		if n := len([]rune(l)); n > 80 {
-			t.Fatalf("row %d is %d wide:\n%s", i, n, l)
+		if n := Width(l); n > 80 {
+			t.Fatalf("row %d is %d cells wide:\n%s", i, n, l)
 		}
 	}
 }

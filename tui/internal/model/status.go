@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/maydaythecoder/trellis/tui/internal/frames"
+	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
 // The status bar's model and tier are trellis's answers, never the
@@ -52,13 +53,13 @@ func (m *Model) stateAnswered(data any) {
 		return
 	}
 	if s, isStr := d["model"].(string); isStr {
-		m.ModelName = Plain(s)
+		m.ModelName = view.Plain(s)
 	} else if d["model"] == nil {
 		m.ModelName = ""
 	}
 	if s, isStr := d["tier"].(string); isStr && strings.TrimSpace(s) != "" {
 		// The bar writes "tier " before the label; a label that already
 		// starts with the word would read "tier tier".
-		m.Tier = Plain(strings.TrimPrefix(s, "tier "))
+		m.Tier = view.Plain(strings.TrimPrefix(s, "tier "))
 	}
 }
