@@ -162,3 +162,50 @@ func TestPanesTurnWithoutAPromptSizeLeavesItUnreported(t *testing.T) {
 		t.Fatalf("view:\n%s", v)
 	}
 }
+
+// #904: scrolled to the top with completions on offer, closing the offer
+// makes the transcript pane taller, so its top is lower than the scroll
+// back held. The first Down then moves the view by a row, and the first
+// PgDn by a page, rather than spending presses above the first row.
+func TestPagesDownMovesAtOnceAfterThePaneGrows(t *testing.T) {
+	for _, c := range []struct {
+		key  tea.KeyType
+		want string
+	}{{tea.KeyDown, "line 001"}, {tea.KeyPgDown, "line 010"}} {
+		m := numbered(t, 200)
+		typeLine(m, "fix @m")
+		tab(m)
+		var paths []any
+		for i := 0; i < 8; i++ {
+			paths = append(paths, fmt.Sprintf("app/m%d.py", i))
+		}
+		respond(m, m.TakeOutbox()[0].Cmd["id"], "list_paths", map[string]any{"paths": paths})
+		m.Update(keyType(tea.KeyHome))
+		held := m.ScrollBack
+		typeLine(m, " ")
+		if len(m.Offered) != 0 {
+			t.Fatalf("a space did not close the offer: %v", m.Offered)
+		}
+		if top := m.transcriptTop(); top >= held {
+			t.Fatalf("closing the offer did not grow the pane: top %d, held %d", top, held)
+		}
+		if first := firstLine(t, m); first != "line 000" {
+			t.Fatalf("the top is not drawn after the pane grew: first %q", first)
+		}
+		m.Update(keyType(c.key))
+		if first := firstLine(t, m); first != c.want {
+			t.Fatalf("after one %v the first line is %q, want %q", c.key, first, c.want)
+		}
+	}
+}
+
+// firstLine is the first "line NNN" the transcript pane draws.
+func firstLine(t *testing.T, m *Model) string {
+	t.Helper()
+	v := m.View()
+	i := strings.Index(v, "line ")
+	if i < 0 || i+8 > len(v) {
+		t.Fatalf("no numbered line on screen:\n%s", v)
+	}
+	return v[i : i+8]
+}
