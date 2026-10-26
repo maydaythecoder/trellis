@@ -30,7 +30,8 @@
 
 import { el } from "./dom.js";
 import { isCount, plural, str } from "./fmt.js";
-import { send, start } from "./rpc.js";
+import { onEscape, typing } from "./keys.js";
+import { onShown, send, start } from "./rpc.js";
 
 const ID = "desktop-atlas-";
 // get_codebase lists this many modules: all of any repository the layout
@@ -2806,10 +2807,6 @@ function hint(A) {
   }, 2500);
 }
 
-function typing(t) {
-  return t && ["INPUT", "SELECT", "TEXTAREA"].includes(t.tagName);
-}
-
 function wireControls(A) {
   byId(A, "at-zin").addEventListener("click", () => zoomAbout(A, 1.6, A.vw / 2, A.vh / 2));
   byId(A, "at-zout").addEventListener("click", () => zoomAbout(A, 1 / 1.6, A.vw / 2, A.vh / 2));
@@ -2861,10 +2858,23 @@ function wireControls(A) {
     if (ev.key === "/" && !busy) {
       ev.preventDefault();
       openSearch(A);
-    } else if (ev.key === "Escape" && !byId(A, "at-search").hidden) closeSearch(A);
-    else if (ev.key === "Escape" && !busy && A.sel) select(A, null);
-    else if (ev.key === "[" && !busy) histGo(A, -1);
+    } else if (ev.key === "[" && !busy) histGo(A, -1);
     else if (ev.key === "]" && !busy) histGo(A, 1);
+  });
+  // ESC is keys.js's for the whole page (#826): the Atlas is asked first,
+  // and closes its search, then clears its selection, before ESC goes out
+  // a level.
+  onEscape((ev) => {
+    if (!shown(A)) return false;
+    if (!byId(A, "at-search").hidden) {
+      closeSearch(A);
+      return true;
+    }
+    if (!typing(ev.target) && A.sel) {
+      select(A, null);
+      return true;
+    }
+    return false;
   });
   A.doc.addEventListener("pointerdown", (ev) => {
     const s = byId(A, "at-search");
@@ -2964,25 +2974,21 @@ export async function wireAtlas(doc, win, tauri) {
     A.childUp = false;
     if (A.view === null) status(A, "No repository is open: open a repository to see its atlas.");
   });
-  const button = doc.querySelector('nav.rail button[aria-controls="atlas"]');
-  if (button) {
-    button.addEventListener("click", () => {
-      // The model pane, open above every section until a model is chosen,
-      // would push the map below the fold; showing the Atlas folds it, and
-      // its summary opens it again.
-      const pane = doc.getElementById("model-pane");
-      if (pane && pane.open) pane.open = false;
-      // After every click listener, the rail's among them, has run, so the
-      // section is shown when it is measured. A page loaded after its child
-      // started saw no child-started; asking is what tells whether one is
-      // there.
-      Promise.resolve().then(() => {
-        A.childUp = true;
-        resize(A);
-        pump(A);
-      });
-    });
-  }
+  // Entering the Atlas's level shows its section (keys.js), and the Atlas
+  // measures and asks then (#826).
+  onShown(doc, "atlas", () => {
+    // The model pane, open above every section until a model is chosen,
+    // would push the map below the fold; showing the Atlas folds it, and
+    // its summary opens it again.
+    const pane = doc.getElementById("model-pane");
+    if (pane && pane.open) pane.open = false;
+    // The section is shown by now, so it can be measured. A page loaded
+    // after its child started saw no child-started; asking is what tells
+    // whether one is there.
+    A.childUp = true;
+    resize(A);
+    pump(A);
+  });
   return A;
 }
 

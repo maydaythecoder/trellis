@@ -277,39 +277,218 @@
 body {
   margin: 0;
   display: flex;
-  min-height: 100vh;
+  flex-direction: column;
+  height: 100vh;
   background: var(--ground);
   color: var(--ink);
   font: 14px/1.45 system-ui, sans-serif;
 }
 
-.rail {
-  display: flex;
-  flex-direction: column;
-  flex: 0 0 auto;
-  width: 120px;
-  padding: 8px;
-  gap: 4px;
-  background: var(--panel-inset);
-  border-right: 1px solid var(--line);
+/* The shell (#826; ADR 0048 section 5 as amended 2026-10-26): the Trail
+   across the top, the sibling rail and the stage, the status bar along the
+   bottom. Only the stage scrolls, so the Trail and the bar never scroll
+   away. */
+.shell-top {
+  flex: none;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
 }
 
-.rail button {
-  padding: 8px 10px;
-  border: 1px solid transparent;
-  border-radius: 6px;
+.trail {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font: 12px/16px var(--font-mono);
+  color: var(--ink-secondary);
+}
+
+.trail-path {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trail-sep {
+  margin-right: 8px;
+  color: var(--ink-muted);
+}
+
+.trail-seg {
+  padding: 0;
+  border: 0;
   background: transparent;
+  color: var(--ink-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.trail-seg:hover {
+  color: var(--ink);
+}
+
+/* The level shown: ink, underlined in signal. */
+.trail-current {
+  padding-bottom: 1px;
+  color: var(--ink);
+  font-weight: 500;
+  box-shadow: inset 0 -1px 0 var(--signal);
+}
+
+.trail-depth {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--ink-muted);
+}
+
+.trail-ticks {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.trail-tick {
+  width: 10px;
+  height: 3px;
+  background: var(--line-strong);
+}
+
+.trail-tick.on {
+  background: var(--signal);
+}
+
+/* A keycap: it names a key, and is no button. */
+.shell-top kbd,
+.shell-bar kbd {
+  display: inline-block;
+  min-width: 18px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--panel-raised);
+  box-shadow: var(--frame-strong);
+  color: var(--ink);
+  font: 500 11px/18px var(--font-mono);
+  text-align: center;
+}
+
+.shell-middle {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+/* The overview's other panels, collapsed, titles written down the rail,
+   the one shown in signal. */
+.siblings {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 4px;
+  border-right: 1px solid var(--line);
+  background: var(--panel-inset);
+  overflow-y: auto;
+}
+
+.sibling {
+  padding: 10px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink-muted);
+  font: 12px/16px var(--font-mono);
+  writing-mode: vertical-rl;
+  cursor: pointer;
+}
+
+.sibling:hover {
+  color: var(--ink);
+}
+
+.sibling[aria-current="location"] {
+  color: var(--signal);
+}
+
+.shell-bar {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 16px;
+  padding: 6px 16px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  font-size: 12px;
+}
+
+.keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 0;
+  color: var(--ink-muted);
+}
+
+/* The overview's ways in: each panel is a button, so ⏎ on it, or a click,
+   enters its level. */
+.levels {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+}
+
+.level-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  height: 100%;
+  padding: 12px 36px 12px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
   color: var(--ink);
   font: inherit;
   text-align: left;
   cursor: pointer;
 }
 
-.rail button[aria-current="page"] {
-  border-color: var(--line);
-  background: var(--panel);
-  color: var(--signal);
+.level-tile:hover {
+  border-color: var(--line-strong);
+  background: var(--panel-raised);
+}
+
+.level-name {
   font-weight: 600;
+}
+
+.level-note {
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+
+.drill {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  color: var(--ink-muted);
+  font: 500 14px/1 var(--font-mono);
+}
+
+.level-tile:hover .drill,
+.level-tile:focus-visible .drill {
+  color: var(--signal);
 }
 
 button:focus-visible,
@@ -326,6 +505,7 @@ summary:focus-visible,
 main {
   flex: 1 1 0;
   min-width: 0;
+  overflow-y: auto;
   padding: 12px 16px;
 }
 
@@ -716,11 +896,7 @@ code {
   display: flex;
   flex-wrap: wrap;
   gap: 2px 12px;
-  margin: 0 0 12px;
-  padding: 6px 10px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--panel);
+  margin: 0;
   font-size: 12px;
 }
 
