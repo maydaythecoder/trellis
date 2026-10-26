@@ -42,20 +42,22 @@ func paneRows(t *testing.T, s State, title string, w, h int) []string {
 
 // #655: at 80 columns the right column was 32 wide, and the panes read
 // "0 ac", "reac" and "a floor on reach, not a boun" where their figures
-// are. The column now has a floor, and the labels are whole.
+// are. The column now has a floor, and the labels are whole. Below
+// FoldWidth by FoldHeight the column folds (#851), so the narrowest it is
+// drawn is there.
 func TestViewFitsEightyColumnsActionsAndRadiusLabelsAreWhole(t *testing.T) {
 	s := acted(Action{Tool: "read_file", Target: "app/calc.py"}, Action{Tool: "edit", Target: "app/calc.py", Wrote: true})
-	if a := strings.Join(paneRows(t, s, "actions", 80, 24), "\n"); !strings.Contains(a, "2 actions") {
+	if a := strings.Join(paneRows(t, s, "actions", FoldWidth, FoldHeight), "\n"); !strings.Contains(a, "2 actions") {
 		t.Fatalf("actions:\n%s", a)
 	}
-	r := strings.Join(paneRows(t, s, "radius", 80, 24), "\n")
+	r := strings.Join(paneRows(t, s, "radius", FoldWidth, FoldHeight), "\n")
 	if !strings.Contains(r, "◆ reach ") {
 		t.Fatalf("radius:\n%s", r)
 	}
 	if !strings.Contains(r, "a floor on reach, not a boundary") {
 		t.Fatalf("radius:\n%s", r)
 	}
-	if a := strings.Join(paneRows(t, populated(), "actions", 80, 24), "\n"); !strings.Contains(a, "0 actions") {
+	if a := strings.Join(paneRows(t, populated(), "actions", FoldWidth, FoldHeight), "\n"); !strings.Contains(a, "0 actions") {
 		t.Fatalf("actions with nothing called:\n%s", a)
 	}
 }
@@ -69,7 +71,7 @@ func TestBudgetLineAtEightyColumnsEndsWithAWholeSegment(t *testing.T) {
 	s.Budget = Budget{Iteration: 4, MaxIterations: u(40), PromptBytes: u(16800), ElapsedSecs: u(36),
 		CompletionTokens: u(85), ModelMs: u(9600), QueueWaitMs: u(2100)}
 	b := strings.Join(paneRows(t, s, "budget", 80, 24), "\n")
-	for _, want := range []string{"iteration 4/40", "16800 B prompt", "0:36 elapsed", "queued 2.1 s"} {
+	for _, want := range []string{"TURNS █░░░░░░░░░░░░░░░ 4/40", "PROMPT 16.8 kB", "TIME 0:36*", "queued 2.1 s"} {
 		if !strings.Contains(b, want) {
 			t.Fatalf("%q missing: %s", want, b)
 		}
@@ -135,6 +137,7 @@ func TestViewWideTextKeepsEveryRowWithinTheWidth(t *testing.T) {
 			screens := map[string]string{
 				"render": Render(s, w, h),
 				"modal":  Modal(th, "edit 应用/计算.py 把所有的类型错误都修复好并且保留原来的行为", diff, 0, w, h),
+				"asking": Asking(s, "edit 应用/计算.py 把所有的类型错误都修复好并且保留原来的行为", diff, 0, w, h),
 			}
 			for name, screen := range screens {
 				rows := strings.Split(screen, "\n")
@@ -152,25 +155,26 @@ func TestViewWideTextKeepsEveryRowWithinTheWidth(t *testing.T) {
 }
 
 // #641: at launch the line read "iteration 0 · 0 B prompt · 0s elapsed",
-// three figures nothing had reported. Each is named as unreported; the
-// ceiling is drawn without inventing a count against it; and the time
-// elapsed is a clock, 75 s as 1:15.
+// three figures nothing had reported. Each is drawn as unreported, Dash,
+// which /help names (#911); the ceiling is drawn without inventing a count
+// against it, and with no count there are no Meter cells to read as 0; and
+// the time elapsed is a clock, 75 s as 1:15.
 func TestBudgetLineUnreportedFiguresAreNamedNotDrawnAsZero(t *testing.T) {
 	out := Render(State{}, 100, 24)
-	for _, bad := range []string{"0 B prompt", "iteration 0", "0s elapsed", "0:00 elapsed"} {
+	for _, bad := range []string{"0 B", "0.0 kB", "0/", "/0", "0s elapsed", "0:00"} {
 		if strings.Contains(out, bad) {
 			t.Fatalf("%q drawn:\n%s", bad, out)
 		}
 	}
-	if !strings.Contains(out, "not reported") || !strings.Contains(out, "no iteration yet") {
-		t.Fatalf("unreported figures are not named:\n%s", out)
+	if !strings.Contains(out, "TURNS —/—") || !strings.Contains(out, "PROMPT —") || !strings.Contains(out, "TIME —") {
+		t.Fatalf("unreported figures are not drawn as —:\n%s", out)
 	}
 	s := State{Running: true, Budget: Budget{Iteration: 2, MaxIterations: u(40), ElapsedSecs: u(18)}}
-	if out := Render(s, 120, 24); !strings.Contains(out, "prompt not reported") || !strings.Contains(out, "iteration 2/40") {
+	if out := Render(s, 120, 24); !strings.Contains(out, "PROMPT —") || !strings.Contains(out, "TURNS █░░░░░░░░░░░░░░░ 2/40") {
 		t.Fatalf("%s", out)
 	}
 	s = State{Running: true, Budget: Budget{MaxIterations: u(40), ElapsedSecs: u(75)}}
-	if out := Render(s, 120, 24); !strings.Contains(out, "1:15 elapsed") || !strings.Contains(out, "no iteration yet of 40") {
+	if out := Render(s, 120, 24); !strings.Contains(out, "TIME 1:15*") || !strings.Contains(out, "TURNS —/40") || strings.Contains(out, "░") {
 		t.Fatalf("%s", out)
 	}
 }
@@ -186,7 +190,7 @@ func TestViewWroteInTextOnTheEditNodeAtEightyColumns(t *testing.T) {
 		Action{Tool: "edit", Target: "app/calc.py"},
 		Action{Tool: "edit", Target: "app/calc.py", Wrote: true},
 	)
-	rows := paneRows(t, s, "actions", 80, 24)
+	rows := paneRows(t, s, "actions", FoldWidth, FoldHeight)
 	var edit, read string
 	for _, r := range rows {
 		switch {
@@ -230,7 +234,7 @@ func TestViewALongToolNameIsCutNotTheLayout(t *testing.T) {
 			Action{Tool: name, Target: "app/calc.py", Wrote: true},
 		)
 		// Tall enough that the actions pane shows every node.
-		for _, size := range [][2]int{{80, 40}, {120, 40}} {
+		for _, size := range [][2]int{{FoldWidth, 40}, {120, 40}} {
 			w, h := size[0], size[1]
 			screen := Render(s, w, h)
 			for i, r := range strings.Split(screen, "\n") {
@@ -258,9 +262,10 @@ func TestViewALongToolNameIsCutNotTheLayout(t *testing.T) {
 			if !strings.Contains(node, "2 · 1 wrote ●") {
 				t.Fatalf("name of %d at %d columns: node %q lost its count or edge:\n%s", n, w, node, strings.Join(rows, "\n"))
 			}
-			// Only the 20-cell name at 120 columns fits beside its count
-			// and the focus; every other is cut, and says so.
-			want := n == 20 && w == 120
+			// Only the 20-cell name fits beside its count and the focus,
+			// at the narrowest unfolded width as at 120; every other is
+			// cut, and says so.
+			want := n == 20
 			if whole := strings.Contains(node, name+" "); whole != want || (!whole && !strings.Contains(node, "…")) {
 				t.Fatalf("name of %d at %d columns: node %q, whole %v, want %v", n, w, node, whole, want)
 			}
