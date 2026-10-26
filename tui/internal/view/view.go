@@ -155,7 +155,7 @@ const MinBodyRows = radiusH
 
 // Render draws the whole screen at width by height.
 func Render(s State, w, h int) string {
-	if w < MinWidth || h < MinHeight {
+	if !fits(w, h) {
 		return tooSmall(w, h)
 	}
 	entry, bodyH := layout(s, w, h)
@@ -282,6 +282,10 @@ func TranscriptTop(s State, w, h int) int {
 	_, bodyH := layout(s, w, h)
 	return max(TranscriptRows(s, w)-max(bodyH-2, 0), 0)
 }
+
+// fits reports whether w by h is room for the whole screen. Below it
+// Render draws tooSmall, and Asking the approval box alone.
+func fits(w, h int) bool { return w >= MinWidth && h >= MinHeight }
 
 func tooSmall(w, h int) string {
 	return fmt.Sprintf("terminal too small\n%dx%d — need at least %dx%d", w, h, MinWidth, MinHeight)
