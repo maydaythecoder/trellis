@@ -19,17 +19,8 @@
 // Every string here is trellis-, model- or repository-supplied, so it
 // reaches the DOM through textContent only (ADR 0007, S10).
 
-import { atEnd } from "./render.js";
-
-function el(doc, tag, text) {
-  const e = doc.createElement(tag);
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
-
-function str(v) {
-  return typeof v === "string" ? v : null;
-}
+import { appendRows, el } from "./dom.js";
+import { str } from "./fmt.js";
 
 // The page errors kept for the banner: the newest few, since one fault
 // in a loop would otherwise fill it.
@@ -75,20 +66,11 @@ function drawBanner(doc) {
   banner.hidden = lines.length === 0;
 }
 
-// The messages pane follows its end only while the reader is there, by the
-// actions log's rule (#643): a reader who scrolled back keeps their place.
+// The messages pane is drawn by the actions log's rule (#643), dom.js's
+// appendRows: it follows its end only while the reader is there, so a
+// reader who scrolled back keeps their place.
 function drawStderr(doc, lines) {
-  const log = doc.getElementById("messages-log");
-  const follow = atEnd(log);
-  const rows = (Array.isArray(lines) ? lines : []).map((l) => el(doc, "div", String(l)));
-  if (rows.length === 0) {
-    const e = el(doc, "div", "trellis has written nothing to stderr.");
-    e.className = "empty";
-    log.replaceChildren(e);
-  } else {
-    log.replaceChildren(...rows);
-  }
-  if (follow) log.scrollTop = log.scrollHeight;
+  appendRows(doc, doc.getElementById("messages-log"), lines, "trellis has written nothing to stderr.");
 }
 
 // Closes the dialog on the question it shows, as no answer: every dialog
