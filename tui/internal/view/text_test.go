@@ -58,6 +58,38 @@ func TestTextCutKeepsAtMostTheWidthAndSaysItCut(t *testing.T) {
 	}
 }
 
+// CutLeft keeps the end, as Cut keeps the start: the task line's end is
+// where the cursor is (#842). Wide characters are kept whole or dropped,
+// never split, and nothing it returns is wider than asked.
+func TestTextCutLeftKeepsTheEndAndSaysItCut(t *testing.T) {
+	for _, c := range []struct {
+		s    string
+		w    int
+		want string
+	}{
+		{"abc", 3, "abc"},
+		{"abcd", 3, "…cd"},
+		{"abcd", 1, "d"},
+		{"abcd", 0, ""},
+		{"中文字符", 5, "…字符"},
+		{"中文字符", 4, "…符"},
+		{"中文", 1, ""},
+		{"ééé", 2, "…é"},
+		{"🇺🇸🇬🇧🇫🇷", 5, "…🇬🇧🇫🇷"},
+	} {
+		if got := CutLeft(c.s, c.w); got != c.want {
+			t.Errorf("CutLeft(%q, %d) = %q, want %q", c.s, c.w, got, c.want)
+		}
+	}
+	for _, s := range samples {
+		for w := 0; w <= Width(s)+1; w++ {
+			if got := CutLeft(s, w); Width(got) > w {
+				t.Fatalf("CutLeft(%q, %d) = %q is %d cells", s, w, got, Width(got))
+			}
+		}
+	}
+}
+
 // Pad is exactly w cells whatever it is given, so the border after it is
 // in the same column on every row.
 func TestTextPadIsExactlyTheWidth(t *testing.T) {
