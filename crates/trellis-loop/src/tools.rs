@@ -4,7 +4,8 @@
 //! tools the model calls, not stages in a pipeline written around it. See
 //! `docs/adr/0005-loop-shape.md`.
 
-use serde::Serialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use trellis_checks::Verdict;
 use trellis_index::RadiusReport;
 
@@ -63,6 +64,114 @@ pub struct EditOutcome {
     /// input is unchanged by a field only the event reads.
     #[serde(skip)]
     pub change: crate::gate::EditDiff,
+}
+
+// One step of the model's plan (ADR 0058 §5). Model output: wherever it is
+// shown or stored it is quoted as data, and its `state` is the model's own
+// account of its progress, from which nothing converges and no count is
+// made. Inlined, both types, so the schema gains no root `$defs`: every
+// run's grammar is built from that root, and an opt-in tool must leave the
+// measured one byte-identical. The doc comment is the schema's description,
+// which a model reads.
+/// One step: what it is, and whether it is to do, current or done.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(inline)]
+pub struct PlanStep {
+    pub text: String,
+    pub state: PlanState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(inline)]
+pub enum PlanState {
+    Todo,
+    Current,
+    Done,
+}
+
+/// The most steps a plan keeps. The Plan card's rule: a plan over eight
+/// steps is a sign the task should have been split.
+pub(crate) const MAX_PLAN_STEPS: usize = 8;
+
+/// The longest step text kept, in characters. It is drawn on one line of a
+/// checklist and sent in every `plan` event.
+pub(crate) const MAX_PLAN_STEP_CHARS: usize = 200;
+
+/// A plan as kept: at most [`MAX_PLAN_STEPS`] steps, each cut to
+/// [`MAX_PLAN_STEP_CHARS`], and how much was cut to get there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct KeptPlan {
+    pub steps: Vec<PlanStep>,
+    /// Steps past the eighth, dropped.
+    pub steps_cut: usize,
+    /// Kept steps whose text was shortened.
+    pub texts_cut: usize,
+}
+
+/// Cuts a plan to what is kept. Cut, not refused (ADR 0058 §5): the steps
+/// within the limits are still the model's plan, and the result says what
+/// was cut. One function, so the tool's result, the `plan` event and the
+/// trail's target cannot disagree about what was kept.
+pub(crate) fn keep_plan(steps: &[PlanStep]) -> KeptPlan {
+    let mut texts_cut = 0;
+    let kept = steps
+        .iter()
+        .take(MAX_PLAN_STEPS)
+        .map(|s| {
+            if s.text.chars().count() <= MAX_PLAN_STEP_CHARS {
+                return s.clone();
+            }
+            texts_cut += 1;
+            PlanStep {
+                text: s.text.chars().take(MAX_PLAN_STEP_CHARS).collect(),
+                state: s.state,
+            }
+        })
+        .collect();
+    KeptPlan {
+        steps: kept,
+        steps_cut: steps.len().saturating_sub(MAX_PLAN_STEPS),
+        texts_cut,
+    }
+}
+
+impl KeptPlan {
+    /// The tool's result text: what was kept, and what was cut.
+    pub(crate) fn observation(&self) -> String {
+        let mut out = format!(
+            "plan recorded: {} step{} kept",
+            self.steps.len(),
+            if self.steps.len() == 1 { "" } else { "s" }
+        );
+        if self.steps_cut > 0 {
+            out.push_str(&format!(
+                "; {} step{} past the first {MAX_PLAN_STEPS} cut. A plan over {MAX_PLAN_STEPS} \
+                 steps is a sign the task should be split",
+                self.steps_cut,
+                if self.steps_cut == 1 { "" } else { "s" }
+            ));
+        }
+        if self.texts_cut > 0 {
+            out.push_str(&format!(
+                "; {} step text{} cut to {MAX_PLAN_STEP_CHARS} characters",
+                self.texts_cut,
+                if self.texts_cut == 1 { "" } else { "s" }
+            ));
+        }
+        out.push_str(". It is shown to the person as your words; it is not a check.");
+        for s in &self.steps {
+            let mark = match s.state {
+                PlanState::Done => "[x]",
+                PlanState::Current => "[>]",
+                PlanState::Todo => "[ ]",
+            };
+            // Quoted: model output, read back into later prompts.
+            out.push_str(&format!("\n{mark} {:?}", s.text));
+        }
+        out
+    }
 }
 
 #[cfg(test)]

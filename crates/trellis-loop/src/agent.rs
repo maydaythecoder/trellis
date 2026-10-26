@@ -125,6 +125,13 @@ pub enum ToolCall {
         question: String,
         options: Vec<String>,
     },
+    /// The model's plan, a short checklist (ADR 0058 §5). Carried as the
+    /// model sent it, so a recorded run reads back as the same call; what
+    /// is kept is [`crate::tools::keep_plan`]'s. Nothing is written and no
+    /// verdict comes of it: the result is `Output`. Opt-in.
+    Plan {
+        steps: Vec<crate::tools::PlanStep>,
+    },
 }
 
 /// The most options an `ask_human` call may offer. Paperclip's decisions
@@ -734,6 +741,12 @@ pub fn turn_action(call: &ToolCall, observation: &str) -> TurnAction {
         ToolCall::Custom { name, args } => (name.as_str(), summarise(&args.to_string())),
         // Quoted: model output, and a trail is read back into prompts.
         ToolCall::AskHuman { question, .. } => ("ask_human", summarise(&format!("{question:?}"))),
+        // The steps as kept, quoted, for the reason the question is.
+        ToolCall::Plan { steps } => {
+            let kept = crate::tools::keep_plan(steps);
+            let texts: Vec<&str> = kept.steps.iter().map(|s| s.text.as_str()).collect();
+            ("plan", summarise(&format!("{texts:?}")))
+        }
     };
     TurnAction {
         tool: tool.to_string(),
@@ -1305,6 +1318,22 @@ pub async fn run_seeded<M: Model>(
                     completion_tokens_used = model.tokens_used(),
                     "turn"
                 );
+                // The plan as kept, after its turn (ADR 0058 §5). Only on
+                // `Output`: a disabled tool or a declined approval comes
+                // back as `Error`, and then there is no plan to draw.
+                // `steps` is a JSON array in one string, because an event's
+                // fields are flat.
+                if let (ToolCall::Plan { steps }, ToolResult::Output(_)) = (&call, &result) {
+                    let kept = crate::tools::keep_plan(steps);
+                    tracing::info!(
+                        turn = iterations,
+                        steps = %serde_json::to_string(&kept.steps)
+                            .expect("plan steps are strings and unit variants"),
+                        steps_cut = kept.steps_cut,
+                        texts_cut = kept.texts_cut,
+                        "plan"
+                    );
+                }
 
                 t.turns.push(Turn {
                     observation,

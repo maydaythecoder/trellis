@@ -157,7 +157,7 @@ fn walk(dir: &Path, base: &Path, dirs: &mut Vec<PathBuf>, files: &mut Vec<(PathB
 /// a 0.
 pub(crate) type TurnFields = std::collections::BTreeMap<String, String>;
 
-/// The `turn` and `model call` events emitted on this thread while
+/// The `turn`, `model call` and `plan` events emitted on this thread while
 /// [`TurnEvents::install`]'s guard lives.
 ///
 /// Hand-written over `tracing` alone rather than `tracing-subscriber`, which
@@ -206,7 +206,19 @@ impl TurnEvents {
             .collect()
     }
 
-    /// Every kept event, `model call` and `turn`, in the order emitted.
+    /// The `plan` events only (ADR 0058 §5).
+    pub(crate) fn plans(&self) -> Vec<TurnFields> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|f| f.get("message").map(String::as_str) == Some("plan"))
+            .cloned()
+            .collect()
+    }
+
+    /// Every kept event, `model call`, `turn` and `plan`, in the order
+    /// emitted.
     pub(crate) fn taken_in_order(&self) -> Vec<TurnFields> {
         self.0.lock().unwrap().clone()
     }
@@ -252,7 +264,8 @@ impl tracing::Subscriber for Router {
         let is_turn =
             message == Some("turn") && f.0.contains_key("turn") && f.0.contains_key("call");
         let is_model_call = message == Some("model call") && f.0.contains_key("turn");
-        if is_turn || is_model_call {
+        let is_plan = message == Some("plan") && f.0.contains_key("turn");
+        if is_turn || is_model_call || is_plan {
             capture.0.lock().unwrap().push(f.0);
         }
     }

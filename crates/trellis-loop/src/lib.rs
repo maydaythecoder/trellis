@@ -75,7 +75,7 @@ pub use skills::{
 pub use supervise::{
     PartitionFailure, PartitionReport, PartitionTask, SuperviseError, Supervised, Supervisor,
 };
-pub use tools::{EditOutcome, ToolResult};
+pub use tools::{EditOutcome, PlanState, PlanStep, ToolResult};
 pub use trust::{
     Fingerprint, HashCache, ItemChange, TrustDiagnosis, TrustGuard, TrustItem, TrustState,
     TrustStore,

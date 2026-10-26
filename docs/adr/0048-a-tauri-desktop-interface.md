@@ -292,6 +292,20 @@ file's size. The answer is listed under `rpc.responses.read_file`, which
 neither client's contract test reads, and the desktop's `rpc_send` does not
 forward it yet. Held by `rpc_read_file_refuses_git_and_outside_paths` and
 `rpc_read_file_cuts_a_file_past_the_cap_and_says_so` in `tests/cli.rs`.
+*Added 2026-10-26 (#810):* a `plan` event, for the Plan card (ADR 0058 §5).
+It is sent after the turn of a `plan` call the gates let through, in a run
+whose repository enables the opt-in tool (`[tools] enable = ["plan"]`), with
+`turn`, `steps` (the plan as kept: a JSON array of `{text, state}` in one
+string, since an event's fields are flat), `steps_cut` and `texts_cut`. At
+most eight steps of at most 200 characters are kept; the counts say what was
+cut. The steps are the model's words: a client shows them as text and makes
+no count of `done` ones. A person's edit goes back as a `steer`. The trail
+records the call as an action like any other, with no new field. The event
+is under `rpc.not_every_client` with empty `read_by`, so neither client's
+contract test reads it yet. Held by `plan_result_is_output_never_a_pass` and
+`plan_event_carries_the_steps_and_cuts_past_eight` in trellis-loop, and by
+`rpc_plan_event_keeps_the_contract_and_the_trail_records_the_call_as_an_action`
+in `tests/modes.rs`.
 
 ### 7. Auditing Tauri's tree
 
