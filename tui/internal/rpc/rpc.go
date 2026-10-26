@@ -28,10 +28,14 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+
+	"github.com/maydaythecoder/trellis/tui/internal/ring"
 )
 
 // StderrCap is how many of the child's stderr lines are kept. Older lines
-// are dropped first and counted, so a pane can say that some were.
+// are dropped first and counted, so a pane can say that some were. They
+// are kept in a ring: once full, a new line takes the oldest one's slot,
+// where a slice copied all 500 for every line (#846).
 const StderrCap = 500
 
 // Line is one stdout line from the child.
@@ -75,9 +79,8 @@ type Client struct {
 
 	lines chan Line
 
-	errMu      sync.Mutex
-	stderr     []string
-	stderrLost int
+	errMu  sync.Mutex
+	stderr *ring.Ring[string]
 
 	exited  chan struct{}
 	waitErr error
@@ -115,6 +118,7 @@ func Start(trellis, root string) (*Client, error) {
 		cmd:    cmd,
 		stdin:  stdin,
 		lines:  make(chan Line, 256),
+		stderr: ring.New[string](StderrCap),
 		exited: make(chan struct{}),
 	}
 	var readers sync.WaitGroup
@@ -162,11 +166,7 @@ func (c *Client) readStderr(r io.Reader) {
 		text, err := br.ReadString('\n')
 		if text != "" {
 			c.errMu.Lock()
-			c.stderr = append(c.stderr, strings.TrimRight(text, "\r\n"))
-			if over := len(c.stderr) - StderrCap; over > 0 {
-				c.stderr = append([]string(nil), c.stderr[over:]...)
-				c.stderrLost += over
-			}
+			c.stderr.Push(strings.TrimRight(text, "\r\n"))
 			c.errMu.Unlock()
 		}
 		if err != nil {
@@ -185,7 +185,7 @@ func (c *Client) Lines() <-chan Line { return c.lines }
 func (c *Client) Stderr() ([]string, int) {
 	c.errMu.Lock()
 	defer c.errMu.Unlock()
-	return append([]string(nil), c.stderr...), c.stderrLost
+	return c.stderr.Slice(), c.stderr.Dropped()
 }
 
 // Send writes one command as one JSON line.
