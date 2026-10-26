@@ -2071,9 +2071,13 @@ mod tests {
         );
         assert!(core.lock().view.prompt_in_flight(), "not sent after both");
         assert!(!core.lock().view.holding());
-        // It reached the child: its answer to p2 comes back.
+        // It reached the child: its answer to p2 comes back. This child
+        // was never given a model, so it refuses it, and the queue says
+        // that rather than delivered.
         core.read(generation(&core), out);
-        rec.wait_for("rpc-frame", |f| f["id"] == "p2");
+        let answer = rec.wait_for("rpc-frame", |f| f["id"] == "p2");
+        assert_eq!(answer["success"], false, "{answer}");
+        rec.wait_for("view", |v| v["pending"][0]["state"] == "not_delivered");
         finish(&core).unwrap();
         for d in &dirs {
             let _ = std::fs::remove_dir_all(d);
