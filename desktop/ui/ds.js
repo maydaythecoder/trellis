@@ -310,3 +310,65 @@ export function facts(doc, rows) {
   }
   return dl;
 }
+
+// Queue (the design system's, #830): one of the composer's verbs while a
+// run is in flight, as the card's mode option, pressed when it is what
+// Send will do. Stop and send takes no tone of its own here: the bundle's
+// options have signal and cool only, and its danger is said by the Stop
+// dialog it opens.
+export function queueVerb(doc, word, { on, cool, title } = {}) {
+  const b = el(doc, "button", word, cx("cd-q-opt", cool && "cd-q-opt-cool", on && "cd-q-opt-on"));
+  b.type = "button";
+  b.setAttribute("aria-pressed", on ? "true" : "false");
+  if (title) b.title = title;
+  return b;
+}
+
+// What each kind of queued item is called, and the kind class the card
+// colours it with (a held prompt has none: it is neither).
+const QUEUE_KINDS = {
+  steer: ["steer", "cd-q-kind-steer"],
+  follow_up: ["follow-up", "cd-q-kind-follow"],
+  prompt: ["stop + run", null],
+};
+
+// When a queued item fires, as its state line says while it waits.
+const QUEUE_WAITS = {
+  steer: "queued · next model call",
+  follow_up: "queued · after this run",
+  prompt: "queued · once this run has ended",
+};
+
+// A queued item's state (the reducer's `pending` rows) as a Status: queued
+// waits, a delivered steer names the turn whose next request carried it, a
+// delivered follow-up or prompt is a run of its own, and one not delivered
+// says why in its title. Delivered is cool, the engine's activity, not ok,
+// which is a passed check's (DESIGN.md §3.1).
+function queueState(doc, q) {
+  const kind = str(q.kind);
+  const state = str(q.state);
+  if (state === "delivered") {
+    return dsStatus(doc, "cool", isCount(q.after_turn) ? `delivered after turn ${q.after_turn}` : "delivered · its own run");
+  }
+  if (state === "not_delivered") {
+    return dsStatus(doc, "down", "not delivered", { title: str(q.why) ?? "trellis gave no reason" });
+  }
+  return dsStatus(doc, "warn", QUEUE_WAITS[kind] ?? "queued");
+}
+
+// Queue (the design system's, #830): the items waiting on the run in
+// flight, numbered by the card's own counter, each its kind, its text as
+// sent (the person's words, as text) and its state. No ↑ ↓ ✎ ×: take
+// back is not built (#838), and the page marks that beside the list.
+export function queueItems(doc, items) {
+  return items.map((q) => {
+    const li = el(doc, "li", null, "cd-q-item");
+    const body = el(doc, "div");
+    const [word, cls] = QUEUE_KINDS[str(q.kind)] ?? ["queued", null];
+    const when = el(doc, "span", null, "cd-q-when");
+    when.append(queueState(doc, q));
+    body.append(el(doc, "span", word, cx("cd-q-kind", cls)), el(doc, "span", str(q.text) ?? ""), when);
+    li.append(body);
+    return li;
+  });
+}

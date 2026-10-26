@@ -71,6 +71,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 /// The longest line `rpc_send` forwards, in bytes as written.
 pub const LINE_CAP: usize = 65_536;
 
+/// The id of the core's own `get_state`, sent after each steer or follow_up
+/// it forwards, so the composer's queue comes from trellis's `pending`
+/// (#830) without a page `get_state`, which resends every pane.
+const PENDING_ID: &str = "desktop-pending";
+
 /// The `type`s `rpc_send` forwards: `rpc.rs`'s `COMMANDS` as #296 lists
 /// them, `list_models` (#564), the read-only `get_session_stats` (#313) and
 /// `get_last_assistant_text`, which the summary level reads (#825),
@@ -323,6 +328,26 @@ impl Core {
             }
         }
         self.feed(&mut s, frame);
+        // A Stop and send's prompt (#830), once this line was the last of
+        // the stopped run's `run_end` and the abort's answer: sent on that
+        // event, outside the lock as every line is, and through `send`, so
+        // every rule a prompt meets holds for it as for one the page sent.
+        let Some(prompt) = s.view.held_ready() else {
+            return;
+        };
+        drop(s);
+        let sent = self.send(&prompt);
+        let id = prompt.get("id").and_then(Value::as_str).unwrap_or_default();
+        let mut s = self.lock();
+        if s.generation != generation {
+            return;
+        }
+        let c = s
+            .view
+            .held_sent(id, sent.as_ref().map(|_| ()).map_err(String::as_str));
+        if !c.is_empty() {
+            self.sink.emit("view", s.view.view(c));
+        }
     }
 
     /// One stderr line, which reaches the page in the `view`'s messages
@@ -432,6 +457,10 @@ impl Core {
     /// whether a run is in flight, then forwards it to the child.
     pub fn send(&self, line: &Value) -> Result<(), String> {
         check_line(line)?;
+        // A Stop and send (#830) is an abort carrying the prompt to run
+        // after it: the prompt is held here, and the abort goes on without it.
+        let (line, then) = split_then(line)?;
+        let line = &line;
         // A steer's row is found again by its line id when rpc answers.
         let steer_id = (line.get("type").and_then(Value::as_str) == Some("steer"))
             .then(|| line.get("id").and_then(Value::as_str).map(str::to_string))
@@ -449,6 +478,20 @@ impl Core {
             check_run_state(line, s.view.running())?;
             check_model_chosen(line, &s.view)?;
             check_approve(line, &s.view)?;
+            // The held prompt meets the prompt's rules now, so a stop is
+            // never sent for a prompt that would then be refused; `send`
+            // checks it again when it goes.
+            if let Some(then) = &then {
+                check_model(then, s.view.configured())?;
+                check_model_chosen(then, &s.view)?;
+                if s.view.holding() {
+                    return Err(
+                        "rpc_send: a Stop and send already holds a prompt for after this \
+                                run; wait for it, or Stop without one"
+                            .into(),
+                    );
+                }
+            }
             let w = child.writer();
             // Set before the line is written, so the reply, which a reader
             // thread may feed as soon as it is written, finds it set.
@@ -477,7 +520,11 @@ impl Core {
                 // The Now strip says `stopping` from here to the run's
                 // `run_end` (#828): no event says a stop began.
                 Some("abort") => {
-                    let c = s.view.abort_sent();
+                    let mut c = s.view.abort_sent();
+                    if let Some(then) = then {
+                        let id = line.get("id").and_then(Value::as_str).unwrap_or_default();
+                        c = c.and(s.view.stop_and_send(id, then));
+                    }
                     self.sink.emit("view", s.view.view(c));
                 }
                 _ => {}
@@ -498,11 +545,24 @@ impl Core {
                 self.sink.emit("view", s.view.view(c));
             }
         }
-        // Nor will an abort that never reached it stop anything.
-        if sent.is_err() && abort {
+        // Nor will an abort that never reached it stop anything, or start
+        // the prompt a Stop and send held behind it.
+        if let (Err(why), true) = (&sent, abort) {
             let mut s = self.lock();
-            let c = s.view.abort_unsent();
+            let c = s.view.abort_unsent().and(s.view.held_dropped(why));
             self.sink.emit("view", s.view.view(c));
+        }
+        // What waits on the run is trellis's to list (#830): a steer or
+        // follow_up taken is asked for again, by the core's own get_state.
+        // Unanswered, the queue lacks the item and the rest goes on.
+        if sent.is_ok()
+            && matches!(
+                line.get("type").and_then(Value::as_str),
+                Some("steer" | "follow_up")
+            )
+            && let Err(e) = writer.send(&json!({"id": PENDING_ID, "type": "get_state"}))
+        {
+            eprintln!("trellis-desktop: cannot ask trellis rpc what is pending: {e}");
         }
         sent
     }
@@ -642,6 +702,53 @@ fn check_line(line: &Value) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// A Stop and send (#830): an `abort` whose `then` is the prompt to send
+/// once the run it stops has ended. Returns the line to forward, without
+/// `then`, and the prompt, checked as `check_line` checks a line of its
+/// own. Only an abort carries one, and it names its abort by a string id,
+/// the one its answer is read by, which the prompt's own id is not.
+fn split_then(line: &Value) -> Result<(Value, Option<Value>), String> {
+    let Some(then) = line.get("then") else {
+        return Ok((line.clone(), None));
+    };
+    let ty = line.get("type").and_then(Value::as_str);
+    if ty != Some("abort") {
+        return Err("rpc_send: only an abort carries a prompt to send after it (then)".into());
+    }
+    let abort_id = line
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|i| !i.is_empty());
+    let Some(abort_id) = abort_id else {
+        return Err(
+            "rpc_send: a Stop and send's abort needs a string id, which its answer is read by"
+                .into(),
+        );
+    };
+    if then.get("type").and_then(Value::as_str) != Some("prompt") {
+        return Err("rpc_send: a Stop and send's then is a prompt line".into());
+    }
+    check_line(then)?;
+    match then
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|i| !i.is_empty())
+    {
+        Some(id) if id != abort_id => {}
+        _ => {
+            return Err(
+                "rpc_send: a Stop and send's prompt needs a string id of its own, not its abort's"
+                    .into(),
+            );
+        }
+    }
+    let mut abort = line.clone();
+    if let Some(o) = abort.as_object_mut() {
+        o.remove("then");
+    }
+    Ok((abort, Some(then.clone())))
 }
 
 /// The read arguments the Atlas sends (the owner's request of 2026-10-11),
@@ -1854,6 +1961,163 @@ mod tests {
     }
 
     #[test]
+    fn a_forwarded_steer_or_follow_up_asks_trellis_what_is_pending() {
+        // The risk (#830): the queue drawn from the page's own record of
+        // what it sent, which trellis may have refused, rather than from
+        // `get_state`'s `pending`; or asked through a page `get_state`,
+        // whose answer resends every pane on each steer. The core asks
+        // with its own id after each one it forwards, and only then.
+        let (core, rec, dirs) = with_child("pending-ask");
+        run_started(&core);
+        for (ty, l) in [
+            ("steer", json!({"id": "s", "type": "steer", "message": "m"})),
+            (
+                "follow_up",
+                json!({"id": "f", "type": "follow_up", "message": "m"}),
+            ),
+        ] {
+            rec.take();
+            assert_eq!(core.send(&l), Ok(()), "{ty}");
+            rec.wait_for("rpc-frame", |f| f["id"] == l["id"]);
+            let asked = rec.wait_for("rpc-frame", |f| {
+                f["id"] == PENDING_ID && f["command"] == "get_state"
+            });
+            assert_eq!(asked["success"], true, "{ty}: {asked}");
+            assert!(
+                rec.named("view").iter().all(|v| v.get("stderr").is_none()),
+                "{ty}: the core's get_state resent every pane"
+            );
+        }
+        rec.take();
+        core.send(&json!({"id": "g", "type": "get_session_stats"}))
+            .unwrap();
+        rec.wait_for("rpc-frame", |f| f["id"] == "g");
+        assert!(
+            rec.named("rpc-frame").iter().all(|f| f["id"] != PENDING_ID),
+            "asked after a line that queues nothing"
+        );
+        finish(&core).unwrap();
+        for d in &dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn stop_and_send_aborts_then_prompts_after_run_end() {
+        // The risk (#830, DESIGN.md §2.1): Stop and send writing its prompt
+        // before the stopped run has ended, which rpc refuses as one at a
+        // time and the person reads as their task lost; writing it at
+        // run_end though the abort is then refused (the run had ended on
+        // its own, so the stop they asked for did nothing); or a prompt the
+        // core would refuse on its own held behind a stop that is sent
+        // anyway. The child's output is unread, so the test's lines are the
+        // only answers the core hears until it hands the output over.
+        let (core, rec, out, dirs) = with_unread_child("stop-and-send");
+        model_set(&core);
+        run_started(&core);
+        rec.take();
+        let stop = |then: Value| json!({"id": "ab", "type": "abort", "then": then});
+        let prompt = json!({"id": "p2", "type": "prompt", "task": "run this instead"});
+
+        // Refused before anything is written: a then on another type, an
+        // abort with no id to read its answer by, a then that is not a
+        // prompt or shares the abort's id, and a model the user never chose.
+        let steer = json!({"id": "s", "type": "steer", "message": "m", "then": prompt});
+        assert!(core.send(&steer).unwrap_err().contains("only an abort"));
+        let no_id = json!({"type": "abort", "then": prompt});
+        assert!(core.send(&no_id).unwrap_err().contains("needs a string id"));
+        let not_prompt = stop(json!({"id": "p2", "type": "steer", "message": "m"}));
+        assert!(
+            core.send(&not_prompt)
+                .unwrap_err()
+                .contains("is a prompt line")
+        );
+        let same_id = stop(json!({"id": "ab", "type": "prompt", "task": "t"}));
+        assert!(core.send(&same_id).unwrap_err().contains("of its own"));
+        let hosted = stop(json!({"id": "p2", "type": "prompt", "task": "t",
+                                 "model": "anthropic:claude-x"}));
+        assert!(core.send(&hosted).unwrap_err().contains("model rule"));
+        assert!(
+            !core.lock().view.holding(),
+            "a refused stop held its prompt"
+        );
+        assert!(
+            rec.named("view").is_empty(),
+            "a refused stop changed the view"
+        );
+
+        // Sent: the abort goes, and the prompt waits in the queue.
+        assert_eq!(core.send(&stop(prompt.clone())), Ok(()));
+        let v = rec.wait_for("view", |v| v["pending"][0]["id"] == "p2");
+        assert_eq!(v["pending"][0]["kind"], "prompt", "{v}");
+        assert_eq!(v["now"]["word"], "stopping", "{v}");
+        assert!(core.lock().view.holding());
+        let again = core.send(&stop(json!({"id": "p3", "type": "prompt", "task": "t"})));
+        assert!(
+            again.unwrap_err().contains("already holds"),
+            "a second held prompt"
+        );
+        // The run ends: not yet, since the abort is not answered.
+        run_ended(&core);
+        assert!(
+            !core.lock().view.prompt_in_flight(),
+            "sent at run_end alone"
+        );
+        // The abort is answered: now, once.
+        core.stdout_line(
+            generation(&core),
+            &line(json!({"type": "response", "command": "abort", "id": "ab",
+                         "success": true, "data": {"undelivered": []}})),
+        );
+        assert!(core.lock().view.prompt_in_flight(), "not sent after both");
+        assert!(!core.lock().view.holding());
+        // It reached the child: its answer to p2 comes back.
+        core.read(generation(&core), out);
+        rec.wait_for("rpc-frame", |f| f["id"] == "p2");
+        finish(&core).unwrap();
+        for d in &dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+
+        // A refused abort: the prompt is never sent, and the queue says why.
+        let (core, rec, out, dirs) = with_unread_child("stop-and-send-refused");
+        model_set(&core);
+        run_started(&core);
+        assert_eq!(core.send(&stop(prompt.clone())), Ok(()));
+        run_ended(&core);
+        core.stdout_line(
+            generation(&core),
+            &line(json!({"type": "response", "command": "abort", "id": "ab",
+                         "success": false, "error": "no run in progress"})),
+        );
+        assert!(
+            !core.lock().view.prompt_in_flight(),
+            "sent after a refused abort"
+        );
+        assert!(!core.lock().view.holding());
+        let v = rec.wait_for("view", |v| v["pending"][0]["state"] == "not_delivered");
+        assert!(
+            v["pending"][0]["why"]
+                .as_str()
+                .unwrap()
+                .contains("abort was refused"),
+            "{v}"
+        );
+        // The child answers in the order it read: the abort, and after it
+        // no prompt, since none was written.
+        core.read(generation(&core), out);
+        rec.wait_for("rpc-frame", |f| f["id"] == "ab");
+        finish(&core).unwrap();
+        assert!(
+            rec.named("rpc-frame").iter().all(|f| f["id"] != "p2"),
+            "the prompt reached the child"
+        );
+        for d in &dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
     fn stdout_lines_become_frames_and_a_bad_line_stays_text() {
         // The risk: a line that is not JSON is dropped, or fails the
         // reader; or a frame reaches the page as a string to parse again.
@@ -2006,6 +2270,7 @@ mod tests {
                 "models",
                 "now",
                 "outcome",
+                "pending",
                 "phase",
                 "queue",
                 "radius",

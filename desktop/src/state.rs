@@ -114,13 +114,17 @@ pub enum Pane {
     /// Where it is (#828): phase, tool and target, turn, last call, model,
     /// tier, runtime and root, derived as the Now strip is.
     Where,
+    /// The composer's queue (#830): each steer and follow-up `get_state`'s
+    /// `pending` listed, and the prompt a Stop and send holds, with where
+    /// each stands.
+    Pending,
 }
 
 /// Every pane the view carries. Each is a key the page must draw:
 /// `view_renders_every_pane_key` in `lockdown.rs` drives a whole run through
 /// [`DesktopState::update`] and fails naming a key here that no module the
 /// page loads reads from the `view` event (ADR 0052 section 1, #513).
-const PANES: [Pane; 26] = [
+const PANES: [Pane; 27] = [
     Pane::Transcript,
     Pane::Actions,
     Pane::Edits,
@@ -147,6 +151,7 @@ const PANES: [Pane; 26] = [
     Pane::Runtime,
     Pane::Now,
     Pane::Where,
+    Pane::Pending,
 ];
 
 /// The panes a run starts afresh: everything but the transcript, which,
@@ -305,6 +310,7 @@ impl Pane {
             Pane::Runtime => "runtime",
             Pane::Now => "now",
             Pane::Where => "where",
+            Pane::Pending => "pending",
         }
     }
 
@@ -340,7 +346,9 @@ impl Changed {
         Self(self.0 | p.bit())
     }
 
-    fn and(self, other: Self) -> Self {
+    /// The panes either changed: the core's, for a line that changed two
+    /// things at once (a Stop and send's abort and its held prompt).
+    pub fn and(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 
@@ -641,6 +649,84 @@ impl Undelivered {
         )
     }
 }
+
+/// What a queued item is (#830): a steer for the run in flight, a
+/// follow-up that runs after it, or the prompt a Stop and send holds until
+/// the run it stops has ended.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum QueuedKind {
+    Steer,
+    FollowUp,
+    Prompt,
+}
+
+impl QueuedKind {
+    fn word(self) -> &'static str {
+        match self {
+            QueuedKind::Steer => "steer",
+            QueuedKind::FollowUp => "follow_up",
+            QueuedKind::Prompt => "prompt",
+        }
+    }
+
+    /// A `pending` entry's `type`; the contract lists these two, and an
+    /// entry of any other is not drawn as either.
+    fn listed(ty: &str) -> Option<Self> {
+        match ty {
+            "steer" => Some(QueuedKind::Steer),
+            "follow_up" => Some(QueuedKind::FollowUp),
+            _ => None,
+        }
+    }
+}
+
+/// Where a queued item stands. An event settles it, never its absence from
+/// a later `pending`: a steer leaves that list before its `steer delivered`
+/// event is written (#808), and a withdrawn one leaves it delivered nowhere.
+#[derive(Debug, Clone, PartialEq)]
+enum Fate {
+    Queued,
+    /// A steer carried by the model request after this turn.
+    After(u64),
+    /// A follow-up whose own run has started, or a held prompt the core
+    /// has sent: either is a new run, after no turn of the one before.
+    Started,
+    /// Never delivered, with why.
+    Not(String),
+}
+
+/// One item of the composer's queue (#830), keyed by the line id it was
+/// sent with.
+#[derive(Debug, Clone, PartialEq)]
+struct Queued {
+    id: String,
+    kind: QueuedKind,
+    text: String,
+    fate: Fate,
+}
+
+/// The prompt a Stop and send holds (#830, DESIGN.md §2.1): sent once both
+/// the stopped run's `run_end` and a successful answer to the abort `abort_id`
+/// have been read. Both, because rpc writes `run_end` before it answers the
+/// abort, so at `run_end` a refused abort (the run had ended on its own) is
+/// not yet known.
+#[derive(Debug, Clone, PartialEq)]
+struct Held {
+    abort_id: String,
+    /// The prompt line as the page sent it, checked by the core.
+    line: Value,
+    ended: bool,
+    stopped: bool,
+}
+
+/// The most items the queue keeps: past it the oldest settled one goes,
+/// and with none settled a new one is not added, so a `pending` of any
+/// length cannot grow the view without bound.
+const QUEUED_CAP: usize = 100;
+
+/// The longest a queued item's text is kept; the rest is cut with the
+/// store's marker.
+const QUEUED_TEXT_BYTES: usize = 4 * 1024;
 
 /// The read-only requests a view of its own sends and answers in place: its
 /// refusal is that view's to say (the `codebase` and `radius` events, the
@@ -989,6 +1075,11 @@ pub struct DesktopState {
     run_model: Option<String>,
     /// The repository trellis serves, from `run_start` or `get_state`.
     root: Option<String>,
+    /// The composer's queue (#830), in the order items were first listed;
+    /// a run's start drops the settled ones.
+    queued: Vec<Queued>,
+    /// The prompt a Stop and send holds, until it is sent or dropped.
+    held: Option<Held>,
 }
 
 impl DesktopState {
@@ -1048,16 +1139,27 @@ impl DesktopState {
                 // A forwarded prompt's run has started, and `running` says
                 // so from here on.
                 self.prompts_in_flight = self.prompts_in_flight.saturating_sub(1);
-                let mut c = Changed::of(&RUN_PANES);
+                let mut c = Changed::of(&RUN_PANES).with(Pane::Pending);
                 if let Some(task) = s.task {
                     self.transcript.push(Entry::new(Kind::Task, None, task));
                     c = c.with(Pane::Transcript);
+                }
+                // The queue is this run's: what the last one settled goes,
+                // and a follow-up whose run this is has been delivered.
+                self.queued.retain(|q| q.fate == Fate::Queued);
+                if let Some(id) = s.id.as_deref() {
+                    self.settle(QueuedKind::FollowUp, id, Fate::Started);
                 }
                 c
             }
             Frame::RunEnd(e) => {
                 self.running = false;
                 self.stopping = false;
+                // The run a Stop and send stops has ended; its prompt waits
+                // on the abort's answer too.
+                if let Some(h) = &mut self.held {
+                    h.ended = true;
+                }
                 // The run's own figure, or none: run_end leaves it out for a
                 // run its loop did not finish, and the last turn's figure
                 // shown beside `ended` would be a partial one passed off as
@@ -1171,11 +1273,28 @@ impl DesktopState {
                             self.undelivered = u;
                             c = c.with(Pane::Undelivered);
                         }
+                        if self.undelivered_settled(r.data.as_ref()) {
+                            c = c.with(Pane::Pending);
+                        }
+                        if let Some(h) = &mut self.held
+                            && r.id.as_deref() == Some(h.abort_id.as_str())
+                        {
+                            h.stopped = true;
+                        }
                     }
-                    // A refused abort stops nothing: the run goes on.
+                    // A refused abort stops nothing: the run goes on, and a
+                    // Stop and send's prompt is not sent after it.
                     (Some("abort"), Some(false)) => {
                         self.stopping = false;
                         c = c.with(Pane::Now).with(Pane::Where);
+                        if self
+                            .held
+                            .as_ref()
+                            .is_some_and(|h| r.id.as_deref() == Some(h.abort_id.as_str()))
+                        {
+                            let why = r.error.as_deref().unwrap_or("no reason given");
+                            c = c.and(self.held_dropped(&format!("the abort was refused: {why}")));
+                        }
                     }
                     // An `approve` is sent with the question's own id, and
                     // either answer means trellis holds it open no more: an
@@ -1240,7 +1359,12 @@ impl DesktopState {
                     if let Some(root) = text("root") {
                         self.root = Some(root);
                     }
-                    c.with(Pane::Tier)
+                    let c = c.with(Pane::Tier);
+                    if self.pending_listed(r.data.as_ref()) {
+                        c.with(Pane::Pending)
+                    } else {
+                        c
+                    }
                 } else if r.success == Some(false) && !view_read {
                     let command = r.command.as_deref().unwrap_or("command");
                     let said = match r.error {
@@ -1307,6 +1431,14 @@ impl DesktopState {
         // So were the runs the totals counted (#313): a new child's start
         // empty.
         self.session_tokens = None;
+        // Nothing that child held will be delivered now, and a Stop and
+        // send's prompt has no session to run in.
+        self.held_dropped("trellis rpc exited before the run ended");
+        for q in &mut self.queued {
+            if q.fate == Fate::Queued {
+                q.fate = Fate::Not("trellis rpc exited".into());
+            }
+        }
         with_now(Changed::of(&[
             Pane::Running,
             Pane::Phase,
@@ -1315,6 +1447,7 @@ impl DesktopState {
             Pane::Models,
             Pane::SessionTokens,
             Pane::Available,
+            Pane::Pending,
         ]))
     }
 
@@ -1612,6 +1745,21 @@ impl DesktopState {
             Pane::Atlas => self.atlas.to_json(),
             Pane::Now => self.now(),
             Pane::Where => self.where_it_is(),
+            Pane::Pending => Value::Array(
+                self.queued
+                    .iter()
+                    .map(|q| {
+                        let (state, after, why) = match &q.fate {
+                            Fate::Queued => ("queued", None, None),
+                            Fate::After(n) => ("delivered", Some(*n), None),
+                            Fate::Started => ("delivered", None, None),
+                            Fate::Not(why) => ("not_delivered", None, Some(why.as_str())),
+                        };
+                        json!({"id": q.id, "kind": q.kind.word(), "text": q.text,
+                               "state": state, "after_turn": after, "why": why})
+                    })
+                    .collect(),
+            ),
             Pane::Outcome => match &self.outcome {
                 Some(e) => json!({
                     "outcome": e.outcome.as_deref().map(outcome_words),
@@ -1991,6 +2139,11 @@ impl DesktopState {
             Delivery::Not(why) => Delivery::Not(cut(why.clone(), why.len(), STEER_FIELD_BYTES)),
             d => d,
         };
+        let fate = match &delivery {
+            Delivery::Pending => None,
+            Delivery::After(n) => Some(Fate::After(*n)),
+            Delivery::Not(why) => Some(Fate::Not(why.clone())),
+        };
         let changed = self.transcript.change(
             |e| matches!(&e.steer, Some((i, Delivery::Pending)) if i == id),
             |e| {
@@ -1999,11 +2152,209 @@ impl DesktopState {
                 }
             },
         );
+        let queued = fate.is_some_and(|f| self.settle(QueuedKind::Steer, id, f));
+        let mut c = Changed::default();
         if changed {
-            Changed::of(&[Pane::Transcript])
+            c = c.with(Pane::Transcript);
+        }
+        if queued {
+            c = c.with(Pane::Pending);
+        }
+        c
+    }
+
+    /// The first queued item of `kind` sent with `id` and still queued now
+    /// stands at `fate`; whether there was one.
+    fn settle(&mut self, kind: QueuedKind, id: &str, fate: Fate) -> bool {
+        match self
+            .queued
+            .iter_mut()
+            .find(|q| q.kind == kind && q.id == id && q.fate == Fate::Queued)
+        {
+            Some(q) => {
+                q.fate = fate;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// A successful `get_state`'s `pending` (#830): each entry not yet in
+    /// the queue joins it as `queued`, unless it is a steer whose row
+    /// already says where it stands (its answer read before this one), in
+    /// which case it takes that. An entry already in the queue keeps its
+    /// state, and one missing from the list keeps its own: only an event
+    /// settles an item. An entry without a string id, a listed type and a
+    /// string message is not drawn: this client sends each with an id, so
+    /// an item without one is not its own. Whether the queue changed.
+    fn pending_listed(&mut self, data: Option<&Value>) -> bool {
+        let Some(list) = data
+            .and_then(|d| d.get("pending"))
+            .and_then(Value::as_array)
+        else {
+            return false;
+        };
+        let mut changed = false;
+        for p in list {
+            let id = p
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|i| !i.is_empty());
+            let kind = p
+                .get("type")
+                .and_then(Value::as_str)
+                .and_then(QueuedKind::listed);
+            let message = p.get("message").and_then(Value::as_str);
+            let (Some(id), Some(kind), Some(message)) = (id, kind, message) else {
+                continue;
+            };
+            // Cut as a steer row's id is, so the two compare.
+            let id = cut(id.to_string(), id.len(), STEER_FIELD_BYTES);
+            if self.queued.iter().any(|q| q.kind == kind && q.id == id) {
+                continue;
+            }
+            if self.queued.len() >= QUEUED_CAP {
+                match self.queued.iter().position(|q| q.fate != Fate::Queued) {
+                    Some(i) => {
+                        self.queued.remove(i);
+                    }
+                    None => break,
+                }
+            }
+            let fate = match kind {
+                QueuedKind::Steer => self.steer_fate(&id),
+                _ => Fate::Queued,
+            };
+            let text = cut(message.to_string(), message.len(), QUEUED_TEXT_BYTES);
+            self.queued.push(Queued {
+                id,
+                kind,
+                text,
+                fate,
+            });
+            changed = true;
+        }
+        changed
+    }
+
+    /// Where the newest steer row sent with `id` stands, as a queue item's
+    /// fate; queued when no row has it.
+    fn steer_fate(&self, id: &str) -> Fate {
+        let row = self
+            .transcript
+            .rows()
+            .rev()
+            .find_map(|e| e.steer.as_ref().filter(|(i, _)| i == id));
+        match row {
+            Some((_, Delivery::After(n))) => Fate::After(*n),
+            Some((_, Delivery::Not(why))) => Fate::Not(why.clone()),
+            Some((_, Delivery::Pending)) | None => Fate::Queued,
+        }
+    }
+
+    /// A successful `abort` answer's `undelivered`: each item it names by
+    /// id was never delivered, since the run was stopped first. Whether
+    /// the queue changed.
+    fn undelivered_settled(&mut self, data: Option<&Value>) -> bool {
+        let Some(list) = data
+            .and_then(|d| d.get("undelivered"))
+            .and_then(Value::as_array)
+        else {
+            return false;
+        };
+        let mut changed = false;
+        for u in list {
+            let id = u.get("id").and_then(Value::as_str);
+            let kind = u
+                .get("type")
+                .and_then(Value::as_str)
+                .and_then(QueuedKind::listed);
+            if let (Some(id), Some(kind)) = (id, kind) {
+                let id = cut(id.to_string(), id.len(), STEER_FIELD_BYTES);
+                let why = Fate::Not("the run was stopped first".into());
+                changed |= self.settle(kind, &id, why);
+            }
+        }
+        changed
+    }
+
+    /// The core forwards an `abort` with id `abort_id` for a Stop and send
+    /// (#830), holding `line`, the prompt to run once the stopped run has
+    /// ended. Called before the abort is written, as [`abort_sent`] is, so
+    /// the answers it waits on find it set. The page sees the prompt in the
+    /// queue at once.
+    ///
+    /// [`abort_sent`]: DesktopState::abort_sent
+    pub fn stop_and_send(&mut self, abort_id: &str, line: Value) -> Changed {
+        let id = line.get("id").and_then(Value::as_str).unwrap_or_default();
+        let id = cut(id.to_string(), id.len(), STEER_FIELD_BYTES);
+        let task = line.get("task").and_then(Value::as_str);
+        let template = line.get("prompt").and_then(Value::as_str);
+        let text = match (template, task) {
+            (Some(t), Some(task)) => format!("template {t}: {task}"),
+            (Some(t), None) => format!("template {t}"),
+            (None, task) => task.unwrap_or_default().to_string(),
+        };
+        let len = text.len();
+        let text = cut(text, len, QUEUED_TEXT_BYTES);
+        self.queued.push(Queued {
+            id,
+            kind: QueuedKind::Prompt,
+            text,
+            fate: Fate::Queued,
+        });
+        self.held = Some(Held {
+            abort_id: abort_id.to_string(),
+            line,
+            ended: false,
+            stopped: false,
+        });
+        Changed::of(&[Pane::Pending])
+    }
+
+    /// Whether a Stop and send's prompt is held: a second one is refused
+    /// while it is, since only one prompt can follow the stopped run.
+    pub fn holding(&self) -> bool {
+        self.held.is_some()
+    }
+
+    /// The held prompt, taken, once the stopped run's `run_end` and the
+    /// abort's successful answer have both been read; `None` until then,
+    /// and ever after it is taken or dropped. Its queue item stays queued
+    /// until [`held_sent`] says what became of it.
+    ///
+    /// [`held_sent`]: DesktopState::held_sent
+    pub fn held_ready(&mut self) -> Option<Value> {
+        if !self.held.as_ref().is_some_and(|h| h.ended && h.stopped) {
+            return None;
+        }
+        self.held.take().map(|h| h.line)
+    }
+
+    /// What the core's forwarding of a taken held prompt, sent with `id`,
+    /// came to: sent, a new run on its way; or refused, with why, and so
+    /// never delivered.
+    pub fn held_sent(&mut self, id: &str, sent: Result<(), &str>) -> Changed {
+        let id = cut(id.to_string(), id.len(), STEER_FIELD_BYTES);
+        let fate = match sent {
+            Ok(()) => Fate::Started,
+            Err(why) => Fate::Not(cut(why.to_string(), why.len(), QUEUED_TEXT_BYTES)),
+        };
+        if self.settle(QueuedKind::Prompt, &id, fate) {
+            Changed::of(&[Pane::Pending])
         } else {
             Changed::default()
         }
+    }
+
+    /// The held prompt will not be sent, for `why`: its abort was refused or
+    /// never written, or the child exited. Nothing when none is held.
+    pub fn held_dropped(&mut self, why: &str) -> Changed {
+        let Some(h) = self.held.take() else {
+            return Changed::default();
+        };
+        let id = h.line.get("id").and_then(Value::as_str).unwrap_or_default();
+        self.held_sent(id, Err(why))
     }
 }
 
@@ -4174,6 +4525,249 @@ mod tests {
         );
         let t = rows(&all(&mut s)["transcript"]);
         assert_eq!(t.last().unwrap()["delivery"]["state"], "not_delivered");
+    }
+
+    /// A `get_state` answer whose `pending` is `pending`.
+    fn state_with(pending: Value) -> String {
+        response_to(
+            "get_state",
+            "desktop-pending",
+            true,
+            json!({"running": true, "tier": null, "model": "scripted:x", "root": "/r",
+                   "pending": pending}),
+        )
+    }
+
+    /// The queue as the page receives it: each item's id, state and turn.
+    fn queue_of(s: &mut DesktopState) -> Vec<(String, String, Value)> {
+        all(s)["pending"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|q| {
+                (
+                    q["id"].as_str().unwrap().to_string(),
+                    q["state"].as_str().unwrap().to_string(),
+                    q["after_turn"].clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn queued_items_show_their_state_from_pending() {
+        // The risk (#830): the queue drawn from what the page sent rather
+        // than what trellis holds, so an item trellis refused reads as
+        // waiting; or an item marked delivered because a later `pending`
+        // left it out, which a steer does before its `steer delivered` is
+        // written (#808), and a withdrawn one does without being delivered
+        // at all; or a late `get_state` answer putting back as queued a
+        // steer whose answer was already read. Items come from `pending`;
+        // only an event settles one.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p"));
+        s.steer_sent("s1", "keep tokens.py");
+        s.steer_sent("s2", "<b>and</b> the lexer");
+        let c = feed(
+            &mut s,
+            &state_with(json!([
+                {"id": "f1", "type": "follow_up", "message": "then rename it"},
+                {"id": "s1", "type": "steer", "message": "keep tokens.py"},
+                {"id": "s2", "type": "steer", "message": "<b>and</b> the lexer"},
+                {"id": null, "type": "steer", "message": "sent by no id"},
+                {"id": "x", "type": "abort", "message": "not a queued type"},
+            ])),
+        );
+        assert!(c.has(Pane::Pending), "{c:?}");
+        let q = all(&mut s)["pending"].clone();
+        assert_eq!(
+            q[2],
+            json!({"id": "s2", "kind": "steer", "text": "<b>and</b> the lexer",
+                   "state": "queued", "after_turn": null, "why": null}),
+            "the text is kept as sent, for the page to write as text"
+        );
+        assert_eq!(q[0]["kind"], "follow_up", "{q}");
+        assert_eq!(q.as_array().unwrap().len(), 3, "{q}");
+
+        // Gone from a later `pending`, s1 is not delivered on that alone.
+        feed(
+            &mut s,
+            &state_with(json!([{"id": "s2", "type": "steer", "message": "<b>and</b> the lexer"}])),
+        );
+        assert_eq!(
+            queue_of(&mut s)[1],
+            ("s1".into(), "queued".into(), Value::Null)
+        );
+        // The loop's event settles the oldest pending steer, s1.
+        let c = feed(&mut s, &event("steer delivered", json!({"after_step": 4})));
+        assert!(c.has(Pane::Pending) && c.has(Pane::Transcript), "{c:?}");
+        assert_eq!(
+            queue_of(&mut s)[1],
+            ("s1".into(), "delivered".into(), json!(4))
+        );
+
+        // A steer answered before any `pending` listed it takes its row's
+        // state when one does, not `queued`.
+        s.steer_sent("s3", "late");
+        feed(
+            &mut s,
+            &response_to("steer", "s3", false, json!("the run ended")),
+        );
+        feed(
+            &mut s,
+            &state_with(json!([{"id": "s3", "type": "steer", "message": "late"}])),
+        );
+        let late = all(&mut s)["pending"][3].clone();
+        assert_eq!(
+            (&late["state"], &late["why"]),
+            (&json!("not_delivered"), &json!("the run ended")),
+            "{late}"
+        );
+
+        // An abort's answer names the follow-up as never delivered, and the
+        // steer still waiting with it.
+        let c = feed(
+            &mut s,
+            &response_to(
+                "abort",
+                "ab",
+                true,
+                json!({"undelivered": [
+                    {"id": "f1", "type": "follow_up", "message": "then rename it"},
+                    {"id": "s2", "type": "steer", "message": "<b>and</b> the lexer"},
+                ]}),
+            ),
+        );
+        assert!(c.has(Pane::Pending), "{c:?}");
+        let states: Vec<String> = queue_of(&mut s).into_iter().map(|q| q.1).collect();
+        assert_eq!(
+            states,
+            [
+                "not_delivered",
+                "delivered",
+                "not_delivered",
+                "not_delivered"
+            ]
+        );
+
+        // A follow-up is delivered when its own run starts, carrying its id;
+        // that run drops what the last one settled.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p"));
+        feed(
+            &mut s,
+            &state_with(json!([{"id": "f2", "type": "follow_up", "message": "next"}])),
+        );
+        feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p"}).to_string(),
+        );
+        assert_eq!(queue_of(&mut s)[0].1, "queued", "run_end delivers nothing");
+        let c = feed(&mut s, &run_start("f2"));
+        assert!(c.has(Pane::Pending), "{c:?}");
+        assert_eq!(
+            queue_of(&mut s),
+            [("f2".into(), "delivered".into(), Value::Null)]
+        );
+        feed(&mut s, &run_start("p3"));
+        assert!(
+            queue_of(&mut s).is_empty(),
+            "a settled item outlived the next run"
+        );
+
+        // Queued when the child exits: never delivered, and said so.
+        feed(
+            &mut s,
+            &state_with(json!([{"id": "s9", "type": "steer", "message": "m"}])),
+        );
+        let c = s.child_exited();
+        assert!(c.has(Pane::Pending), "{c:?}");
+        assert_eq!(queue_of(&mut s)[0].1, "not_delivered");
+
+        // A `pending` of any length keeps the queue to its cap.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p"));
+        let many: Vec<Value> = (0..QUEUED_CAP + 5)
+            .map(|i| json!({"id": format!("s{i}"), "type": "steer", "message": "m"}))
+            .collect();
+        feed(&mut s, &state_with(json!(many)));
+        assert_eq!(queue_of(&mut s).len(), QUEUED_CAP);
+    }
+
+    #[test]
+    fn stop_and_send_prompt_waits_for_run_end_and_the_abort_s_answer() {
+        // The risk (#830, DESIGN.md §2.1): the held prompt sent at run_end
+        // when the abort is then refused (the run had ended on its own, so
+        // the person's stop did nothing they were told), sent before the
+        // stopped run has ended, which rpc refuses ("one at a time"), sent
+        // twice, or sent into a session whose child has exited. It is ready
+        // once both the run's end and the abort's success are read, in
+        // either order, and only once.
+        let prompt = json!({"id": "p2", "type": "prompt", "task": "run this instead"});
+        let ended =
+            json!({"type": "run_end", "outcome": "interrupted", "exit": 1, "id": "p"}).to_string();
+        let stopped = response_to("abort", "ab", true, json!({"undelivered": []}));
+        for (first, second) in [(&ended, &stopped), (&stopped, &ended)] {
+            let mut s = DesktopState::default();
+            feed(&mut s, &run_start("p"));
+            let c = s.stop_and_send("ab", prompt.clone());
+            assert!(c.has(Pane::Pending), "{c:?}");
+            assert_eq!(
+                queue_of(&mut s),
+                [("p2".into(), "queued".into(), Value::Null)]
+            );
+            assert!(s.holding());
+            feed(&mut s, first);
+            assert_eq!(s.held_ready(), None, "sent on one of the two");
+            feed(&mut s, second);
+            assert_eq!(s.held_ready(), Some(prompt.clone()));
+            assert_eq!(s.held_ready(), None, "sent twice");
+            assert!(!s.holding());
+            assert!(s.held_sent("p2", Ok(())).has(Pane::Pending));
+            assert_eq!(queue_of(&mut s)[0].1, "delivered");
+        }
+        // Another abort's answer is not this one's.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p"));
+        s.stop_and_send("ab", prompt.clone());
+        feed(&mut s, &ended);
+        feed(
+            &mut s,
+            &response_to("abort", "other", true, json!({"undelivered": []})),
+        );
+        assert_eq!(s.held_ready(), None);
+        // A refused abort: never sent, and the queue says why.
+        let c = feed(
+            &mut s,
+            &response_to("abort", "ab", false, json!("no run in progress")),
+        );
+        assert!(c.has(Pane::Pending), "{c:?}");
+        assert_eq!(s.held_ready(), None);
+        assert!(!s.holding());
+        let q = all(&mut s)["pending"][0].clone();
+        assert_eq!(q["state"], "not_delivered", "{q}");
+        assert_eq!(q["why"], "the abort was refused: no run in progress", "{q}");
+        // The child exits before the run ends: never sent.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p"));
+        s.stop_and_send("ab", prompt.clone());
+        s.child_exited();
+        feed(&mut s, &ended);
+        feed(&mut s, &stopped);
+        assert_eq!(s.held_ready(), None);
+        assert_eq!(queue_of(&mut s)[0].1, "not_delivered");
+        // Sent, then refused by the core's own rules: not delivered, why.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p"));
+        s.stop_and_send("ab", prompt.clone());
+        feed(&mut s, &ended);
+        feed(&mut s, &stopped);
+        assert!(s.held_ready().is_some());
+        s.held_sent("p2", Err("rpc_send: no trellis rpc child is running"));
+        assert_eq!(
+            all(&mut s)["pending"][0]["why"],
+            "rpc_send: no trellis rpc child is running"
+        );
     }
 
     #[test]
