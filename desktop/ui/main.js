@@ -30,13 +30,14 @@
 
 import { wireKeys } from "./keys.js";
 import { drawView, wireLog } from "./render.js";
+import { wireBudget } from "./render.js";
 import { runEnded, send, start } from "./rpc.js";
 import { drawOpenRefusal, drawOverview, drawOverviewChild } from "./overview.js";
 import { askStarters, composerStopped, drawComposer, wireComposer } from "./composer.js";
 import { drawDialogs, wireDialogs } from "./dialogs.js";
 import { askModels, drawModelPane, modelPaneStopped, wireModelPane } from "./model.js";
 import { drawSettings, wireRegister, wireRepositorySwitch } from "./settings.js";
-import { redrawNow } from "./now.js";
+import { redrawNow, wireNow } from "./now.js";
 import { drawStatus, exitText, wireStatus } from "./status.js";
 import { drawCode, wireCode } from "./code.js";
 import { drawSummary, wireSummary } from "./summary.js";
@@ -127,6 +128,10 @@ async function main() {
   wireRegister(document, window, () => redrawNow(document));
   wireCode(document, tauri);
   wireSummary(document);
+  // The run controls (#837): Pause and Resume in the Now strip, and Raise
+  // beside each budget row set_budget takes.
+  wireNow(tauri);
+  wireBudget(document, tauri);
   // A feed that finds rows missing: this page fell behind its event stream
   // and lost views (#827), so it asks once for the whole run again.
   let resend = false;

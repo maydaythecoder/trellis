@@ -297,10 +297,19 @@ export function meter(doc, { label, filled, cells, tone, now, max, text }) {
 // Meter, and `used / ceiling` as two figures in the unit measured. A side
 // trellis did not report is unreported's dash with its reason, and with
 // either side unreported no Meter is drawn: cells with no share to show
-// would read as 0. Rows are the reducer's `budget.limits`; no currency and
-// no raise control (#837) here.
-export function budgetRows(doc, rows) {
+// would read as 0. Rows are the reducer's `budget.limits`; no currency.
+//
+// `raise` is the reducer's `budget.raise` (#837): by a row's limit, the
+// set_budget field it sends, the unit its input is typed in and how many
+// of the field's units one typed unit is. A row it names gets the card's
+// input and a Raise button, which carry the field, the unit and the
+// ceiling drawn for the caller's one listener to read; a row it does not
+// name (context, and every row with no run to raise) gets neither. The
+// note says when a raise shows and in what unit it is typed.
+export function budgetRows(doc, rows, raise = null) {
   const box = el(doc, "div", null, "cd-bud");
+  const raisable = raise !== null && typeof raise === "object" ? raise : {};
+  let raises = false;
   for (const r of rows) {
     const row = el(doc, "div", null, "cd-bud-row");
     const unit = str(r.unit);
@@ -321,9 +330,48 @@ export function budgetRows(doc, rows) {
       ceiling === null ? unreported(doc, str(r.why_ceiling) ?? "trellis did not report it") : said(ceiling),
     );
     row.append(el(doc, "span", label, "cd-bud-label"), slot, readout);
+    const to = raisable[label];
+    if (to !== null && typeof to === "object" && str(to.field) !== null && isCount(to.per_unit)) {
+      row.append(raiseControl(doc, label, to, r.ceiling));
+      raises = true;
+    }
     box.append(row);
   }
+  if (raises) {
+    box.append(
+      el(
+        doc,
+        "p",
+        "Raise sends set_budget. A ceiling is raised, never lowered, and the row shows the new one once trellis applies it at its next budget check and sends run budget again. The wall clock is typed in seconds and sent in milliseconds.",
+        "cd-bud-note",
+      ),
+    );
+  }
   return box;
+}
+
+// A budget row's raise (#837): the card's input, typed in `to.unit`, and
+// its Raise button. Both carry what the caller's listener needs; nothing
+// here sends.
+function raiseControl(doc, label, to, ceiling) {
+  const slot = el(doc, "span");
+  const input = el(doc, "input", null, "cd-bud-in");
+  input.type = "text";
+  input.inputMode = "numeric";
+  input.setAttribute("aria-label", `new ${label} ceiling, in ${to.unit}`);
+  input.placeholder = str(to.unit) ?? "";
+  const button = el(doc, "button", "Raise", "cd-bud-ext");
+  button.type = "button";
+  button.title = `Raise the ${label} ceiling to the number typed, in ${to.unit}`;
+  for (const node of [input, button]) {
+    node.dataset.raise = to.field;
+    node.dataset.unit = String(to.unit);
+    node.dataset.perUnit = String(to.per_unit);
+    node.dataset.label = label;
+    if (isCount(ceiling)) node.dataset.ceiling = String(ceiling);
+  }
+  slot.append(input, " ", button);
+  return slot;
 }
 
 // Facts (#828): a label and its value per row, as a description list, for

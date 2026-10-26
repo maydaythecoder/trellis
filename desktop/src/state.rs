@@ -1388,6 +1388,15 @@ pub struct DesktopState {
     /// the Now strip's `stopping`. Only the core's own forwarding sets it
     /// ([`DesktopState::abort_sent`]), since no event says a stop began.
     stopping: bool,
+    /// The run is held (#837): from the loop's `paused` event to its
+    /// `resumed` one or the run's end. Only the engine's event sets it,
+    /// never the person's click, since a pause asked is not yet a hold.
+    paused: bool,
+    /// A `pause` was forwarded and neither the `paused` event nor the
+    /// pause's answer has come (#837). The strip still says `running`, and
+    /// offers Resume, which withdraws a pause not yet reached (ADR 0058 §1),
+    /// rather than a second Pause trellis would refuse as `already paused`.
+    pause_asked: bool,
     /// The run's wall-clock spend as trellis last reported it (#799): the
     /// latest `model call` or `turn` figure, then `run_end`'s, which is
     /// absent for a run its loop did not finish. Never a clock of the
@@ -1441,6 +1450,17 @@ impl DesktopState {
                 self.budget.ceilings = b;
                 Changed::of(&[Pane::Budget])
             }
+            // The hold is the engine's (#837): the strip says `paused` from
+            // this event, never from the click that asked for it.
+            Frame::Paused { .. } => {
+                self.paused = true;
+                self.pause_asked = false;
+                Changed::of(&[Pane::Now, Pane::Where])
+            }
+            Frame::Resumed { .. } => {
+                self.paused = false;
+                Changed::of(&[Pane::Now, Pane::Where])
+            }
             // The loop's word that a model request carried a steer: the
             // oldest steer row still pending is the one it carried. rpc's
             // answer to that steer's id says the same, and settles it.
@@ -1487,6 +1507,9 @@ impl DesktopState {
             Frame::RunEnd(e) => {
                 self.running = false;
                 self.stopping = false;
+                // An abort ends a held run with no `resumed` (#806).
+                self.paused = false;
+                self.pause_asked = false;
                 // The run a Stop and send stops has ended; its prompt waits
                 // on the abort's answer too.
                 if let Some(h) = &mut self.held {
@@ -1636,7 +1659,7 @@ impl DesktopState {
                     // Stop and send's prompt is not sent after it.
                     (Some("abort"), Some(false)) => {
                         self.stopping = false;
-                        c = c.with(Pane::Now).with(Pane::Where);
+                        c = c.with(Pane::Now).with(Pane::Where).with(Pane::Budget);
                         if self
                             .held
                             .as_ref()
@@ -1645,6 +1668,13 @@ impl DesktopState {
                             let why = r.error.as_deref().unwrap_or("no reason given");
                             c = c.and(self.held_dropped(&format!("the abort was refused: {why}")));
                         }
+                    }
+                    // A pause's answer, either way, ends the wait for it: held
+                    // (the `paused` event came first and said so), or refused
+                    // (no hold, and the reason reaches the transcript below).
+                    (Some("pause"), Some(_)) => {
+                        self.pause_asked = false;
+                        c = c.with(Pane::Now).with(Pane::Where);
                     }
                     // An `approve` is sent with the question's own id, and
                     // either answer means trellis holds it open no more: an
@@ -1802,6 +1832,8 @@ impl DesktopState {
     pub fn child_exited(&mut self) -> Changed {
         self.running = false;
         self.stopping = false;
+        self.paused = false;
+        self.pause_asked = false;
         // The root and model were that child's; the next may serve another
         // repository, and Where it is would name the last one's until it
         // said its own.
@@ -1832,6 +1864,8 @@ impl DesktopState {
             Pane::Running,
             Pane::Phase,
             Pane::Approvals,
+            // Its Raise goes with the run.
+            Pane::Budget,
             Pane::Model,
             Pane::Models,
             Pane::SessionTokens,
@@ -1845,13 +1879,28 @@ impl DesktopState {
     /// so a `run_end` read as soon as it is written finds it set.
     pub fn abort_sent(&mut self) -> Changed {
         self.stopping = true;
-        Changed::of(&[Pane::Now, Pane::Where])
+        // A stopping run takes no raise: the budget's Raise goes with it.
+        Changed::of(&[Pane::Now, Pane::Where, Pane::Budget])
     }
 
     /// The `abort` could not be written to the child: nothing is stopping.
     pub fn abort_unsent(&mut self) -> Changed {
         self.stopping = false;
-        Changed::of(&[Pane::Now, Pane::Where])
+        Changed::of(&[Pane::Now, Pane::Where, Pane::Budget])
+    }
+
+    /// The core forwarded a `pause` (#837): Resume replaces Pause until the
+    /// engine's `paused` event or the pause's answer. Called before the line
+    /// is written, as `abort_sent` is. The state word stays `running`.
+    pub fn pause_sent(&mut self) -> Changed {
+        self.pause_asked = true;
+        Changed::of(&[Pane::Now])
+    }
+
+    /// The `pause` could not be written to the child: nothing was asked.
+    pub fn pause_unsent(&mut self) -> Changed {
+        self.pause_asked = false;
+        Changed::of(&[Pane::Now])
     }
 
     /// Whether a run is in flight, from `run_start` to `run_end` or the
@@ -1942,6 +1991,7 @@ impl DesktopState {
     pub fn clear(&mut self) -> Changed {
         let running = self.running;
         let stopping = self.stopping;
+        let (paused, pause_asked) = (self.paused, self.pause_asked);
         let run_model = self.run_model.take();
         let root = self.root.take();
         let prompts_in_flight = self.prompts_in_flight;
@@ -1958,6 +2008,8 @@ impl DesktopState {
         *self = Self {
             running,
             stopping,
+            paused,
+            pause_asked,
             run_model,
             root,
             prompts_in_flight,
@@ -2033,6 +2085,7 @@ impl DesktopState {
                     "turn": self.budget.turn,
                     "max_turns": self.budget.ceilings.max_iterations,
                     "limits": self.limits(),
+                    "raise": self.raisable(),
                     "prompt_bytes": self.budget.prompt_bytes,
                     "completion_tokens": self.budget.completion_tokens,
                     "model_ms": self.budget.model_ms,
@@ -2199,13 +2252,16 @@ impl DesktopState {
 
     /// The run's state as the Now strip words it (#828, DESIGN.md §2.1):
     /// `stopping` once an abort is sent, `needs you` while an approval
-    /// waits, `running`, and once a run has ended its `run_end` outcome in
+    /// waits, `paused` from the engine's `paused` event to its `resumed`
+    /// (#837), `running`, and once a run has ended its `run_end` outcome in
     /// that event's own words, never `done` or `failed`.
     fn state_word(&self) -> (&'static str, String) {
         if self.running && self.stopping {
             ("stopping", "stopping".into())
         } else if self.running && !self.approvals.is_empty() {
             ("needs_you", "needs you".into())
+        } else if self.running && self.paused {
+            ("paused", "paused".into())
         } else if self.running {
             ("running", "running".into())
         } else if let Some(e) = &self.outcome {
@@ -2301,6 +2357,26 @@ impl DesktopState {
         ])
     }
 
+    /// The budget rows a person may raise now (#837), by the row's `limit`:
+    /// the `set_budget` field each sends, the unit its input is typed in,
+    /// and how many of the field's units one typed unit is. Only the three
+    /// ceilings `set_budget` takes, never context, which the driver fixes
+    /// for the run; and only while a run is in flight and not stopping,
+    /// since rpc refuses a raise with none. The wall clock is typed in
+    /// seconds and sent in milliseconds, the unit `run budget` carries.
+    /// Null when nothing may be raised. What the rows draw is still the
+    /// latest `run budget`'s ceiling, never the number typed or the answer.
+    fn raisable(&self) -> Value {
+        if !self.running || self.stopping {
+            return Value::Null;
+        }
+        json!({
+            "turns": {"field": "max_iterations", "unit": "turns", "per_unit": 1},
+            "wall clock": {"field": "max_wall_clock_ms", "unit": "s", "per_unit": 1000},
+            "completion tokens": {"field": "max_tokens", "unit": "tok", "per_unit": 1},
+        })
+    }
+
     /// The Now strip (#828). The clock is trellis's elapsed figure, shown
     /// for a run in flight or ended, and with none reported it is null with
     /// the reason: the desktop draws no clock of its own (ADR 0048 §8).
@@ -2350,6 +2426,15 @@ impl DesktopState {
             "model": self.run_model,
             "tier": self.tier,
             "can_stop": self.running && !self.stopping,
+            // Pause or Resume (#837), or neither: one of the two while a
+            // run is in flight and not stopping, Resume from the pause
+            // asked until the run goes on, as the engine counts a pause
+            // asked as one.
+            "pause_control": match (self.running && !self.stopping, self.paused || self.pause_asked) {
+                (false, _) => None,
+                (true, false) => Some("pause"),
+                (true, true) => Some("resume"),
+            },
             "register": register(state),
         })
     }
@@ -2362,6 +2447,7 @@ impl DesktopState {
         let phase = match (state, &self.phase) {
             ("stopping", _) => "rolling back".to_string(),
             ("needs_you", _) => "waiting on you".to_string(),
+            ("paused", _) => "paused before the next model call".to_string(),
             ("running", Some(Phase::Model { turn })) => format!("calling the model, turn {turn}"),
             ("running", Some(Phase::Tool { turn, tool })) => format!("ran {tool}, turn {turn}"),
             ("running", Some(Phase::Checks { turn })) => format!("ran checks, turn {turn}"),
@@ -2873,6 +2959,8 @@ impl DesktopState {
         self.phase = None;
         self.runtime = None;
         self.stopping = false;
+        self.paused = false;
+        self.pause_asked = false;
         self.elapsed_ms = None;
         self.trail = TrailRead::Unnamed;
         self.trail_unread = false;
@@ -3460,6 +3548,217 @@ mod tests {
     }
 
     #[test]
+    fn pause_and_resume_follow_the_engines_events() {
+        // The risk (#837, ADR 0058 section 1): the strip says `paused` on
+        // the click, while the loop is still finishing its turn and may end
+        // before it holds, so the person reads a hold that never happened;
+        // or it keeps saying `paused` after the engine's `resumed`, an
+        // abort's run_end or the child's exit. The word follows the engine's
+        // `paused` and `resumed` events alone. The click only swaps Pause
+        // for Resume, which withdraws a pause not yet reached, and the
+        // pause's answer, held or refused, ends that.
+        let mut s = DesktopState::default();
+        let now = |s: &mut DesktopState| all(s)["now"].clone();
+        let controls = |v: &Value| v["pause_control"].clone();
+        assert_eq!(controls(&now(&mut s)), Value::Null);
+        feed(&mut s, &run_start("p1"));
+        assert_eq!(controls(&now(&mut s)), "pause");
+
+        // Asked, not held: still running, Resume offered in Pause's place.
+        let c = s.pause_sent();
+        assert!(c.has(Pane::Now), "{c:?}");
+        let v = now(&mut s);
+        assert_eq!(v["word"], "running", "paused on the click: {v}");
+        assert_eq!(controls(&v), "resume");
+
+        // The engine's event is what says it holds.
+        let c = feed(&mut s, &event("paused", json!({"turn": 3})));
+        assert!(c.has(Pane::Now) && c.has(Pane::Where), "{c:?}");
+        let v = now(&mut s);
+        assert_eq!(
+            (v["state"].clone(), v["word"].clone()),
+            (json!("paused"), json!("paused"))
+        );
+        assert_eq!(controls(&v), "resume");
+        assert_eq!(v["can_stop"], true, "a held run can still be stopped");
+        assert_eq!(
+            all(&mut s)["where"]["phase"],
+            "paused before the next model call"
+        );
+        // Its answer, after the event, changes nothing the event said.
+        feed(&mut s, &response("pause", true, json!({"turn": 3})));
+        assert_eq!(now(&mut s)["word"], "paused");
+        // A resume sent is not the run going on: the `resumed` event is.
+        feed(&mut s, &response("resume", true, Value::Null));
+        assert_eq!(now(&mut s)["word"], "paused");
+        let c = feed(
+            &mut s,
+            &event("resumed", json!({"turn": 3, "paused_ms": 4200})),
+        );
+        assert!(c.has(Pane::Now), "{c:?}");
+        let v = now(&mut s);
+        assert_eq!(v["word"], "running");
+        assert_eq!(controls(&v), "pause");
+
+        // A pause the run never reached: refused, it was no hold, and the
+        // reason is said.
+        s.pause_sent();
+        let c = feed(
+            &mut s,
+            &response(
+                "pause",
+                false,
+                json!("the run ended before it reached the hold; it did not pause"),
+            ),
+        );
+        assert!(c.has(Pane::Now) && c.has(Pane::Alert), "{c:?}");
+        let v = now(&mut s);
+        assert_eq!(v["word"], "running");
+        assert_eq!(controls(&v), "pause");
+        // A pause that could not be written was never asked.
+        s.pause_sent();
+        s.pause_unsent();
+        assert_eq!(controls(&now(&mut s)), "pause");
+
+        // An abort ends a held run with no `resumed`.
+        feed(&mut s, &event("paused", json!({"turn": 4})));
+        s.abort_sent();
+        let v = now(&mut s);
+        assert_eq!(v["word"], "stopping");
+        assert_eq!(controls(&v), Value::Null);
+        feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "interrupted", "exit": 130, "id": "p1"})
+                .to_string(),
+        );
+        let v = now(&mut s);
+        assert_eq!(v["word"], "ended · interrupted");
+        assert_eq!(controls(&v), Value::Null);
+        // The next run starts unheld, and so does one after the child's exit.
+        feed(&mut s, &run_start("p2"));
+        assert_eq!(now(&mut s)["word"], "running");
+        feed(&mut s, &event("paused", json!({"turn": 1})));
+        s.child_exited();
+        let v = now(&mut s);
+        assert_ne!(v["state"], "paused", "{v}");
+        assert_eq!(controls(&v), Value::Null);
+    }
+
+    #[test]
+    fn a_raised_ceiling_is_drawn_from_run_budget_not_from_the_input() {
+        // The risk (#837, ADR 0058 section 2): the budget draws the ceiling
+        // the person typed, or the one set_budget's answer names, while the
+        // loop still enforces the old one until its next budget check, or
+        // never (a raise in the run's last turn); the row then claims a
+        // limit the run does not have. The ceiling comes from `run budget`
+        // alone, sent again when the raise takes effect. Raise is offered
+        // only on the three ceilings set_budget takes, never context, and
+        // only while a run is in flight and not stopping.
+        let mut s = DesktopState::default();
+        assert_eq!(
+            all(&mut s)["budget"]["raise"],
+            Value::Null,
+            "nothing to raise"
+        );
+        feed(&mut s, &run_start("p1"));
+        feed(
+            &mut s,
+            &event(
+                "run budget",
+                json!({"max_iterations": 8, "max_wall_clock_ms": 60_000,
+                       "max_tokens": 1000, "context_bytes": 10_000}),
+            ),
+        );
+        let v = all(&mut s);
+        let raise = v["budget"]["raise"]
+            .as_object()
+            .expect("raisable rows")
+            .clone();
+        let mut rows: Vec<&String> = raise.keys().collect();
+        rows.sort();
+        assert_eq!(rows, ["completion tokens", "turns", "wall clock"]);
+        assert_eq!(raise["turns"]["field"], "max_iterations");
+        assert_eq!(raise["completion tokens"]["field"], "max_tokens");
+        // Typed in seconds, sent in the milliseconds run budget carries.
+        assert_eq!(
+            raise["wall clock"],
+            json!({"field": "max_wall_clock_ms", "unit": "s", "per_unit": 1000})
+        );
+        for row in v["budget"]["limits"].as_array().unwrap() {
+            let name = row["limit"].as_str().unwrap();
+            assert_eq!(
+                raise.contains_key(name),
+                name != "context",
+                "{name}: context is the driver's, fixed for the run"
+            );
+        }
+
+        // rpc takes the raise and answers with the ceilings after it: the
+        // rows still draw the ceiling in force.
+        let c = feed(
+            &mut s,
+            &response(
+                "set_budget",
+                true,
+                json!({"max_iterations": 20, "max_wall_clock_ms": 60_000, "max_tokens": 1000}),
+            ),
+        );
+        assert!(!c.has(Pane::Budget), "the answer redrew the budget: {c:?}");
+        let v = all(&mut s);
+        assert_eq!(
+            limit(&v, "turns")["ceiling_text"],
+            "8",
+            "drawn from the answer"
+        );
+        assert_eq!(v["now"]["max_turns"], 8);
+
+        // The loop's next budget check sends run budget again: that is the
+        // ceiling drawn, in the strip as in the row.
+        let c = feed(
+            &mut s,
+            &event(
+                "run budget",
+                json!({"max_iterations": 20, "max_wall_clock_ms": 60_000,
+                       "max_tokens": 1000, "context_bytes": 10_000}),
+            ),
+        );
+        assert!(c.has(Pane::Budget) && c.has(Pane::Now), "{c:?}");
+        let v = all(&mut s);
+        assert_eq!(limit(&v, "turns")["ceiling_text"], "20");
+        assert_eq!(v["now"]["max_turns"], 20);
+
+        // A refused raise changes no ceiling, and says why.
+        let c = feed(
+            &mut s,
+            &response(
+                "set_budget",
+                false,
+                json!("max_iterations 5 is below the ceiling in force, 20"),
+            ),
+        );
+        assert!(c.has(Pane::Alert), "{c:?}");
+        let v = all(&mut s);
+        assert_eq!(limit(&v, "turns")["ceiling_text"], "20");
+        assert!(
+            v["alert"].to_string().contains("set_budget refused"),
+            "{}",
+            v["alert"]
+        );
+
+        // Stopping, and ended: nothing to raise.
+        let c = s.abort_sent();
+        assert!(c.has(Pane::Budget), "{c:?}");
+        assert_eq!(all(&mut s)["budget"]["raise"], Value::Null);
+        s.abort_unsent();
+        assert!(all(&mut s)["budget"]["raise"].is_object());
+        feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p1"}).to_string(),
+        );
+        assert_eq!(all(&mut s)["budget"]["raise"], Value::Null);
+    }
+
+    #[test]
     fn phase_is_model_with_its_turn_from_a_model_call_frame() {
         // The risk (#615): replies are not streamed, so a `model call` is
         // the only sign of life between two turns of a slow local model.
@@ -3619,7 +3918,10 @@ mod tests {
             Value::Null,
             "the last child's root"
         );
-        assert_eq!(s.abort_unsent(), Changed::of(&[Pane::Now, Pane::Where]));
+        assert_eq!(
+            s.abort_unsent(),
+            Changed::of(&[Pane::Now, Pane::Where, Pane::Budget])
+        );
     }
 
     /// The view as the page draws it with the register dial at `dial`:
@@ -4175,7 +4477,7 @@ mod tests {
             v["budget"],
             json!({"turn": 1, "max_turns": 40, "prompt_bytes": 9800,
             "completion_tokens": null, "model_ms": null, "queue_wait_ms": null,
-            "tokens_per_second": null, "queued_seconds": null,
+            "tokens_per_second": null, "queued_seconds": null, "raise": null,
             "limits": [
                 {"limit": "turns", "unit": null, "used": 1, "ceiling": 40,
                  "used_text": "1", "ceiling_text": "40", "why_used": null,
@@ -4546,7 +4848,7 @@ mod tests {
             json!({"turn": null, "max_turns": null, "prompt_bytes": null,
                    "completion_tokens": null, "model_ms": null, "queue_wait_ms": null,
                    "tokens_per_second": null, "queued_seconds": null,
-                   "limits": limits})
+                   "raise": v["budget"]["raise"], "limits": limits})
         );
         assert_eq!(v["approvals"], json!([]));
         assert_eq!(v["outcome"], Value::Null);
@@ -6325,7 +6627,8 @@ mod tests {
             | "lines_added"
             | "lines_removed"
             | "start_line"
-            | "duration_ms" => {
+            | "duration_ms"
+            | "paused_ms" => {
                 *n += 1;
                 json!(*n)
             }
@@ -6407,6 +6710,28 @@ mod tests {
                     json!(true)
                 } else {
                     sample(&f, name, spec, &mut n)
+                };
+                m.insert(f, v);
+            }
+            build.push((name.clone(), m, true));
+        }
+        // An event every client does not read yet has no rpc.events record
+        // to join (`paused` and `resumed`, #837): its desktop fields are a
+        // record of their own, so a read_by naming the desktop is held too.
+        for (name, extra) in later["events"]
+            .as_object()
+            .expect("not_every_client.events")
+        {
+            let fields = ours(extra);
+            if rpc["events"].get(name).is_some() || fields.is_empty() {
+                continue;
+            }
+            let mut m = Map::new();
+            for f in fields {
+                let v = if BOOLEANS.contains(&f.as_str()) {
+                    json!(true)
+                } else {
+                    sample(&f, name, extra, &mut n)
                 };
                 m.insert(f, v);
             }

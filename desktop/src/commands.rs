@@ -85,11 +85,13 @@ const PENDING_ID: &str = "desktop-pending";
 /// command a desktop view reads through (ADR 0048 section 10) as that view
 /// is built: `get_codebase` (#307), `get_radius` (#308), `vault_search` and
 /// `vault_graph` (#309), `get_queue` (#311), and the Atlas's `get_symbols`
-/// and `get_history` (the owner's request of 2026-10-11). No vault or queue
+/// and `get_history` (the owner's request of 2026-10-11), and the run
+/// controls the Now strip and the budget send (#837, ADR 0058 sections 1
+/// and 2): `pause`, `resume` and `set_budget`. No vault or queue
 /// write is among them: rpc has none, every vault write stays a `trellis
 /// vault` command the person runs (#70), and the queue's writes are
 /// `trellis queue` and `trellis work` (ADR 0020 section 5).
-pub const FORWARDED: [&str; 22] = [
+pub const FORWARDED: [&str; 25] = [
     "prompt",
     "abort",
     "get_state",
@@ -112,7 +114,15 @@ pub const FORWARDED: [&str; 22] = [
     "get_queue",
     "get_symbols",
     "get_history",
+    "pause",
+    "resume",
+    "set_budget",
 ];
+
+/// The ceilings `set_budget` raises, as `run budget` names them (ADR 0058
+/// section 2). `context_bytes` is not among them: the driver fixes it for
+/// the run.
+const RAISABLE: [&str; 3] = ["max_iterations", "max_wall_clock_ms", "max_tokens"];
 
 /// The longest `ref` `rpc_send` forwards, in bytes.
 pub const REF_CAP: usize = 200;
@@ -506,6 +516,7 @@ impl Core {
             .then(|| line.get("id").and_then(Value::as_str).map(str::to_string))
             .flatten();
         let abort = line.get("type").and_then(Value::as_str) == Some("abort");
+        let pause = line.get("type").and_then(Value::as_str) == Some("pause");
         let writer = {
             let mut s = self.lock();
             check_model(line, s.view.configured())?;
@@ -516,6 +527,7 @@ impl Core {
                 ));
             };
             check_run_state(line, s.view.running())?;
+            check_raise(line)?;
             check_model_chosen(line, &s.view)?;
             check_approve(line, &s.view)?;
             // The held prompt meets the prompt's rules now, so a stop is
@@ -559,6 +571,12 @@ impl Core {
                 }
                 // The Now strip says `stopping` from here to the run's
                 // `run_end` (#828): no event says a stop began.
+                // Resume replaces Pause from here (#837); `paused` waits for
+                // the engine's event.
+                Some("pause") => {
+                    let c = s.view.pause_sent();
+                    self.sink.emit("view", s.view.view(c));
+                }
                 Some("abort") => {
                     let mut c = s.view.abort_sent();
                     if let Some(then) = then {
@@ -590,6 +608,12 @@ impl Core {
         if let (Err(why), true) = (&sent, abort) {
             let mut s = self.lock();
             let c = s.view.abort_unsent().and(s.view.held_dropped(why));
+            self.sink.emit("view", s.view.view(c));
+        }
+        // Nor is a pause that never reached it asked for.
+        if let (Err(_), true) = (&sent, pause) {
+            let mut s = self.lock();
+            let c = s.view.pause_unsent();
             self.sink.emit("view", s.view.view(c));
         }
         // What waits on the run is trellis's to list (#830): a steer or
@@ -858,6 +882,62 @@ fn check_arguments(o: &serde_json::Map<String, Value>) -> Result<(), String> {
     Ok(())
 }
 
+/// A `set_budget` (#837, ADR 0058 section 2), held to the shape rpc takes
+/// before it leaves the core: at least one of [`RAISABLE`], each a whole
+/// number above 0 (`max_iterations` at most `u32::MAX`, the loop's own
+/// width), and no other field but `id` and `type`. `context_bytes` is
+/// refused by name, since the driver fixes it for the run. Whether a value
+/// is above the ceiling in force is rpc's to say: the view's ceiling is the
+/// last `run budget`'s, which a raise rpc has taken but not yet applied
+/// leaves behind.
+fn check_raise(line: &Value) -> Result<(), String> {
+    if line.get("type").and_then(Value::as_str) != Some("set_budget") {
+        return Ok(());
+    }
+    let Some(o) = line.as_object() else {
+        return Ok(());
+    };
+    let mut named = 0;
+    for (k, v) in o {
+        match k.as_str() {
+            "id" | "type" => {}
+            "context_bytes" => {
+                return Err(
+                    "rpc_send: set_budget does not raise context_bytes: the driver fixes the \
+                     context ceiling for the run"
+                        .into(),
+                );
+            }
+            f if RAISABLE.contains(&f) => {
+                let max = if f == "max_iterations" {
+                    u64::from(u32::MAX)
+                } else {
+                    u64::MAX
+                };
+                if !v.as_u64().is_some_and(|n| (1..=max).contains(&n)) {
+                    return Err(format!(
+                        "rpc_send: set_budget's {f} is a whole number from 1 to {max}; got {v}"
+                    ));
+                }
+                named += 1;
+            }
+            other => {
+                return Err(format!(
+                    "rpc_send: set_budget takes {}; not {other:?}",
+                    RAISABLE.join(", ")
+                ));
+            }
+        }
+    }
+    if named == 0 {
+        return Err(format!(
+            "rpc_send: set_budget names no ceiling; it takes at least one of {}",
+            RAISABLE.join(", ")
+        ));
+    }
+    Ok(())
+}
+
 /// The composer's rule (#301), from the view's own record of whether a run
 /// is in flight (`run_start` to `run_end`, or the child's exit): a `prompt`
 /// only while none is, and a `steer`, a `follow_up` (#825) or an `abort`
@@ -871,9 +951,14 @@ fn check_run_state(line: &Value, running: bool) -> Result<(), String> {
              or Stop it"
                 .into(),
         ),
-        (Some(ty @ ("steer" | "abort")), false) => Err(format!(
+        (Some(ty @ ("steer" | "abort" | "pause" | "resume")), false) => Err(format!(
             "rpc_send: no run is in flight, so there is nothing to {ty}; send a prompt to start one"
         )),
+        (Some("set_budget"), false) => Err(
+            "rpc_send: no run is in flight, so there is no ceiling to raise; a run's ceilings \
+             come from its configuration"
+                .into(),
+        ),
         // A follow_up runs after the run it is sent during; with none in
         // flight there is nothing for it to follow.
         (Some("follow_up"), false) => Err(
@@ -1773,6 +1858,70 @@ mod tests {
         rec.wait_for("rpc-frame", |f| f["id"] == "ab" && f["success"] == false);
         rec.wait_for("view", |v| v["now"]["word"] == "running");
         finish(&core).unwrap();
+        for d in &dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn run_controls_need_a_run_and_a_raise_is_checked_before_it_leaves_the_core() {
+        // The risk (#837): the strip's Pause or a budget's Raise sent with
+        // no run, or a raise of the wrong shape reaching rpc: a ceiling it
+        // does not take (context_bytes, fixed for the run), a value that is
+        // not a whole number above 0, as a wall clock typed in seconds and
+        // sent unconverted as a fraction would be, or no ceiling at all.
+        // Each is refused here, by name, before it is written; a line
+        // that passes is forwarded, and rpc's own answer says the rest.
+        let (core, _rec, dirs) = with_child("run-controls");
+        for (ty, l) in [
+            ("pause", json!({"id": "p", "type": "pause"})),
+            ("resume", json!({"id": "r", "type": "resume"})),
+        ] {
+            let err = core.send(&l).unwrap_err();
+            assert!(err.contains(&format!("nothing to {ty}")), "{l}: {err}");
+        }
+        let raise = json!({"id": "b", "type": "set_budget", "max_iterations": 20});
+        let err = core.send(&raise).unwrap_err();
+        assert!(err.contains("no ceiling to raise"), "{err}");
+        run_started(&core);
+        for (l, want) in [
+            (json!({"id": "b", "type": "set_budget"}), "names no ceiling"),
+            (
+                json!({"id": "b", "type": "set_budget", "context_bytes": 9}),
+                "does not raise context_bytes",
+            ),
+            (
+                json!({"id": "b", "type": "set_budget", "max_iterations": 0}),
+                "whole number from 1",
+            ),
+            (
+                json!({"id": "b", "type": "set_budget", "max_wall_clock_ms": 1.5}),
+                "whole number from 1",
+            ),
+            (
+                json!({"id": "b", "type": "set_budget", "max_tokens": "900"}),
+                "whole number from 1",
+            ),
+            (
+                json!({"id": "b", "type": "set_budget", "max_iterations": 4_294_967_296_u64}),
+                "4294967295",
+            ),
+            (
+                json!({"id": "b", "type": "set_budget", "max_tokens": 9, "max_turns": 3}),
+                "not \"max_turns\"",
+            ),
+        ] {
+            let err = core.send(&l).unwrap_err();
+            assert!(err.contains(want), "{l}: {err}");
+        }
+        for l in [
+            json!({"id": "b", "type": "set_budget", "max_iterations": 20,
+                   "max_wall_clock_ms": 120_000, "max_tokens": 900}),
+            json!({"id": "p", "type": "pause"}),
+            json!({"id": "r", "type": "resume"}),
+        ] {
+            assert_eq!(core.send(&l), Ok(()), "{l}");
+        }
         for d in &dirs {
             let _ = std::fs::remove_dir_all(d);
         }

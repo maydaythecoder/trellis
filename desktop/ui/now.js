@@ -14,6 +14,14 @@
 // or Summary once the run has ended, opens the summary level (#832) one
 // burrow in from Run, and sends nothing.
 //
+// Pause and Resume (#837, ADR 0058 section 1) send `pause` and `resume`
+// and nothing else. Which of the two is offered is the reducer's
+// (`pause_control`); the word `paused` is the engine's `paused`
+// event, never the click, since a run asked to pause finishes its turn
+// first and may end before it holds. A refusal by the core is said under
+// the strip; one by trellis reaches the log and the alert, as every
+// refused command's does.
+//
 // Every value is trellis- or model-supplied text, written through
 // textContent only (ADR 0007, S10).
 
@@ -21,12 +29,13 @@ import { el } from "./dom.js";
 import { asciiFace, dsButton, dsStatus, facts, nowStrip, unreported } from "./ds.js";
 import { isCount, str } from "./fmt.js";
 import { burrow } from "./keys.js";
+import { lineId, send } from "./rpc.js";
 import { currentRegister } from "./settings.js";
 
 // The bundle's NowStrip state each of the reducer's states is coloured as.
 // The word drawn is the reducer's, never the bundle's: an ended run reads
 // run_end's own outcome, never `done` or `failed` (DESIGN.md §2.1).
-const NOW_TONES = { idle: "idle", running: "running", needs_you: "waiting", stopping: "failed" };
+const NOW_TONES = { idle: "idle", running: "running", needs_you: "waiting", paused: "paused", stopping: "failed" };
 
 // An ended run's tone: converged as `done`'s, every other outcome as
 // `failed`'s, as the outcome pane tones them.
@@ -62,6 +71,26 @@ function registerFace(doc, r) {
 // undefined until the first view.
 let lastNow;
 
+// The page's tauri, once wireNow has run; Pause and Resume send through it.
+let nowTauri = null;
+// What the core said when it refused a Pause or Resume; null when nothing.
+let controlRefused = null;
+
+// Wires the strip's run controls once (#837).
+export function wireNow(tauri) {
+  nowTauri = tauri;
+}
+
+// Sends `pause` or `resume`. What follows is the engine's to say: the view
+// redraws the strip from its events.
+async function control(doc, type) {
+  controlRefused = null;
+  await send(nowTauri, { id: lineId("now", type), type }, (why) => {
+    controlRefused = why;
+  });
+  redrawNow(doc);
+}
+
 // Redraws the Now strip from the last `now`, for the register dial.
 export function redrawNow(doc) {
   const pane = doc.getElementById("pane-now");
@@ -83,6 +112,9 @@ export function drawNow(doc, pane, n) {
   let model = null;
   if (str(v.model) !== null) model = str(v.tier) !== null ? `${v.model} · tier ${v.tier}` : v.model;
   const controls = [];
+  // A refusal is about this run's controls: once none applies, it goes.
+  const hold = str(v.pause_control);
+  if (hold === null) controlRefused = null;
   if (v.can_stop === true) {
     const stop = dsButton(doc, "Stop", { variant: "down", title: "Stop the run: trellis rolls back its edits and writes a trail" });
     stop.setAttribute("aria-haspopup", "dialog");
@@ -94,6 +126,16 @@ export function drawNow(doc, pane, n) {
       doc.getElementById("stop-confirm-cancel").focus();
     });
     controls.push(stop);
+  }
+  if (hold === "pause" && nowTauri !== null) {
+    const pause = dsButton(doc, "Pause", { variant: "ghost", title: "Hold the run before its next model call; the held time is not charged to the wall clock" });
+    pause.addEventListener("click", () => control(doc, "pause"));
+    controls.push(pause);
+  }
+  if (hold === "resume" && nowTauri !== null) {
+    const resume = dsButton(doc, "Resume", { variant: "signal", title: "Let the run go on, or withdraw a pause it has not reached yet" });
+    resume.addEventListener("click", () => control(doc, "resume"));
+    controls.push(resume);
   }
   if (state !== "idle") {
     const summary = dsButton(doc, state === "ended" ? "Summary" : "Summary so far", {
@@ -115,6 +157,7 @@ export function drawNow(doc, pane, n) {
       controls,
     }),
     ...registerFace(doc, v.register),
+    ...(controlRefused !== null ? [el(doc, "p", controlRefused, "failed")] : []),
   );
 }
 

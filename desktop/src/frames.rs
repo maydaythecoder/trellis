@@ -37,6 +37,19 @@ pub enum Frame {
     /// loop starts and again after a `set_budget` raise takes effect
     /// (#807), so the latest one replaces the last whole.
     RunBudget(RunBudget),
+    /// The loop's `paused` event (#806): the run holds before model call
+    /// `turn`, at the hold a `pause` asked for. Without the turn it names
+    /// no hold, so one that lacks it is [`Frame::Ignored`].
+    Paused {
+        turn: u64,
+    },
+    /// The loop's `resumed` event: the held run goes on. `paused_ms` is
+    /// how long it was held, left out of the wall-clock spend; `None` from
+    /// a line that did not carry it.
+    Resumed {
+        turn: Option<u64>,
+        paused_ms: Option<u64>,
+    },
     /// The loop's `steer delivered` event.
     SteerDelivered {
         after_step: Option<u64>,
@@ -275,6 +288,16 @@ pub fn parse_stdout(line: &str) -> Frame {
             max_tokens: json::u64(f, "max_tokens"),
             context_bytes: json::u64(f, "context_bytes"),
         }),
+        Some("paused") => match json::u64(f, "turn") {
+            Some(turn) => Frame::Paused { turn },
+            None => Frame::Ignored,
+        },
+        // Read whatever it carries: the run going on is the fact, and a
+        // line missing a figure still says it.
+        Some("resumed") => Frame::Resumed {
+            turn: json::u64(f, "turn"),
+            paused_ms: json::u64(f, "paused_ms"),
+        },
         Some("steer delivered") => Frame::SteerDelivered {
             after_step: json::u64(f, "after_step"),
         },

@@ -3901,7 +3901,7 @@ mod tests {
         let render = code_of("render.js");
         let budget = function_body(&render, "budget");
         assert!(
-            budget.contains("budgetRows(doc, Array.isArray(v.limits) ? v.limits : [])"),
+            budget.contains("budgetRows(doc, Array.isArray(v.limits) ? v.limits : [], v.raise)"),
             "the budget draws rows the core did not send"
         );
         for clock in ["Date", "performance", "setInterval", "setTimeout"] {
@@ -4619,9 +4619,28 @@ mod tests {
         // one dialog whose close sends the abort, and sends nothing itself;
         // Summary so far, and Summary once the run has ended, only burrows
         // into the summary level, and no not-built mark is left for it.
+        // Pause and Resume (#837) are the strip's only sends: one call to
+        // rpc.js's send, its type `pause` or `resume` and nothing else, so
+        // no abort or other line leaves the strip.
         let js = code_of("now.js");
-        for bad in ["abort", "send(", "invoke("] {
+        for bad in ["abort", "invoke(", "set_budget"] {
             assert!(!js.contains(bad), "now.js sends something: {bad}");
+        }
+        assert_eq!(
+            js.matches("send(").count(),
+            1,
+            "now.js sends more than its controls"
+        );
+        let control = function_body(&js, "control");
+        assert!(
+            control
+                .contains("await send(nowTauri, { id: lineId(\"now\", type), type }, (why) => {"),
+            "the strip's one send is not its control's: {control}"
+        );
+        let calls: Vec<&str> = js.matches("control(doc, \"").collect();
+        assert_eq!(calls.len(), 2, "the strip sends more than pause and resume");
+        for want in [r#"control(doc, "pause")"#, r#"control(doc, "resume")"#] {
+            assert!(js.contains(want), "now.js lacks {want}");
         }
         let draw = function_body(&js, "drawNow");
         for want in [
