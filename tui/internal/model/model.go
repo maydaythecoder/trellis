@@ -225,6 +225,8 @@ func (m *Model) key(k tea.KeyMsg) {
 		// be ^c's alone, and the ratatui TUI now stops on both.
 		if m.Input != "" {
 			m.Input = ""
+			// The @ offer goes with the line it was for (#904).
+			m.inputChanged()
 		} else {
 			m.ctrlC()
 		}
@@ -253,16 +255,18 @@ func (m *Model) key(k tea.KeyMsg) {
 		// it was one Down spent before the view moved again (#843).
 		m.ScrollBack = min(m.ScrollBack+1, m.transcriptTop())
 	case tea.KeyDown:
-		// Saturating: Down at the end stays at the end, following.
-		if m.ScrollBack > 0 {
-			m.ScrollBack--
-		}
+		// From the top as the view now draws it: when the pane has grown
+		// under a scroll back (an @ offer closed), the held offset is past
+		// the top, and Down spent presses there before the view moved
+		// (#904). Saturating: Down at the end stays at the end, following.
+		m.ScrollBack = max(min(m.ScrollBack, m.transcriptTop())-1, 0)
 	case tea.KeyPgUp:
 		// Held at the top, so PgDn after it moves at once rather than
 		// first spending presses on rows above the first (#660).
 		m.ScrollBack = min(m.ScrollBack+view.TranscriptPage, m.transcriptTop())
 	case tea.KeyPgDown:
-		m.ScrollBack = max(m.ScrollBack-view.TranscriptPage, 0)
+		// From the top as the view now draws it, as Down (#904).
+		m.ScrollBack = max(min(m.ScrollBack, m.transcriptTop())-view.TranscriptPage, 0)
 	case tea.KeyHome:
 		m.ScrollBack = m.transcriptTop()
 	case tea.KeyEnd:
