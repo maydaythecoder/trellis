@@ -41,6 +41,11 @@ got=$(go env GOVERSION)
 git config user.name "muhyadin mohamed"
 git config user.email "99102186+maydaythecoder@users.noreply.github.com"
 
+# G2b's guard fixture runs `python -m mypy` and `python -m pytest`; the
+# versions and hashes are the ones ci.yml's guard job installs (#215).
+python3 -m pip install -q --require-hashes -r qa/requirements-ci.txt \
+  || { echo "FAIL: could not install qa/requirements-ci.txt"; exit 1; }
+
 # G2b's dirty_worktree guard needs 127.0.0.1:11434 to accept a connection
 # (RuntimeClient::reachable is a TCP connect), and a cloud session has no
 # model runtime. A plain listener serving an empty directory, as ci.yml's
