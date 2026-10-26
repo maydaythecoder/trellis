@@ -1,8 +1,8 @@
 // What every module that talks to the trellis rpc child shares, one copy
 // each (#816): sending a command, the id that tells its answer apart,
 // starting a module, fetching when a section is shown, and knowing a run
-// ended. The copies modules still keep move here ticket by ticket (#817 to
-// #820).
+// ended. No other module keeps a copy of one
+// (`page_helpers_live_in_one_module_each`).
 //
 // The page reaches trellis only through the core's commands and events
 // (ADR 0048 section 5): `rpc_send` forwards one command, and the core

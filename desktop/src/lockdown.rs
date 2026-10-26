@@ -1957,7 +1957,15 @@ mod tests {
             submit.contains("if (!sent) searching(doc, false);"),
             "a refused search leaves the button disabled for good"
         );
-        let send = function_body(&js, "send");
+        // forward() answers rpc.js's send's answer, which says whether the
+        // line went (#820).
+        let forward = function_body(&js, "forward");
+        assert!(
+            forward.contains("return send(tauri, line, (why) =>"),
+            "forward() does not say whether the line went: {forward}"
+        );
+        let rpc = code_of("rpc.js");
+        let send = function_body(&rpc, "send");
         assert!(
             send.contains("return true;")
                 && between(send, "catch (err)", "\n  }").contains("return false;"),
@@ -2417,11 +2425,17 @@ mod tests {
             .skip(1)
             .map(|rest| &rest[..rest.find('"').unwrap()])
             .collect();
-        assert_eq!(invoked, ["rpc_send", "get_overview"], "{invoked:?}");
+        // get_queue goes through rpc.js's send (#820); the overview, which
+        // carries PR and CI state, is the core's own command.
+        assert_eq!(invoked, ["get_overview"], "{invoked:?}");
+        assert!(
+            js.contains(r#"import { runEnded, send, start } from "./rpc.js";"#),
+            "queue.js reaches the core some other way"
+        );
         // When it asks: on opening, on Refresh, and after each run_end.
         assert!(js.contains(r#"aria-controls="board""#), "{js}");
         assert!(js.contains(r#"getElementById("qb-refresh").addEventListener("click""#));
-        assert!(js.contains(r#"f.type === "run_end") askQueue"#));
+        assert!(js.contains("if (runEnded(event.payload)) askQueue(doc, tauri);"));
     }
 
     #[test]
@@ -3225,22 +3239,6 @@ mod tests {
         ("runEnded", "rpc.js"),
     ];
 
-    /// The copies of a helper a module still defines for itself, as
-    /// #816 found them. #817 to #820 move them, each taking its lines out;
-    /// the list only ever shrinks.
-    const NOT_YET_MOVED: &[(&str, &str)] = &[
-        ("queue.js", "el"),
-        ("queue.js", "isCount"),
-        ("queue.js", "muted"),
-        ("queue.js", "start"),
-        ("queue.js", "str"),
-        ("vault.js", "el"),
-        ("vault.js", "isCount"),
-        ("vault.js", "send"),
-        ("vault.js", "start"),
-        ("vault.js", "str"),
-    ];
-
     /// The names a module defines at its top level, at the start of a
     /// line: `function name(`, exported, async or both, and `const name =`
     /// or `let name =` bound to a function or an arrow. A definition
@@ -3282,8 +3280,8 @@ mod tests {
     fn page_helpers_live_in_one_module_each() {
         // The risk: a helper written again in one more module (`el` was
         // written twelve times, `str` twelve), so a fix to one copy leaves
-        // the others wrong; and a line in NOT_YET_MOVED left behind after
-        // its copy moved, which would let a new copy back in unnoticed.
+        // the others wrong. #817 to #820 moved every copy #816 found, so no
+        // module but a helper's home defines it.
         let ui = ui_code();
         for (name, home) in HELPER_HOMES {
             let code = ui
@@ -3300,18 +3298,17 @@ mod tests {
                     continue;
                 };
                 assert!(
-                    module == home || NOT_YET_MOVED.contains(&(module.as_str(), name.as_str())),
+                    module == home,
                     "{module} defines {name}, whose one home is {home}: import it from there"
                 );
             }
         }
-        for (module, name) in NOT_YET_MOVED {
-            let code = ui
-                .get(*module)
-                .unwrap_or_else(|| panic!("ui/{module} is missing"));
+        // A run's end is known one way, rpc.js's runEnded (#816): no other
+        // module tests a frame for run_end itself.
+        for (module, code) in &ui {
             assert!(
-                top_level_definitions(code).contains(*name),
-                "{module} no longer defines {name}: take ({module}, {name}) out of NOT_YET_MOVED"
+                module == "rpc.js" || !code.contains(r#""run_end""#),
+                "{module} tests for run_end itself: use rpc.js's runEnded"
             );
         }
     }
