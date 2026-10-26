@@ -92,12 +92,17 @@ Parity between the clients is tracked in `tui/PARITY.md`.
 
 ## Tokens
 
-Both themes live in the wireframe's first `<style>` block, with a reading
-copy and each colour's meaning in `docs/design/DESIGN.md` §3 (held in step by
-`scripts/checks/design-tokens.py`). The desktop's
+Every value comes from `docs/design/system/tokens.json`, the owner's design
+system as vendored into the repository; the wireframe's first `<style>` block
+and the tables in `docs/design/DESIGN.md` §3 are copies that
+`scripts/checks/design-tokens.py` holds to it. Each colour's meaning is in
+DESIGN.md §3.1, the terminal colours (256-colour index and 16-colour fallback)
+in §3.4, and where the brand book and the engine's rules differ in §2.1. The
+component cards are `docs/design/system/components/<Name>.md`; the icons and
+the mark are `docs/design/system/icons/` and `logos/`. The desktop's
 `desktop/ui/style.css` still has its own, older names (`--bg`, `--fg`,
 `--accent`, `--passed`, `--failed`, …); mapping them onto these is part of
-building the wireframe, not a change to make on the side. Use the variables,
+building the run view, not a change to make on the side. Use the variables,
 never a literal:
 
 - Surfaces: `--ground`, `--panel`, `--panel-raised`, `--panel-inset`; lines
@@ -106,8 +111,10 @@ never a literal:
 - Ink: `--ink`, `--ink-secondary`, `--ink-muted`, `--ink-inverse`.
 - Meaning: `--signal` (the user and what needs them), `--cool` (tools and
   the engine's own activity), `--ok` (a passed check), `--down` (a failed
-  check, a refusal, stop), `--warn` (waiting, a WARN line), `--play`
-  (wire-only annotations). Each has a `-soft` fill where a row is tinted.
+  check, a refusal, stop), `--warn` (waiting, a WARN line), `--play` (the
+  playful register: one Ascii face, a loader; never a status, an action or a
+  figure, and absent in the serious register). Each has a `-soft` fill where
+  a row is tinted.
 - Diff: `--diff-add`, `--diff-del`, `--diff-hunk` and their `-soft` fills.
 - Type: `--font-mono` for anything the engine said or measured, `--font-sans`
   for prose a person or the model wrote. Figures use tabular numerals.
