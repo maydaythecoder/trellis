@@ -108,9 +108,17 @@ type Model struct {
 	restored *bool
 
 	// now is the clock the budget's elapsed time is read from; tests set
-	// it. runStart is when the run in flight started.
+	// it. runStart is when the run in flight started; waited is the time
+	// this run's questions waited on the person, and askedAt when the one
+	// on screen was asked (ownElapsed, panes.go).
 	now      func() time.Time
 	runStart time.Time
+	waited   time.Duration
+	askedAt  time.Time
+	// strip is what the Now strip and Where it is draw that the panes do
+	// not hold (#850): the run's phase, the runtime, the repository, a
+	// stop on its way, and the last run's own run_end words.
+	strip view.Now
 
 	// theme is what the screen and the modal are painted with (Options).
 	theme theme.Theme
@@ -315,10 +323,11 @@ func (m *Model) ctrlC() {
 	if m.Quitting {
 		return
 	}
-	m.Modal = nil
+	m.closeModal()
 	m.approvals = nil
 	if m.Running {
 		m.send("abort", nil)
+		m.strip.Stopping = true
 		m.push(view.RoleNote, "· stopping: the run rolls back before trellis exits")
 	} else if m.classifying {
 		// abort also drops a pending classify, unanswered.
@@ -388,6 +397,10 @@ func (m *Model) frame(f frames.Frame) {
 		m.runStart = m.now()
 		m.Running = true
 		m.Outcome = ""
+	case frames.ModelCall:
+		m.strip.Phase = view.Phase{Kind: "model", Turn: *f.ModelCallTurn}
+	case frames.RuntimeIdentified:
+		m.strip.Runtime = runtimeText(f.Runtime)
 	case frames.ApprovalRequest:
 		m.approvalRequested(*f.Approval)
 	case frames.SteerDelivered:
@@ -453,10 +466,21 @@ func (m *Model) runEnd(e *frames.RunEndFields) {
 	m.refreshState()
 	m.steersNotDelivered()
 	// A question its run no longer waits on cannot be answered.
-	m.Modal = nil
+	m.closeModal()
 	m.approvals = nil
 	m.Outcome = OutcomeLine(e)
 	m.restored = e.Restored
+	// The strip names the ending in run_end's own words and exit code, and
+	// keeps the time the run took by this view's clock.
+	m.strip.Phase, m.strip.Stopping = view.Phase{}, false
+	m.strip.Outcome, m.strip.Exit = "", e.Exit
+	if e.Outcome != nil {
+		m.strip.Outcome = *e.Outcome
+	}
+	if !m.runStart.IsZero() {
+		secs := uint64(m.ownElapsed() / time.Second)
+		m.Budget.ElapsedSecs = &secs
+	}
 	if e.Outcome != nil && *e.Outcome == "error" {
 		m.errorLines(e.Error)
 		return
@@ -598,7 +622,7 @@ func (m *Model) exited(err error) {
 		}
 	}
 	m.Running = false
-	m.Modal = nil
+	m.closeModal()
 	m.approvals = nil
 	m.Done = true
 }
@@ -614,7 +638,7 @@ func exitReason(err error) string {
 func (m *Model) View() string {
 	w, h := m.size()
 	if m.Modal != nil {
-		return view.Modal(m.theme, m.Modal.Question, m.Modal.Diff, m.Modal.Scroll, w, h)
+		return view.Asking(m.viewState(), m.Modal.Question, m.Modal.Diff, m.Modal.Scroll, w, h)
 	}
 	return view.Render(m.viewState(), w, h)
 }

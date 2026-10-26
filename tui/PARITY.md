@@ -217,3 +217,16 @@ tests held no colour rule, so the row names no Rust test.
 | none | none | each row is painted in its role's token, and a check row takes ok or down only from the verdict trellis sent, never from its words | #841 | `TestPaintEachRoleTakesItsToken`, `TestViewCheckRowsTakeOkAndDownRoles` |
 | none | none | painted, the only escape sequences on screen are the theme's colours, at every colour depth, and every row is still exactly the screen's width | #841 | `TestViewNoEscapeSequenceReachesTheScreen`, `TestViewWideTextKeepsEveryRowWithinTheWidth`, `TestFrameBoxIsExactlyItsSize` |
 | none | none | every transcript row is written with its role through rows.go, and no role is read from a row's words | #849 | `TestRowsEveryTranscriptLineHasARole`, `TestRowsOnlyRowsGoWritesTheTranscript` |
+
+## Run view
+
+The regions of the run view the brand book and `docs/design/DESIGN.md`
+section 2 name, as the TUI draws them (S20, #790). The ratatui TUI had none
+of them, so each row names no Rust test.
+
+| Rust file | Rust test | Rule | Ticket | Go test |
+| --- | --- | --- | --- | --- |
+| none | none | the Now strip names the state, the turn against the run's ceiling and what the run is on; an ended run in run_end's own words and exit code, never done or failed | #850 | `TestNowStripShowsStateTurnAndActivity` |
+| none | none | the strip's clock is this view's and says so, and leaves out the time a question waited on the person | #850 | `TestNowClockIsLabelledAndSkipsApprovalWaits` |
+| none | none | Where it is names the runtime as it identified itself and the repository trellis serves, and a control mode trellis does not send as not reported | #850 | `TestWhereItIsShowsTheRuntime` |
+| none | none | the messages row draws trellis's newest stderr line and how many came before, and only once there is one | #850 | `TestViewDrawsTheNewestStderrLine` |
