@@ -15,29 +15,8 @@
 // unreported, never drawn as 0, and no two counts are joined into a ratio
 // (CLAUDE.md rules 3 and 4).
 
-function el(doc, tag, text) {
-  const e = doc.createElement(tag);
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
-
-function muted(doc, tag, text) {
-  const e = el(doc, tag, text);
-  e.className = "muted";
-  return e;
-}
-
-function isCount(v) {
-  return typeof v === "number" && Number.isFinite(v);
-}
-
-function str(v) {
-  return typeof v === "string" ? v : null;
-}
-
-function count(v) {
-  return isCount(v) ? String(v) : "not reported";
-}
+import { el, muted } from "./dom.js";
+import { isCount, notReported, str } from "./fmt.js";
 
 function list(v) {
   return Array.isArray(v) ? v : [];
@@ -174,8 +153,8 @@ function lastRun(doc, pane, o) {
     ["edits", isCount(t.edits) ? `${t.edits} file(s)` : "not reported"],
     ["checks", checks.length > 0 ? checks.join(", ") : "none ran"],
     // Two counts, never one number (CLAUDE.md rule 4).
-    ["verified", count(t.verified)],
-    ["reviewed", count(t.reviewed)],
+    ["verified", notReported(t.verified)],
+    ["reviewed", notReported(t.reviewed)],
     ["budget", "not reported in the overview"],
     ["tier", str(t.tier) ?? "not recorded"],
     ["approvals", "not reported in the overview"],
@@ -200,10 +179,10 @@ function codebase(doc, pane, o) {
   }
   pane.replaceChildren(
     pairs(doc, [
-      ["modules indexed", count(c.modules_indexed)],
-      ["bound call sites", count(c.bound_call_sites)],
-      ["ambiguous", count(c.ambiguous)],
-      ["unresolved", count(c.unresolved)],
+      ["modules indexed", notReported(c.modules_indexed)],
+      ["bound call sites", notReported(c.bound_call_sites)],
+      ["ambiguous", notReported(c.ambiguous)],
+      ["unresolved", notReported(c.unresolved)],
     ]),
     muted(doc, "p", "Three counts from different populations; no share of one is drawn."),
     muted(doc, "p", "From the saved index, .trellis/index.bin, which trellis index and the Codebase section save."),
@@ -250,8 +229,8 @@ function pullRequest(doc, p) {
     muted(
       doc,
       "div",
-      `checks: ${count(c.passed)} passed, ${count(c.failed)} failed, ` +
-        `${count(c.pending)} pending, ${count(c.other)} other`,
+      `checks: ${notReported(c.passed)} passed, ${notReported(c.failed)} failed, ` +
+        `${notReported(c.pending)} pending, ${notReported(c.other)} other`,
     ),
   );
   return li;
