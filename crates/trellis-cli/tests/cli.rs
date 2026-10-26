@@ -4734,9 +4734,8 @@ fn doctor_reports_one_slot_as_single_stream_and_two_as_measured_concurrency() {
 /// the heads `tests/client_contract.json` documents for `get_state`'s tier
 /// label, followed by the documented separator and some explanation.
 fn documented_tier_head(line: &str) -> Option<String> {
-    let c: serde_json::Value =
-        serde_json::from_str(include_str!("client_contract.json")).expect("the contract is JSON");
-    let shape = &c["rpc"]["commands"]["get_state"]["data"]["tier_label"];
+    let c = client_contract();
+    let shape = &c["rpc"]["responses"]["get_state"]["tier_label"];
     let sep = shape["detail_separator"]
         .as_str()
         .expect("the contract names the separator");
@@ -6594,12 +6593,12 @@ fn rpc_contract_lists_every_field_get_state_answers() {
         .collect();
     let c = client_contract();
     let listed: std::collections::BTreeSet<&str> =
-        contract_paths(&c["rpc"]["commands"]["get_state"]["data"]["always"])
+        contract_paths(&c["rpc"]["responses"]["get_state"]["always"])
             .into_iter()
             .collect();
     assert_eq!(
         answered, listed,
-        "get_state's fields and tests/client_contract.json's get_state.data.always differ"
+        "get_state's fields and tests/client_contract.json's responses.get_state.always differ"
     );
     let _ = std::fs::remove_dir_all(&d);
 }
