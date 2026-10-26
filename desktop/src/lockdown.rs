@@ -1546,8 +1546,8 @@ mod tests {
             "ctx.items[k] = b;",
             "markSelected(ctx);",
             r#"`Modules in ${str(p.package) ?? "this package"}`"#,
-            "`edges in ${edgesIn(ctx, m)} · edges out ${figure(m && m.edges_out)} · `",
-            "`doubt ${figure(m && m.doubt)}`",
+            "`edges in ${edgesIn(ctx, m)} · edges out ${notReported(m && m.edges_out)} · `",
+            "`doubt ${notReported(m && m.doubt)}`",
         ] {
             assert!(list.contains(want), "drawList lacks {want}");
         }
@@ -1890,8 +1890,8 @@ mod tests {
         );
         let ask = function_body(&js, "ask");
         let sent = ask
-            .find("invoke(\"rpc_send\"")
-            .expect("ask sends the question");
+            .find("await send(tauri, { id, type: \"get_radius\", symbol }")
+            .expect("ask sends the question through rpc.js's send");
         let off = ask
             .find("submitting(doc, true);")
             .expect("ask disables the button");
@@ -1899,7 +1899,8 @@ mod tests {
             off < sent,
             "the button is disabled only after the question is sent"
         );
-        let refused = between(ask, "catch (err)", "\n  }");
+        // The refusal is rpc.js's send's third argument (#819).
+        let refused = between(ask, "symbol }, (why) => {", "\n  });");
         assert!(
             refused.contains("submitting(doc, false);"),
             "a refused question leaves the button disabled for good"
@@ -1956,7 +1957,15 @@ mod tests {
             submit.contains("if (!sent) searching(doc, false);"),
             "a refused search leaves the button disabled for good"
         );
-        let send = function_body(&js, "send");
+        // forward() answers rpc.js's send's answer, which says whether the
+        // line went (#820).
+        let forward = function_body(&js, "forward");
+        assert!(
+            forward.contains("return send(tauri, line, (why) =>"),
+            "forward() does not say whether the line went: {forward}"
+        );
+        let rpc = code_of("rpc.js");
+        let send = function_body(&rpc, "send");
         assert!(
             send.contains("return true;")
                 && between(send, "catch (err)", "\n  }").contains("return false;"),
@@ -2416,11 +2425,17 @@ mod tests {
             .skip(1)
             .map(|rest| &rest[..rest.find('"').unwrap()])
             .collect();
-        assert_eq!(invoked, ["rpc_send", "get_overview"], "{invoked:?}");
+        // get_queue goes through rpc.js's send (#820); the overview, which
+        // carries PR and CI state, is the core's own command.
+        assert_eq!(invoked, ["get_overview"], "{invoked:?}");
+        assert!(
+            js.contains(r#"import { runEnded, send, start } from "./rpc.js";"#),
+            "queue.js reaches the core some other way"
+        );
         // When it asks: on opening, on Refresh, and after each run_end.
         assert!(js.contains(r#"aria-controls="board""#), "{js}");
         assert!(js.contains(r#"getElementById("qb-refresh").addEventListener("click""#));
-        assert!(js.contains(r#"f.type === "run_end") askQueue"#));
+        assert!(js.contains("if (runEnded(event.payload)) askQueue(doc, tauri);"));
     }
 
     #[test]
@@ -2924,12 +2939,12 @@ mod tests {
             BTreeSet::from(["get_codebase", "get_history", "get_radius", "get_symbols"]),
             "atlas.js sends a type that is not one of its four reads"
         );
-        let invoked: Vec<&str> = js
-            .split("invoke(\"")
-            .skip(1)
-            .map(|rest| &rest[..rest.find('"').unwrap()])
-            .collect();
-        assert_eq!(invoked, ["rpc_send"], "{invoked:?}");
+        // It reaches the core only through rpc.js's send (#819), which
+        // calls only rpc_send (model_gate_model_js_parses_no_html).
+        assert!(
+            !js.contains("invoke(") && js.contains(r#"import { send, start } from "./rpc.js";"#),
+            "atlas.js reaches the core some other way"
+        );
         // Every question carries an Atlas id, so the core keeps its
         // answers apart from the Codebase view's and the radius pane's.
         assert!(js.contains(r#"const ID = "desktop-atlas-";"#));
@@ -3224,48 +3239,6 @@ mod tests {
         ("runEnded", "rpc.js"),
     ];
 
-    /// The copies of a helper a module still defines for itself, as
-    /// #816 found them. #817 to #820 move them, each taking its lines out;
-    /// the list only ever shrinks.
-    const NOT_YET_MOVED: &[(&str, &str)] = &[
-        ("atlas.js", "el"),
-        ("atlas.js", "isCount"),
-        ("atlas.js", "plural"),
-        ("atlas.js", "send"),
-        ("atlas.js", "start"),
-        ("atlas.js", "str"),
-        ("codebase.js", "el"),
-        ("codebase.js", "isCount"),
-        ("codebase.js", "start"),
-        ("codebase.js", "str"),
-        ("model.js", "el"),
-        ("model.js", "lineId"),
-        ("model.js", "send"),
-        ("model.js", "str"),
-        ("queue.js", "el"),
-        ("queue.js", "isCount"),
-        ("queue.js", "muted"),
-        ("queue.js", "start"),
-        ("queue.js", "str"),
-        ("radius.js", "el"),
-        ("radius.js", "isCount"),
-        ("radius.js", "start"),
-        ("radius.js", "str"),
-        ("settings.js", "el"),
-        ("settings.js", "isCount"),
-        ("settings.js", "lineId"),
-        ("settings.js", "str"),
-        ("status.js", "str"),
-        ("trails.js", "el"),
-        ("trails.js", "isCount"),
-        ("trails.js", "start"),
-        ("vault.js", "el"),
-        ("vault.js", "isCount"),
-        ("vault.js", "send"),
-        ("vault.js", "start"),
-        ("vault.js", "str"),
-    ];
-
     /// The names a module defines at its top level, at the start of a
     /// line: `function name(`, exported, async or both, and `const name =`
     /// or `let name =` bound to a function or an arrow. A definition
@@ -3307,8 +3280,8 @@ mod tests {
     fn page_helpers_live_in_one_module_each() {
         // The risk: a helper written again in one more module (`el` was
         // written twelve times, `str` twelve), so a fix to one copy leaves
-        // the others wrong; and a line in NOT_YET_MOVED left behind after
-        // its copy moved, which would let a new copy back in unnoticed.
+        // the others wrong. #817 to #820 moved every copy #816 found, so no
+        // module but a helper's home defines it.
         let ui = ui_code();
         for (name, home) in HELPER_HOMES {
             let code = ui
@@ -3325,18 +3298,17 @@ mod tests {
                     continue;
                 };
                 assert!(
-                    module == home || NOT_YET_MOVED.contains(&(module.as_str(), name.as_str())),
+                    module == home,
                     "{module} defines {name}, whose one home is {home}: import it from there"
                 );
             }
         }
-        for (module, name) in NOT_YET_MOVED {
-            let code = ui
-                .get(*module)
-                .unwrap_or_else(|| panic!("ui/{module} is missing"));
+        // A run's end is known one way, rpc.js's runEnded (#816): no other
+        // module tests a frame for run_end itself.
+        for (module, code) in &ui {
             assert!(
-                top_level_definitions(code).contains(*name),
-                "{module} no longer defines {name}: take ({module}, {name}) out of NOT_YET_MOVED"
+                module == "rpc.js" || !code.contains(r#""run_end""#),
+                "{module} tests for run_end itself: use rpc.js's runEnded"
             );
         }
     }
@@ -4069,12 +4041,18 @@ mod tests {
             assert!(!js.contains(bad), "model.js uses {bad}");
         }
         assert!(js.contains("textContent"), "model.js writes no text");
-        let invokes: Vec<&str> = js
+        // It sends through rpc.js's send (#818), which calls only rpc_send.
+        assert!(
+            !js.contains("invoke(") && js.contains(r#"import { lineId, send } from "./rpc.js";"#),
+            "model.js reaches the core some other way"
+        );
+        let rpc = code_of("rpc.js");
+        let invokes: Vec<&str> = rpc
             .split("invoke(\"")
             .skip(1)
             .map(|r| r.split('"').next().unwrap_or(""))
             .collect();
-        assert_eq!(invokes, ["rpc_send"], "model.js calls only rpc_send");
+        assert_eq!(invokes, ["rpc_send"], "rpc.js calls only rpc_send");
     }
 
     #[test]
@@ -4113,10 +4091,16 @@ mod tests {
         for want in [
             r#"type: "get_session_stats""#,
             r#"listen("rpc-frame""#,
-            r#"f.type === "run_end") askSessionTokens(tauri)"#,
+            "if (runEnded(event.payload)) askSessionTokens(tauri);",
         ] {
             assert!(main.contains(want), "main.js lacks {want}");
         }
+        // rpc.js's runEnded is the one way the page knows a run ended
+        // (#816): the child's run_end frame.
+        assert!(
+            function_body(&code_of("rpc.js"), "runEnded").contains(r#"frame.type === "run_end""#),
+            "runEnded reads something other than the run_end frame"
+        );
         let started = main
             .split(r#"listen("child-started""#)
             .nth(1)

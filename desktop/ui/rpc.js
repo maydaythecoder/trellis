@@ -1,8 +1,8 @@
 // What every module that talks to the trellis rpc child shares, one copy
 // each (#816): sending a command, the id that tells its answer apart,
 // starting a module, fetching when a section is shown, and knowing a run
-// ended. The copies modules still keep move here ticket by ticket (#817 to
-// #820).
+// ended. No other module keeps a copy of one
+// (`page_helpers_live_in_one_module_each`).
 //
 // The page reaches trellis only through the core's commands and events
 // (ADR 0048 section 5): `rpc_send` forwards one command, and the core
@@ -34,14 +34,23 @@ export function lineId(module, kind) {
   return `desktop-${module}-${kind}-${n}`;
 }
 
-// Starts a module: runs `wire` and, when it fails, says so in the page's
-// banner through dialogs.js. Every module used to end in
-// `.catch(console.error)`, and a release window has no console, so a
-// module that failed to start did so silently.
+// Starts a module: runs `wire` once the document is parsed and, when it
+// fails, says so in the page's banner through dialogs.js. Every module used
+// to end in `.catch(console.error)`, and a release window has no console,
+// so a module that failed to start did so silently. The console still
+// hears it, so a developer's devtools and the CI smoke run (ADR 0059) do
+// too. A module script runs once the document is parsed, so the wait is
+// only for a page that loaded one some other way.
 export function start(name, wire) {
-  Promise.resolve()
-    .then(wire)
-    .catch((err) => pageError(`${name} did not start: ${err}`));
+  const run = () =>
+    Promise.resolve()
+      .then(wire)
+      .catch((err) => {
+        pageError(`${name} did not start: ${err}`);
+        console.error(`trellis desktop: ${name} did not start:`, err);
+      });
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", run, { once: true });
+  else run();
 }
 
 // Calls `show` each time the element with id `id` stops being hidden, so a
