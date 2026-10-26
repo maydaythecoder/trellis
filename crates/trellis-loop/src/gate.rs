@@ -466,7 +466,10 @@ pub(crate) fn call_summary(call: &ToolCall) -> String {
         ToolCall::AskHuman { question, .. } => format!("ask_human {:?}", first_line(question)),
         // A count, not the text: the steps are model output, and the
         // observation lists them quoted.
-        ToolCall::Plan { steps } => format!("plan ({} steps)", steps.len()),
+        ToolCall::Plan { steps } => match steps.len() {
+            1 => "plan (1 step)".to_string(),
+            n => format!("plan ({n} steps)"),
+        },
     }
 }
 
