@@ -2899,7 +2899,7 @@ mod tests {
     }
 
     /// The ids atlas.js draws into or reads, every one inside #atlas.
-    const ATLAS_IDS: [&str; 30] = [
+    const ATLAS_IDS: [&str; 32] = [
         "at-where",
         "at-open-search",
         "at-status",
@@ -2926,6 +2926,8 @@ mod tests {
         "at-tab-chg",
         "at-tab-pin",
         "at-detail",
+        "at-detail-title",
+        "at-detail-meta",
         "at-search",
         "at-q",
         "at-qclose",
@@ -3503,6 +3505,198 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The level sections #910 moved onto the design system's components.
+    const DS_LEVELS: [&str; 5] = ["trails", "codebase", "atlas", "board", "vault"];
+
+    /// The modules that draw them, each through ds.js.
+    const DS_LEVEL_MODULES: [&str; 6] = [
+        "trails.js",
+        "codebase.js",
+        "radius.js",
+        "queue.js",
+        "vault.js",
+        "atlas.js",
+    ];
+
+    /// What draws a component other than through ds.js (#910): a region in
+    /// a level section that is not a Panel whose first child is its head,
+    /// holding the h3 title the region is labelled by; a `.pane` there; and
+    /// a module other than ds.js that writes a Panel's, a Stat's or a
+    /// Status's class, or builds a title (`h3`) or a label and value list
+    /// (`dl`, `dt`, `dd`) itself.
+    fn hand_drawn(page: &[Element], ui: &BTreeMap<String, String>) -> Vec<String> {
+        let mut out = Vec::new();
+        let first_child = |i: usize| (0..page.len()).find(|&c| page[c].parent == Some(i));
+        for level in DS_LEVELS {
+            let s = index_of(page, level);
+            for (i, e) in page.iter().enumerate() {
+                if !within(page, i, s) {
+                    continue;
+                }
+                let classes: Vec<&str> = e.attr("class").unwrap_or("").split_whitespace().collect();
+                if classes.contains(&"pane") {
+                    out.push(format!("#{level} draws a pane of its own"));
+                }
+                if e.attr("role") != Some("region") {
+                    continue;
+                }
+                let label = e.attr("aria-labelledby").unwrap_or("");
+                if !classes.contains(&"cd-panel") {
+                    out.push(format!("a region in #{level} is not a Panel: {label:?}"));
+                    continue;
+                }
+                let Some(head) =
+                    first_child(i).filter(|&h| page[h].attr("class") == Some("cd-panel-head"))
+                else {
+                    out.push(format!("a Panel in #{level} has no head first: {label:?}"));
+                    continue;
+                };
+                let titled = first_child(head).is_some_and(|t| {
+                    page[t].tag == "h3"
+                        && page[t].attr("class") == Some("cd-panel-title")
+                        && page[t].attr("id") == Some(label)
+                });
+                if !titled {
+                    out.push(format!(
+                        "a Panel in #{level} is not labelled by its head's title: {label:?}"
+                    ));
+                }
+            }
+        }
+        for (module, code) in ui {
+            if module == "ds.js" {
+                continue;
+            }
+            for piece in [
+                "\"cd-panel",
+                "`cd-panel",
+                "\"cd-stat",
+                "`cd-stat",
+                "\"cd-status",
+                "`cd-status",
+                "\"cd-rail-row",
+                "\"h3\"",
+                "\"dl\"",
+                "\"dt\"",
+                "\"dd\"",
+            ] {
+                if code.contains(piece) {
+                    out.push(format!("{module} draws {piece} itself"));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_level_draws_through_ds() {
+        // The risk (#910): a level drawing its own frames and label and
+        // value sentences beside the design system's, so the Trails,
+        // Codebase, Board, Vault and Atlas read as another application
+        // than the Run level; or one module's copy of a Panel head, a Stat
+        // or a Status drifting from ds.js's. Each region there is a Panel
+        // with its title in the head, no module but ds.js builds a head, a
+        // Stat or a Status, and each level module draws through ds.js: a
+        // sequence in time as a Rail, a count as a Stat, a state as a
+        // Status. The styles the levels kept for their own frames are gone.
+        let page = page();
+        let ui = ui_code();
+        let gaps = hand_drawn(&page, &ui);
+        assert!(gaps.is_empty(), "{gaps:#?}");
+        for module in DS_LEVEL_MODULES {
+            assert!(
+                imports_of(&ui[module]).values().any(|m| m == "ds.js"),
+                "{module} draws nothing through ds.js"
+            );
+        }
+        let trails = &ui["trails.js"];
+        let queue = &ui["queue.js"];
+        let overview = &ui["overview.js"];
+        for (code, f, want) in [
+            (trails, "drawList", "railRows(doc, rows)"),
+            (
+                trails,
+                "drawList",
+                "dsStatus(doc, INTEGRITY_TONES[r.integrity] ?? \"idle\", integrity)",
+            ),
+            (trails, "drawDetail", "stats(doc, ["),
+            (queue, "drawTasks", "railRows(doc, items)"),
+            (
+                queue,
+                "task",
+                "dsStatus(doc, STATUS_TONES[status] ?? \"idle\"",
+            ),
+            (queue, "drawCounts", "stat(doc, {"),
+            (overview, "drawPrCi", "railRows(doc, runs)"),
+            (
+                overview,
+                "ciRun",
+                "dsStatus(doc, CI_TONES[conclusion] ?? \"idle\"",
+            ),
+            (&ui["radius.js"], "block", "stats(doc, rows.map("),
+            (&ui["codebase.js"], "drawDetails", "stats(doc, figures)"),
+            (&ui["codebase.js"], "drawFigures", "stats(doc, ["),
+            (&ui["atlas.js"], "figs", "return stats("),
+            (
+                &ui["atlas.js"],
+                "renderPanel",
+                "byId(A, \"at-detail-title\").textContent = head.title;",
+            ),
+        ] {
+            assert!(function_body(code, f).contains(want), "{f} lacks {want}");
+        }
+        // Integrity is trellis's word and may take a tone; a trail's
+        // outcome is its own, untrusted, and keeps the idle one.
+        assert!(
+            function_body(trails, "drawDetail").contains(
+                r#"dsStatus(doc, "idle", recorded(doc, "span", r.outcome, "not recorded"))"#
+            ),
+            "a trail's outcome is drawn in a tone the desktop chose"
+        );
+        let rules = css_rules();
+        for (selector, decls) in &rules {
+            for token in selector.split([',', ' ', '>']).filter(|t| !t.is_empty()) {
+                for gone in [".rd-block", ".at-rd-block", ".qb-count", ".at-panel"] {
+                    assert!(
+                        token != gone && !token.starts_with(&format!("{gone}.")),
+                        "style.css keeps {gone}, a frame a level drew itself: {selector}"
+                    );
+                }
+            }
+            if selector.contains(".at-mapwrap") || selector.contains(".at-side") {
+                for frame in ["border", "background", "box-shadow"] {
+                    assert!(
+                        !decls.contains(frame),
+                        "{selector} draws a frame over the Panel's: {decls}"
+                    );
+                }
+            }
+        }
+        assert!(
+            !rules.iter().any(|(s, _)| s.contains(".tr-list button")),
+            "style.css frames a run's row itself"
+        );
+        // A planted drift is caught: a region drawn as a pane, and a title
+        // a module builds.
+        let html = ui_file("index.html");
+        let planted = html.replacen(
+            r#"<div class="cd-panel" role="region" aria-labelledby="tr-detail-title">"#,
+            r#"<div class="pane" role="region" aria-labelledby="tr-detail-title">"#,
+            1,
+        );
+        assert_ne!(planted, html, "the plant did not take");
+        assert!(!hand_drawn(&page_of(&planted), &ui).is_empty());
+        let mut drifted = ui.clone();
+        drifted
+            .get_mut("vault.js")
+            .unwrap()
+            .push_str("\nel(doc, \"h3\", \"Note\");\n");
+        assert_eq!(
+            hand_drawn(&page, &drifted),
+            ["vault.js draws \"h3\" itself"]
+        );
     }
 
     #[test]

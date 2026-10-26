@@ -244,14 +244,21 @@ function pullRequest(doc, p) {
   return li;
 }
 
+// The tone a CI run's conclusion is drawn in, as gh reported it: a run
+// that succeeded is ok, one that failed is down, and any other (none yet,
+// cancelled, skipped) is idle, its word saying which.
+const CI_TONES = { success: "ok", failure: "down" };
+
+// One CI run as a Rail row (#910): its workflow and branch, its state as
+// a Status, and its id and start as the row's meta.
 function ciRun(doc, r) {
-  const li = el(doc, "li");
-  li.append(el(doc, "span", str(r.workflow) ?? "?"), " ");
-  li.append(el(doc, "code", str(r.branch) ?? "?"), " ");
-  li.append(el(doc, "span", `${str(r.status) ?? "?"}/${str(r.conclusion) ?? "none"}`));
+  const label = el(doc, "span");
+  const conclusion = str(r.conclusion);
+  label.append(el(doc, "span", str(r.workflow) ?? "?"), " ");
+  label.append(el(doc, "code", str(r.branch) ?? "?"), " ");
+  label.append(dsStatus(doc, CI_TONES[conclusion] ?? "idle", `${str(r.status) ?? "?"}/${conclusion ?? "none"}`));
   const when = str(r.created_at) ?? "start not reported";
-  li.append(muted(doc, "div", isCount(r.id) ? `run ${r.id} · ${when}` : when));
-  return li;
+  return { label, meta: isCount(r.id) ? `run ${r.id} · ${when}` : when, tone: CI_TONES[conclusion] ?? null };
 }
 
 // A headed list, or one muted line when it is empty.
@@ -298,7 +305,14 @@ export function drawPrCi(doc, value) {
     const prs = list(pr.pull_requests).map((p) => pullRequest(doc, p || {}));
     const runs = list(pr.runs).map((r) => ciRun(doc, r || {}));
     out.push(...block(doc, "Open pull requests (from gh)", prs, "No open pull requests."));
-    out.push(...block(doc, "Recent CI runs (from gh), newest first", runs, "No CI runs."));
+    // A sequence in time is a Rail, newest first as gh lists them.
+    out.push(el(doc, "h4", "Recent CI runs (from gh), newest first"));
+    if (runs.length === 0) out.push(el(doc, "p", "No CI runs.", "empty"));
+    else {
+      const rail = el(doc, "ol", null, "cd-rail");
+      rail.append(...railRows(doc, runs));
+      out.push(rail);
+    }
   } else {
     out.push(el(doc, "h4", "Pull requests and CI"));
     out.push(muted(doc, "p", `PR and CI state unavailable: ${str(pr.reason) ?? "no reason given"}`));

@@ -455,8 +455,8 @@ h3 {
 }
 
 /* A pane is the design system's Panel (ds.css's .cd-panel), drawn on the
-   markup every level already has: its h3 is the head, the rest the body.
-   Each level's own markup moves to the components themselves under #910. */
+   Run level's and the overview's markup: its h3 is the head, the rest the
+   body. The other levels' regions are Panels in their own markup (#910). */
 .pane {
   min-width: 0;
   padding: 0 0 var(--space-3);
@@ -486,6 +486,20 @@ h3 {
 /* Inside a pane's body, what a module draws stands a gutter apart; a
    log's lines do not. */
 .pane > div:not(.log) > * + * {
+  margin-top: var(--space-3);
+}
+
+/* A Panel on a level (#910): it shrinks in its grid cell, as a pane does,
+   and what a module draws in its body stands a gutter apart. */
+.cd-panel {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.cd-panel-body > * + *,
+.cd-panel-body > section > * + *,
+#cb-figures > * + *,
+article.past-run section > * + * {
   margin-top: var(--space-3);
 }
 
@@ -562,8 +576,10 @@ h4:first-child {
   margin-top: 6px;
 }
 
-/* A pane's button is the design system's outline Button (.cd-btn). */
-.pane button {
+/* A pane's or a Panel's button is the design system's outline Button
+   (.cd-btn). */
+.pane button,
+.cd-panel-body button {
   padding: var(--space-0\.5) var(--space-2);
   border: 0;
   border-radius: var(--radius-xs);
@@ -574,11 +590,13 @@ h4:first-child {
   cursor: pointer;
 }
 
-.pane button:hover:not(:disabled) {
+.pane button:hover:not(:disabled),
+.cd-panel-body button:hover:not(:disabled) {
   background: var(--panel-raised);
 }
 
-.pane button:disabled {
+.pane button:disabled,
+.cd-panel-body button:disabled {
   color: var(--ink-muted);
   cursor: default;
 }
@@ -1162,11 +1180,6 @@ code {
   overflow-y: auto;
 }
 
-#cb-details p + dl,
-#cb-details dl + p {
-  margin-top: 6px;
-}
-
 #cb-search {
   display: block;
   width: 100%;
@@ -1217,12 +1230,6 @@ code {
   grid-column: 1 / -1;
 }
 
-.rd-block {
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-}
-
 h5 {
   margin: 8px 0 2px;
   font-size: 12px;
@@ -1250,33 +1257,36 @@ h5 {
   font: inherit;
 }
 
+/* The runs scroll inside their Panel; the Rail keeps its own indent. */
 .tr-list {
   max-height: 520px;
   overflow-y: auto;
-  padding-left: 0;
-  list-style: none;
 }
 
-.tr-list button {
+/* A run's row is the Rail's label as a button: the rail draws the row,
+   and the current run is the Rail's current row, so the button adds no
+   frame of its own. */
+.cd-rail-row .past-run {
   display: block;
   width: 100%;
-  padding: 4px 6px;
-  border: 1px solid transparent;
-  border-radius: 4px;
+  padding: 0;
+  box-shadow: none;
   background: transparent;
-  color: var(--ink);
+  color: inherit;
   font: inherit;
   text-align: left;
   cursor: pointer;
 }
 
-.tr-list button[aria-current="true"] {
-  border-color: var(--line);
-  background: var(--ground);
+.cd-rail-row .past-run:hover:not(:disabled) {
+  background: transparent;
+  color: var(--ink);
 }
 
-.tr-list li.empty {
-  margin-left: 0;
+/* What a run ended in, and the chain of a queued task, under its words. */
+.tr-said,
+.qb-chain {
+  display: block;
 }
 
 /* A past run's record: recorded text is drawn as it was written, in its
@@ -1368,35 +1378,19 @@ article.past-run section + section {
   list-style: none;
 }
 
-/* Each cell is a button that filters the list (#656), drawn as the cell it
-   was rather than as the pane's small buttons. */
+/* Each cell is a button holding its status's Stat, which filters the list
+   (#656): no frame until pressed, and pressed it takes the system's
+   selected frame. */
 .qb-counts .qb-cell {
-  display: flex;
-  flex-direction: column;
+  display: block;
   width: 100%;
-  padding: 6px 8px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--ground);
-  color: var(--ink);
-  font: inherit;
+  padding: var(--space-2);
+  box-shadow: none;
   text-align: left;
-  cursor: pointer;
 }
 
 .qb-counts .qb-cell[aria-pressed="true"] {
-  border-color: var(--signal);
-  background: var(--panel);
-}
-
-.qb-counts .qb-cell:disabled {
-  color: var(--ink-muted);
-  cursor: default;
-}
-
-.qb-count {
-  font-size: 18px;
-  font-variant-numeric: tabular-nums;
+  box-shadow: var(--frame-signal);
 }
 
 .qb-grid {
@@ -1569,15 +1563,14 @@ article.past-run section + section {
   height: max(520px, calc(100vh - 240px));
 }
 
+/* The map and the detail are Panels (#910): these set only their
+   layout, and ds.css's .cd-panel their frame. */
 .at-mapwrap,
-.at-panel {
+.at-side {
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--panel);
 }
 
 .at-mapwrap {
@@ -1904,16 +1897,6 @@ article.past-run section + section {
   margin: 12px 0 4px;
 }
 
-.at-detail dl {
-  grid-template-columns: minmax(0, 1fr) max-content;
-}
-
-.at-detail dd {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
 .at-title {
   font-size: 15px;
   font-weight: 600;
@@ -2090,19 +2073,8 @@ article.past-run section + section {
   gap: 8px;
 }
 
-.at-rd-block {
+.at-rd > section {
   min-width: 0;
-  padding: 8px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-}
-
-.at-rd-block.reach {
-  border-color: var(--reach);
-}
-
-.at-rd-block.doubt {
-  border-color: var(--doubt);
 }
 
 .at-tablewrap {
@@ -2260,7 +2232,7 @@ article.past-run section + section {
     height: 440px;
   }
 
-  .at-panel {
+  .at-side {
     max-height: 560px;
   }
 }

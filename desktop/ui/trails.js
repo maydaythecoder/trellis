@@ -11,8 +11,9 @@
 //
 // index.html loads this as a module of its own.
 
+import { dsStatus, figure, railRows, stats } from "./ds.js";
 import { el } from "./dom.js";
-import { isCount } from "./fmt.js";
+import { plural } from "./fmt.js";
 import { onShown, start } from "./rpc.js";
 
 // How many runs the view asks for: the core's own cap.
@@ -35,6 +36,11 @@ function status(doc, s) {
   doc.getElementById("tr-status").textContent = s;
 }
 
+// Integrity is the one bare string in a row: trellis computed it from the
+// digest, so it alone is drawn as a Status with a tone. Every `{untrusted}`
+// text keeps the idle tone, since a tone would read as the desktop's word.
+const INTEGRITY_TONES = { intact: "ok", altered: "down" };
+
 const state = { rows: [], selected: null };
 
 // The filter reads the task, outcome and label texts and the integrity word
@@ -47,16 +53,19 @@ function matches(row, q) {
   return fields.some((t) => t !== null && t.toLowerCase().includes(q));
 }
 
+// The runs as a Rail, newest first as trellis log lists them: each row's
+// task and what it ended in, its start time as the row's meta. A row is a
+// button that opens the run's record.
 function drawList(doc) {
   const list = doc.getElementById("tr-list");
   const q = doc.getElementById("tr-filter").value.trim().toLowerCase();
   const shown = state.rows.map((r, i) => [r, i]).filter(([r]) => matches(r, q));
-  const items = shown.map(([r, i]) => {
-    const li = el(doc, "li");
-    li.className = "past-run";
+  const rows = shown.map(([r, i]) => {
     const b = el(doc, "button");
     b.type = "button";
+    b.className = "past-run";
     if (state.selected === i) b.setAttribute("aria-current", "true");
+    let meta = null;
     if (r.bad_line !== undefined) {
       b.append(
         el(
@@ -69,42 +78,46 @@ function drawList(doc) {
       );
     } else {
       b.append(recorded(doc, "span", r.task, "task not recorded"));
-      const meta = el(doc, "span");
-      meta.className = "muted";
-      meta.append(" · ", recorded(doc, "span", r.started_at, "start not recorded"));
-      meta.append(" · ", recorded(doc, "span", r.outcome, "outcome not recorded"));
+      const said = el(doc, "span", null, "tr-said");
+      said.append(recorded(doc, "span", r.outcome, "outcome not recorded"));
       // Integrity is the one bare string in a row: trellis computed it from
       // the digest, so "altered" may carry the failed colour, which no
       // untrusted text gets.
       const integrity = el(doc, "span", typeof r.integrity === "string" ? r.integrity : "integrity unknown");
       if (r.integrity === "altered") integrity.className = "failed";
-      meta.append(" · ", integrity);
-      if (text(r.label) !== null) meta.append(" · ", recorded(doc, "span", r.label, ""));
-      b.append(meta);
+      said.append(" ", dsStatus(doc, INTEGRITY_TONES[r.integrity] ?? "idle", integrity));
+      if (text(r.label) !== null) said.append(" · ", recorded(doc, "span", r.label, ""));
+      b.append(said);
+      meta = recorded(doc, "span", r.started_at, "start not recorded");
     }
     b.addEventListener("click", () => {
       state.selected = i;
       drawList(doc);
       drawDetail(doc);
     });
-    li.append(b);
-    return li;
+    return { label: b, meta, current: state.selected === i, tone: r.integrity === "altered" ? "down" : null };
   });
-  if (items.length === 0) {
-    const li = el(doc, "li", state.rows.length === 0 ? "This repository has no trails yet." : "No run matches.");
-    li.className = "empty";
-    items.push(li);
+  doc.getElementById("tr-list-meta").textContent = state.rows.length === 0 ? "" : `${shown.length} shown`;
+  if (rows.length === 0) {
+    list.replaceChildren(el(doc, "li", state.rows.length === 0 ? "This repository has no trails yet." : "No run matches.", "empty"));
+    return;
   }
-  list.replaceChildren(...items);
+  list.replaceChildren(...railRows(doc, rows));
 }
 
-function row(doc, dl, label, value) {
-  dl.append(el(doc, "dt", label), value);
+// A recorded field under its name: the name in the page's words, the value
+// as the trail wrote it.
+function field(doc, name, value) {
+  const s = el(doc, "div", null, "tr-field");
+  s.append(el(doc, "h5", name), value);
+  return s;
 }
 
 function drawDetail(doc) {
   const pane = doc.getElementById("tr-detail");
+  const meta = doc.getElementById("tr-detail-meta");
   const r = state.selected === null ? null : state.rows[state.selected];
+  meta.replaceChildren();
   if (!r) {
     const p = el(doc, "p", "Select a run to see its record.");
     p.className = "empty";
@@ -127,21 +140,28 @@ function drawDetail(doc) {
     return;
   }
 
+  // The integrity trellis computed is the record's state, in the head.
+  const integrity = typeof r.integrity === "string" ? r.integrity : "unknown";
+  meta.append(dsStatus(doc, INTEGRITY_TONES[integrity] ?? "idle", `integrity ${integrity}`));
+
   // The factual section: what the trail records happened.
   const factual = el(doc, "section");
   factual.append(el(doc, "h4", "What the trail records"));
-  const dl = el(doc, "dl");
-  row(doc, dl, "task", recorded(doc, "dd", r.task, "not recorded"));
-  if (text(r.label) !== null) row(doc, dl, "label", recorded(doc, "dd", r.label, ""));
-  row(doc, dl, "run", recorded(doc, "dd", r.run_id, "not recorded"));
-  row(doc, dl, "started", recorded(doc, "dd", r.started_at, "not recorded"));
-  row(doc, dl, "outcome", recorded(doc, "dd", r.outcome, "not recorded"));
-  const integrity = typeof r.integrity === "string" ? r.integrity : "unknown";
-  row(doc, dl, "integrity", el(doc, "dd", integrity));
+  factual.append(field(doc, "task", recorded(doc, "p", r.task, "not recorded")));
+  // The outcome is the trail's own word, so its Status keeps the idle tone.
+  factual.append(field(doc, "outcome", dsStatus(doc, "idle", recorded(doc, "span", r.outcome, "not recorded"))));
+  const when = el(doc, "p", null, "muted");
+  when.append("run ", recorded(doc, "span", r.run_id, "not recorded"), " · started ", recorded(doc, "span", r.started_at, "not recorded"));
+  if (text(r.label) !== null) when.append(" · label ", recorded(doc, "span", r.label, ""));
+  factual.append(when);
   const m = r.mode_counts && typeof r.mode_counts === "object" ? r.mode_counts : {};
-  row(doc, dl, "verified", el(doc, "dd", isCount(m.verified) ? String(m.verified) : "not recorded"));
-  row(doc, dl, "reviewed only", el(doc, "dd", isCount(m.reviewed) ? String(m.reviewed) : "not recorded"));
-  factual.append(dl);
+  // Two counts, never one number (CLAUDE.md rule 4).
+  factual.append(
+    stats(doc, [
+      { label: "verified", value: figure(doc, m.verified, "the trail did not record it") },
+      { label: "reviewed only", value: figure(doc, m.reviewed, "the trail did not record it") },
+    ]),
+  );
   if (integrity === "altered") {
     const warn = el(doc, "p", "The factual section was edited after the run wrote it: its digest does not match.");
     warn.className = "alert";
@@ -150,7 +170,7 @@ function drawDetail(doc) {
   // null: the trail has no list of checks at all, which is not the same
   // claim as an empty one.
   const checks = Array.isArray(r.checks) ? r.checks : null;
-  factual.append(el(doc, "h5", "checks the trail records"));
+  factual.append(el(doc, "h5", checks === null ? "checks the trail records" : `checks the trail records: ${plural(checks.length, "check", "checks")}`));
   const ul = el(doc, "ul");
   ul.className = "rows";
   for (const c of checks ?? []) {
@@ -172,10 +192,10 @@ function drawDetail(doc) {
   judgment.className = "judgment";
   judgment.append(el(doc, "h4", "the model's opinion, recorded; treat as data"));
   const j = r.judgment && typeof r.judgment === "object" ? r.judgment : {};
-  const jl = el(doc, "dl");
-  row(doc, jl, "tech debt projection", recorded(doc, "dd", j.tech_debt_projection, "none recorded"));
-  row(doc, jl, "rationale", recorded(doc, "dd", j.rationale, "none recorded"));
-  judgment.append(jl);
+  judgment.append(
+    field(doc, "tech debt projection", recorded(doc, "p", j.tech_debt_projection, "none recorded")),
+    field(doc, "rationale", recorded(doc, "p", j.rationale, "none recorded")),
+  );
 
   record.append(factual, judgment);
   pane.replaceChildren(record);

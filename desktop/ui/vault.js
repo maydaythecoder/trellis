@@ -19,8 +19,9 @@
 //
 // index.html loads this as a module of its own.
 
+import { stat, unreported } from "./ds.js";
 import { el } from "./dom.js";
-import { isCount, str } from "./fmt.js";
+import { isCount, plural, str } from "./fmt.js";
 import { send, start } from "./rpc.js";
 
 let asked = 0;
@@ -213,7 +214,7 @@ function drawNote(doc, tauri, g) {
   pane.replaceChildren(
     head,
     path,
-    section(doc, "depth", el(doc, "p", str(g.depth) ?? "not reported")),
+    stat(doc, { label: "depth", value: str(g.depth) ?? unreported(doc, "the vault graph did not carry it"), size: "sm" }),
     section(doc, "lineage", lineage),
     section(doc, "unresolved parent", el(doc, "p", str(g.unresolved_parent) ?? "none")),
     section(doc, "children", rows(doc, list(g.children, named), "none")),
@@ -233,6 +234,8 @@ function searching(doc, on) {
 
 export function drawVault(doc, tauri, v) {
   if (v === null || typeof v !== "object") return;
+  // How many notes the list holds, as the Search panel's head says it.
+  doc.getElementById("vt-search-meta").textContent = Array.isArray(v.hits) ? plural(v.hits.length, "note", "notes") : "";
   if (str(v.error) !== null || Array.isArray(v.hits)) searching(doc, false);
   if (str(v.error) !== null) status(doc, v.error);
   else if (Array.isArray(v.hits)) {
