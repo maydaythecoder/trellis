@@ -19,7 +19,8 @@
 //! `textContent` only (ADR 0007, S10).
 
 use crate::frames::Response;
-use serde_json::{Map, Value, json};
+use crate::json;
+use serde_json::{Value, json};
 
 /// The reasons and files shown before the rest are counted, as `trellis
 /// radius` prints them.
@@ -128,14 +129,6 @@ pub(crate) fn ratio_key(v: &Value) -> Option<String> {
     }
 }
 
-fn count(o: Option<&Map<String, Value>>, k: &str) -> Option<u64> {
-    o?.get(k).and_then(Value::as_u64)
-}
-
-fn text(o: Option<&Map<String, Value>>, k: &str) -> Option<String> {
-    o?.get(k).and_then(Value::as_str).map(str::to_string)
-}
-
 /// The rows of `list` named by `name_key`, the first `shown` of them, and
 /// the rest counted. A row with no string name is left out: there is
 /// nothing to show it by.
@@ -154,11 +147,11 @@ fn rows(
                     Some(Counted {
                         name: o.get(name_key)?.as_str()?.to_string(),
                         explain: if with_explain {
-                            text(Some(o), "explain")
+                            json::string(o, "explain")
                         } else {
                             None
                         },
-                        call_sites: count(Some(o), "call_sites"),
+                        call_sites: json::u64(o, "call_sites"),
                     })
                 })
                 .collect()
@@ -199,16 +192,16 @@ pub fn read(data: &Value) -> Result<Radius, String> {
         FILES_SHOWN,
     );
     Ok(Radius {
-        symbol: text(top, "symbol"),
-        file: text(top, "file"),
+        symbol: top.and_then(|o| json::string(o, "symbol")),
+        file: top.and_then(|o| json::string(o, "file")),
         reach: Reach {
-            resolved: count(reach, "resolved"),
-            ambiguous: count(reach, "ambiguous"),
-            symbols_reached: count(reach, "symbols_reached"),
+            resolved: reach.and_then(|o| json::u64(o, "resolved")),
+            ambiguous: reach.and_then(|o| json::u64(o, "ambiguous")),
+            symbols_reached: reach.and_then(|o| json::u64(o, "symbols_reached")),
         },
         doubt: Doubt {
-            unbound_in_touched_files: count(doubt, "unbound_in_touched_files"),
-            touched_files: count(doubt, "touched_files"),
+            unbound_in_touched_files: doubt.and_then(|o| json::u64(o, "unbound_in_touched_files")),
+            touched_files: doubt.and_then(|o| json::u64(o, "touched_files")),
             reasons,
             reasons_not_shown,
             files,
