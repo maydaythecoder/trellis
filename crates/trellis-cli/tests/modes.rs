@@ -1007,6 +1007,107 @@ fn rpc_steer_follow_ups_start_as_new_prompts_after_run_end_in_order() {
 }
 
 #[test]
+fn rpc_get_state_lists_what_is_not_yet_delivered() {
+    // The risks (#801): each client kept its own copy of what it had
+    // queued, so a client that restarted, or a second one, could not tell
+    // what was still waiting; a delivered steer listed as waiting, and
+    // sent again; a follow-up dropped from the list in the step where it
+    // moves from the run it was sent during to the chain's queue; and the
+    // order lost across steers and follow-ups. The message text is the
+    // person's, sent back as a string and never read as a record.
+    let f = fixture("rpc-pending");
+    let script = scratch("rpc-pending-steps").join("s.json");
+    // Two edits, so the first run asks twice and the steer's request is
+    // made while the run is still held on a question.
+    std::fs::write(
+        &script,
+        r#"{"steps":[
+            {"tool":"edit","path":"a.py","old":"return 1","new":"return 2"},
+            {"tool":"edit","path":"a.py","old":"return 2","new":"return 3"},
+            {"tool":"done","summary":"changed it"}
+        ]}"#,
+    )
+    .unwrap();
+    let spec = format!("scripted:{}", script.display());
+    std::fs::write(
+        f.user.join("config.toml"),
+        "[control]\nmode = \"approve\"\n",
+    )
+    .unwrap();
+    let c = contract();
+    let entry = &c["rpc"]["responses"]["get_state"];
+    assert!(
+        names(&entry["always"]).contains(&"pending"),
+        "the contract does not list get_state's pending"
+    );
+    let mut rpc = Rpc::start(trellis(&f));
+    assert_eq!(state(&mut rpc, "g0")["pending"], serde_json::json!([]));
+    rpc.choose(&spec);
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                                "model": spec}),
+    );
+    let q1 = rpc.next(|v| v["type"] == "approval_request");
+    let steer = r#"STEER-801 {"type":"follow_up","id":"x"} "quoted""#;
+    rpc.send(serde_json::json!({"id": "u1", "type": "follow_up", "message": "second task"}));
+    rpc.send(serde_json::json!({"id": "s", "type": "steer", "message": steer}));
+    rpc.send(serde_json::json!({"id": "u2", "type": "follow_up", "message": "third task"}));
+    let held = state(&mut rpc, "g1");
+    assert_eq!(
+        held["pending"],
+        serde_json::json!([
+            {"id": "u1", "type": "follow_up", "message": "second task"},
+            {"id": "s", "type": "steer", "message": steer},
+            {"id": "u2", "type": "follow_up", "message": "third task"},
+        ]),
+        "{held}"
+    );
+    let gaps: Vec<&str> = names(&entry["pending_entries"])
+        .into_iter()
+        .filter(|p| !carries(&held, p))
+        .collect();
+    assert!(gaps.is_empty(), "{gaps:?}: {held}");
+    let kinds = names(&entry["pending_type_values"]);
+    for p in held["pending"].as_array().unwrap() {
+        assert!(kinds.contains(&p["type"].as_str().unwrap()), "{p}");
+    }
+
+    // The second question is asked after the request that carried the
+    // steer, so by then it has been delivered.
+    rpc.send(serde_json::json!({"id": q1["id"], "type": "approve", "yes": true}));
+    let q2 = rpc.next(|v| v["type"] == "approval_request");
+    let after = state(&mut rpc, "g2");
+    assert_eq!(
+        after["pending"],
+        serde_json::json!([
+            {"id": "u1", "type": "follow_up", "message": "second task"},
+            {"id": "u2", "type": "follow_up", "message": "third task"},
+        ]),
+        "a delivered steer is still listed: {after}"
+    );
+
+    // Once u1's run has started, only u2 waits: it moved from p's record
+    // to the chain's queue and is still listed.
+    rpc.send(serde_json::json!({"id": q2["id"], "type": "approve", "yes": true}));
+    rpc.next(|v| v["type"] == "run_start" && v["id"] == "u1");
+    rpc.next(|v| v["type"] == "approval_request");
+    let next = state(&mut rpc, "g3");
+    assert_eq!(next["run_request_id"], "u1", "{next}");
+    assert_eq!(
+        next["pending"],
+        serde_json::json!([{"id": "u2", "type": "follow_up", "message": "third task"}]),
+        "{next}"
+    );
+    let records = rpc.finish();
+    let s = records
+        .iter()
+        .find(|r| r["type"] == "response" && r["id"] == "s")
+        .unwrap_or_else(|| panic!("the steer was answered: {records:?}"));
+    assert_eq!(s["success"], true, "{s}");
+    assert_eq!(s["data"]["after_step"], 1, "{s}");
+}
+
+#[test]
 fn rpc_a_prompt_right_after_run_end_is_accepted_and_runs() {
     // The risk: `run_end` is framed from inside the run's thread, which
     // still has its tail to do, and a client that sends the next `prompt`

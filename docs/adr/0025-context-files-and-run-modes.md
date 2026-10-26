@@ -425,6 +425,26 @@ on stderr.
     person names while it is still waiting, and is refused once it has been
     delivered; `clear_queue` stays excluded. Accepted, not built (#808).
     The steering record in the trail is #117's.
+  - *Amended 2026-10-26 (#801):* `get_state` answers with `pending`, each
+    steer and follow-up sent and not yet delivered, as `{id, type,
+    message}`, oldest first, so a client reads what is waiting from the
+    engine instead of keeping its own copy. The follow-ups queued behind
+    the run in flight come first, then what was sent to that run. The
+    chain's follow-up queue is held where `get_state` reads it, under one
+    lock from the moment a run's steering record is closed until the next
+    run starts, so a follow-up moving from one to the other is listed once
+    and leaves the list when its own run starts. A steer leaves it at the
+    model request that carries it, the one its `steer delivered` event
+    announces, before its `steer` response is written; the server learns
+    of the delivery as that request is made, after the event is written,
+    so a `get_state` read in that gap can still list it. A steer still
+    waiting when its run ends leaves it then, answered as not delivered.
+    `message` is the text as sent, a string and nothing else (ADR 0007).
+    With no run in flight it is `[]`. Listed in
+    `tests/client_contract.json`; evidence:
+    `rpc_get_state_lists_what_is_not_yet_delivered` in `tests/modes.rs`
+    and `rpc_contract_lists_every_field_get_state_answers` in
+    `tests/cli.rs`.
   - Evidence: `rpc_steer_reaches_the_next_model_request_and_cannot_converge_the_run`,
     `rpc_steer_and_follow_up_are_refused_with_no_run_in_flight` and
     `rpc_steer_follow_ups_start_as_new_prompts_after_run_end_in_order` in
