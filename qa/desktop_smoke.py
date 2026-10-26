@@ -180,6 +180,12 @@ class Chrome:
             # Chrome, not trellis: nothing of the repository's runs in it.
             self.proc.kill()
             self.proc.wait()
+        # Chrome has exited, so the reader sees the end of its pipe and
+        # returns; both ends are closed once it has.
+        self.out.close()
+        self.reader.join(timeout=5)
+        if not self.reader.is_alive():
+            self.inp.close()
         shutil.rmtree(self.profile, ignore_errors=True)
 
 
@@ -315,6 +321,15 @@ class Desktop:
         self.page_url = f"http://{self.host}:{self.port}/{self.token}/"
         self.frames = queue.Queue()
         threading.Thread(target=self._events, daemon=True).start()
+        # The desktop writes only its errors to stderr. Read as they come,
+        # so one shows in the run's log and the pipe never fills and holds
+        # the desktop on a write; the thread ends when the desktop exits.
+        self.stderr = threading.Thread(target=self._stderr, daemon=True)
+        self.stderr.start()
+
+    def _stderr(self):
+        for raw in self.proc.stderr:
+            print(f"smoke: trellis-desktop stderr: {raw.decode('utf-8', errors='replace').rstrip()}")
 
     def _events(self):
         """The core's events, as a second page would hear them: the frames
@@ -362,6 +377,9 @@ class Desktop:
             self.proc.wait(timeout=WAIT)
         except subprocess.TimeoutExpired:
             print("smoke: trellis-desktop did not stop within the bound after its stdin closed")
+        else:
+            self.stderr.join(timeout=5)
+            self.proc.stdout.close()
         shutil.rmtree(self.config, ignore_errors=True)
 
 
@@ -375,8 +393,11 @@ def smoke(chrome_bin, desktop, trellis, prompts, cycles):
     failures = []
     with fixture_repo(None, BASELINE) as repo:
         d = Desktop(desktop, trellis, repo)
-        chrome = Chrome(chrome_bin)
+        # Set inside the try, so a Chrome that fails to start still leaves
+        # the desktop asked to stop before the clone it runs in is removed.
+        chrome = None
         try:
+            chrome = Chrome(chrome_bin)
             page = Page(chrome)
             page.open(d.page_url)
             page.settle(3)
@@ -409,7 +430,8 @@ def smoke(chrome_bin, desktop, trellis, prompts, cycles):
             page.settle(1)
             failures += page.errors
         finally:
-            chrome.close()
+            if chrome is not None:
+                chrome.close()
             d.close()
     return failures
 
@@ -488,6 +510,7 @@ def self_test(chrome_bin):
     finally:
         chrome.close()
         server.shutdown()
+        server.server_close()
         shutil.rmtree(site, ignore_errors=True)
     for b in bad:
         print(f"FAIL: self-test: {b}")
