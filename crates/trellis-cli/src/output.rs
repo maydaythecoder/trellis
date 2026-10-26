@@ -162,6 +162,10 @@ pub(crate) struct RunExtras {
     /// at the top of each iteration; its caller closes it when the run ends.
     /// `None` everywhere but rpc.
     pub hold: Option<Arc<trellis_loop::Hold>>,
+    /// rpc's `set_budget` (ADR 0058 §2): the run's whole ceiling, adopted
+    /// by the agent loop and raised from rpc's thread; `None` everywhere
+    /// but rpc.
+    pub budget: Option<Arc<trellis_loop::LiveBudget>>,
 }
 
 /// The shared cell `RunExtras::done` writes into. `Arc<Mutex<_>>` because
@@ -189,6 +193,7 @@ impl Default for RunExtras {
             tier: None,
             spent: trellis_loop::SpentSlot::default(),
             hold: None,
+            budget: None,
         }
     }
 }

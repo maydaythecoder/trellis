@@ -43,7 +43,9 @@ pub use agent::{
     ToolCall, Transcript, Turn, TurnAction, VaultContext, run, run_seeded, summarise, turn_action,
 };
 pub use agent_clone::{AgentClone, AgentCloneError, CarriedBack, NEW_FILE_WALK_CAP, NotCarried};
-pub use budget::{Budget, BudgetTooSmall, CostRegime, Exhaustion, Spend};
+pub use budget::{
+    Budget, BudgetTooSmall, CostRegime, Exhaustion, LiveBudget, Raise, RaiseRefused, Spend,
+};
 pub use exec::{ExecError, default_shell};
 pub use extra_context::{
     ContextFile, DEFAULT_ROLE, ExtraContext, FORCED_SKILL_HEAD, ForcedSkill, GROUNDING,

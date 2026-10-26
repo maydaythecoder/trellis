@@ -1262,6 +1262,9 @@ fn run_body(
         spent: Some(extras.spent.clone()),
         // rpc's `pause` and `resume` (ADR 0058 §1); `None` everywhere else.
         hold: extras.hold.clone(),
+        // rpc's `set_budget` (ADR 0058 §2), raising this one run's whole
+        // ceiling; `None` everywhere else.
+        budget: extras.budget.clone(),
     };
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -2452,6 +2455,11 @@ fn run_partitioned(p: Partitioned<'_>, out: &mut (dyn std::io::Write + Send)) ->
             spent: None,
             // rpc starts no partitioned run, and `pause` reaches only rpc's.
             hold: None,
+            // A raise is to the run's whole ceiling and a partition runs on
+            // its share of it; handing each partition the whole would grant
+            // one raise N times (rule 9). Re-dealt through `Budget::shares`
+            // by whatever first lets a partitioned run be raised.
+            budget: None,
         };
         let results = Arc::clone(&results);
         async move {
