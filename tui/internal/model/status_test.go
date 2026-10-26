@@ -19,14 +19,16 @@ func startup(t *testing.T) (*Model, any, any) {
 	return m, out[0].Cmd["id"], out[1].Cmd["id"]
 }
 
+// barOf is the status bar: the screen's last row since the shell (#851).
 func barOf(m *Model) string {
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
-	return strings.SplitN(m.View(), "\n", 2)[0]
+	rows := strings.Split(m.View(), "\n")
+	return rows[len(rows)-1]
 }
 
-// The bar says TRELLIS, the model and the tier get_state reports; a
-// set_model that succeeds asks get_state again, since the tier may now be
-// known, and so does a run's end.
+// The bar says the model and the tier get_state reports, and the Trail
+// above says TRELLIS; a set_model that succeeds asks get_state again,
+// since the tier may now be known, and so does a run's end.
 func TestStatusShowsModelAndTierFromGetState(t *testing.T) {
 	m, stateID, modelID := startup(t)
 	respond(m, stateID, "get_state", map[string]any{"model": nil, "tier": nil, "running": false})
@@ -37,8 +39,11 @@ func TestStatusShowsModelAndTierFromGetState(t *testing.T) {
 	}
 	respond(m, out[0].Cmd["id"], "get_state", map[string]any{"model": "ollama:qwen", "tier": "1, native tool calls"})
 	bar := barOf(m)
-	if !strings.Contains(bar, "TRELLIS") || !strings.Contains(bar, "model ollama:qwen") || !strings.Contains(bar, "tier 1, native tool calls") {
+	if !strings.Contains(bar, "model ollama:qwen") || !strings.Contains(bar, "tier 1, native tool calls") {
 		t.Fatalf("bar %q", bar)
+	}
+	if top := strings.SplitN(m.View(), "\n", 2)[0]; !strings.Contains(top, "TRELLIS") {
+		t.Fatalf("the Trail does not name the program: %q", top)
 	}
 	submit(m, "t")
 	m.TakeOutbox()
@@ -75,12 +80,12 @@ func TestStatusTierWordOnceAndPlain(t *testing.T) {
 // The bar says clean, or how many edits are pending, from the edits pane.
 func TestStatusWorktreeCleanOrEditsPending(t *testing.T) {
 	m := running(t)
-	if bar := barOf(m); !strings.Contains(bar, "worktree clean") {
+	if bar := barOf(m); !strings.Contains(bar, "● clean") {
 		t.Fatalf("%q", bar)
 	}
 	feed(m, turn(1, "edit a.py", map[string]any{"observation": "applied: true"}))
 	feed(m, turn(2, "edit b.py", map[string]any{"observation": "applied: true"}))
-	if bar := barOf(m); !strings.Contains(bar, "worktree 2 edit(s) pending") {
+	if bar := barOf(m); !strings.Contains(bar, "● 2 pending") {
 		t.Fatalf("%q", bar)
 	}
 }
