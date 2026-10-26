@@ -244,10 +244,11 @@ function outcome(doc, pane, o) {
 // drawn by the modules that read them from the same event: `approvals`,
 // `alert` and `stderr` by dialogs.js; `running`, `model`, `starters` and
 // `undelivered` by composer.js; `model`, `models` and `available` by
-// model.js; `available` by settings.js; `model` and `running` by status.js;
-// `vault` by vault.js; `queue` by queue.js. The view_renders_ tests in
-// src/lockdown.rs fail when a key the reducer sends is read by none of
-// them, or when a pane in the run section is one this table never names.
+// model.js; `available` by settings.js; `model`, `running` and `phase` by
+// status.js; `vault` by vault.js; `queue` by queue.js; `atlas` by atlas.js.
+// The view_renders_ tests in src/lockdown.rs fail when a key the reducer
+// sends is read by none of them, or when a pane in the run section is one
+// this table never names.
 const PANES = {
   transcript: ["pane-transcript", transcript],
   actions: ["pane-actions", actions],

@@ -252,6 +252,32 @@ mod tests {
                 "script body: <script{s}"
             );
         }
+        // Each module is loaded once (#833): a tag names it at most once,
+        // and a module another module imports is not given a tag too, as
+        // graph.js was beside render.js's import of it.
+        let srcs: Vec<&str> = scripts
+            .iter()
+            .filter_map(|s| s.split("src=\"").nth(1)?.split('"').next())
+            .collect();
+        let mut seen = std::collections::BTreeSet::new();
+        for src in &srcs {
+            assert!(seen.insert(*src), "{src} is loaded by two tags");
+        }
+        let ui = Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
+        for entry in std::fs::read_dir(&ui).unwrap() {
+            let p = entry.unwrap().path();
+            if p.extension().is_none_or(|x| x != "js") {
+                continue;
+            }
+            let code = std::fs::read_to_string(&p).unwrap();
+            for src in &srcs {
+                assert!(
+                    !code.contains(&format!("from \"./{src}\"")),
+                    "{src} has a tag, and {} imports it too",
+                    p.display()
+                );
+            }
+        }
         assert!(!page.contains("<style"), "inline <style>");
         assert!(!page.contains(" style="), "style attribute");
         let handler = page
