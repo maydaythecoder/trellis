@@ -22,6 +22,8 @@ import (
 //   - the composer's queue lists at most QueueCap items: the oldest settled
 //     one makes room for a new one, and with none settled the new one is
 //     sent but not listed (#852).
+//   - the model's closing words keep their first ClosingCap bytes, and the
+//     summary says how many it cut (#854), as the desktop keeps 16 KiB.
 //
 // TranscriptCap and StderrCap (model.go) and OfferedCap (complete.go) are
 // the limits that came before these.
@@ -32,6 +34,7 @@ const (
 	UnansweredCap = 256
 	LineCap       = 4096
 	QueueCap      = 100
+	ClosingCap    = 16 * 1024
 )
 
 // capLine is l cut to at most LineCap bytes, at a character's start, with

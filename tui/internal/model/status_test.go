@@ -48,7 +48,9 @@ func TestStatusShowsModelAndTierFromGetState(t *testing.T) {
 	submit(m, "t")
 	m.TakeOutbox()
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
-	if got := kinds(m.TakeOutbox()); strings.Join(got, ",") != "get_state" {
+	// A converged run's closing words are asked for too, for the summary
+	// (#854).
+	if got := kinds(m.TakeOutbox()); strings.Join(got, ",") != "get_state,get_last_assistant_text" {
 		t.Fatalf("after run_end: %v", got)
 	}
 }

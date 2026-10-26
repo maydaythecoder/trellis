@@ -24,7 +24,7 @@ func TestPanesCheckRowsComeOnlyFromASomeVerdict(t *testing.T) {
 	feed(m, turn(3, "run_checks", map[string]any{"verdict": "Some(false)", "check_kind": ""}))
 	feed(m, turn(4, "edit a.py", map[string]any{"verdict": "None"}))
 	feed(m, turn(5, "read_file a.py", map[string]any{"verdict": "true"}))
-	want := []view.Check{{Name: "pytest", Passed: true}, {Name: "mypy", Passed: false}, {Name: "check", Passed: false}}
+	want := []view.Check{{Name: "pytest", Passed: true, Turn: 1}, {Name: "mypy", Passed: false, Turn: 2}, {Name: "check", Passed: false, Turn: 3}}
 	if m.Checks.Len() != len(want) {
 		t.Fatalf("checks %+v", m.Checks.Slice())
 	}

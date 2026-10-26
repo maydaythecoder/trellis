@@ -134,7 +134,7 @@ func (m *Model) reviewKey(k tea.KeyMsg) {
 	case tea.KeyEsc:
 		m.Modal.Reviewing = false
 	default:
-		m.scrollCodeKey(k.Type)
+		m.scrollLevelKey(k.Type)
 	}
 }
 

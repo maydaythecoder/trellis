@@ -158,11 +158,27 @@ func (m *Model) abortAnswered(id *string, data any) {
 }
 
 // steersNotDelivered says which of this run's steers never reached the
-// model, as the run ends.
+// model, as the run ends. The steers stay, every one told, for the
+// summary (#854), until the next run's newRun forgets them.
 func (m *Model) steersNotDelivered() {
 	for i := range m.steers {
 		m.notDelivered(i, "the run ended first")
 	}
-	m.steers = nil
-	m.deliveries = 0
+}
+
+// steerItems is this run's steers as the summary lists them, each with its
+// delivery in the words the composer's queue uses (#854).
+func (m *Model) steerItems() []view.Queued {
+	var out []view.Queued
+	for _, s := range m.steers {
+		q := view.Queued{Kind: kindSteer, Text: capLine(view.Plain(s.text))}
+		switch {
+		case s.told && s.turn > 0:
+			q.Fate, q.After = view.FateAfter, s.turn-1
+		case s.told:
+			q.Fate, q.Why = view.FateNot, s.why
+		}
+		out = append(out, q)
+	}
+	return out
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -481,5 +482,69 @@ func TestModelPaintsWithTheThemeItIsGiven(t *testing.T) {
 	plain.Update(windowSize(100, 30))
 	if v := plain.View(); strings.Contains(v, "\x1b") {
 		t.Fatalf("with no theme the screen carries an escape sequence:\n%q", v)
+	}
+}
+
+// #854: the model's closing words are asked for only after a converged
+// run, since trellis keeps the words of the last run that ended on done and
+// after any other outcome they could be an earlier run's. The answer is
+// read only while that run's question is open, so a reply that comes after
+// a new run has started is not shown as the new run's; it is cut to
+// ClosingCap, with what was cut said; and a refusal or no words is said
+// with why rather than drawn as words.
+func TestSummaryClosingWordsAskedOnlyAfterAConvergedRun(t *testing.T) {
+	closingAsk := func(out []Out) any {
+		for _, o := range out {
+			if o.Cmd != nil && o.Cmd["type"] == "get_last_assistant_text" {
+				return o.Cmd["id"]
+			}
+		}
+		return nil
+	}
+	m := running(t)
+	feed(m, runEnd(map[string]any{"outcome": "not_converged", "exit": 1, "restored": true}))
+	if id := closingAsk(m.TakeOutbox()); id != nil {
+		t.Fatalf("a run that did not converge asked for closing words")
+	}
+	if c := m.closingState(); c.Words != nil || !strings.Contains(c.Why, "did not converge") {
+		t.Fatalf("%+v", c)
+	}
+
+	submit(m, "again")
+	m.TakeOutbox()
+	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
+	id := closingAsk(m.TakeOutbox())
+	if id == nil {
+		t.Fatalf("a converged run did not ask for its closing words")
+	}
+	long := strings.Repeat("é", ClosingCap) + "\x1b[2J"
+	respond(m, id, "get_last_assistant_text", map[string]any{"text": long})
+	c := m.closingState()
+	if c.Words == nil || len(*c.Words) > ClosingCap || !utf8.ValidString(*c.Words) || c.Total != len(long) || c.Cut != len(long)-len(*c.Words) {
+		t.Fatalf("cut %d of %d, kept %d bytes", c.Cut, c.Total, len(*c.Words))
+	}
+
+	// A new run forgets the words, and a late answer to the last run's
+	// question is not read as its own.
+	submit(m, "third")
+	m.TakeOutbox()
+	respond(m, id, "get_last_assistant_text", map[string]any{"text": "the last run's words"})
+	if c := m.closingState(); c.Words != nil || !strings.Contains(c.Why, "once the run has converged") {
+		t.Fatalf("the new run shows %+v", c)
+	}
+	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
+	id = closingAsk(m.TakeOutbox())
+	respond(m, id, "get_last_assistant_text", map[string]any{"text": nil})
+	if c := m.closingState(); c.Words != nil || !strings.Contains(c.Why, "no run of this trellis rpc has ended on done") {
+		t.Fatalf("no words: %+v", c)
+	}
+
+	submit(m, "fourth")
+	m.TakeOutbox()
+	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
+	id = closingAsk(m.TakeOutbox())
+	feed(m, jsonLine(map[string]any{"type": "response", "command": "get_last_assistant_text", "id": id, "success": false, "error": "busy"}))
+	if c := m.closingState(); c.Words != nil || c.Why != "get_last_assistant_text refused: busy" {
+		t.Fatalf("refused: %+v", c)
 	}
 }
