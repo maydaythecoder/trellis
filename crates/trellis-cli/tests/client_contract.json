@@ -97,7 +97,7 @@
             "start_line": "as lines_added",
             "diff": "as lines_added"
           },
-          "read_by": {"completion_tokens_used": [], "duration_ms": [], "summarised": [], "lines_added": [], "lines_removed": [], "start_line": [], "diff": []},
+          "read_by": {"completion_tokens_used": ["desktop"], "duration_ms": [], "summarised": [], "lines_added": [], "lines_removed": [], "start_line": [], "diff": []},
           "about": "lines_added and lines_removed are the whole lines an applied edit added and removed, in every control mode, computed from the text the edit read and wrote, the same hunk an approve-mode question counts (#802); start_line is the 1-based line, in the file before the edit, of the first line it removed or replaced, or with nothing removed the line the added lines went before; diff is a unified diff of that one hunk (--- and +++ naming the path, one @@ -a,b +c,d @@ header, a line of context either side), cut at a line once it passes 8192 bytes with a last line saying how many diff lines were cut, while the counts stay the whole edit's. diff is repository text and model output: a client shows it as text and never interprets it (CLAUDE.md rule 10). duration_ms is the tool call's time in milliseconds by the monotonic clock, with any wait on a person in approve mode taken out, and on the governance audit's turn the audit's own time (#800); summarised is how many of the radius's call sites its observation summarised by file instead of listing them, 0 when it listed every one. completion_tokens_used is the counter run budget's max_tokens is checked against: completion (output) tokens over every reply so far, format retries included, never prompt tokens and never a sum of the two; a hosted driver counts a reply that reported none at its request's max_tokens, so the ceiling trips early rather than never; 0 for a driver that reads no reply (the scripted one)."
         },
         "run budget": {
@@ -106,7 +106,7 @@
           "absent_when": {
             "context_bytes": "the driver elides nothing and has no ceiling: the scripted one. A runtime or hosted driver always has one ([model] context_bytes, else its default)"
           },
-          "read_by": {"max_wall_clock_ms": [], "max_tokens": [], "context_bytes": []},
+          "read_by": {"max_wall_clock_ms": ["desktop"], "max_tokens": ["desktop"], "context_bytes": ["desktop"]},
           "about": "every ceiling the run enforces, beside rpc.events' max_iterations (#799): max_wall_clock_ms, the wall-clock ceiling in milliseconds, checked against elapsed_ms; max_tokens, the token ceiling under the budget's own name ([budget] max_tokens) and in tokens, checked against the turn's completion_tokens_used and so a ceiling on completion tokens only; context_bytes, the ceiling on one prompt in bytes ([model] context_bytes as the driver enforces it), against which older observations are elided (the compacted event). A run budget sent again after a set_budget raise (#807) carries each of these too; context_bytes is never raised"
         },
         "compacted": {

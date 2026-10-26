@@ -236,6 +236,66 @@ export function nowStrip(doc, { tone, word, clock, turn, where, wait, model, con
   return root;
 }
 
+// The Meter tones ds.css colours; signal is the bundle's default fill, so
+// it takes no class of its own.
+const METER_TONES = { cool: "cd-meter-cool", down: "cd-meter-down" };
+
+// Meter (the design system's, #829): `filled` of `cells` block characters,
+// █ then ░, as text in classed spans, so no width is ever a style. The
+// reducer chooses the count and the tone; the cell count is fixed, since █
+// and ░ have different East Asian width classes and a meter as long as
+// its figures would not line up with the next. role="meter" with
+// aria-valuetext saying the two figures (`used of ceiling`), because a
+// screen reader reads aria-valuenow as a percentage, and a budget has no
+// percentage (DESIGN.md rule 4).
+export function meter(doc, { label, filled, cells, tone, now, max, text }) {
+  const m = el(doc, "span", null, cx("cd-meter", METER_TONES[tone]));
+  m.setAttribute("role", "meter");
+  m.setAttribute("aria-label", label);
+  m.setAttribute("aria-valuemin", "0");
+  m.setAttribute("aria-valuemax", String(max));
+  m.setAttribute("aria-valuenow", String(Math.min(now, max)));
+  m.setAttribute("aria-valuetext", text);
+  const bar = el(doc, "span", null, "cd-meter-bar");
+  bar.setAttribute("aria-hidden", "true");
+  bar.append(el(doc, "span", "█".repeat(filled), "cd-meter-on"), el(doc, "span", "░".repeat(cells - filled), "cd-meter-off"));
+  m.append(bar);
+  return m;
+}
+
+// Budget (the design system's, #829): one row per limit, its label, a
+// Meter, and `used / ceiling` as two figures in the unit measured. A side
+// trellis did not report is unreported's dash with its reason, and with
+// either side unreported no Meter is drawn: cells with no share to show
+// would read as 0. Rows are the reducer's `budget.limits`; no currency and
+// no raise control (#837) here.
+export function budgetRows(doc, rows) {
+  const box = el(doc, "div", null, "cd-bud");
+  for (const r of rows) {
+    const row = el(doc, "div", null, "cd-bud-row");
+    const unit = str(r.unit);
+    const used = str(r.used_text);
+    const ceiling = str(r.ceiling_text);
+    const drawn = isCount(r.used) && isCount(r.ceiling) && isCount(r.filled) && isCount(r.cells) && r.filled <= r.cells;
+    const label = str(r.limit) ?? "limit";
+    const said = (t) => (unit ? `${t} ${unit}` : t);
+    const slot = el(doc, "span");
+    if (drawn && used !== null && ceiling !== null) {
+      slot.append(meter(doc, { label, filled: r.filled, cells: r.cells, tone: str(r.tone), now: r.used, max: r.ceiling, text: `${said(used)} of ${said(ceiling)}` }));
+    }
+    // The unit follows the last figure drawn, never a dash.
+    const readout = el(doc, "span", null, "cd-meter-value");
+    readout.append(
+      used === null ? unreported(doc, str(r.why_used) ?? "trellis did not report it") : ceiling === null ? said(used) : used,
+      " / ",
+      ceiling === null ? unreported(doc, str(r.why_ceiling) ?? "trellis did not report it") : said(ceiling),
+    );
+    row.append(el(doc, "span", label, "cd-bud-label"), slot, readout);
+    box.append(row);
+  }
+  return box;
+}
+
 // Facts (#828): a label and its value per row, as a description list, for
 // a region that states where something is rather than counting it (Where
 // it is). Each value is text or an element (unreported's dash).
