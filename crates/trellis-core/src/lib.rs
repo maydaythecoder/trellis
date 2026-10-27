@@ -11,6 +11,8 @@
 //! it started (`process`), which the tool runner and the checks both need.
 //! And how to print repository text without letting it drive the terminal
 //! (`text`), which the loop and the binary both do.
+//! And how to turn a day count into a calendar date and back (`time`),
+//! which the queue and the ticket sweep both do with no date crate.
 //! Everything else in the workspace may depend on it; it depends on nothing
 //! in the workspace.
 
@@ -21,6 +23,7 @@ pub mod paths;
 pub mod process;
 pub mod secrets;
 pub mod text;
+pub mod time;
 
 pub use ids::{CallSiteId, FileId, PartitionId, RunId, SymbolId};
 pub use interner::Interner;
