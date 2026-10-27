@@ -1,22 +1,22 @@
  Run ⟩ edits                                         L2 / 4  [ESC] out  TRELLIS 
  ● RUNNING  1:23*  █░░░░░░░ 3/40  [^P] pause  running edit → src/parser.py      
  w ┌ edits ────────────────────────────────────────────────────────────────────┐
- h │› src/parser.py                                    +3 −1  ● in the worktree│
-   │  tests/test_parser.py                                 —  ● in the worktree│
- a │  src/lexer.py                              +1 −1  ● awaiting your approval│
- c │                                                                           │
-   │                                                                           │
+   │› src/parser.py                                    +3 −1  ● in the worktree│
+ a │  tests/test_parser.py                                 —  ● in the worktree│
+   │  src/lexer.py                              +1 −1  ● awaiting your approval│
  e │                                                                           │
- d │                                                                           │
    │                                                                           │
  c │                                                                           │
- h │                                                                           │
    │                                                                           │
  r │                                                                           │
- a │                                                                           │
+   │                                                                           │
+   │                                                                           │
    └───────────────────────────────────────────────────────────────────────────┘
 ┌ budget  [^R] raise ──────────────────────────────────────────────────────────┐
-│TURNS █░░░░░░░░░░░░░░░ 3/40  ·  PROMPT 24.1 kB  ·  TIME 1:23*                 │
+│   TURNS        █░░░░░░░░░░░░░░░ 3/40                                         │
+│   WALL CLOCK   1:23*/—                                                       │
+│   COMPLETION   —/— tokens                                                    │
+│   LAST PROMPT  24.1 kB/—                                                     │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌ steer  [⏎] queue for the next turn ──────────────────────────────────────────┐
 │█                                                                             │

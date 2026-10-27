@@ -169,7 +169,8 @@ func TestPanesBudgetCarriesTheCeilingTheTurnsFiguresAndElapsed(t *testing.T) {
 	}
 	m.Update(windowSize(140, 30))
 	v := m.View()
-	if !strings.Contains(v, "TURNS █░░░░░░░░░░░░░░░ 2/40  ·  PROMPT 8.4 kB  ·  TIME 0:18*  ·  30 tok, 2.0 tok/s  ·  queued 10.0 s") {
+	if !strings.Contains(v, "TURNS        █░░░░░░░░░░░░░░░ 2/40") || !strings.Contains(v, "last turn 30 tok, 2.0 tok/s  ·  queued 10.0 s") ||
+		!strings.Contains(v, "WALL CLOCK   0:18*/—") || !strings.Contains(v, "LAST PROMPT  8.4 kB/—") {
 		t.Fatalf("%s", v)
 	}
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
