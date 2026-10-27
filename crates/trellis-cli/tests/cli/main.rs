@@ -515,6 +515,9 @@ fn stub_tui(dir: &Path) -> PathBuf {
 
 // One module per command, still one test binary named `cli` (#938). A helper
 // two modules use lives above; one module's own helpers stay in that module.
+// Every test in `bare` drives a pseudo-terminal, which only Unix has; on
+// Windows the module would be an unused `use super::*` under -D warnings.
+#[cfg(unix)]
 mod bare;
 mod check;
 mod control_dial;
