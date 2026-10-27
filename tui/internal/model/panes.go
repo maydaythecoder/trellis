@@ -29,7 +29,7 @@ func (m *Model) clearPanes() {
 	m.runStart = m.now()
 	m.waited = 0
 	m.engineMs, m.engineMark = nil, 0
-	m.strip.Phase = view.Phase{}
+	m.strip.Phase, m.strip.Call = view.Phase{}, view.Call{}
 	m.strip.Stopping = false
 	m.strip.Outcome, m.strip.Exit = "", nil
 	m.runID = ""
@@ -64,6 +64,9 @@ func (m *Model) panesTurn(t *frames.TurnFields) {
 	}
 	m.Actions.Push(view.Action{Tool: tool, Target: target, Wrote: wrote})
 	m.strip.Phase = view.Phase{Kind: "tool", Turn: t.Turn, Tool: tool, Target: target}
+	// Kept past the next model call and run_end, which clear the phase:
+	// Where it is names the last call the run made, not only one under way.
+	m.strip.Call = view.Call{Tool: tool, Target: target}
 
 	// A refused edit is not a proposal at all: listing one made the panes
 	// contradict each other ("3 edit(s) pending" for a run that changed one
@@ -246,5 +249,10 @@ func (m *Model) nowState() view.Now {
 	}
 	n.EngineClock = m.engineMs != nil
 	n.Paused, n.PauseAsked = m.paused, m.pauseAsked
+	// Before any prompt, the mode the next one names; after, the one the
+	// last prompt sent, which a follow_up's run also runs in (ADR 0025).
+	if n.Control == "" {
+		n.Control = m.control
+	}
 	return n
 }

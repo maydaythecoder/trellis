@@ -2,21 +2,21 @@
  ● RUNNING  1:23*  █░░░░░░░ 3/40  [^P] pause  running edit → src/parser.py                         plan  summary so far 
 ┌ transcript ──────────────────────────────────────────────────────────┐┌ where ───────────────────────────────────────┐
 │▎ you · task  fix the failing parser test, keeping the comment        ││  phase    ran edit, turn 3                   │
-│▎ handling the tokenizer already has                                  ││  runtime  ollama · qwen2.5-coder:32b         │
-│─ turn 1 · model 6200 ms · 412 tok out · 12400 B prompt               ││  control  —                                  │
-│· Measured the blast radius of parse_expr                             ││  root     trellis-demo                       │
-│    resolved 12 · candidates 1                                        │└──────────────────────────────────────────────┘
-│The parser drops the last token when the input ends in a comment.     │┌ actions ─────────────────────────────────────┐
-│▎ you · steer · queued  leave tokens.py alone                         ││  blast_radius           1 ●─┐                │
-│─ turn 2 · model 4800 ms · — tok out · — B prompt                     ││  read_file                ○─┤                │
-│· Ran the checks: Tests on whole repository                           ││  edit         1 · 1 wrote ●─┤──◆ 3 actions   │
-│✓ Tests passed · trellis-checks verdict                               ││  run_checks             1 ●─┘                │
+│▎ handling the tokenizer already has                                  ││  call     edit → src/parser.py               │
+│─ turn 1 · model 6200 ms · 412 tok out · 12400 B prompt               ││  model    ollama… · tier 2, native tool calls│
+│· Measured the blast radius of parse_expr                             ││  root     trellis-demo · control approve     │
+│    resolved 12 · candidates 1                                        ││  runtime  ollama · qwen2.5-coder:32b         │
+│The parser drops the last token when the input ends in a comment.     │└──────────────────────────────────────────────┘
+│▎ you · steer · queued  leave tokens.py alone                         │┌ actions ─────────────────────────────────────┐
+│─ turn 2 · model 4800 ms · — tok out · — B prompt                     ││  blast_radius           1 ●─┐                │
+│· Ran the checks: Tests on whole repository                           ││  read_file                ○─┤                │
+│✓ Tests passed · trellis-checks verdict                               ││  edit         1 · 1 wrote ●─┤──◆ 3 actions   │
+│                                                                      ││  run_checks             1 ●─┘                │
 │                                                                      ││  ✎ 1                                         │
 │                                                                      ││  · run_checks                                │
 │                                                                      │└──────────────────────────────────────────────┘
 │                                                                      │┌ edits ───────────────────────────────────────┐
 │                                                                      ││~ src/index/resolve.rs                       —│
-│                                                                      ││                                              │
 │                                                                      │└──────────────────────────────────────────────┘
 │                                                                      │┌ checks ──────────────────────────────────────┐
 │                                                                      ││typecheck passed                              │

@@ -1,6 +1,6 @@
 // Command trellis-tui is the Go TUI, a client of `trellis rpc` (ADR 0052).
 //
-//	trellis-tui --root <repo> [--trellis <path>] [--model <spec>] [--theme auto|dark|light] [--register serious|playful] [task]
+//	trellis-tui --root <repo> [--trellis <path>] [--model <spec>] [--theme auto|dark|light] [--register serious|playful] [--control approve|auto] [task]
 //	trellis-tui --version
 //
 // It starts one `trellis --root <repo> rpc` child, using the trellis it is
@@ -13,7 +13,10 @@
 // replaces the terminal's answer, since Windows always answers dark.
 // --register is the brand book's register dial (#857): serious, the
 // default, or playful, which draws one Ascii face where the Now strip has no
-// run to show and changes nothing else.
+// run to show and changes nothing else. --control is the control mode every
+// prompt names (#952): approve, the default and the desktop's, asks before
+// each call the configuration lists; auto runs without asking. /control
+// changes it between runs.
 //
 // The flow: run parses the flags, starts the child (internal/rpc) and hands
 // it to the Bubble Tea program (internal/model's App, which feeds the
@@ -59,6 +62,7 @@ type args struct {
 	model   string
 	theme   string
 	reg     string
+	control string
 	task    string
 }
 
@@ -72,6 +76,7 @@ func parseArgs(argv []string, stderr io.Writer) (args, error) {
 	fs.StringVar(&a.model, "model", "", "the model spec for this session, sent as set_model")
 	fs.StringVar(&a.theme, "theme", "auto", "the background the colours are chosen for: auto (ask the terminal), dark or light")
 	fs.StringVar(&a.reg, "register", "serious", "the register dial: serious, or playful for one Ascii face where the screen has no run to show")
+	fs.StringVar(&a.control, "control", "approve", "the control mode every prompt names: approve (ask before each listed call) or auto")
 	if err := fs.Parse(argv); err != nil {
 		return a, err
 	}
@@ -88,6 +93,11 @@ func parseArgs(argv []string, stderr io.Writer) (args, error) {
 	case "serious", "playful":
 	default:
 		return a, fmt.Errorf("--register is serious or playful, not %q", a.reg)
+	}
+	// rpc refuses any other word, but only once a prompt is sent: refused
+	// here, a mistyped mode never reaches a run.
+	if !model.ControlMode(a.control) {
+		return a, fmt.Errorf("--control is approve or auto, not %q", a.control)
 	}
 	if a.root == "" {
 		return a, errors.New("--root <repo> is required")
@@ -166,7 +176,7 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "trellis-tui:", err)
 		return 1
 	}
-	m := model.New(model.Options{Task: a.task, ModelSpec: a.model, Theme: th, Playful: a.reg == "playful"})
+	m := model.New(model.Options{Task: a.task, ModelSpec: a.model, Theme: th, Playful: a.reg == "playful", Control: a.control})
 	app := model.NewApp(m, c)
 	_, err = tea.NewProgram(app, tea.WithAltScreen()).Run()
 	// The program has ended, on whatever path: what it left waiting on the
