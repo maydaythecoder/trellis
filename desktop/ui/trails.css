@@ -1,0 +1,171 @@
+/*
+  The record levels' stylesheet (#978): the trails view, the vault notes view
+  and the board. index.html links it after codebase.css.
+*/
+
+/* The trails view (#304): a Rail of past runs and one run's record, its
+   factual and judgment parts apart. */
+.tr-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(0, 2fr);
+  gap: var(--space-6);
+  margin-top: var(--space-2);
+}
+
+/* Below 1000 px a run's row would leave its task a word wide beside its
+   start time, so the record goes under the runs, as the run grid stacks. */
+@media (max-width: 1000px) {
+  .tr-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+#tr-filter {
+  display: block;
+  width: 100%;
+  margin: var(--space-1) 0 var(--space-2);
+  padding: var(--space-1) var(--space-1\.5);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--ground);
+  color: var(--ink);
+  font: inherit;
+}
+
+/* The runs scroll inside their Panel, and the Rail opens on the newest, its
+   last row (trails.js). */
+.tr-list {
+  max-height: 520px;
+  overflow-y: auto;
+}
+
+/* A run's row is one button: its task over its outcome and integrity. */
+.tr-list button {
+  display: block;
+  width: 100%;
+  padding: 0;
+  box-shadow: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.tr-list button[aria-current="true"] {
+  color: var(--ink);
+}
+
+.tr-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  margin-top: var(--space-0\.5);
+}
+
+/* A past run's record: recorded text is drawn as it was written, in its
+   own face, so it never reads as the desktop's own words. */
+.untrusted {
+  font-family: ui-monospace, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+article.past-run section + section {
+  margin-top: var(--space-3);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--line);
+}
+
+.judgment h4 {
+  color: var(--ink-muted);
+  font-style: italic;
+}
+
+/* The vault notes view (#309): search hits beside one note's relations. */
+.vt-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(0, 1fr);
+  gap: var(--space-6);
+  margin-top: var(--space-2);
+}
+
+.vt-hits button {
+  display: block;
+  width: 100%;
+  padding: var(--space-1) var(--space-1\.5);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.vt-hits button[aria-current="true"] {
+  border-color: var(--line);
+  background: var(--ground);
+}
+
+.vt-hits ul {
+  padding-left: 0;
+  list-style: none;
+}
+
+.vt-note section + section {
+  margin-top: var(--space-2);
+}
+
+.vt-note code,
+.vt-hits code {
+  overflow-wrap: anywhere;
+}
+
+/* The board (#311): eight queue counts, the tasks, and PR and CI state. */
+.qb-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-2) 0;
+}
+
+.qb-bar button {
+  padding: 1px var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--ground);
+  color: var(--signal);
+  font: inherit;
+  cursor: pointer;
+}
+
+.qb-counts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+/* Each cell is a button that filters the list (#656), holding its status's
+   count as a Stat; pressed, it takes the frame and fill of what the person
+   chose, as the design system's Queue marks a chosen option. */
+.qb-counts .qb-cell {
+  display: block;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+}
+
+.qb-counts .qb-cell[aria-pressed="true"] {
+  background: var(--signal-soft);
+  box-shadow: var(--frame-signal);
+}
+
+.qb-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(220px, 2fr);
+  gap: var(--space-6);
+  margin-top: var(--space-6);
+}
