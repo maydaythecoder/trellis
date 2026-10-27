@@ -554,7 +554,8 @@ enum Closing {
 /// What a transcript row came from (#827), as the design system's
 /// Transcript types its entries: the person's task and steers, the tools
 /// the run called, the checks trellis-checks ran, what trellis noted, and
-/// what it refused.
+/// what it refused; and (#949) the rule a turn's rows start under, and a
+/// question the model asked the person through `ask_human`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Kind {
     Task,
@@ -563,6 +564,8 @@ enum Kind {
     Check,
     Note,
     Refusal,
+    Turn,
+    Ask,
 }
 
 impl Kind {
@@ -574,6 +577,8 @@ impl Kind {
             Kind::Check => "check",
             Kind::Note => "note",
             Kind::Refusal => "refusal",
+            Kind::Turn => "turn",
+            Kind::Ask => "ask",
         }
     }
 }
@@ -616,6 +621,23 @@ struct Entry {
     passed: Option<bool>,
     /// A steer row's line id and where it stands.
     steer: Option<(String, Delivery)>,
+    /// A tool row's `wrote`, so quiet mode keeps the calls that changed the
+    /// tree in view and hides only the reads and lookups (#949).
+    wrote: bool,
+    /// A turn row's figures as its first turn event carried them, each
+    /// `None` when that event did not (#949).
+    figures: Option<TurnFigures>,
+}
+
+/// The figures a turn divider carries (#949): the model call's time, the
+/// completion tokens and the prompt's size, each in its own unit and never
+/// summed (skill rule 5); `None` is a figure the turn event did not carry,
+/// drawn unreported and never as 0 (rule 2).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TurnFigures {
+    model_ms: Option<u64>,
+    completion_tokens: Option<u64>,
+    prompt_bytes: Option<u64>,
 }
 
 impl Entry {
@@ -628,6 +650,8 @@ impl Entry {
             detail: None,
             passed: None,
             steer: None,
+            wrote: false,
+            figures: None,
         }
     }
 }
@@ -719,6 +743,16 @@ impl Row for Entry {
             Delivery::Not(why) => json!({"state": "not_delivered", "why": why}),
         });
         m.insert("delivery".into(), delivery.unwrap_or(Value::Null));
+        // Only the rows that carry them, so every other row's shape stays
+        // what the page and the tests already read (#949).
+        if self.kind == Kind::Tool {
+            m.insert("wrote".into(), json!(self.wrote));
+        }
+        if let Some(f) = self.figures {
+            m.insert("model_ms".into(), json!(f.model_ms));
+            m.insert("completion_tokens".into(), json!(f.completion_tokens));
+            m.insert("prompt_bytes".into(), json!(f.prompt_bytes));
+        }
         m
     }
 }
@@ -1608,6 +1642,11 @@ pub struct DesktopState {
     /// The run's typed rows, oldest first, each sent to the page once and
     /// again only when it changes (#827).
     transcript: Feed<TRANSCRIPT_CAP, TRANSCRIPT_BYTES, Entry>,
+    /// The turn whose divider the transcript last drew; `None` from a
+    /// run's start. Two turn events under one number (the governance
+    /// audit's run_checks after the model's call) share one divider, as
+    /// the TUI's do (#947, #949).
+    divided_turn: Option<u64>,
     actions: Vec<Action>,
     edits: Vec<String>,
     /// The run's writes, oldest first, with what each turn said of its
@@ -2146,8 +2185,24 @@ impl DesktopState {
                 if self.approvals.iter().any(|o| o.id == a.id) {
                     return Changed::default();
                 }
+                // The gate names an ask_human call `ask_human "<question>"`
+                // (trellis-loop gate.rs), and no custom tool may take a
+                // built-in's name (registry.rs), so the prefix is the
+                // call's. The question is the model's, kept in the log as
+                // well as the dialog, as the TUI keeps it (#947, #949).
+                let asked = a
+                    .question
+                    .as_deref()
+                    .and_then(|q| q.strip_prefix("ask_human "))
+                    .map(str::to_string);
                 self.approvals.push(a);
-                Changed::of(&[Pane::Approvals])
+                match asked {
+                    Some(q) => {
+                        self.transcript.push(Entry::new(Kind::Ask, None, q));
+                        Changed::of(&[Pane::Approvals, Pane::Transcript])
+                    }
+                    None => Changed::of(&[Pane::Approvals]),
+                }
             }
             Frame::Ignored => Changed::default(),
             // Text on stdout, which carries only JSON objects: shown as it
@@ -3332,10 +3387,24 @@ impl DesktopState {
             _ => None,
         };
 
+        // The rule the turn's rows start under, once a turn, with the
+        // figures its first event carried (#949).
+        if self.divided_turn != Some(t.turn) {
+            self.divided_turn = Some(t.turn);
+            let mut rule = Entry::new(Kind::Turn, Some(t.turn), format!("turn {}", t.turn));
+            rule.figures = Some(TurnFigures {
+                model_ms: t.model_ms,
+                completion_tokens: t.completion_tokens,
+                prompt_bytes: t.prompt_bytes,
+            });
+            self.transcript.push(rule);
+        }
+
         // The call as a tool row, its sentence first and the raw call and
         // observation shown on demand; then, only for a verdict
         // trellis-checks produced, a check row.
         let mut tool = Entry::new(Kind::Tool, Some(t.turn), tool_sentence(&t));
+        tool.wrote = t.wrote == Some(true);
         tool.call = Some(visible(t.call.clone()));
         tool.detail = t.observation.as_deref().map(|obs| {
             let mut lines = obs.lines();
@@ -3439,6 +3508,7 @@ impl DesktopState {
 
     /// Empties the panes a run owns; the transcript is left to its caps.
     fn reset_run(&mut self) {
+        self.divided_turn = None;
         self.actions.clear();
         self.edits.clear();
         self.writes.clear();
@@ -3859,11 +3929,164 @@ mod tests {
         assert_eq!(
             rows(&v["transcript"]),
             [
-                json!({"seq": 0, "kind": "tool", "turn": 1, "text": "Read app/core.py",
-                    "call": "read_file app/core.py", "detail": "def f():\n    return 1", "passed": null, "delivery": null})
+                json!({"seq": 0, "kind": "turn", "turn": 1, "text": "turn 1",
+                    "call": null, "detail": null, "passed": null, "delivery": null,
+                    "model_ms": null, "completion_tokens": null, "prompt_bytes": null}),
+                json!({"seq": 1, "kind": "tool", "turn": 1, "text": "Read app/core.py",
+                    "call": "read_file app/core.py", "detail": "def f():\n    return 1", "passed": null, "delivery": null,
+                    "wrote": false})
             ]
         );
         assert_eq!(v["checks"], json!([]), "verdict None ran no check");
+    }
+
+    #[test]
+    fn action_log_turn_divider_carries_the_turns_figures() {
+        // The risk (#949): the page inventing a turn's rule from row turn
+        // numbers, so it carries no figures; a figure the event did not
+        // carry drawn as 0; prompt bytes and completion tokens joined into
+        // one number; or the governance audit's second event under the
+        // same number drawing a second rule.
+        let mut s = DesktopState::default();
+        feed(
+            &mut s,
+            &turn(
+                json!({"turn": 1, "call": "read_file a.py", "verdict": "None", "check_kind": "",
+                         "tool": "read_file", "target": "a.py", "wrote": false,
+                         "model_ms": 6200, "completion_tokens": 412, "prompt_bytes": 12000}),
+            ),
+        );
+        feed(
+            &mut s,
+            &turn(
+                json!({"turn": 1, "call": "run_checks", "verdict": "Some(true)",
+                         "check_kind": "Tests", "tool": "run_checks", "target": "",
+                         "model_ms": 1, "completion_tokens": 2, "prompt_bytes": 3}),
+            ),
+        );
+        feed(
+            &mut s,
+            &turn(
+                json!({"turn": 2, "call": "read_file b.py", "verdict": "None", "check_kind": "",
+                         "tool": "read_file", "target": "b.py", "wrote": false}),
+            ),
+        );
+        let t = rows(&all(&mut s)["transcript"]);
+        let kinds: Vec<&str> = t.iter().map(|r| r["kind"].as_str().unwrap()).collect();
+        assert_eq!(
+            kinds,
+            ["turn", "tool", "tool", "check", "turn", "tool"],
+            "{t:?}"
+        );
+        let figures = |r: &Value| {
+            (
+                r["text"].clone(),
+                r["turn"].clone(),
+                r["model_ms"].clone(),
+                r["completion_tokens"].clone(),
+                r["prompt_bytes"].clone(),
+            )
+        };
+        // The first event's figures, each in its own key.
+        assert_eq!(
+            figures(&t[0]),
+            (
+                json!("turn 1"),
+                json!(1),
+                json!(6200),
+                json!(412),
+                json!(12000)
+            )
+        );
+        // Not carried is null, never 0.
+        assert_eq!(
+            figures(&t[4]),
+            (
+                json!("turn 2"),
+                json!(2),
+                Value::Null,
+                Value::Null,
+                Value::Null
+            )
+        );
+        for key in ["tokens", "total", "sum"] {
+            assert!(
+                t[0].get(key).is_none(),
+                "a divider carries {key}: {:?}",
+                t[0]
+            );
+        }
+        // Only a divider carries the figures, and only a tool row `wrote`.
+        for r in &t[1..4] {
+            assert!(r.get("model_ms").is_none(), "{r}");
+        }
+        assert_eq!(t[3].get("wrote"), None, "{:?}", t[3]);
+
+        // A new run numbers its turns from 1 again, under a rule of its own.
+        feed(&mut s, &run_start("p-2"));
+        feed(
+            &mut s,
+            &turn(
+                json!({"turn": 1, "call": "read_file a.py", "verdict": "None", "check_kind": "",
+                         "tool": "read_file", "target": "a.py", "model_ms": 5}),
+            ),
+        );
+        let t = rows(&all(&mut s)["transcript"]);
+        let last_rule = t.iter().rev().find(|r| r["kind"] == "turn").unwrap();
+        assert_eq!(
+            figures(last_rule),
+            (
+                json!("turn 1"),
+                json!(1),
+                json!(5),
+                Value::Null,
+                Value::Null
+            )
+        );
+        assert_eq!(t.iter().filter(|r| r["kind"] == "turn").count(), 3, "{t:?}");
+    }
+
+    #[test]
+    fn a_model_question_is_a_model_asks_you_entry() {
+        // The risk (#949): the model's ask_human question shown only in a
+        // dialog, so once answered the log has no record that the run
+        // waited on the person; an edit's approval mistaken for one; or the
+        // same request, sent again, logged twice.
+        let ask = |id: &str, question: &str| {
+            json!({"type": "approval_request", "id": id, "question": question, "detail": ""})
+                .to_string()
+        };
+        let mut s = DesktopState::default();
+        let c = feed(&mut s, &ask("approval-1", "ask_human \"which branch?\""));
+        assert!(c.has(Pane::Transcript) && c.has(Pane::Approvals), "{c:?}");
+        let t = rows(&all(&mut s)["transcript"]);
+        assert_eq!(t.len(), 1, "{t:?}");
+        assert_eq!(
+            (&t[0]["kind"], &t[0]["text"], &t[0]["turn"]),
+            (&json!("ask"), &json!("\"which branch?\""), &Value::Null)
+        );
+
+        // The same request again changes nothing.
+        let c = feed(&mut s, &ask("approval-1", "ask_human \"which branch?\""));
+        assert_eq!(c, Changed::default());
+        // An edit's approval, or a name that only starts the same, is no
+        // question from the model.
+        for (id, q) in [
+            ("approval-2", "edit a.py"),
+            ("approval-3", "ask_humanx \"q\""),
+            ("approval-4", "run ask_human \"q\""),
+        ] {
+            let c = feed(&mut s, &ask(id, q));
+            assert!(!c.has(Pane::Transcript), "{q}: {c:?}");
+        }
+        assert_eq!(rows(&all(&mut s)["transcript"]).len(), 1);
+
+        // The question is the model's text: a control character in it is
+        // escaped, seen and not dropped.
+        let c = feed(&mut s, &ask("approval-5", "ask_human \"a\u{1b}b\""));
+        assert!(c.has(Pane::Transcript), "{c:?}");
+        let t = rows(&all(&mut s)["transcript"]);
+        assert_eq!(t[1]["text"], json!("\"a\\u{1b}b\""));
     }
 
     #[test]
@@ -3977,11 +4200,12 @@ mod tests {
             v["checks"],
             json!([{"kind": "Typecheck", "result": "failed"}])
         );
-        // The tool row, then a check row carrying the verdict.
+        // The turn's divider, the tool row, then a check row carrying the
+        // verdict.
         let t = rows(&v["transcript"]);
-        assert_eq!(t.len(), 2, "{v}");
+        assert_eq!(t.len(), 3, "{v}");
         assert_eq!(
-            (&t[1]["kind"], &t[1]["text"], &t[1]["passed"], &t[1]["turn"]),
+            (&t[2]["kind"], &t[2]["text"], &t[2]["passed"], &t[2]["turn"]),
             (
                 &json!("check"),
                 &json!("Typecheck failed"),
@@ -6264,17 +6488,17 @@ mod tests {
         assert_eq!(v["transcript"]["whole"], false);
         assert_eq!(
             new.len(),
-            2,
-            "the tool row and its check row, nothing older: {v}"
+            3,
+            "the turn's divider, the tool row and its check row, nothing older: {v}"
         );
         let first = TRANSCRIPT_CAP as u64 + 5;
         assert_eq!(
-            (&new[0]["seq"], &new[1]["seq"]),
-            (&json!(first), &json!(first + 1))
+            (&new[0]["seq"], &new[1]["seq"], &new[2]["seq"]),
+            (&json!(first), &json!(first + 1), &json!(first + 2))
         );
         assert_eq!(
-            (&new[0]["kind"], &new[1]["kind"]),
-            (&json!("tool"), &json!("check"))
+            (&new[0]["kind"], &new[1]["kind"], &new[2]["kind"]),
+            (&json!("turn"), &json!("tool"), &json!("check"))
         );
         // A view with nothing new carries no row.
         let c = s.update(Frame::Human("aside".into()));
@@ -7779,9 +8003,18 @@ mod tests {
                              "observation": text}),
                 ),
             );
+            // The turn's divider, then its tool row; a row cut to the
+            // transcript's byte cap leaves no room for the divider ahead
+            // of it, which the cap drops as the oldest.
             let rows = rows(&all(&mut s)["transcript"]);
-            assert_eq!(rows.len(), 1, "{name}");
-            let row = &rows[0];
+            let Some((row, before)) = rows.split_last() else {
+                panic!("{name}: no row");
+            };
+            assert_eq!(row["kind"], "tool", "{name}");
+            assert!(
+                before.len() <= 1 && before.iter().all(|r| r["kind"] == "turn"),
+                "{name}: {before:?}"
+            );
             let fields = ["text", "call", "detail"].map(|k| row[k].as_str().unwrap_or_default());
             for (field, bad) in fields
                 .iter()

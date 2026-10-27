@@ -135,7 +135,7 @@ func (m *Model) sendHeld() {
 		return
 	}
 	m.held = nil
-	m.push(view.RoleYou, "> "+view.Plain(h.text))
+	m.pushYou(taskWords(h.text))
 	m.startRun(h.text)
 	if i := m.heldItem(); i >= 0 {
 		m.queue[i].id = m.promptID

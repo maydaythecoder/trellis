@@ -19,11 +19,15 @@ func shellState() State {
 	s.Running = true
 	s.Model, s.Tier = "ollama:qwen2.5-coder:32b", "2, native tool calls"
 	s.Transcript = []Row{
-		{Text: "> fix the failing parser test", Role: RoleYou},
+		{Text: "you · task  fix the failing parser test, keeping the comment handling the tokenizer already has", Role: RoleYou, Bar: true},
+		{Text: TurnDivider(1, u(6200), u(412), u(12400)), Role: RoleLabel, Turn: 1},
 		{Text: "· Measured the blast radius of parse_expr", Role: RoleTool, Turn: 1},
 		{Text: "    resolved 12 · candidates 1", Role: RoleOutput, Turn: 1},
 		{Text: "The parser drops the last token when the input ends in a comment."},
-		{Text: "· Ran the checks: Tests on whole repository  ✓ Tests passed", Role: RolePassed, Turn: 2},
+		{Text: "you · steer · queued  leave tokens.py alone", Role: RoleYou, Bar: true},
+		{Text: TurnDivider(2, u(4800), nil, nil), Role: RoleLabel, Turn: 2},
+		{Text: "· Ran the checks: Tests on whole repository", Role: RoleTool, Turn: 2},
+		{Text: "✓ Tests passed · trellis-checks verdict", Role: RolePassed, Turn: 2},
 	}
 	s.Actions = []Action{{Tool: "blast_radius", Target: "parse_expr"}, {Tool: "edit", Target: "src/parser.py", Wrote: true}, {Tool: "run_checks"}}
 	s.Budget = Budget{Iteration: 3, MaxIterations: u(40), PromptBytes: u(24100), ElapsedSecs: u(83)}
