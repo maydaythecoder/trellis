@@ -1,22 +1,22 @@
  Run ⟩ summary                                       L2 / 4  [ESC] out  TRELLIS 
  ● ENDED · converged · exit 0  1:23  █░░░░░░░ 6/40                              
  w ┌ summary · how the run ended ──────────────────────────────────────────────┐
- h │ how the run ended                                                         │
-   │   outcome   ● converged                                                   │
- a │   exit      0                                                             │
- c │                                                                           │
+   │ how the run ended                                                         │
+ a │   outcome   ● converged                                                   │
+   │   exit      0                                                             │
+ e │                                                                           │
    │ CHECKS BY KIND · trellis-checks' verdict and the turn's time              │
- e │   Typecheck                                                               │
- d │     turn 2  passed  120 ms                                                │
-   │     turn 6  passed  —  the turn's event carried no duration_ms            │
- c │   Tests                                                                   │
- h │     turn 3  failed  340 ms                                                │
-   │                                                                           │
- r │ VERIFIED AND REVIEWED · from the trail, two figures                       │
- a │   Verified  —  trellis rpc sends no mode counts, and this view reads no   │
-   └ rows 1–13 of 40 · [↑][↓] [PGUP][PGDN] ────────────────────────────────────┘
+ c │   Typecheck                                                               │
+   │     turn 2  passed  120 ms                                                │
+ r │     turn 6  passed  —  the turn's event carried no duration_ms            │
+   │   Tests                                                                   │
+   │     turn 3  failed  340 ms                                                │
+   └ rows 1–10 of 40 · [↑][↓] [PGUP][PGDN] ────────────────────────────────────┘
 ┌ budget ──────────────────────────────────────────────────────────────────────┐
-│TURNS ██░░░░░░░░░░░░░░ 6/40  ·  PROMPT 24.1 kB  ·  TIME 1:23                  │
+│   TURNS        ██░░░░░░░░░░░░░░ 6/40                                         │
+│   WALL CLOCK   ████░░░░░░░░░░░░ 1:23/5:21                                    │
+│   COMPLETION   █░░░░░░░░░░░░░░░ 540/54321 tokens                             │
+│   LAST PROMPT  ███░░░░░░░░░░░░░ 24.1 kB/123.5 kB                             │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌ task  [⏎] run  [ESC] clear  /help ───────────────────────────────────────────┐
 │█                                                                             │

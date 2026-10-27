@@ -245,7 +245,7 @@ func layout(s State, w, h int) (entry []string, bodyH int) {
 // the Now strip, the budget box and the status bar, and the messages row
 // once trellis has written to stderr.
 func fixedRows(s State) int {
-	n := 1 + 1 + 3 + 1
+	n := 1 + 1 + budgetH + 1
 	if len(s.Stderr) > 0 {
 		n++
 	}
@@ -653,36 +653,6 @@ func actions(s State, w, h int) []string {
 	return paneBox(s, PanelActions, "actions", "", lines, w, h)
 }
 
-// budgetSegments are the budget row's segments, in order (#911): a Meter
-// for the turns against the run's max_iterations (the summary level draws
-// every other ceiling, #854);
-// the prompt's size in kB; the time by this view's clock; and #257's rate
-// and queue wait, nil when not drawn at all. A figure trellis did not
-// report is Dash, never 0 (#641): at launch the line used to read
-// "iteration 0 · 0 B prompt · 0s elapsed", three figures nothing had
-// measured.
-func budgetSegments(s State) [][]Span {
-	b := s.Budget
-	labelled := func(label, value string) []Span {
-		return []Span{{Text: label + " ", Role: RoleLabel}, {Text: value}}
-	}
-	rate, queued := turnRate(b)
-	segs := [][]Span{
-		meter("TURNS", turnUsed(s), b.MaxIterations, meterCells),
-		labelled("PROMPT", kB(b.PromptBytes)),
-		labelled("TIME", clockText(s)),
-		nil,
-		nil,
-	}
-	if rate != nil {
-		segs[3] = []Span{{Text: *rate}}
-	}
-	if queued != nil {
-		segs[4] = []Span{{Text: *queued}}
-	}
-	return segs
-}
-
 // Limit is a budget row a person may raise (#857): one of the three
 // ceilings set_budget takes, never the context, which the driver fixes for
 // the run (#807).
@@ -735,56 +705,72 @@ func limitFigures(s State, l Limit) (label string, used, ceiling *uint64, readou
 	return "TURNS", turnUsed(s), b.MaxIterations, figure(turnUsed(s)) + "/" + figure(b.MaxIterations)
 }
 
-// budgetBox is the budget box: the row of segments, or, while a raise is
-// typed, the row it is for, so the person sees the ceiling they are
-// raising as trellis last sent it. Its title offers ^R while a run in
-// flight can take a raise.
+// budgetBox is the budget box (#951): one row per ceiling run budget
+// carries, the turns, the wall clock, the completion tokens and the last
+// prompt's bytes, each a Meter of meterCells cells and its two figures,
+// as the summary level and the desktop's budget rows draw them (#829,
+// #854). A figure trellis did not report is Dash and its row has no
+// cells (#641): at launch the line used to read "iteration 0 · 0 B prompt
+// · 0s elapsed", three figures nothing had measured. The rows are always
+// four, so the box's height, and with it the transcript's scroll limits
+// (#843), never moves with what has been reported. While a raise is typed
+// its row is marked, so the person sees the ceiling they are raising as
+// trellis last sent it beside the others. Its title offers ^R while a run
+// in flight can take a raise.
 func budgetBox(s State, w int) []string {
 	title := "budget"
-	row := Row{Spans: budgetRow(s, w-2)}
 	switch {
 	case s.Raise != "":
 		title = "budget · raise " + string(s.Raise)
-		label, used, ceiling, readout := limitFigures(s, s.Raise)
-		row = limitRow(label, used, ceiling, readout, "", w-2)[0]
 	case s.Running && !s.Now.Stopping:
 		title = "budget  " + keyRow(key{"^R", "raise"})
 	}
-	return Box(s.Theme, title, "", []Row{row}, w, 3)
+	var rows []Row
+	for _, l := range Limits {
+		label, used, ceiling, readout := limitFigures(s, l)
+		row := limitRow(label, used, ceiling, readout, "", w-2)[0]
+		if l == s.Raise {
+			row.Spans[0] = Span{Text: " › " + Pad(label, 13), Role: RoleYou}
+		}
+		rows = append(rows, row)
+	}
+	b := s.Budget
+	rows = append(rows, limitRow("LAST PROMPT", b.PromptBytes, b.MaxContextBytes, kB(b.PromptBytes)+"/"+kB(b.MaxContextBytes), "", w-2)[0])
+	rows[0].Spans = withLastTurn(b, rows[0].Spans, w-2)
+	return Box(s.Theme, title, "", rows, w, budgetH)
 }
 
-// BudgetLine is the budget's whole row as text, every segment kept.
-func BudgetLine(s State) string { return spansText(budgetRow(s, -1)) }
+// budgetH is the budget box's height: its four rows and two borders.
+const budgetH = 4 + 2
 
-// budgetRow is the budget row's segments joined with "  ·  ", dropping
-// whole segments until it fits width (#655); a negative width keeps them
-// all. A row cut by the box ended mid-word ("· queu"), so a segment that
-// does not fit is left out rather than cut, in this order: the token rate
-// first, since it is the one figure derived from the others; then the
-// queue wait; then the prompt size. The turns and the time are never
-// dropped: they are what says the run is moving.
-func budgetRow(s State, width int) []Span {
-	segs := budgetSegments(s)
-	join := func() []Span {
-		var out []Span
-		for _, seg := range segs {
-			if seg == nil {
-				continue
+// withLastTurn puts #257's rate and queue wait for the last turn at the
+// right of the turns row, the desktop's Stats under its rows (#829): the
+// turn's own output, never summed with the prompt or the completion tokens
+// counted against their ceiling. A Stat that does not fit width is left
+// out whole rather than cut mid-word (#655's "· queu"), the rate first,
+// since it is the one figure derived from the others.
+func withLastTurn(b Budget, row []Span, width int) []Span {
+	rate, queued := turnRate(b)
+	for {
+		var stats []string
+		for _, st := range []*string{rate, queued} {
+			if st != nil {
+				stats = append(stats, *st)
 			}
-			if out != nil {
-				out = append(out, Span{Text: "  ·  ", Role: RoleLabel})
-			}
-			out = append(out, seg...)
 		}
-		return out
-	}
-	for _, drop := range []int{3, 4, 1} {
-		if width < 0 || spansWidth(join()) <= width {
-			break
+		if len(stats) == 0 {
+			return row
 		}
-		segs[drop] = nil
+		right := []Span{{Text: "last turn ", Role: RoleLabel}, {Text: strings.Join(stats, "  ·  ")}}
+		if spansWidth(row)+2+spansWidth(right) <= width {
+			return spread(row, right, width)
+		}
+		if rate != nil {
+			rate = nil
+		} else {
+			queued = nil
+		}
 	}
-	return join()
 }
 
 // kB is a byte count in kilobytes to one place, the unit after a space as

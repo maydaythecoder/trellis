@@ -136,7 +136,10 @@ func TestShellSelectedPaneAndTheRail(t *testing.T) {
 		t.Fatalf("the selected pane is not the heavy one:\n%s", out)
 	}
 	s.Nav.Open = PanelChecks
-	rows := strings.Split(Render(s, 120, 40), "\n")
+	// 43 rows: the budget box's four rows (#951) leave a 120x40 stage
+	// three rows shorter, and the rail's share of it cuts each title to
+	// four letters.
+	rows := strings.Split(Render(s, 120, 43), "\n")
 	if !strings.HasPrefix(rows[2], " w ┌ checks") {
 		t.Fatalf("the rail and the open pane do not start the stage: %q", rows[2])
 	}

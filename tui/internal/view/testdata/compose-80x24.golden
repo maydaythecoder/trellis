@@ -1,9 +1,6 @@
  Run                                                            L1 / 4  TRELLIS 
  ● RUNNING  1:23*  █░░░░░░░ 3/40  1 queued  [^P] pause  running edit → src/pars…
 ┌ transcript ──────────────────────────────────────────────────────────────────┐
-│─ turn 1 · model 6200 ms · 412 tok out · 12400 B prompt                       │
-│· Measured the blast radius of parse_expr                                     │
-│    resolved 12 · candidates 1                                                │
 │The parser drops the last token when the input ends in a comment.             │
 │▎ you · steer · queued  leave tokens.py alone                                 │
 │─ turn 2 · model 4800 ms · — tok out · — B prompt                             │
@@ -12,7 +9,10 @@
 └──────────────────────────────────────────────────────────────────────────────┘
  where · actions 3 · edits 1 · checks 1 · radius · plan · summary   [TAB] select
 ┌ budget  [^R] raise ──────────────────────────────────────────────────────────┐
-│TURNS █░░░░░░░░░░░░░░░ 3/40  ·  PROMPT 24.1 kB  ·  TIME 1:23*                 │
+│   TURNS        █░░░░░░░░░░░░░░░ 3/40                                         │
+│   WALL CLOCK   1:23*/—                                                       │
+│   COMPLETION   —/— tokens                                                    │
+│   LAST PROMPT  24.1 kB/—                                                     │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌ stop and send  [⏎] stop this run (rolls back), then run this ────────────────┐
 │start over from the parser█                                                   │

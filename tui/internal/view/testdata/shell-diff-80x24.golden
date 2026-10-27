@@ -1,22 +1,22 @@
  Run ⟩ edits ⟩ src/parser.py                         L3 / 4  [ESC] out  TRELLIS 
  ● RUNNING  1:23*  █░░░░░░░ 3/40  [^P] pause  running edit → src/parser.py      
  w ┌ src/parser.py ────────────────────────────────────────────────────────────┐
- h │ +3 −1  ● in the worktree                                                  │
-   │                                                                           │
- a │ @@ -11,3 +11,3 @@ · turn 3                                                │
- c │   def parse_expr(tokens):                                                 │
-   │ -     return tokens[:-1]                                                  │
- e │ +     return tokens                                                       │
- d │                                                                           │
-   │                                                                           │
- c │ @@ -20,1 +20,3 @@ · turn 5                                                │
- h │   # the end                                                               │
-   │ + def parse_comment(tokens):                                              │
- r │ +     return []                                                           │
+   │ +3 −1  ● in the worktree                                                  │
  a │                                                                           │
-   └───────────────────────────────────────────────────────────────────────────┘
+   │ @@ -11,3 +11,3 @@ · turn 3                                                │
+ e │   def parse_expr(tokens):                                                 │
+   │ -     return tokens[:-1]                                                  │
+ c │ +     return tokens                                                       │
+   │                                                                           │
+ r │                                                                           │
+   │ @@ -20,1 +20,3 @@ · turn 5                                                │
+   │   # the end                                                               │
+   └ rows 1–10 of 12 · [↑][↓] [PGUP][PGDN] ────────────────────────────────────┘
 ┌ budget  [^R] raise ──────────────────────────────────────────────────────────┐
-│TURNS █░░░░░░░░░░░░░░░ 3/40  ·  PROMPT 24.1 kB  ·  TIME 1:23*                 │
+│   TURNS        █░░░░░░░░░░░░░░░ 3/40                                         │
+│   WALL CLOCK   1:23*/—                                                       │
+│   COMPLETION   —/— tokens                                                    │
+│   LAST PROMPT  24.1 kB/—                                                     │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌ steer  [⏎] queue for the next turn ──────────────────────────────────────────┐
 │█                                                                             │

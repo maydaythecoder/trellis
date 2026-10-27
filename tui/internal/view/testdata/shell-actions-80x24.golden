@@ -1,22 +1,22 @@
  Run ⟩ actions                                       L2 / 4  [ESC] out  TRELLIS 
  ● RUNNING  1:23*  █░░░░░░░ 3/40  [^P] pause  running edit → src/parser.py      
  w ┌ actions ──────────────────────────────────────────────────────────────────┐
- h │  blast_radius           1 ●─┐                                             │
-   │  read_file                ○─┤                                             │
- a │  edit         1 · 1 wrote ●─┤──◆ 3 actions                                │
- c │  run_checks             1 ●─┘                                             │
+   │  blast_radius           1 ●─┐                                             │
+ a │  read_file                ○─┤                                             │
+   │  edit         1 · 1 wrote ●─┤──◆ 3 actions                                │
+ e │  run_checks             1 ●─┘                                             │
    │  ✎ 1                                                                      │
- e │  · blast_radius parse_expr                                                │
- d │  ✎ edit src/parser.py                                                     │
-   │  · run_checks                                                             │
- c │                                                                           │
- h │                                                                           │
+ c │  · blast_radius parse_expr                                                │
+   │  ✎ edit src/parser.py                                                     │
+ r │  · run_checks                                                             │
    │                                                                           │
- r │                                                                           │
- a │                                                                           │
+   │                                                                           │
    └───────────────────────────────────────────────────────────────────────────┘
 ┌ budget  [^R] raise ──────────────────────────────────────────────────────────┐
-│TURNS █░░░░░░░░░░░░░░░ 3/40  ·  PROMPT 24.1 kB  ·  TIME 1:23*                 │
+│   TURNS        █░░░░░░░░░░░░░░░ 3/40                                         │
+│   WALL CLOCK   1:23*/—                                                       │
+│   COMPLETION   —/— tokens                                                    │
+│   LAST PROMPT  24.1 kB/—                                                     │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌ steer  [⏎] queue for the next turn ──────────────────────────────────────────┐
 │█                                                                             │
