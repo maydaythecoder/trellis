@@ -924,7 +924,7 @@ mod tests {
 
     /// A committed, trusted repository whose checks pass, with `extra`
     /// files beside the config.
-    fn repo(name: &str, config: &str, extra: &[(&str, &str)]) -> PathBuf {
+    fn repo(name: &str, config: &str, extra: &[(&str, &str)]) -> crate::testutil::Scratch {
         let root = crate::testutil::scratch(name);
         crate::testutil::git_init(&root);
         std::fs::create_dir_all(root.join(".trellis")).unwrap();
@@ -1206,7 +1206,7 @@ mod tests {
     // through it. They were `orchestration.rs` tests before.
 
     /// A repository ignoring `*.cfg`, with `config`, committed and trusted.
-    fn ignoring(name: &str, config: &str) -> PathBuf {
+    fn ignoring(name: &str, config: &str) -> crate::testutil::Scratch {
         repo(name, config, &[(".gitignore", "*.cfg\n")])
     }
 

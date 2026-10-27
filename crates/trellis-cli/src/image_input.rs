@@ -170,8 +170,7 @@ mod tests {
     fn a_path_inside_the_repository_is_named_relative_and_one_outside_by_file_name() {
         // The risk: an absolute path, the user's home layout, in a trail
         // that is committed and pushed.
-        let d = std::env::temp_dir().join(format!("trellis-image-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = crate::testutil::scratch("image");
         let root = d.join("repo");
         std::fs::create_dir_all(root.join("docs")).unwrap();
         std::fs::write(root.join("docs/a.gif"), b"GIF89a-in").unwrap();
@@ -190,7 +189,6 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains(".git"), "{e}");
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -208,9 +206,7 @@ mod tests {
 
     #[test]
     fn images_whose_base64_exceeds_the_context_budget_are_refused_before_the_run() {
-        let d = std::env::temp_dir().join(format!("trellis-image-b-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+        let d = crate::testutil::scratch("image-b");
         let p = d.join("a.gif");
         std::fs::write(&p, b"GIF89a012345").unwrap();
         // 12 bytes are 16 of base64.
@@ -220,6 +216,5 @@ mod tests {
             e.contains("16 bytes as base64") && e.contains("15 bytes"),
             "{e}"
         );
-        let _ = std::fs::remove_dir_all(&d);
     }
 }

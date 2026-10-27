@@ -14,16 +14,16 @@
 
 use serde_json::Value;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("trellis-interrupt-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+mod common;
+use common::Scratch;
+
+fn scratch(name: &str) -> Scratch {
+    common::scratch_dir(&format!("trellis-interrupt-{name}"))
 }
 
 fn git(root: &Path, args: &[&str]) {
@@ -40,13 +40,13 @@ fn git(root: &Path, args: &[&str]) {
 const KEY_ENV: &str = "TRELLIS_TEST_INTERRUPT_KEY";
 
 struct Fixture {
-    root: PathBuf,
-    home: PathBuf,
+    root: Scratch,
+    home: Scratch,
 }
 
 /// A committed repository whose `[hooks]` are `hooks`, and a user
 /// configuration naming the provider stub at `base`.
-fn fixture(root: PathBuf, hooks: &str, base: &str) -> Fixture {
+fn fixture(root: Scratch, hooks: &str, base: &str) -> Fixture {
     git(&root, &["init", "-q"]);
     git(&root, &["config", "user.email", "t@example.invalid"]);
     git(&root, &["config", "user.name", "t"]);
@@ -244,7 +244,8 @@ fn after_run_interrupted_by_sigint_runs_before_the_rollback_with_reason_interrup
     // path; its stdin goes outside the repository.
     let root = scratch("sigint");
     let hooked = root.join("hooked.py");
-    let payload = scratch("sigint-payload").join("payload.json");
+    let payload_dir = scratch("sigint-payload");
+    let payload = payload_dir.join("payload.json");
     let hooks = format!(
         "[hooks]\nafter_run = ['sh', '-c', 'cat > {}; echo hooked > {}']\n",
         payload.display(),
@@ -291,7 +292,8 @@ fn after_run_interrupted_a_second_sigint_stops_the_hook_and_the_rollback_proceed
     // sleep itself.
     let root = scratch("sigint-twice");
     let hooked = root.join("hooked.py");
-    let started = scratch("sigint-twice-marker").join("started");
+    let started_dir = scratch("sigint-twice-marker");
+    let started = started_dir.join("started");
     let hooks = format!(
         "[hooks]\ntimeout_s = 120\nafter_run = ['sh', '-c', 'echo hooked > {}; echo > {}; exec sleep 60']\n",
         hooked.display(),

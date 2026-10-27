@@ -70,9 +70,9 @@ fn doctor_coverage_probe_never_appends_help_to_a_tests_command_that_is_not_pytes
         "trellis-stub-runner"
     };
     let d = repo_with_checks("doctor-coverage-probe", "git", stub);
-    let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
-        &std::env::var_os("PATH").unwrap_or_default(),
-    )))
+    let path = std::env::join_paths(std::iter::once(bin.to_path_buf()).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
     .unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_trellis"))
         .arg("doctor")

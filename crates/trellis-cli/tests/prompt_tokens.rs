@@ -15,11 +15,11 @@ use std::process::Command;
 /// about the key; its value is built at run time, not written as a literal.
 const KEY_ENV: &str = "TRELLIS_TEST_PROVIDER_KEY";
 
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("trellis-prompt-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+mod common;
+use common::Scratch;
+
+fn scratch(name: &str) -> Scratch {
+    common::scratch_dir(&format!("trellis-prompt-{name}"))
 }
 
 fn git(root: &Path, args: &[&str]) {
@@ -41,7 +41,7 @@ fn user_dir(repo: &Path) -> PathBuf {
 
 /// A committed repository whose typecheck runs and exits 0, and a user
 /// config naming one provider at `base` when `protocol` is given.
-fn repo(name: &str, protocol: Option<&str>, base: &str) -> PathBuf {
+fn repo(name: &str, protocol: Option<&str>, base: &str) -> Scratch {
     let d = scratch(name);
     git(&d, &["init", "-q"]);
     git(&d, &["config", "user.email", "t@example.invalid"]);

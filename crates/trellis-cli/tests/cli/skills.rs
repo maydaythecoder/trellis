@@ -17,15 +17,8 @@ fn a_run_says_how_many_skills_it_listed_and_how_many_it_skipped() {
     git(&d, &["add", "-A"]);
     git(&d, &["commit", "-qm", "skills"]);
 
-    let out = run(
-        &d,
-        &[
-            "run",
-            "--model",
-            &script_that_stops(&scratch("skills-run-script")),
-            "t",
-        ],
-    );
+    let scripts = scratch("skills-run-script");
+    let out = run(&d, &["run", "--model", &script_that_stops(&scripts), "t"]);
     let said = stdout(&out);
     let repo_line = said
         .lines()

@@ -155,15 +155,16 @@ mod approval_tests {
 
     use super::*;
     use crate::run_cmd::{RunExit, RunSeeding, cmd_run};
+    use crate::testutil::Scratch;
     use anyhow::Result;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     /// A committed repository in approve mode, and a script outside it.
     ///
     /// The script lives elsewhere because an untracked file inside the
     /// repository would make the worktree dirty, and a run refuses that.
-    fn fixture(name: &str, script: &str) -> (PathBuf, String) {
-        let dir = crate::testutil::scratch(&format!("approval-{name}"));
+    fn fixture(name: &str, script: &str) -> (Scratch, String) {
+        let mut dir = crate::testutil::scratch(&format!("approval-{name}"));
         crate::testutil::git_init(&dir);
         std::fs::create_dir_all(dir.join(".trellis")).unwrap();
         std::fs::write(
@@ -176,7 +177,9 @@ mod approval_tests {
         let scripts = crate::testutil::scratch(&format!("approval-{name}-script"));
         let path = scripts.join("script.json");
         std::fs::write(&path, script).unwrap();
-        (dir, format!("scripted:{}", path.display()))
+        let spec = format!("scripted:{}", path.display());
+        dir.hold(scripts);
+        (dir, spec)
     }
 
     const EDIT_THEN_STOP: &str = r#"{"steps":[
@@ -235,7 +238,7 @@ mod approval_tests {
 
     /// `fixture`, with `tools` appended to the approve-mode config and the
     /// repository trusted, so a `[[tools.custom]]` in it is enabled.
-    fn fixture_with_tools(name: &str, tools: &str, script: &str) -> (PathBuf, String) {
+    fn fixture_with_tools(name: &str, tools: &str, script: &str) -> (Scratch, String) {
         let (dir, spec) = fixture(name, script);
         std::fs::write(
             dir.join(".trellis/config.toml"),

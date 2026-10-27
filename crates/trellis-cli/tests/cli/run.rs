@@ -222,9 +222,6 @@ fn sandbox_missing_or_failing_is_a_warning_that_names_the_reason() {
         doctor.contains("sandbox:    none (bwrap not found)"),
         "{doctor}"
     );
-    for p in [&d, &bin, &empty] {
-        let _ = std::fs::remove_dir_all(p);
-    }
 }
 
 #[test]

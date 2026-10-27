@@ -143,9 +143,9 @@ fn index_does_not_wait_two_minutes_on_a_backstop_server_that_never_answers_initi
             std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
     }
-    let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
-        &std::env::var_os("PATH").unwrap_or_default(),
-    )))
+    let path = std::env::join_paths(std::iter::once(bin.to_path_buf()).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
     .unwrap();
 
     let started = std::time::Instant::now();
@@ -186,7 +186,7 @@ fn index_does_not_wait_two_minutes_on_a_backstop_server_that_never_answers_initi
 /// A committed repository whose `.trellis/<name>` is a link to `target`,
 /// as a clone of a hostile repository arrives. `None` (the test skips)
 /// where the platform will not make a file link.
-fn repo_with_linked(test: &str, name: &str, target: &Path) -> Option<PathBuf> {
+fn repo_with_linked(test: &str, name: &str, target: &Path) -> Option<Scratch> {
     let d = repo(test);
     std::fs::create_dir_all(d.join(".trellis")).unwrap();
     let link = d.join(".trellis").join(name);

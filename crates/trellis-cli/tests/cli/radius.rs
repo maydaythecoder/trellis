@@ -76,7 +76,7 @@ const OTHER_WITH_DOUBT: &str = concat!(
 
 /// Four reasons across two files: past `SHOWN` and past the one-file guard,
 /// so the residue row and the concentration block both render.
-fn repo_with_doubt_spread(name: &str) -> PathBuf {
+fn repo_with_doubt_spread(name: &str) -> Scratch {
     repo_with_doubt(name, CALLER_FOUR_REASONS, Some(OTHER_WITH_DOUBT))
 }
 
@@ -86,7 +86,7 @@ fn repo_with_doubt_spread(name: &str) -> PathBuf {
 /// is what puts a run either side of that boundary. One reason throughout,
 /// deliberately: this fixture is about the file list, and a second reason
 /// would move the table above it as well.
-fn repo_with_doubt_in_n_files(name: &str, n: usize) -> PathBuf {
+fn repo_with_doubt_in_n_files(name: &str, n: usize) -> Scratch {
     let d = empty_repo(name);
 
     std::fs::create_dir_all(d.join("app")).unwrap();
@@ -119,7 +119,7 @@ fn repo_with_doubt_in_n_files(name: &str, n: usize) -> PathBuf {
 /// been printed under test. Nothing here calls a method on an untyped value,
 /// names an unbound name, or passes a callable, so there is nothing for the
 /// resolver to miss.
-fn repo_without_doubt(name: &str) -> PathBuf {
+fn repo_without_doubt(name: &str) -> Scratch {
     let d = empty_repo(name);
 
     std::fs::create_dir_all(d.join("app")).unwrap();
