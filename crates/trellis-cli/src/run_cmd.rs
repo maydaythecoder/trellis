@@ -13,13 +13,14 @@
 
 use crate::approval::{Human, NEEDS_A_TERMINAL, RunControl, answer_on_the_line, print_undelivered};
 use crate::doctor_cmd::{runtime_tier_label, schema_report};
-use crate::driver::{Driver, SeesDone};
+use crate::driver::Driver;
+use crate::observed_model::Observed;
 use crate::plain;
 use crate::run_partitioned::{
     Agents, Fanout, Partitioned, agents_for, parse_agents, run_partitioned,
 };
 use crate::{
-    config, context_files, first_run, floor, hosted, image_input, output, rpc, templates, tooling,
+    config, context_files, first_run, floor, hosted, image_input, output, templates, tooling,
     user_config, vault_cmd,
 };
 use anyhow::{Context, Result};
@@ -1481,24 +1482,21 @@ fn drive_loop(
             out = async {
                 let done = &mut done_summary;
                 let steps = &mut recorded;
-                // Each driver behind `Watched`, which tells RPC's port which
-                // steers each request carried (with no port it only forwards),
-                // and that behind `SeesDone`, which keeps the `done` summary.
+                // Each driver behind `Observed`, which tells RPC's port which
+                // steers each request carried (with no port it tells nobody)
+                // and keeps the `done` summary and the steps.
                 let port = extras.steer_watch.as_deref();
                 match &mut *driver {
                     Driver::Scripted(m) => {
-                        let mut w = rpc::Watched::new(m, port);
-                        let mut m = SeesDone { inner: &mut w, done, steps };
+                        let mut m = Observed::new(m, port, done, steps);
                         trellis_loop::run_seeded(task, &mut m, &handle, &cfg.budget(), seed).await
                     }
                     Driver::Runtime(m) => {
-                        let mut w = rpc::Watched::new(m, port);
-                        let mut m = SeesDone { inner: &mut w, done, steps };
+                        let mut m = Observed::new(m, port, done, steps);
                         trellis_loop::run_seeded(task, &mut m, &handle, &cfg.budget(), seed).await
                     }
                     Driver::Hosted(m) => {
-                        let mut w = rpc::Watched::new(&mut **m, port);
-                        let mut m = SeesDone { inner: &mut w, done, steps };
+                        let mut m = Observed::new(&mut **m, port, done, steps);
                         trellis_loop::run_seeded(task, &mut m, &handle, &cfg.budget(), seed)
                             .await
                     }
