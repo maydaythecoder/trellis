@@ -2765,7 +2765,7 @@ fn answer_gaps(c: &Value, command: &str, lists: &[&str], answers: &[&Value]) -> 
 }
 
 /// Commits a `.trellis/config.toml` whose checks pass on Windows and Linux,
-/// as `cli.rs`'s fixtures do, so a run that calls `run_checks` converges
+/// as `tests/cli/`'s fixtures do, so a run that calls `run_checks` converges
 /// without depending on the machine's toolchain.
 fn commit_passing_checks(f: &Fixture) {
     std::fs::create_dir_all(f.root.join(".trellis")).unwrap();
