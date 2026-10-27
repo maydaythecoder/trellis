@@ -31,6 +31,9 @@ type Now struct {
 	Phase Phase
 	// Waiting is set while a question trellis asked waits on the person.
 	Waiting bool
+	// Question is that question as the approval box names it, served
+	// text; "" when none waits.
+	Question string
 	// EngineClock is set when the Budget's elapsed time counts on from an
 	// elapsed_ms trellis sent (#906), and clear when it is this view's own.
 	EngineClock bool
@@ -95,35 +98,75 @@ func Activity(p Phase) string {
 	return "none"
 }
 
-// nowStrip is the Now strip's row as spans (#911, the NowStrip card): the
-// state as a Status, the run's time (clockText), the turn as a Meter
-// against the run's ceiling, the pause key, what the run is on (the last
-// turn's tool → target when it ran one), and while a question waits the
-// keys that answer it. The pause key comes before what the run is on,
-// which is the part the row cuts when it runs short.
-func nowStrip(s State) []Span {
+// nowStrip is the Now strip's row as spans at w cells (#911, the NowStrip
+// card): the state as a Status, the run's time (clockText), the turn as a
+// Meter against the run's ceiling, how many sent items are still queued,
+// the pause key, and what the run is on in -ing form (doing); or, while a
+// question waits, the question in that place and the keys that answer it
+// (#950). The figures and keys come first, and what the run is on is the
+// part the row cuts when it runs short; the question is cut to the room
+// the keys leave, so they are never the part cut.
+func nowStrip(s State, w int) []Span {
 	gap := Span{Text: "  "}
 	out := []Span{{Text: " "}, statusSpan(stateWord(s), nowRole(s))}
 	if s.Running || s.Now.Outcome != "" {
 		out = append(out, gap, Span{Text: clockText(s)}, gap)
 		out = append(out, meter("", turnUsed(s), s.Budget.MaxIterations, meterCellsShort)...)
 	}
+	if n := queuedCount(s.Compose.Queue); n > 0 {
+		out = append(out, gap, Span{Text: fmt.Sprintf("%d queued", n), Role: RoleLabel})
+	}
 	if k, ok := pauseKey(s); ok {
 		out = append(out, gap, Span{Text: keyRow(k), Role: RoleLabel})
+	}
+	if s.Running && s.Now.Waiting {
+		// The run is on the question now, not on the call it last made,
+		// and at 80 columns the row has room for one of the two.
+		keys := Span{Text: keyRow(key{"y", "accept"}, key{"n", "reject"}), Role: RoleYou}
+		room := w - spansWidth(out) - 2*Width(gap.Text) - Width(keys.Text)
+		// Below two cells Cut keeps one character and no "…", which would
+		// read as the whole question.
+		if q := Plain(s.Now.Question); q != "" && room >= 2 {
+			out = append(out, gap, Span{Text: Cut(q, room), Role: RoleYou})
+		}
+		return append(out, gap, keys)
 	}
 	// Before its first model call a run is on nothing yet, and the strip
 	// says nothing for it rather than "none".
 	if p := s.Now.Phase; s.Running && p.Kind != "" {
-		on := Activity(p)
-		if p.Kind == "tool" && p.Target != "" {
-			on += " → " + Plain(p.Target)
-		}
-		out = append(out, gap, Span{Text: on, Role: RoleTool})
-	}
-	if s.Running && s.Now.Waiting {
-		out = append(out, gap, Span{Text: keyRow(key{"y", "accept"}, key{"n", "reject"}), Role: RoleYou})
+		out = append(out, gap, Span{Text: doing(p), Role: RoleTool})
 	}
 	return out
+}
+
+// doing is what the run is on as the Now strip says it, in -ing form
+// (#950): "calling the model, turn 3", "running edit → src/a.py". The
+// turn is the meter's beside it, so a tool's line leaves it out. Where it
+// is keeps Activity's "ran edit, turn 3", the sentence the desktop's Where
+// it is also uses.
+func doing(p Phase) string {
+	if p.Kind != "tool" {
+		return Activity(p)
+	}
+	on := "running " + Plain(p.Tool)
+	if p.Target != "" {
+		on += " → " + Plain(p.Target)
+	}
+	return on
+}
+
+// queuedCount is how many of the composer's items are still queued: the
+// steers and follow_ups get_state's pending listed (#801) and the line a
+// Stop and send holds, so the strip's figure is the rows the task box
+// draws as queued.
+func queuedCount(q []Queued) int {
+	n := 0
+	for _, it := range q {
+		if it.Fate == FateQueued {
+			n++
+		}
+	}
+	return n
 }
 
 // pauseKey is the Now strip's one pause control (#857), as the desktop's
@@ -276,7 +319,7 @@ func Asking(s State, question, diff string, scroll, w, h int) string {
 	if !fits(w, h) {
 		return Modal(s.Theme, question, diff, scroll, w, h)
 	}
-	top := line(s.Theme, trail(s, w), w) + "\n" + line(s.Theme, nowStrip(s), w)
+	top := line(s.Theme, trail(s, w), w) + "\n" + line(s.Theme, nowStrip(s, w), w)
 	return top + "\n" + Modal(s.Theme, question, diff, scroll, w, h-askingRows) + "\n" + line(s.Theme, statusBar(s, w), w)
 }
 
