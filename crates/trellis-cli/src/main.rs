@@ -32,10 +32,10 @@ mod init_cmd; // `init`: the `.trellis/` scaffold and its prerequisites
 mod install; // `install`: skills and prompt templates from a package source
 mod launch; // starting the desktop from `--dsk` (ADR 0050 §1, ADR 0048)
 mod liveness; // whether a pid is running on this machine
-mod log_cmd; // `log` and `why`, and `plain`, the terminal-safe printer
+mod log_cmd; // `log` and `why`
 mod models_cmd; // `model`: fetched weights
 mod orchestrate; // `agents` and `routines` (ADR 0026)
-mod output; // where output goes, and the JSONL framing of `--json` and `rpc`
+mod output; // where output goes, `plain` the terminal-safe printer, and the JSONL framing of `--json` and `rpc`
 mod overview; // `overview` (ADR 0050 §3)
 mod process_agent; // process agents and the carry-back of what they wrote
 mod replay; // the replay recording every run writes (ADR 0056)
@@ -67,9 +67,9 @@ use check_cmd::cmd_check;
 use doctor_cmd::cmd_doctor;
 use index_cmd::{cmd_index, cmd_partitions, cmd_radius};
 use init_cmd::cmd_init;
-pub(crate) use log_cmd::plain;
 use log_cmd::{cmd_log, cmd_why};
 use models_cmd::cmd_models;
+pub(crate) use output::plain;
 pub(crate) use run_cmd::{
     ModelChoice, RunExit, RunSeeding, audit_modes, cmd_resume, cmd_run, cmd_run_with,
 };
