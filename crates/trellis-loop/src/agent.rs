@@ -1139,6 +1139,18 @@ pub trait Model {
     fn step_usage(&self) -> StepUsage {
         StepUsage::default()
     }
+
+    /// The words the reply behind the last [`Model::next_step`]'s call
+    /// carried beside it, already cut to the event's cap, for the `turn`
+    /// event's `said` (#953). Model output, shown as text and never read
+    /// as a verdict (CLAUDE.md rules 1 and 10).
+    ///
+    /// Nothing by default: a driver whose reply is the call itself, the
+    /// runtime and scripted ones, has no words to give, and an empty
+    /// string would read as a model that said nothing.
+    fn said(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// The figures the replies behind one step reported, each summed over every
@@ -1451,6 +1463,7 @@ pub async fn run_seeded<M: Model>(
                 // this call, not the next one.
                 let prompt_bytes = model.prompt_bytes();
                 let usage = model.step_usage();
+                let said = model.said().map(str::to_owned);
                 let called = Instant::now();
                 let crate::orchestrator::Dispatched {
                     result,
@@ -1577,6 +1590,9 @@ pub async fn run_seeded<M: Model>(
                     lines_removed = edit.map(|e| e.lines_removed),
                     start_line = edit.map(|e| e.start_line),
                     diff = edit.map(|e| e.diff.as_str()),
+                    // The model's own words beside the call (#953), left
+                    // off when it said none.
+                    said = said.as_deref(),
                     resolved = rad_resolved,
                     candidates = rad_candidates,
                     unresolved = rad_unresolved,

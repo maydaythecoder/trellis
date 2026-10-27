@@ -61,6 +61,9 @@ pub struct HostedModel {
     /// read; `None` until it reads one, so a step with no reply reports
     /// nothing rather than a sum of 0.
     step: Option<(Reported, Reported)>,
+    /// The words the reply behind the last `next_step`'s call carried
+    /// beside it, cut to [`SAID_CAP`]; `None` when it carried none.
+    said: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +89,7 @@ impl HostedModel {
             thinking_withheld: false,
             images: Vec::new(),
             step: None,
+            said: None,
         }
     }
 
@@ -319,6 +323,7 @@ impl Model for HostedModel {
     async fn next_step(&mut self, t: &Transcript) -> Result<Step, String> {
         self.record_pending(t);
         self.step = None;
+        self.said = None;
         let tools = native_tools(t);
         let protocol = self.client.protocol();
         let mut last = String::new();
@@ -440,6 +445,9 @@ impl Model for HostedModel {
             match t.repo.tools.parse_value(serde_json::Value::Object(obj)) {
                 Ok(step) => {
                     if let Step::Call(c) = &step {
+                        // This reply's alone: a retried reply's words went
+                        // with a call the loop never ran.
+                        self.said = said_in(&reply.replay);
                         self.pending = Some((
                             t.turns.len(),
                             IssuedCall {
@@ -495,6 +503,10 @@ impl Model for HostedModel {
         &self.compaction.requested
     }
 
+    fn said(&self) -> Option<&str> {
+        self.said.as_deref()
+    }
+
     fn step_usage(&self) -> crate::agent::StepUsage {
         match self.step {
             Some((tokens, wait)) => crate::agent::StepUsage {
@@ -504,6 +516,51 @@ impl Model for HostedModel {
             None => crate::agent::StepUsage::default(),
         }
     }
+}
+
+/// The most of the model's words a turn event carries: the cap a command's
+/// output is kept to, since the words travel on the same event stream.
+pub(crate) const SAID_CAP: usize = crate::exec::OUTPUT_CAP;
+
+/// The words an assistant message carried beside its call: OpenAI's string
+/// `content`, or Anthropic's `text` blocks joined. Thinking blocks are the
+/// model's reasoning, not what it said, and are left out. Trimmed, and
+/// `None` when nothing is left, so a reply with no words is never sent as
+/// an empty string a client would read as words.
+///
+/// Model output (CLAUDE.md rule 10): kept as text and never read as a
+/// verdict or an instruction.
+pub(super) fn said_in(replay: &serde_json::Value) -> Option<String> {
+    let text = match &replay["content"] {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(blocks) => blocks
+            .iter()
+            .filter(|b| b["type"] == "text")
+            .filter_map(|b| b["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => return None,
+    };
+    let text = text.trim();
+    (!text.is_empty()).then(|| cut_said(text))
+}
+
+/// `text` whole when it fits [`SAID_CAP`], else cut at the last whole
+/// character within it with a last line saying how many bytes were cut: a
+/// silently cut reply reads as all the model said.
+pub(crate) fn cut_said(text: &str) -> String {
+    if text.len() <= SAID_CAP {
+        return text.to_string();
+    }
+    let mut end = SAID_CAP;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}\n...({} more bytes cut at {SAID_CAP} bytes)...",
+        &text[..end],
+        text.len() - end
+    )
 }
 
 /// The first 200 characters of model output, for an error message: enough
