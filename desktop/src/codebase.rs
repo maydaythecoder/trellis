@@ -524,7 +524,7 @@ pub fn event(r: &Response) -> Value {
 mod tests {
     use super::*;
 
-    /// One module as `get_codebase` sends it (`doctor_cmd::graph_json`).
+    /// One module as `get_codebase` sends it (`codebase_graph::graph_json`).
     fn module(name: &str, calls: &[(&str, u64)], ambiguous: u64, unresolved: u64) -> Value {
         json!({
             "module": name,
