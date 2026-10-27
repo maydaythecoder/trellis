@@ -4100,7 +4100,15 @@ mod tests {
             r#"if (kind === "check" && typeof row.passed === "boolean") {"#,
             r#"passed ? "cd-tx-check-ok" : "cd-tx-check-down""#,
             r#"kind === "refusal" ? "cd-tx-refusal" : "cd-tx-system""#,
-            "raw.hidden = true;",
+            // The raw call and observation open on demand in a <details>
+            // (#949), which needs no listener at all, as text.
+            r#"const open = el(doc, "details", null, "tx-details");"#,
+            r#"open.append(el(doc, "summary", "raw call and observation", "cd-tx-open"), raw);"#,
+            r#"raw.append(el(doc, "span", "$ ", "k"), str(row.call) ?? text);"#,
+            // A check row says whose verdict it is (#949), as the TUI's
+            // does (#947).
+            r#"el(doc, "span", "trellis-checks verdict", "tx-check-src")"#,
+            r#"if (kind === "turn") return txTurn(doc, row);"#,
         ] {
             assert!(entry.contains(want), "txEntry lacks {want}");
         }
@@ -4110,13 +4118,10 @@ mod tests {
         );
         let render = code_of("render.js");
         let wire = function_body(&render, "wireLog");
-        for want in [
-            r#"pane.addEventListener("click", toggle);"#,
-            r#"pane.addEventListener("keydown", (e) => {"#,
-            r#"e.target.closest(".cd-tx-tool")"#,
-        ] {
-            assert!(wire.contains(want), "wireLog lacks {want}");
-        }
+        assert!(
+            !wire.contains("addEventListener(\"keydown\"") && !wire.contains(".cd-tx-raw"),
+            "wireLog opens the raw call itself again: {wire}"
+        );
         assert!(
             function_body(&render, "drawView").contains("onMissing();"),
             "drawView does not say when rows are missing"
@@ -4137,6 +4142,90 @@ mod tests {
             page[index_of(&page, "pane-transcript")].attr("class"),
             Some("log cd-tx"),
             "the log is not the system's Transcript"
+        );
+    }
+
+    #[test]
+    fn action_log_filter_hides_entries_never_drops_them() {
+        // The risk (#949): a filter or quiet mode that removes the rows it
+        // hides, so turning it off shows a log with holes, the feed's
+        // append-or-replace by seq finds rows missing, or a turn's rule goes
+        // with its rows. The filter bar only marks the log, its data-filter
+        // and its log-quiet class, and style.css hides rows by the kind
+        // drawFeed marks each with. No JavaScript runs under cargo test, so
+        // this holds the text; the smoke run loads the page with the bar.
+        let render = code_of("render.js");
+        let wire = function_body(&render, "wireLog");
+        let bar = between(wire, r#"bar.addEventListener("click", (e) => {"#, "\n  });");
+        for want in [
+            "pane.dataset.filter = button.dataset.filter;",
+            r#"pane.classList.toggle("log-quiet")"#,
+            r#"option.setAttribute("aria-pressed", String(on));"#,
+            r#"button.setAttribute("aria-pressed", String(quiet));"#,
+        ] {
+            assert!(bar.contains(want), "the filter bar lacks {want}: {bar}");
+        }
+        for bad in [
+            ".remove(",
+            "replaceChildren",
+            "replaceWith",
+            "removeChild",
+            ".hidden",
+            "textContent",
+            "drawFeed",
+            "send(",
+        ] {
+            assert!(
+                !bar.contains(bad),
+                "the filter bar drops or redraws rows: {bad}"
+            );
+        }
+        assert!(
+            function_body(&code_of("dom.js"), "drawFeed")
+                .contains(r#"if (typeof row.kind === "string") e.dataset.kind = row.kind;"#),
+            "drawFeed does not mark a row with its kind"
+        );
+
+        // Each filter the bar offers, and quiet, hides by display in
+        // style.css, and a turn's rule is never hidden by a filter.
+        let page = page();
+        let filters: Vec<&str> = page
+            .iter()
+            .filter(|e| e.tag == "button")
+            .filter_map(|e| e.attr("data-filter"))
+            .collect();
+        assert_eq!(filters, ["all", "you", "tool", "check", "note"]);
+        let quiet = page
+            .iter()
+            .position(|e| e.tag == "button" && e.attrs.contains_key("data-quiet"))
+            .expect("the bar has a quiet toggle");
+        let log = index_of(&page, "pane-transcript");
+        assert_eq!(
+            page[quiet].parent.and_then(|p| page[p].parent),
+            page[log].parent,
+            "the bar is not beside the log"
+        );
+        let css = ui_file("style.css");
+        let rule = between(&css, ".cd-tx[data-filter=\"you\"]", "}");
+        assert!(rule.contains("display: none;"), "{rule}");
+        for f in &filters[1..] {
+            let selector =
+                format!(".cd-tx[data-filter=\"{f}\"] > [data-kind]:not([data-kind=\"turn\"], ");
+            assert!(
+                css.contains(&selector),
+                "no rule hides by {f}, sparing the turn's rule"
+            );
+        }
+        assert!(
+            css.contains(
+                ".cd-tx.log-quiet > [data-kind=\"tool\"]:not(.tx-edit) {\n  display: none;"
+            ),
+            "quiet hides something other than the calls that wrote nothing"
+        );
+        assert!(
+            code_of("ds.js")
+                .contains(r#"cx("cd-tx-e cd-tx-tool", row.wrote === true && "tx-edit")"#),
+            "a call that wrote is not marked to stay in view"
         );
     }
 

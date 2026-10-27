@@ -156,11 +156,14 @@ function delivery(doc, d) {
 // Transcript (the design system's): one entry of a run's log, typed by what
 // it came from (#827). The person's task and steers are signal blocks, a
 // steer saying where it stands; a tool call is one line, its raw call and
-// observation shown on demand (render.js's wireLog opens it, on one
-// listener for the whole log); a check row carries trellis-checks' verdict
-// and nothing else; a note and a refusal are trellis's words.
+// observation in a <details> under it, opened on demand with no listener
+// of the row's own (#949); a check row carries trellis-checks' verdict and
+// nothing else, and says so; the model's ask_human question is its words
+// under `model asks you`; a note and a refusal are trellis's words; and a
+// turn entry is the rule its rows start under (txTurn).
 export function txEntry(doc, row) {
   const kind = str(row.kind);
+  if (kind === "turn") return txTurn(doc, row);
   const text = str(row.text) ?? "";
   const turn = isCount(row.turn) ? `t${row.turn}` : "";
   if (kind === "task" || kind === "steer") {
@@ -172,27 +175,36 @@ export function txEntry(doc, row) {
     return e;
   }
   if (kind === "tool") {
-    const e = el(doc, "div", null, "cd-tx-e cd-tx-tool");
-    e.tabIndex = 0;
-    e.setAttribute("aria-expanded", "false");
+    // A call that wrote stays in view in quiet mode (style.css).
+    const e = el(doc, "div", null, cx("cd-tx-e cd-tx-tool", row.wrote === true && "tx-edit"));
     const space = text.indexOf(" ");
     const sent = el(doc, "span", null, "cd-tx-sent");
     if (space < 0) sent.append(el(doc, "b", text));
     else sent.append(el(doc, "b", text.slice(0, space)), text.slice(space));
-    const raw = el(doc, "pre", null, "cd-tx-raw");
-    raw.hidden = true;
     // The row's words are the sentence (#803); the call as the model sent
-    // it is what opens under them.
+    // it, and what it observed, open under them.
+    const open = el(doc, "details", null, "tx-details");
+    const raw = el(doc, "pre", null, "cd-tx-raw");
     raw.append(el(doc, "span", "$ ", "k"), str(row.call) ?? text);
     const detail = str(row.detail);
     if (detail !== null) raw.append(`\n${detail}`);
-    e.append(glyph(doc, "→"), sent, el(doc, "span", turn, "cd-tx-meta"), raw);
+    open.append(el(doc, "summary", "raw call and observation", "cd-tx-open"), raw);
+    e.append(glyph(doc, "→"), sent, el(doc, "span", turn, "cd-tx-meta"), open);
     return e;
   }
   if (kind === "check" && typeof row.passed === "boolean") {
     const passed = row.passed;
     const e = el(doc, "div", null, cx("cd-tx-e", passed ? "cd-tx-check-ok" : "cd-tx-check-down"));
-    e.append(glyph(doc, passed ? "✓" : "✗"), el(doc, "span", text, "cd-tx-sent"), el(doc, "span", turn, "cd-tx-meta"));
+    const sent = el(doc, "span", text, "cd-tx-sent");
+    sent.append(el(doc, "span", "trellis-checks verdict", "tx-check-src"));
+    e.append(glyph(doc, passed ? "✓" : "✗"), sent, el(doc, "span", turn, "cd-tx-meta"));
+    return e;
+  }
+  if (kind === "ask") {
+    const e = el(doc, "div", null, "cd-tx-e tx-ask");
+    const words = el(doc, "div");
+    words.append(el(doc, "span", "model asks you", "cd-tx-label"), el(doc, "div", text, "cd-tx-body"));
+    e.append(glyph(doc, "?"), words, el(doc, "span", "ask_human", "cd-tx-meta"));
     return e;
   }
   const e = el(doc, "div", null, cx("cd-tx-e", kind === "refusal" ? "cd-tx-refusal" : "cd-tx-system"));
@@ -213,9 +225,27 @@ export function modelWords(doc, label, text) {
   return e;
 }
 
-// The rule a transcript draws ahead of a turn's first row.
-export function txTurn(doc, turn) {
-  return el(doc, "div", `turn ${turn}`, "cd-tx-turn");
+// The rule a turn's rows start under, the reducer's turn entry (#949): its
+// number, then the model call's time, the completion tokens and the
+// prompt's size, each with its unit, as the TUI's divider writes them
+// (#947). A figure the turn event did not carry is unreported's dash with
+// its reason, never 0, and the tokens and the bytes are two figures, never
+// one sum.
+export function txTurn(doc, row) {
+  const e = el(doc, "div", `turn ${isCount(row.turn) ? row.turn : "?"}`, "cd-tx-turn");
+  const why = "this turn's event did not carry it";
+  const meta = el(doc, "span", null, "turn-meta");
+  meta.append(
+    " · model ",
+    figure(doc, row.model_ms, why),
+    " ms · ",
+    figure(doc, row.completion_tokens, why),
+    " tok out · ",
+    figure(doc, row.prompt_bytes, why),
+    " B prompt",
+  );
+  e.append(meta);
+  return e;
 }
 
 // Button (the design system's): a button with its word, `variant` one of
