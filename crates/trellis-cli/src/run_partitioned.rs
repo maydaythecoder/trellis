@@ -4,7 +4,8 @@
 //! would take a snapshot.
 
 use crate::approval::{Human, answer_on_the_line};
-use crate::driver::{Driver, SeesDone};
+use crate::driver::Driver;
+use crate::observed_model::Observed;
 use crate::run_cmd::{
     CompiledNote, RepoInputs, RunExit, TrailFacts, on_run_stack, read_only_action, record_trail,
     repo_context, report_trail, run_governance, summarise,
@@ -462,31 +463,20 @@ pub(crate) fn run_partitioned(
             };
             let (handle, join) = orchestrator.spawn();
             let budget = &part.budget;
-            // Behind `SeesDone` for its steps; the summary is not used here.
+            // Behind `Observed` for its steps, with no steering port; the
+            // summary is not used here.
             let (mut done, mut steps) = (None, Vec::new());
             let (outcome, transcript) = match &mut driver {
                 Driver::Scripted(m) => {
-                    let mut m = SeesDone {
-                        inner: m,
-                        done: &mut done,
-                        steps: &mut steps,
-                    };
+                    let mut m = Observed::new(m, None, &mut done, &mut steps);
                     trellis_loop::run_seeded(&text, &mut m, &handle, budget, seed).await
                 }
                 Driver::Runtime(m) => {
-                    let mut m = SeesDone {
-                        inner: m,
-                        done: &mut done,
-                        steps: &mut steps,
-                    };
+                    let mut m = Observed::new(m, None, &mut done, &mut steps);
                     trellis_loop::run_seeded(&text, &mut m, &handle, budget, seed).await
                 }
                 Driver::Hosted(m) => {
-                    let mut m = SeesDone {
-                        inner: &mut **m,
-                        done: &mut done,
-                        steps: &mut steps,
-                    };
+                    let mut m = Observed::new(&mut **m, None, &mut done, &mut steps);
                     trellis_loop::run_seeded(&text, &mut m, &handle, budget, seed).await
                 }
             };

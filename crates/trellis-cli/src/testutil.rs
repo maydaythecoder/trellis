@@ -157,7 +157,7 @@ pub(crate) struct Figures {
 /// [`Figures`]: 7 tokens, 4,321 prompt bytes against a 9,000-byte context
 /// budget, one compaction eliding 50 B,
 /// one requested compaction eliding 60 B, and a last step of 13 output
-/// tokens queued 250 ms.
+/// tokens queued 250 ms; 1,234 prompt tokens, and a few words said.
 pub(crate) fn figures() -> Figures {
     Figures {
         compactions: vec![trellis_loop::Compacted {
@@ -189,6 +189,9 @@ impl trellis_loop::Model for Figures {
     fn tokens_used(&self) -> Option<u64> {
         Some(7)
     }
+    fn prompt_tokens(&self) -> Option<u64> {
+        Some(1_234)
+    }
     fn prompt_bytes(&self) -> Option<usize> {
         Some(4321)
     }
@@ -206,5 +209,8 @@ impl trellis_loop::Model for Figures {
             completion_tokens: Some(13),
             queue_wait_ms: Some(250),
         }
+    }
+    fn said(&self) -> Option<&str> {
+        Some("looking at the caller first")
     }
 }
