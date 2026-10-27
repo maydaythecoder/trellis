@@ -118,7 +118,7 @@ desktop refuse when `trellis-tui` is not beside the binary, naming where it
 was looked for and `trellis session` as the line interface
 (`launch_without_a_tui_beside_it_refuses_naming_where_it_looked_and_the_session`,
 `launch_bare_with_a_terminal_and_no_tui_refuses_naming_the_session`, in
-`crates/trellis-cli/tests/cli.rs`). The parity bar is unchanged: the rows of
+`crates/trellis-cli/tests/cli/tui_handoff.rs`). The parity bar is unchanged: the rows of
 `tui/PARITY.md` are the record of what the retired tests held. MISSION.md goal 8
 reads "Built; the ratatui TUI is retired".
 
