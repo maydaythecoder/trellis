@@ -7,7 +7,7 @@
 //! followed by `trellis check`'s two checks.
 
 use crate::orchestrate::{load_profiles, load_routines, spend_records, this_month};
-use crate::{Human, RunControl, RunExit, RunSeeding, cmd_run, config};
+use crate::{Human, RunControl, RunExit, RunSeeding, cmd_run, config, plain};
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,7 +21,7 @@ use trellis_queue::profile::Profile;
 use trellis_queue::routine::{self, Routine};
 use trellis_queue::{
     Actor, Blocked, Event, NewTask, Priority, Queue, QueueError, RunEnd, Runner, State, Status,
-    WorkOptions, approval, ledger, plain,
+    WorkOptions, approval, ledger,
 };
 
 const PRIORITIES: [&str; 4] = ["critical", "high", "medium", "low"];
@@ -241,584 +241,623 @@ fn run_marker(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<(&'sta
 pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
     let q = Queue::for_repo(root)?;
     match action {
-        QueueAction::Add {
-            task,
-            focus,
-            prompt,
-            args,
-            model,
-            priority,
-            labels,
-            parent,
-            assignee,
-            blocked_by,
-            needs_approval,
-            backlog,
-        } => {
-            if task.trim().is_empty() && prompt.is_none() {
-                anyhow::bail!("nothing to queue: give a task, or --prompt <name>, or both");
-            }
-            // Checked now rather than when the heartbeat reaches the task,
-            // which may be hours later with nobody watching.
-            if let Some(name) = &prompt {
-                config::RepoConfig::prompt(root, name)?;
-            }
-            // An unclosed quote would otherwise fail the run, not the add.
-            if let Some(a) = &args {
-                crate::templates::split_args(a)
-                    .with_context(|| format!("--args `{}`", plain(a)))?;
-            }
-            // Parsed as `run --model` parses it, for the same reason. Only
-            // parsed: whether a key may go to its endpoint is decided when
-            // the task runs, against the configuration in force then.
-            if let Some(m) = &model {
-                let _: trellis_model::ModelSpec = m.parse()?;
-            }
-            if let Some(stem) = &focus {
-                check_focus(root, stem)?;
-            }
-            if let Some(a) = &assignee {
-                let profiles = load_profiles(root)?;
-                let Some(p) = profiles.get(a) else {
-                    anyhow::bail!("no agent `{a}` in .trellis/agents/");
-                };
-                // Stored, the model would never be used, and the person who
-                // typed it would believe it was (ADR 0026 §1, #458).
-                if model.is_some() && p.is_process() {
-                    anyhow::bail!(
-                        "agent `{a}` is a process agent: it runs its own command and no \
-                         model is chosen for it, so --model would never be used"
-                    );
-                }
-            }
-            let id = q.add_task(
-                NewTask {
-                    task,
-                    focus,
-                    prompt,
-                    args,
-                    model,
-                    priority: parse_priority(&priority),
-                    labels,
-                    parent,
-                    assignee,
-                    blockers: blocked_by,
-                    needs_approval,
-                    backlog,
-                    routine: None,
-                    routine_at: None,
-                },
-                Actor::Human,
-            )?;
-            let (_, t) = q.find(&id)?;
-            println!("queued:   {id} ({})", t.status_in(State::Pending).as_str());
-            println!("          {}", q.dir().join("pending").display());
-            Ok(())
-        }
+        add @ QueueAction::Add { .. } => queue_add(root, &q, add),
         QueueAction::List {
             status,
             label,
             assignee,
             priority,
             text,
-        } => {
-            // An empty needle matches every task, which would read as a
-            // search that found everything.
-            if text.as_deref().is_some_and(|s| s.trim().is_empty()) {
-                anyhow::bail!("--text is empty: give the words to look for");
-            }
-            let text = text.map(|s| s.to_lowercase());
-            let entries = q.list()?;
-            let ix = Queue::index_of(&entries);
-            let shown: Vec<&trellis_queue::Entry> = entries
-                .iter()
-                .filter(|e| {
-                    let Ok(t) = &e.task else {
-                        return status.is_none()
-                            && label.is_none()
-                            && assignee.is_none()
-                            && priority.is_none();
-                    };
-                    status
-                        .as_deref()
-                        .is_none_or(|s| t.status_in(e.state).as_str() == s)
-                        && label.as_ref().is_none_or(|l| t.labels.contains(l))
-                        && assignee
-                            .as_deref()
-                            .is_none_or(|a| t.assignee.as_deref() == Some(a))
-                        && priority.as_deref().is_none_or(|p| t.priority.as_str() == p)
-                        && text.as_deref().is_none_or(|s| {
-                            std::iter::once(&e.id)
-                                .chain(std::iter::once(&t.task))
-                                .chain(&t.labels)
-                                .chain(t.notes.iter().map(|n| &n.text))
-                                .any(|h| h.to_lowercase().contains(s))
-                        })
-                })
-                .collect();
-            if entries.is_empty() {
-                println!("queue empty ({})", q.dir().display());
-            } else if shown.is_empty() {
-                println!("no task matches ({} in the queue)", entries.len());
-            }
-            for e in shown {
-                println!("{}", list_line(e, &ix));
-            }
-            let requests = approval::list(&q, "pending")?;
-            if !requests.is_empty() {
-                println!();
-                println!("approvals waiting:");
-                for r in requests {
-                    println!(
-                        "  {}  budget_override for agent `{}`: {} of {} {} tokens ({})",
-                        r.id,
-                        r.agent,
-                        r.spent,
-                        r.limit,
-                        r.window.as_str(),
-                        r.month
-                    );
-                }
-            }
-            Ok(())
-        }
-        QueueAction::Set {
-            id,
-            priority,
-            labels,
-            unlabels,
-            assignee,
-            unassign,
-            parent,
-            no_parent,
-            blocked_by,
-            unblock,
-            needs_approval,
-            status,
-            reason,
-            detail,
-            at,
-        } => {
-            if let Some(a) = &assignee
-                && !load_profiles(root)?.contains_key(a)
-            {
-                anyhow::bail!("no agent `{a}` in .trellis/agents/");
-            }
-            let status = status.as_deref().and_then(Status::parse);
-            if reason.is_some() && status != Some(Status::Blocked) {
-                anyhow::bail!("--reason goes with --status blocked");
-            }
-            if detail.is_some() && reason.as_deref() != Some("manual") {
-                anyhow::bail!("--detail goes with --reason manual");
-            }
-            if at.is_some() && reason.as_deref() != Some("until") {
-                anyhow::bail!("--at goes with --reason until");
-            }
-            let blocked = match (status, reason.as_deref()) {
-                (Some(Status::Blocked), None) => anyhow::bail!(
-                    "--status blocked needs --reason blockers|children|manual|until: a block \
-                     that names nothing to wait for routes to nobody"
-                ),
-                (Some(Status::Blocked), Some("blockers")) => Some(Blocked::Blockers),
-                (Some(Status::Blocked), Some("children")) => Some(Blocked::Children),
-                (Some(Status::Blocked), Some("until")) => {
-                    let at = at.as_deref().context(
-                        "--reason until needs --at <instant>, such as 2026-10-06T12:00:00Z",
-                    )?;
-                    Some(Blocked::until(at).with_context(|| {
-                        format!(
-                            "--at {at:?} is not an RFC 3339 instant, such as 2026-10-06T12:00:00Z"
-                        )
-                    })?)
-                }
-                (Some(Status::Blocked), Some(_)) => Some(Blocked::Manual {
-                    detail: detail
-                        .clone()
-                        .filter(|d| !d.trim().is_empty())
-                        .context("--reason manual needs --detail naming what unblocks it")?,
-                }),
-                _ => None,
-            };
-            let ix = q.index()?;
-            for b in parent.iter().chain(blocked_by.iter()) {
-                if b == &id {
-                    anyhow::bail!("a task cannot depend on or contain itself");
-                }
-                if !ix.by_id.contains_key(b) {
-                    return Err(QueueError::Unknown(b.clone()).into());
-                }
-            }
-            let children = ix.children.get(&id).map(Vec::len).unwrap_or(0);
-            let mut changes = Vec::new();
-            let (from, to) = q.edit(&id, |t, s| {
-                if let Some(p) = &priority {
-                    t.priority = parse_priority(p);
-                    changes.push(format!("priority {p}"));
-                }
-                for l in &labels {
-                    if !t.labels.contains(l) {
-                        t.labels.push(l.clone());
-                        changes.push(format!("+label {l}"));
-                    }
-                }
-                for l in &unlabels {
-                    t.labels.retain(|x| x != l);
-                    changes.push(format!("-label {l}"));
-                }
-                if let Some(a) = &assignee {
-                    t.assignee = Some(a.clone());
-                    changes.push(format!("assignee {a}"));
-                }
-                if unassign {
-                    t.assignee = None;
-                    changes.push("unassigned".into());
-                }
-                if let Some(p) = &parent {
-                    t.parent = Some(p.clone());
-                    changes.push(format!("parent {p}"));
-                }
-                if no_parent {
-                    t.parent = None;
-                    changes.push("no parent".into());
-                }
-                for b in &blocked_by {
-                    if !t.blockers.contains(b) {
-                        t.blockers.push(b.clone());
-                        changes.push(format!("+blocker {b}"));
-                    }
-                }
-                for b in &unblock {
-                    t.blockers.retain(|x| x != b);
-                    changes.push(format!("-blocker {b}"));
-                }
-                if let Some(n) = needs_approval {
-                    t.needs_approval = n;
-                    if n {
-                        // A new requirement needs a new decision.
-                        t.approval = None;
-                    }
-                    changes.push(format!("needs_approval {n}"));
-                }
-                let mut target = None;
-                if let Some(st) = status {
-                    match &blocked {
-                        Some(Blocked::Blockers) if t.blockers.is_empty() => {
-                            return Err(QueueError::Invalid(
-                                "--reason blockers, but the task has no blockers; add \
-                                 them with --blocked-by"
-                                    .into(),
-                            ));
-                        }
-                        Some(Blocked::Children) if children == 0 => {
-                            return Err(QueueError::Invalid(
-                                "--reason children, but no task names this one as its \
-                                 parent"
-                                    .into(),
-                            ));
-                        }
-                        _ => {}
-                    }
-                    t.status = Some(st);
-                    t.blocked = blocked.clone();
-                    t.claimed_at = None;
-                    t.claimed_by_pid = None;
-                    if st.home() == State::Pending && s != State::Pending {
-                        // Back to waiting: an old outcome on it would be
-                        // read as this attempt's, as `requeue` says.
-                        t.outcome = None;
-                    }
-                    target = Some(st.home());
-                    changes.push(format!("status {}", st.as_str()));
-                } else if s == State::Pending
-                    && !blocked_by.is_empty()
-                    && t.status_in(s) == Status::Todo
-                    && !ix.unresolved(t).is_empty()
-                {
-                    // New blockers that are not done: the task now waits,
-                    // and says so, rather than sitting in todo unclaimable.
-                    t.status = Some(Status::Blocked);
-                    t.blocked = Some(Blocked::Blockers);
-                    changes.push("status blocked (blockers)".into());
-                }
-                Ok(target)
-            })?;
-            if changes.is_empty() {
-                println!("nothing to change");
-                return Ok(());
-            }
-            q.log(
-                Event::new(Actor::Human, "task.set", format!("task:{id}"))
-                    .detail(changes.join(", ")),
-            )?;
-            println!(
-                "set:      {id}: {}{}",
-                changes.join(", "),
-                if from != to {
-                    format!(" ({}/ -> {}/)", from.dir_name(), to.dir_name())
-                } else {
-                    String::new()
-                }
-            );
-            reconcile(&q)
-        }
-        QueueAction::Note { id, text } => {
-            // Before the edit: a child of a run that wrote this note would
-            // be an agent waking an agent (ADR 0005, ADR 0026 §1).
-            if let Some((var, value)) = run_marker(|name| std::env::var_os(name)) {
-                let run_id = (var == "TRELLIS_RUN_ID").then(|| value.clone());
-                q.log(
-                    Event::new(Actor::Human, "task.note_refused", format!("task:{id}"))
-                        .run(run_id)
-                        .detail(format!("{var}={value} is set: {text}")),
-                )?;
-                anyhow::bail!(
-                    "refused: {var} is set, so this runs inside a trellis run, and a run \
-                     cannot write a person's note (ADR 0026 §1). Nothing was written to \
-                     {id}; the refusal is in `trellis queue log`"
-                );
-            }
-            // The one writer of a person's note: an `@name` in it wakes that
-            // profile's task on the next `work` tick (trellis_queue::mention).
-            q.edit(&id, |t, _| {
-                t.note_from_person(text.clone());
-                Ok(None)
-            })?;
-            q.log(Event::new(Actor::Human, "task.note", format!("task:{id}")).detail(text))?;
-            println!("noted:    {id}");
-            Ok(())
-        }
+        } => queue_list(&q, status, label, assignee, priority, text),
+        set @ QueueAction::Set { .. } => queue_set(root, &q, set),
+        QueueAction::Note { id, text } => queue_note(&q, id, text),
         QueueAction::Cancel {
             id,
             reason,
             children,
-        } => {
-            if !children {
-                if let Some(from) = cancel_task(&q, &id, reason.as_deref(), None)? {
-                    println!("cancelled: {id} ({}/ -> cancelled/)", from.dir_name());
-                }
-                return reconcile(&q);
-            }
-            let id = id.strip_suffix(".json").unwrap_or(&id).to_string();
-            let ix = q.index()?;
-            // The subtree by `parent`, as `queue set` reads it. `seen` stops
-            // a parent loop, which `queue set --parent` does not refuse.
-            let mut seen = BTreeSet::from([id.clone()]);
-            let mut next = vec![id.clone()];
-            while let Some(p) = next.pop() {
-                for c in ix.children.get(&p).into_iter().flatten() {
-                    if seen.insert(c.clone()) {
-                        next.push(c.clone());
-                    }
-                }
-            }
-            seen.remove(&id);
-            let descendants: Vec<String> = seen.into_iter().collect();
-            // `Queue::edit` refuses a claimed task one at a time; refusing
-            // the whole command up front means it never stops half done
-            // because of a run the person could have seen.
-            let claimed: Vec<&str> = std::iter::once(&id)
-                .chain(&descendants)
-                .filter(|t| matches!(ix.by_id.get(*t), Some((State::Claimed, _))))
-                .map(String::as_str)
-                .collect();
-            if !claimed.is_empty() {
-                anyhow::bail!(
-                    "refused: claimed, so running until its run ends: {}. Nothing was \
-                     cancelled; retry when the runs end, or `trellis queue requeue` a claim \
-                     a crashed process left behind",
-                    claimed.join(", ")
-                );
-            }
-            if let Some(from) = cancel_task(&q, &id, reason.as_deref(), None)? {
-                println!("cancelled: {id} ({}/ -> cancelled/)", from.dir_name());
-            }
-            // Best-effort from here: the queue cannot hold every task at
-            // once, so a `work` tick may claim a descendant in between
-            // (ADR 0026 §3).
-            let mut missed = Vec::new();
-            for d in &descendants {
-                let Some((State::Pending, _)) = ix.by_id.get(d) else {
-                    let st = ix.by_id.get(d).map(|(s, st)| (s.dir_name(), st.as_str()));
-                    let (dir, st) = st.unwrap_or(("?", "?"));
-                    println!("left:      {d} ({dir}/, {st})");
-                    continue;
-                };
-                match cancel_task(&q, d, reason.as_deref(), Some(&id)) {
-                    Ok(Some(from)) => {
-                        println!("cancelled: {d} ({}/ -> cancelled/)", from.dir_name())
-                    }
-                    Ok(None) => {
-                        println!("not cancelled: {d} (left pending/ while this ran)");
-                        missed.push(d.as_str());
-                    }
-                    Err(QueueError::Claimed { .. }) => {
-                        println!("not cancelled: {d} (claimed while this ran)");
-                        missed.push(d.as_str());
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-            }
-            reconcile(&q)?;
-            if !missed.is_empty() {
-                anyhow::bail!(
-                    "not cancelled, because each left pending/ while this ran: {}",
-                    missed.join(", ")
-                );
-            }
-            Ok(())
-        }
-        QueueAction::Approve { id, raise } => {
-            if approval::is_request_id(&id) {
-                let raise = raise.context(
-                    "a budget override needs --raise <tokens>: how far to lift the limit \
-                     that tripped. `trellis queue reject <id>` keeps the agent paused",
-                )?;
-                let r = approval::approve_budget(&q, &id, raise, Actor::Human)?;
-                println!(
-                    "approved: {id}; agent `{}` {} limit raised by {raise} and resumed",
-                    r.agent,
-                    r.window.as_str()
-                );
-            } else {
-                if raise.is_some() {
-                    anyhow::bail!("--raise applies to a budget override request, not a task");
-                }
-                approval::approve_task(&q, &id, Actor::Human)?;
-                println!("approved: {id}; `work` may now claim it");
-            }
-            Ok(())
-        }
-        QueueAction::Reject { id, reason } => {
-            if approval::is_request_id(&id) {
-                let r = approval::reject_budget(&q, &id, reason.as_deref(), Actor::Human)?;
-                println!("rejected: {id}; agent `{}` stays paused", r.agent);
-            } else {
-                approval::reject_task(&q, &id, reason.as_deref(), Actor::Human)?;
-                println!("rejected: {id}; cancelled");
-                reconcile(&q)?;
-            }
-            Ok(())
-        }
-        QueueAction::Requeue { id } => {
-            let from = q.requeue(&id)?;
-            println!(
-                "requeued: {} ({}/ -> pending/)",
-                plain(&id),
-                from.dir_name()
-            );
-            Ok(())
-        }
-        QueueAction::Log { limit } => {
-            let events = q.activity().tail(limit)?;
-            if events.is_empty() {
-                println!("no activity ({})", q.activity().path().display());
-            }
-            for e in events {
-                println!(
-                    "{} {:<7} {:<18} {}{}{}",
-                    plain(&e.at),
-                    e.actor.as_str(),
-                    plain(&e.action),
-                    plain(&e.entity),
-                    e.run_id
-                        .as_deref()
-                        .map(|r| format!(" run {}", plain(r)))
-                        .unwrap_or_default(),
-                    e.detail
-                        .as_deref()
-                        .map(|d| format!(" — {}", plain(d)))
-                        .unwrap_or_default()
-                );
-            }
-            Ok(())
-        }
-        QueueAction::Export { dir } => {
-            load_profiles(root)?;
-            let n = portable::export(root, &q, &dir)?;
-            println!(
-                "exported: {} agent(s), {} instructions file(s), {} routine(s), {} task(s) to {}",
-                n.agents,
-                n.instructions,
-                n.routines,
-                n.tasks,
-                dir.display()
-            );
-            // First: the one left-behind state that changes what an import
-            // does. The exported file does not say `paused`, so it runs there.
-            for name in &n.paused_by_overlay {
-                println!(
-                    "          agent `{name}` is paused here (`agents pause` or a budget stop), \
-                     not in its file: an import does not carry its pause, and will run it"
-                );
-            }
-            if n.claimed_skipped > 0 {
-                println!(
-                    "          {} claimed task(s) not exported: they belong to a run in \
-                     progress",
-                    n.claimed_skipped
-                );
-            }
-            // This checkout's runtime state, not definitions (ADR 0026 §10).
-            for (count, what) in [
-                (n.overlays, "agent overlay(s) (pauses, budget raises)"),
-                (
-                    n.routine_states,
-                    "routine state file(s) (when each last fired)",
-                ),
-                (n.approval_requests, "approval request(s)"),
-                (n.activity_lines, "activity log line(s)"),
-            ] {
-                if count > 0 {
-                    println!(
-                        "          {count} {what} not exported: runtime state of this checkout"
-                    );
-                }
-            }
-            println!(
-                "          nothing secret to scrub: profiles name a model spec, and keys \
-                 are never in files trellis reads (ADR 0010)"
-            );
-            Ok(())
-        }
+        } => queue_cancel(&q, id, reason, children),
+        QueueAction::Approve { id, raise } => queue_approve(&q, id, raise),
+        QueueAction::Reject { id, reason } => queue_reject(&q, id, reason),
+        QueueAction::Requeue { id } => queue_requeue(&q, id),
+        QueueAction::Log { limit } => queue_log(&q, limit),
+        QueueAction::Export { dir } => queue_export(root, &q, dir),
         QueueAction::Import {
             dir,
             dry_run,
             on_conflict,
-        } => {
-            let on = OnConflict::parse(&on_conflict).unwrap_or(OnConflict::Skip);
-            let plan = portable::plan_import(root, &q, &dir, on)?;
-            if plan.items.is_empty() {
-                println!("nothing to import in {}", dir.display());
-                return Ok(());
-            }
-            for it in &plan.items {
-                println!(
-                    "{:<8} {:<8} {}",
-                    it.kind.as_str(),
-                    match &it.action {
-                        Action::Create => "create".to_string(),
-                        Action::Skip => "skip".to_string(),
-                        Action::Replace => "replace".to_string(),
-                        Action::Rename(_) => "rename".to_string(),
-                    },
-                    match &it.action {
-                        Action::Rename(to) => format!("{} -> {to}", it.name),
-                        _ => it.name.clone(),
-                    }
-                );
-            }
-            if dry_run {
-                println!("dry run: nothing written");
-                return Ok(());
-            }
-            portable::apply_import(root, &q, &plan)?;
-            println!(
-                "imported. Profiles and routines were written into .trellis/; review and \
-                 commit them like any change there"
+        } => queue_import(root, &q, dir, dry_run, on_conflict),
+    }
+}
+
+fn queue_add(root: &Path, q: &Queue, action: QueueAction) -> Result<()> {
+    // Passed whole: twelve fields as parameters exceed clippy's
+    // too_many_arguments, which the lint gate denies. `queue` is the only
+    // caller and passes only Add, so the else arm cannot run.
+    let QueueAction::Add {
+        task,
+        focus,
+        prompt,
+        args,
+        model,
+        priority,
+        labels,
+        parent,
+        assignee,
+        blocked_by,
+        needs_approval,
+        backlog,
+    } = action
+    else {
+        unreachable!("queue dispatches only QueueAction::Add to queue_add");
+    };
+    if task.trim().is_empty() && prompt.is_none() {
+        anyhow::bail!("nothing to queue: give a task, or --prompt <name>, or both");
+    }
+    // Checked now rather than when the heartbeat reaches the task,
+    // which may be hours later with nobody watching.
+    if let Some(name) = &prompt {
+        config::RepoConfig::prompt(root, name)?;
+    }
+    // An unclosed quote would otherwise fail the run, not the add.
+    if let Some(a) = &args {
+        crate::templates::split_args(a).with_context(|| format!("--args `{}`", plain(a)))?;
+    }
+    // Parsed as `run --model` parses it, for the same reason. Only
+    // parsed: whether a key may go to its endpoint is decided when
+    // the task runs, against the configuration in force then.
+    if let Some(m) = &model {
+        let _: trellis_model::ModelSpec = m.parse()?;
+    }
+    if let Some(stem) = &focus {
+        check_focus(root, stem)?;
+    }
+    if let Some(a) = &assignee {
+        let profiles = load_profiles(root)?;
+        let Some(p) = profiles.get(a) else {
+            anyhow::bail!("no agent `{a}` in .trellis/agents/");
+        };
+        // Stored, the model would never be used, and the person who
+        // typed it would believe it was (ADR 0026 §1, #458).
+        if model.is_some() && p.is_process() {
+            anyhow::bail!(
+                "agent `{a}` is a process agent: it runs its own command and no \
+                 model is chosen for it, so --model would never be used"
             );
-            reconcile(&q)
         }
     }
+    let id = q.add_task(
+        NewTask {
+            task,
+            focus,
+            prompt,
+            args,
+            model,
+            priority: parse_priority(&priority),
+            labels,
+            parent,
+            assignee,
+            blockers: blocked_by,
+            needs_approval,
+            backlog,
+            routine: None,
+            routine_at: None,
+        },
+        Actor::Human,
+    )?;
+    let (_, t) = q.find(&id)?;
+    println!("queued:   {id} ({})", t.status_in(State::Pending).as_str());
+    println!("          {}", q.dir().join("pending").display());
+    Ok(())
+}
+
+fn queue_list(
+    q: &Queue,
+    status: Option<String>,
+    label: Option<String>,
+    assignee: Option<String>,
+    priority: Option<String>,
+    text: Option<String>,
+) -> Result<()> {
+    // An empty needle matches every task, which would read as a
+    // search that found everything.
+    if text.as_deref().is_some_and(|s| s.trim().is_empty()) {
+        anyhow::bail!("--text is empty: give the words to look for");
+    }
+    let text = text.map(|s| s.to_lowercase());
+    let entries = q.list()?;
+    let ix = Queue::index_of(&entries);
+    let shown: Vec<&trellis_queue::Entry> = entries
+        .iter()
+        .filter(|e| {
+            let Ok(t) = &e.task else {
+                return status.is_none()
+                    && label.is_none()
+                    && assignee.is_none()
+                    && priority.is_none();
+            };
+            status
+                .as_deref()
+                .is_none_or(|s| t.status_in(e.state).as_str() == s)
+                && label.as_ref().is_none_or(|l| t.labels.contains(l))
+                && assignee
+                    .as_deref()
+                    .is_none_or(|a| t.assignee.as_deref() == Some(a))
+                && priority.as_deref().is_none_or(|p| t.priority.as_str() == p)
+                && text.as_deref().is_none_or(|s| {
+                    std::iter::once(&e.id)
+                        .chain(std::iter::once(&t.task))
+                        .chain(&t.labels)
+                        .chain(t.notes.iter().map(|n| &n.text))
+                        .any(|h| h.to_lowercase().contains(s))
+                })
+        })
+        .collect();
+    if entries.is_empty() {
+        println!("queue empty ({})", q.dir().display());
+    } else if shown.is_empty() {
+        println!("no task matches ({} in the queue)", entries.len());
+    }
+    for e in shown {
+        println!("{}", list_line(e, &ix));
+    }
+    let requests = approval::list(q, "pending")?;
+    if !requests.is_empty() {
+        println!();
+        println!("approvals waiting:");
+        for r in requests {
+            println!(
+                "  {}  budget_override for agent `{}`: {} of {} {} tokens ({})",
+                r.id,
+                r.agent,
+                r.spent,
+                r.limit,
+                r.window.as_str(),
+                r.month
+            );
+        }
+    }
+    Ok(())
+}
+
+fn queue_set(root: &Path, q: &Queue, action: QueueAction) -> Result<()> {
+    // As in `queue_add`: fifteen fields, so the variant is passed whole.
+    let QueueAction::Set {
+        id,
+        priority,
+        labels,
+        unlabels,
+        assignee,
+        unassign,
+        parent,
+        no_parent,
+        blocked_by,
+        unblock,
+        needs_approval,
+        status,
+        reason,
+        detail,
+        at,
+    } = action
+    else {
+        unreachable!("queue dispatches only QueueAction::Set to queue_set");
+    };
+    if let Some(a) = &assignee
+        && !load_profiles(root)?.contains_key(a)
+    {
+        anyhow::bail!("no agent `{a}` in .trellis/agents/");
+    }
+    let status = status.as_deref().and_then(Status::parse);
+    if reason.is_some() && status != Some(Status::Blocked) {
+        anyhow::bail!("--reason goes with --status blocked");
+    }
+    if detail.is_some() && reason.as_deref() != Some("manual") {
+        anyhow::bail!("--detail goes with --reason manual");
+    }
+    if at.is_some() && reason.as_deref() != Some("until") {
+        anyhow::bail!("--at goes with --reason until");
+    }
+    let blocked = match (status, reason.as_deref()) {
+        (Some(Status::Blocked), None) => anyhow::bail!(
+            "--status blocked needs --reason blockers|children|manual|until: a block \
+             that names nothing to wait for routes to nobody"
+        ),
+        (Some(Status::Blocked), Some("blockers")) => Some(Blocked::Blockers),
+        (Some(Status::Blocked), Some("children")) => Some(Blocked::Children),
+        (Some(Status::Blocked), Some("until")) => {
+            let at = at
+                .as_deref()
+                .context("--reason until needs --at <instant>, such as 2026-10-06T12:00:00Z")?;
+            Some(Blocked::until(at).with_context(|| {
+                format!("--at {at:?} is not an RFC 3339 instant, such as 2026-10-06T12:00:00Z")
+            })?)
+        }
+        (Some(Status::Blocked), Some(_)) => Some(Blocked::Manual {
+            detail: detail
+                .clone()
+                .filter(|d| !d.trim().is_empty())
+                .context("--reason manual needs --detail naming what unblocks it")?,
+        }),
+        _ => None,
+    };
+    let ix = q.index()?;
+    for b in parent.iter().chain(blocked_by.iter()) {
+        if b == &id {
+            anyhow::bail!("a task cannot depend on or contain itself");
+        }
+        if !ix.by_id.contains_key(b) {
+            return Err(QueueError::Unknown(b.clone()).into());
+        }
+    }
+    let children = ix.children.get(&id).map(Vec::len).unwrap_or(0);
+    let mut changes = Vec::new();
+    let (from, to) = q.edit(&id, |t, s| {
+        if let Some(p) = &priority {
+            t.priority = parse_priority(p);
+            changes.push(format!("priority {p}"));
+        }
+        for l in &labels {
+            if !t.labels.contains(l) {
+                t.labels.push(l.clone());
+                changes.push(format!("+label {l}"));
+            }
+        }
+        for l in &unlabels {
+            t.labels.retain(|x| x != l);
+            changes.push(format!("-label {l}"));
+        }
+        if let Some(a) = &assignee {
+            t.assignee = Some(a.clone());
+            changes.push(format!("assignee {a}"));
+        }
+        if unassign {
+            t.assignee = None;
+            changes.push("unassigned".into());
+        }
+        if let Some(p) = &parent {
+            t.parent = Some(p.clone());
+            changes.push(format!("parent {p}"));
+        }
+        if no_parent {
+            t.parent = None;
+            changes.push("no parent".into());
+        }
+        for b in &blocked_by {
+            if !t.blockers.contains(b) {
+                t.blockers.push(b.clone());
+                changes.push(format!("+blocker {b}"));
+            }
+        }
+        for b in &unblock {
+            t.blockers.retain(|x| x != b);
+            changes.push(format!("-blocker {b}"));
+        }
+        if let Some(n) = needs_approval {
+            t.needs_approval = n;
+            if n {
+                // A new requirement needs a new decision.
+                t.approval = None;
+            }
+            changes.push(format!("needs_approval {n}"));
+        }
+        let mut target = None;
+        if let Some(st) = status {
+            match &blocked {
+                Some(Blocked::Blockers) if t.blockers.is_empty() => {
+                    return Err(QueueError::Invalid(
+                        "--reason blockers, but the task has no blockers; add \
+                         them with --blocked-by"
+                            .into(),
+                    ));
+                }
+                Some(Blocked::Children) if children == 0 => {
+                    return Err(QueueError::Invalid(
+                        "--reason children, but no task names this one as its \
+                         parent"
+                            .into(),
+                    ));
+                }
+                _ => {}
+            }
+            t.status = Some(st);
+            t.blocked = blocked.clone();
+            t.claimed_at = None;
+            t.claimed_by_pid = None;
+            if st.home() == State::Pending && s != State::Pending {
+                // Back to waiting: an old outcome on it would be
+                // read as this attempt's, as `requeue` says.
+                t.outcome = None;
+            }
+            target = Some(st.home());
+            changes.push(format!("status {}", st.as_str()));
+        } else if s == State::Pending
+            && !blocked_by.is_empty()
+            && t.status_in(s) == Status::Todo
+            && !ix.unresolved(t).is_empty()
+        {
+            // New blockers that are not done: the task now waits,
+            // and says so, rather than sitting in todo unclaimable.
+            t.status = Some(Status::Blocked);
+            t.blocked = Some(Blocked::Blockers);
+            changes.push("status blocked (blockers)".into());
+        }
+        Ok(target)
+    })?;
+    if changes.is_empty() {
+        println!("nothing to change");
+        return Ok(());
+    }
+    q.log(Event::new(Actor::Human, "task.set", format!("task:{id}")).detail(changes.join(", ")))?;
+    println!(
+        "set:      {id}: {}{}",
+        changes.join(", "),
+        if from != to {
+            format!(" ({}/ -> {}/)", from.dir_name(), to.dir_name())
+        } else {
+            String::new()
+        }
+    );
+    reconcile(q)
+}
+
+fn queue_note(q: &Queue, id: String, text: String) -> Result<()> {
+    // Before the edit: a child of a run that wrote this note would
+    // be an agent waking an agent (ADR 0005, ADR 0026 §1).
+    if let Some((var, value)) = run_marker(|name| std::env::var_os(name)) {
+        let run_id = (var == "TRELLIS_RUN_ID").then(|| value.clone());
+        q.log(
+            Event::new(Actor::Human, "task.note_refused", format!("task:{id}"))
+                .run(run_id)
+                .detail(format!("{var}={value} is set: {text}")),
+        )?;
+        anyhow::bail!(
+            "refused: {var} is set, so this runs inside a trellis run, and a run \
+             cannot write a person's note (ADR 0026 §1). Nothing was written to \
+             {id}; the refusal is in `trellis queue log`"
+        );
+    }
+    // The one writer of a person's note: an `@name` in it wakes that
+    // profile's task on the next `work` tick (trellis_queue::mention).
+    q.edit(&id, |t, _| {
+        t.note_from_person(text.clone());
+        Ok(None)
+    })?;
+    q.log(Event::new(Actor::Human, "task.note", format!("task:{id}")).detail(text))?;
+    println!("noted:    {id}");
+    Ok(())
+}
+
+fn queue_cancel(q: &Queue, id: String, reason: Option<String>, children: bool) -> Result<()> {
+    if !children {
+        if let Some(from) = cancel_task(q, &id, reason.as_deref(), None)? {
+            println!("cancelled: {id} ({}/ -> cancelled/)", from.dir_name());
+        }
+        return reconcile(q);
+    }
+    let id = id.strip_suffix(".json").unwrap_or(&id).to_string();
+    let ix = q.index()?;
+    // The subtree by `parent`, as `queue set` reads it. `seen` stops
+    // a parent loop, which `queue set --parent` does not refuse.
+    let mut seen = BTreeSet::from([id.clone()]);
+    let mut next = vec![id.clone()];
+    while let Some(p) = next.pop() {
+        for c in ix.children.get(&p).into_iter().flatten() {
+            if seen.insert(c.clone()) {
+                next.push(c.clone());
+            }
+        }
+    }
+    seen.remove(&id);
+    let descendants: Vec<String> = seen.into_iter().collect();
+    // `Queue::edit` refuses a claimed task one at a time; refusing
+    // the whole command up front means it never stops half done
+    // because of a run the person could have seen.
+    let claimed: Vec<&str> = std::iter::once(&id)
+        .chain(&descendants)
+        .filter(|t| matches!(ix.by_id.get(*t), Some((State::Claimed, _))))
+        .map(String::as_str)
+        .collect();
+    if !claimed.is_empty() {
+        anyhow::bail!(
+            "refused: claimed, so running until its run ends: {}. Nothing was \
+             cancelled; retry when the runs end, or `trellis queue requeue` a claim \
+             a crashed process left behind",
+            claimed.join(", ")
+        );
+    }
+    if let Some(from) = cancel_task(q, &id, reason.as_deref(), None)? {
+        println!("cancelled: {id} ({}/ -> cancelled/)", from.dir_name());
+    }
+    // Best-effort from here: the queue cannot hold every task at
+    // once, so a `work` tick may claim a descendant in between
+    // (ADR 0026 §3).
+    let mut missed = Vec::new();
+    for d in &descendants {
+        let Some((State::Pending, _)) = ix.by_id.get(d) else {
+            let st = ix.by_id.get(d).map(|(s, st)| (s.dir_name(), st.as_str()));
+            let (dir, st) = st.unwrap_or(("?", "?"));
+            println!("left:      {d} ({dir}/, {st})");
+            continue;
+        };
+        match cancel_task(q, d, reason.as_deref(), Some(&id)) {
+            Ok(Some(from)) => {
+                println!("cancelled: {d} ({}/ -> cancelled/)", from.dir_name())
+            }
+            Ok(None) => {
+                println!("not cancelled: {d} (left pending/ while this ran)");
+                missed.push(d.as_str());
+            }
+            Err(QueueError::Claimed { .. }) => {
+                println!("not cancelled: {d} (claimed while this ran)");
+                missed.push(d.as_str());
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    reconcile(q)?;
+    if !missed.is_empty() {
+        anyhow::bail!(
+            "not cancelled, because each left pending/ while this ran: {}",
+            missed.join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn queue_approve(q: &Queue, id: String, raise: Option<u64>) -> Result<()> {
+    if approval::is_request_id(&id) {
+        let raise = raise.context(
+            "a budget override needs --raise <tokens>: how far to lift the limit \
+             that tripped. `trellis queue reject <id>` keeps the agent paused",
+        )?;
+        let r = approval::approve_budget(q, &id, raise, Actor::Human)?;
+        println!(
+            "approved: {id}; agent `{}` {} limit raised by {raise} and resumed",
+            r.agent,
+            r.window.as_str()
+        );
+    } else {
+        if raise.is_some() {
+            anyhow::bail!("--raise applies to a budget override request, not a task");
+        }
+        approval::approve_task(q, &id, Actor::Human)?;
+        println!("approved: {id}; `work` may now claim it");
+    }
+    Ok(())
+}
+
+fn queue_reject(q: &Queue, id: String, reason: Option<String>) -> Result<()> {
+    if approval::is_request_id(&id) {
+        let r = approval::reject_budget(q, &id, reason.as_deref(), Actor::Human)?;
+        println!("rejected: {id}; agent `{}` stays paused", r.agent);
+    } else {
+        approval::reject_task(q, &id, reason.as_deref(), Actor::Human)?;
+        println!("rejected: {id}; cancelled");
+        reconcile(q)?;
+    }
+    Ok(())
+}
+
+fn queue_requeue(q: &Queue, id: String) -> Result<()> {
+    let from = q.requeue(&id)?;
+    println!(
+        "requeued: {} ({}/ -> pending/)",
+        plain(&id),
+        from.dir_name()
+    );
+    Ok(())
+}
+
+fn queue_log(q: &Queue, limit: usize) -> Result<()> {
+    let events = q.activity().tail(limit)?;
+    if events.is_empty() {
+        println!("no activity ({})", q.activity().path().display());
+    }
+    for e in events {
+        println!(
+            "{} {:<7} {:<18} {}{}{}",
+            plain(&e.at),
+            e.actor.as_str(),
+            plain(&e.action),
+            plain(&e.entity),
+            e.run_id
+                .as_deref()
+                .map(|r| format!(" run {}", plain(r)))
+                .unwrap_or_default(),
+            e.detail
+                .as_deref()
+                .map(|d| format!(" — {}", plain(d)))
+                .unwrap_or_default()
+        );
+    }
+    Ok(())
+}
+
+fn queue_export(root: &Path, q: &Queue, dir: PathBuf) -> Result<()> {
+    load_profiles(root)?;
+    let n = portable::export(root, q, &dir)?;
+    println!(
+        "exported: {} agent(s), {} instructions file(s), {} routine(s), {} task(s) to {}",
+        n.agents,
+        n.instructions,
+        n.routines,
+        n.tasks,
+        dir.display()
+    );
+    // First: the one left-behind state that changes what an import
+    // does. The exported file does not say `paused`, so it runs there.
+    for name in &n.paused_by_overlay {
+        println!(
+            "          agent `{name}` is paused here (`agents pause` or a budget stop), \
+             not in its file: an import does not carry its pause, and will run it"
+        );
+    }
+    if n.claimed_skipped > 0 {
+        println!(
+            "          {} claimed task(s) not exported: they belong to a run in \
+             progress",
+            n.claimed_skipped
+        );
+    }
+    // This checkout's runtime state, not definitions (ADR 0026 §10).
+    for (count, what) in [
+        (n.overlays, "agent overlay(s) (pauses, budget raises)"),
+        (
+            n.routine_states,
+            "routine state file(s) (when each last fired)",
+        ),
+        (n.approval_requests, "approval request(s)"),
+        (n.activity_lines, "activity log line(s)"),
+    ] {
+        if count > 0 {
+            println!("          {count} {what} not exported: runtime state of this checkout");
+        }
+    }
+    println!(
+        "          nothing secret to scrub: profiles name a model spec, and keys \
+         are never in files trellis reads (ADR 0010)"
+    );
+    Ok(())
+}
+
+fn queue_import(
+    root: &Path,
+    q: &Queue,
+    dir: PathBuf,
+    dry_run: bool,
+    on_conflict: String,
+) -> Result<()> {
+    let on = OnConflict::parse(&on_conflict).unwrap_or(OnConflict::Skip);
+    let plan = portable::plan_import(root, q, &dir, on)?;
+    if plan.items.is_empty() {
+        println!("nothing to import in {}", dir.display());
+        return Ok(());
+    }
+    for it in &plan.items {
+        println!(
+            "{:<8} {:<8} {}",
+            it.kind.as_str(),
+            match &it.action {
+                Action::Create => "create".to_string(),
+                Action::Skip => "skip".to_string(),
+                Action::Replace => "replace".to_string(),
+                Action::Rename(_) => "rename".to_string(),
+            },
+            match &it.action {
+                Action::Rename(to) => format!("{} -> {to}", it.name),
+                _ => it.name.clone(),
+            }
+        );
+    }
+    if dry_run {
+        println!("dry run: nothing written");
+        return Ok(());
+    }
+    portable::apply_import(root, q, &plan)?;
+    println!(
+        "imported. Profiles and routines were written into .trellis/; review and \
+         commit them like any change there"
+    );
+    reconcile(q)
 }
 
 /// Cancels one task and logs it, as `queue cancel` always has. With `via`,
