@@ -2,12 +2,15 @@
 //!
 //! `triage` (#77), `ready` (#78), `new` (#79), `sweep` and `scan` (#80) and
 //! `index` (#81): the six commands ADR 0040 lists.
-//! `triage` and `ready` are read-only: the one argv they spawn is
-//! `gh issue view`. `new` spawns that too, for its blockers, and
-//! `gh issue create`, which is its one write, and not on `--dry-run`.
-//! `sweep` spawns `gh issue list` and `gh issue view`, and `gh issue edit`
-//! only with `--apply`. `scan` spawns nothing. `index` spawns what `sweep`
-//! reads with and nothing else, and writes only the `--out` file.
+//! Every spawn is `gh api` on a REST path (`repos/{owner}/{repo}/issues...`):
+//! `gh issue` goes through GraphQL, which a Claude Code cloud session
+//! refuses (#957). `triage` and `ready` are read-only: the one argv they
+//! spawn reads one issue. `new` spawns that too, for its blockers, and a
+//! `POST` that files the issue, which is its one write, and not on
+//! `--dry-run`. `sweep` spawns the open-issue list and the one-issue read,
+//! and a `PATCH` only with `--apply`. `scan` spawns nothing. `index` spawns
+//! what `sweep` reads with and nothing else, and writes only the `--out`
+//! file.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -51,7 +54,7 @@ enum Cmd {
     /// File one issue with the labels triage computes. Refuses a body with
     /// no `## Done when`, no fenced `## Verify`, or a Verify line G6
     /// (scripts/gates/ticket-verify.sh) would not run. Prints each label's
-    /// rule, what abstained, and the `gh issue create` argv and body before
+    /// rule, what abstained, and the `gh api` argv and body before
     /// filing.
     New {
         /// The issue title.
@@ -190,7 +193,7 @@ fn gh() -> Command {
     cmd
 }
 
-/// `gh issue view <n> --json ...`, the only thing `triage` and `ready` spawn.
+/// The REST read of issue `n`, the only thing `triage` and `ready` spawn.
 fn gh_view(n: u64) -> Result<String> {
     let mut cmd = gh();
     cmd.args(trellis_tickets::gh_view_args(n))
@@ -200,16 +203,17 @@ fn gh_view(n: u64) -> Result<String> {
         .context("running `gh`; is the GitHub CLI installed and on PATH?")?;
     if !out.status.success() {
         bail!(
-            "`gh issue view {n}` exited with {}: {}",
+            "`gh api` reading #{n} exited with {}: {}",
             out.status,
             trellis_tickets::printable(String::from_utf8_lossy(&out.stderr).trim())
         );
     }
-    String::from_utf8(out.stdout).with_context(|| format!("`gh issue view {n}` printed non-UTF-8"))
+    String::from_utf8(out.stdout)
+        .with_context(|| format!("`gh api` reading #{n} printed non-UTF-8"))
 }
 
-/// `gh issue create` with `args` ([`trellis_tickets::NewPlan::gh_create_args`])
-/// and the checked body on stdin. Returns what `gh` prints: the new issue's
+/// The REST `POST` in `args` ([`trellis_tickets::NewPlan::gh_create_args`])
+/// with the checked body on stdin. Returns what `gh` prints: the new issue's
 /// URL.
 fn gh_create(args: &[String], body: &str) -> Result<String> {
     let mut child = gh()
@@ -222,16 +226,16 @@ fn gh_create(args: &[String], body: &str) -> Result<String> {
     let wrote = child
         .stdin
         .take()
-        .context("`gh issue create` was spawned with no stdin")?
+        .context("`gh api` filing the issue was spawned with no stdin")?
         .write_all(body.as_bytes());
     // The stdin handle is dropped above, so `gh` sees the end of the body.
     let out = child
         .wait_with_output()
-        .context("waiting for `gh issue create`")?;
+        .context("waiting for `gh api` filing the issue")?;
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     if !out.status.success() {
         bail!(
-            "`gh issue create` exited with {}: {}",
+            "`gh api` filing the issue exited with {}: {}",
             out.status,
             trellis_tickets::printable(String::from_utf8_lossy(&out.stderr).trim())
         );
@@ -241,15 +245,15 @@ fn gh_create(args: &[String], body: &str) -> Result<String> {
     // report a failure that reads as nothing filed.
     if let Err(e) = wrote {
         bail!(
-            "`gh issue create` filed {} but writing the body to it failed ({e}); check that issue's body",
+            "`gh api` filed {} but writing the body to it failed ({e}); check that issue's body",
             trellis_tickets::printable(stdout.trim())
         );
     }
     Ok(stdout)
 }
 
-/// `gh issue list` for every open issue, the read `sweep` and `index`
-/// start from.
+/// The paginated REST list of every open issue, the read `sweep` and
+/// `index` start from.
 fn gh_list() -> Result<String> {
     let out = gh()
         .args(trellis_tickets::gh_list_args())
@@ -258,16 +262,16 @@ fn gh_list() -> Result<String> {
         .context("running `gh`; is the GitHub CLI installed and on PATH?")?;
     if !out.status.success() {
         bail!(
-            "`gh issue list` exited with {}: {}",
+            "`gh api` listing the open issues exited with {}: {}",
             out.status,
             trellis_tickets::printable(String::from_utf8_lossy(&out.stderr).trim())
         );
     }
-    String::from_utf8(out.stdout).context("`gh issue list` printed non-UTF-8")
+    String::from_utf8(out.stdout).context("`gh api` listing the open issues printed non-UTF-8")
 }
 
-/// `gh issue edit` with `args` ([`trellis_tickets::IssuePlan::gh_edit_args`])
-/// and, when the triage block changes, the new body on stdin.
+/// The REST `PATCH` in `args` ([`trellis_tickets::IssuePlan::gh_edit_args`])
+/// with, when the triage block changes, the new body on stdin.
 fn gh_edit(args: &[String], body: Option<&str>) -> Result<()> {
     let mut child = gh()
         .args(args)
@@ -284,17 +288,17 @@ fn gh_edit(args: &[String], body: Option<&str>) -> Result<()> {
         Some(b) => child
             .stdin
             .take()
-            .context("`gh issue edit` was spawned with no stdin")?
+            .context("`gh api` editing the issue was spawned with no stdin")?
             .write_all(b.as_bytes()),
         None => Ok(()),
     };
     // The stdin handle is dropped above, so `gh` sees the end of the body.
     let out = child
         .wait_with_output()
-        .context("waiting for `gh issue edit`")?;
+        .context("waiting for `gh api` editing the issue")?;
     if !out.status.success() {
         bail!(
-            "`gh issue edit` exited with {}: {}",
+            "`gh api` editing the issue exited with {}: {}",
             out.status,
             trellis_tickets::printable(String::from_utf8_lossy(&out.stderr).trim())
         );
@@ -303,7 +307,7 @@ fn gh_edit(args: &[String], body: Option<&str>) -> Result<()> {
     // issue's body may now be cut short. Say so rather than report success.
     if let Err(e) = wrote {
         bail!(
-            "`gh issue edit` succeeded but writing the body to it failed ({e}); check that issue's body"
+            "`gh api` editing the issue succeeded but writing the body to it failed ({e}); check that issue's body"
         );
     }
     Ok(())
