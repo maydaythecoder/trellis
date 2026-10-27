@@ -639,6 +639,74 @@ h4:first-child {
   padding: var(--space-2) var(--space-3);
 }
 
+/* The log's additions the run view wireframe draws and the bundle does not
+   carry yet (#949; docs/design/run-view-wireframe.html, "Transcript
+   additions"): the filter bar, a turn rule's figures, a check row's source,
+   the model's question, and the raw call's <details> in the row's grid.
+   They are named outside the bundle's cd- prefix: every cd- class ds.js
+   writes is one ds.css styles (ds_components_draw_the_bundles_markup), and
+   ds.css is the bundle. */
+.log-filters {
+  display: flex;
+  gap: var(--space-1);
+  align-items: center;
+  flex-wrap: wrap;
+  font: 500 11px/16px var(--font-mono);
+  color: var(--ink-muted);
+}
+
+.log-filters .cd-q-opt {
+  padding: 1px var(--space-2);
+}
+
+.log-filters .spacer {
+  flex: 1;
+}
+
+.cd-tx-turn .turn-meta {
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.tx-check-src {
+  color: var(--ink-muted);
+  font-weight: 400;
+  margin-left: var(--space-2);
+}
+
+.tx-ask {
+  background: var(--panel-raised);
+  border-left: 2px solid var(--warn);
+  margin: var(--space-1) 0;
+}
+
+.tx-ask .cd-tx-g,
+.tx-ask .cd-tx-label {
+  color: var(--warn);
+}
+
+.tx-details {
+  grid-column: 2 / -1;
+}
+
+.tx-details > summary {
+  cursor: pointer;
+}
+
+/* A filter or quiet mode hides rows and never drops them (#949): the rows
+   stay in the log, each marked with its kind (dom.js's drawFeed), and a
+   turn's rule shows under every filter, as the wireframe's does. The
+   groups are the wireframe's: You is the person's words and the model's
+   question to them, Tools the calls and what was refused, Notes trellis's
+   notes, refusals and the model's question. */
+.cd-tx[data-filter="you"] > [data-kind]:not([data-kind="turn"], [data-kind="task"], [data-kind="steer"], [data-kind="ask"]),
+.cd-tx[data-filter="tool"] > [data-kind]:not([data-kind="turn"], [data-kind="tool"], [data-kind="refusal"]),
+.cd-tx[data-filter="check"] > [data-kind]:not([data-kind="turn"], [data-kind="check"]),
+.cd-tx[data-filter="note"] > [data-kind]:not([data-kind="turn"], [data-kind="note"], [data-kind="refusal"], [data-kind="ask"]),
+.cd-tx.log-quiet > [data-kind="tool"]:not(.tx-edit) {
+  display: none;
+}
+
 .rows {
   margin: 0;
   padding-left: 18px;
