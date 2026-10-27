@@ -31,7 +31,9 @@ mod vault;
 use crate::atlas;
 use crate::capped::{Capped, Item, cut};
 use crate::feed::{Feed, Row};
-use crate::frames::{ApprovalRequest, Frame, Response, RunBudget, RunEnd, RuntimeIdentified, Turn};
+use crate::frames::{
+    ApprovalRequest, Compacted, Frame, Response, RunBudget, RunEnd, RuntimeIdentified, Turn,
+};
 use crate::graph;
 use crate::queue;
 use serde_json::{Map, Value, json};
@@ -1574,7 +1576,14 @@ fn tool_sentence(t: &Turn) -> String {
         "grep" => format!("Searched for {target}"),
         "bash" => format!("Ran {target}"),
         "run_checks" => format!("Ran the checks: {target}"),
-        "blast_radius" => format!("Measured the blast radius of {target}"),
+        // A radius whose observation folded call sites into per-file counts
+        // says how many, so a short list is not read as the whole (#954).
+        "blast_radius" => match t.summarised.filter(|&n| n > 0) {
+            Some(n) => format!(
+                "Measured the blast radius of {target}; {n} call site(s) summarised by file"
+            ),
+            None => format!("Measured the blast radius of {target}"),
+        },
         other => format!("{other} {target}").trim().to_string(),
     }
 }
@@ -1737,6 +1746,15 @@ pub struct DesktopState {
     run_model: Option<String>,
     /// The repository trellis serves, from `run_start` or `get_state`.
     root: Option<String>,
+    /// The id and task of the run in flight's `run_start`: the prompt or
+    /// follow-up an approval's `request_id` names (#954).
+    run_request: Option<(String, Option<String>)>,
+    /// The `compacted` and `compacted on request` events this run has
+    /// sent: a count of events received, which trellis does not total.
+    compactions: u64,
+    /// The latest `compacted` event's figures, for its request's size and
+    /// the budget in force; `None` until one, and from each run's start.
+    last_compacted: Option<Compacted>,
     /// The composer's queue (#830), in the order items were first listed;
     /// a run's start drops the settled ones.
     queued: Vec<Queued>,
@@ -1786,6 +1804,17 @@ impl DesktopState {
                 // ceiling the latest event lacks is not the last one's.
                 self.budget.ceilings = b;
                 Changed::of(&[Pane::Budget])
+            }
+            // Each is a compaction this run made; only `compacted` says the
+            // request's size and the budget it was held to.
+            Frame::Compacted(e) => {
+                self.compactions += 1;
+                self.last_compacted = Some(e);
+                Changed::of(&[Pane::Where])
+            }
+            Frame::CompactedOnRequest(_) => {
+                self.compactions += 1;
+                Changed::of(&[Pane::Where])
             }
             // The hold is the engine's (#837): the strip says `paused` from
             // this event, never from the click that asked for it.
@@ -1841,6 +1870,7 @@ impl DesktopState {
                 self.running = true;
                 self.run_model = s.model;
                 self.root = s.root;
+                self.run_request = s.id.clone().map(|id| (id, s.task.clone()));
                 // A forwarded prompt's run has started, and `running` says
                 // so from here on.
                 self.prompts_in_flight = self.prompts_in_flight.saturating_sub(1);
@@ -2608,7 +2638,10 @@ impl DesktopState {
             Pane::Approvals => Value::Array(
                 self.approvals
                     .iter()
-                    .map(|a| json!({"id": a.id, "question": a.question, "detail": a.detail}))
+                    .map(|a| {
+                        json!({"id": a.id, "question": a.question, "detail": a.detail,
+                               "request_id": a.request_id, "asked_for": self.asked_for(a)})
+                    })
                     .collect(),
             ),
             Pane::Running => json!(self.running),
@@ -3018,7 +3051,38 @@ impl DesktopState {
                 "served": r.served,
             })),
             "root": self.root,
+            "compactions": self.compactions,
+            // Two figures, never divided (#954): null until a compacted
+            // event has said them.
+            "request_bytes": self.last_compacted.and_then(|e| e.request_bytes),
+            "budget_bytes": self.last_compacted.and_then(|e| e.budget),
         })
+    }
+
+    /// What an approval belongs to (#954): the prompt or follow-up its
+    /// `request_id` names, with the task the run's start carried when it
+    /// is the run in flight's, and said to have no id when it had none.
+    fn asked_for(&self, a: &ApprovalRequest) -> String {
+        let Some(id) = a.request_id.as_deref() else {
+            return "a prompt or follow-up sent with no id".to_string();
+        };
+        let follow_up = self
+            .queued
+            .iter()
+            .any(|q| q.kind == QueuedKind::FollowUp && q.id == id);
+        match &self.run_request {
+            Some((run, task)) if run == id => {
+                let kind = if follow_up { "follow-up" } else { "prompt" };
+                match task {
+                    Some(t) => {
+                        format!("the {kind}: {}", cut(t.clone(), t.len(), QUEUED_TEXT_BYTES))
+                    }
+                    None => format!("the {kind} sent as {id}"),
+                }
+            }
+            _ if follow_up => format!("the follow-up sent as {id}"),
+            _ => format!("the prompt or follow-up sent as {id}"),
+        }
     }
 
     /// A file's state word (#831, DESIGN.md §2.1) as `(state, word, tone,
@@ -3530,6 +3594,9 @@ impl DesktopState {
         self.closing = Closing::Unasked;
         self.closing_unasked = false;
         self.plan = None;
+        self.run_request = None;
+        self.compactions = 0;
+        self.last_compacted = None;
     }
 
     /// The page sent a steer, `text`, with line id `id`: its row, pending
@@ -4563,6 +4630,7 @@ mod tests {
             id: "q1".into(),
             question: Some("Run bash?".into()),
             detail: None,
+            request_id: None,
         }));
         assert!(c.has(Pane::Now), "{c:?}");
         let v = now(&mut s);
@@ -4588,6 +4656,7 @@ mod tests {
             id: "q2".into(),
             question: None,
             detail: None,
+            request_id: None,
         }));
         let c = s.abort_sent();
         assert!(c.has(Pane::Now), "{c:?}");
@@ -4693,6 +4762,7 @@ mod tests {
             id: "q1".into(),
             question: Some("Run bash?".into()),
             detail: None,
+            request_id: None,
         }));
         views.push(("needs you", all(&mut s)));
         s.abort_sent();
@@ -5180,6 +5250,162 @@ mod tests {
             &turn(json!({"turn": 1, "call": "blast_radius f", "resolved": 4, "candidates": 2})),
         );
         assert_eq!(all(&mut s)["radius"], Value::Null);
+    }
+
+    #[test]
+    fn where_counts_compactions_from_compacted_events() {
+        // The risks (#954): a run whose older observations were elided to
+        // fit its context budget looks, from the desktop, like one that saw
+        // everything; the request's size and the budget are divided into a
+        // share trellis never sent (CLAUDE.md rule 3's reasoning); and a
+        // figure no compacted event has said yet is drawn as 0.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p"));
+        let w = all(&mut s)["where"].clone();
+        assert_eq!(w["compactions"], 0, "{w}");
+        assert_eq!(w["request_bytes"], Value::Null, "{w}");
+        assert_eq!(w["budget_bytes"], Value::Null, "{w}");
+
+        let c = feed(
+            &mut s,
+            &event(
+                "compacted",
+                json!({"turn": 3, "elided_turns": 1, "elided_bytes": 400,
+                       "request_bytes": 900, "budget": 1000}),
+            ),
+        );
+        assert!(c.has(Pane::Where), "{c:?}");
+        feed(
+            &mut s,
+            &event(
+                "compacted",
+                json!({"turn": 4, "elided_turns": 2, "elided_bytes": 700,
+                       "request_bytes": 950, "budget": 1000}),
+            ),
+        );
+        // A compact a client asked for is a compaction too.
+        feed(
+            &mut s,
+            &event(
+                "compacted on request",
+                json!({"turn": 5, "turns_folded": 1, "elided_turns": 2,
+                       "bytes_before": 990, "bytes_after": 600}),
+            ),
+        );
+        let w = all(&mut s)["where"].clone();
+        assert_eq!(w["compactions"], 3, "{w}");
+        assert_eq!(
+            (w["request_bytes"].clone(), w["budget_bytes"].clone()),
+            (json!(950), json!(1000)),
+            "the latest compacted event's two figures, as sent: {w}"
+        );
+        let mut ks = Vec::new();
+        keys(&w, &mut ks);
+        assert!(
+            !ks.iter()
+                .any(|k| ["ratio", "percent", "fraction", "share", "total"]
+                    .iter()
+                    .any(|b| k.to_lowercase().contains(b))),
+            "Where it is derives a figure: {ks:?}"
+        );
+
+        // The next run starts with none.
+        feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p"}).to_string(),
+        );
+        feed(&mut s, &run_start("q"));
+        let w = all(&mut s)["where"].clone();
+        assert_eq!(w["compactions"], 0, "{w}");
+        assert_eq!(w["request_bytes"], Value::Null, "{w}");
+    }
+
+    #[test]
+    fn a_radius_that_summarised_call_sites_says_how_many() {
+        // The risk (#954): a radius whose observation folded call sites
+        // into per-file counts reads as a whole list, so the person thinks
+        // they saw every site.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p"));
+        let radius = |n: u64| {
+            turn(
+                json!({"turn": 1, "call": "blast_radius f", "verdict": "None",
+                        "check_kind": "", "observation": "", "tool": "blast_radius",
+                        "target": "f", "wrote": false, "resolved": 40,
+                        "candidates": 2, "unresolved": 1, "summarised": n}),
+            )
+        };
+        feed(&mut s, &radius(12));
+        feed(&mut s, &radius(0));
+        let t = texts(&all(&mut s)["transcript"]);
+        let said: Vec<&String> = t.iter().filter(|x| x.starts_with("Measured")).collect();
+        assert_eq!(
+            said,
+            [
+                "Measured the blast radius of f; 12 call site(s) summarised by file",
+                "Measured the blast radius of f",
+            ],
+            "{t:?}"
+        );
+        // The radius pane stays three counts.
+        assert_eq!(
+            all(&mut s)["radius"],
+            json!({"resolved": 40, "candidates": 2, "unresolved": 1})
+        );
+    }
+
+    #[test]
+    fn an_approval_names_the_prompt_or_follow_up_it_belongs_to() {
+        // The risk (#954): with a follow-up queued behind a prompt, a
+        // question is answered for the wrong request, since the dialog did
+        // not say which one's run asks.
+        let ask = |id: &str, request_id: Value| {
+            json!({"type": "approval_request", "id": id, "question": "edit a.py (+1 -1)",
+                   "detail": "", "request_id": request_id})
+            .to_string()
+        };
+        let asked_for = |s: &mut DesktopState| all(s)["approvals"][0]["asked_for"].clone();
+
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p"));
+        feed(&mut s, &ask("q1", json!("p")));
+        assert_eq!(asked_for(&mut s), "the prompt: change f");
+        assert_eq!(all(&mut s)["approvals"][0]["request_id"], "p");
+
+        // A follow-up's own run: its start carries its id.
+        feed(
+            &mut s,
+            &state_with(
+                json!([{"id": "u1", "type": "follow_up", "message": "then <b>rename</b> it"}]),
+            ),
+        );
+        feed(
+            &mut s,
+            &json!({"type": "run_end", "outcome": "converged", "exit": 0, "id": "p"}).to_string(),
+        );
+        feed(
+            &mut s,
+            &json!({"type": "run_start", "version": 1, "trellis": "0.0.1",
+                    "task": "then <b>rename</b> it", "model": "scripted:x", "root": "/r",
+                    "id": "u1"})
+            .to_string(),
+        );
+        feed(&mut s, &ask("q2", json!("u1")));
+        assert_eq!(
+            asked_for(&mut s),
+            "the follow-up: then <b>rename</b> it",
+            "the text kept as sent, for the page to write as text"
+        );
+
+        // An id that is not the run's, and none at all.
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p"));
+        feed(&mut s, &ask("q3", json!("other")));
+        assert_eq!(asked_for(&mut s), "the prompt or follow-up sent as other");
+        let mut s = DesktopState::default();
+        feed(&mut s, &run_start("p"));
+        feed(&mut s, &ask("q4", Value::Null));
+        assert_eq!(asked_for(&mut s), "a prompt or follow-up sent with no id");
     }
 
     #[test]
@@ -5681,7 +5907,8 @@ mod tests {
         assert_eq!(
             v["approvals"],
             json!([{"id": "approval-1", "question": "edit a.py (+1 -1)",
-                    "detail": "<script>alert(1)</script>"}]),
+                    "detail": "<script>alert(1)</script>", "request_id": "p",
+                    "asked_for": "the prompt: change f"}]),
             "one question, its text carried as text"
         );
         // Unanswerable without an id: not opened.
@@ -7355,7 +7582,15 @@ mod tests {
             | "duration_ms"
             | "paused_ms"
             | "steps_cut"
-            | "texts_cut" => {
+            | "texts_cut"
+            | "summarised"
+            | "elided_turns"
+            | "elided_bytes"
+            | "request_bytes"
+            | "budget"
+            | "turns_folded"
+            | "bytes_before"
+            | "bytes_after" => {
                 *n += 1;
                 json!(*n)
             }

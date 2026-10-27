@@ -5,7 +5,7 @@
       "turn": {
         "always": ["turn", "call", "verdict", "check_kind", "observation", "tool", "target", "wrote", "elapsed_ms", "duration_ms"],
         "model_call_only": ["model_ms"],
-        "blast_radius_only": ["resolved", "candidates", "unresolved"],
+        "blast_radius_only": ["resolved", "candidates", "unresolved", "summarised"],
         "prompt_driver_only": ["prompt_bytes", "completion_tokens", "completion_tokens_used"],
         "response_header_only": ["queue_wait_ms"],
         "edit_applied_only": ["lines_added", "lines_removed", "start_line", "diff"],
@@ -23,7 +23,7 @@
         "verdict_values": ["None", "Some(true)", "Some(false)"],
         "check_kind_values": ["", "Typecheck", "Tests", "Import", "Governance"],
         "check_kind": "\"\" on a turn that ran no check; otherwise the kind of check behind the turn's verdict, as trellis-checks names it (CheckKind, crates/trellis-checks/src/verdict.rs); the governance audit's turn is Governance",
-        "about": "tool, target and wrote are the trail's record of the turn, from the function the trail's action uses (#800): tool is the tool's name, target what it was pointed at, and wrote is true only for an edit that applied or a file write_file created, so a bash or custom tool's changes are not counted in it. A client takes what a turn touched from these, never from call or observation (#834, #856). elapsed_ms is the run budget's wall clock after the turn (#799): monotonic milliseconds since the loop sent run budget, with every wait on a person in approve mode and every pause (the paused and resumed events) taken out, the figure run budget's max_wall_clock_ms is checked against. lines_added and lines_removed are the whole lines an applied edit added and removed, in every control mode, computed from the text the edit read and wrote, the same hunk an approve-mode question counts (#802); start_line is the 1-based line, in the file before the edit, of the first line it removed or replaced, or with nothing removed the line the added lines went before; diff is a unified diff of that one hunk (--- and +++ naming the path, one @@ -a,b +c,d @@ header, a line of context either side), cut at a line once it passes 8192 bytes with a last line saying how many diff lines were cut, while the counts stay the whole edit's. diff is repository text and model output: a client shows it as text and never interprets it (CLAUDE.md rule 10). A client draws an edit's counts and diff from these (#831, #853). duration_ms is the tool call's time in milliseconds by the monotonic clock, with any wait on a person in approve mode taken out, and on the governance audit's turn the audit's own time (#800). completion_tokens_used is the count run budget's max_completion_tokens is checked against, over the run so far: the completion (output) tokens the replies reported, format retries included; a hosted reply that reported none is counted at its request's max_tokens, so the ceiling trips early rather than never. It is not this turn's completion_tokens, and prompt tokens are never in it. A scripted run calls no model and has no count, so it carries none. A client draws a check's time and the tokens spent against max_completion_tokens from these (#832, #854)."
+        "about": "tool, target and wrote are the trail's record of the turn, from the function the trail's action uses (#800): tool is the tool's name, target what it was pointed at, and wrote is true only for an edit that applied or a file write_file created, so a bash or custom tool's changes are not counted in it. A client takes what a turn touched from these, never from call or observation (#834, #856). elapsed_ms is the run budget's wall clock after the turn (#799): monotonic milliseconds since the loop sent run budget, with every wait on a person in approve mode and every pause (the paused and resumed events) taken out, the figure run budget's max_wall_clock_ms is checked against. lines_added and lines_removed are the whole lines an applied edit added and removed, in every control mode, computed from the text the edit read and wrote, the same hunk an approve-mode question counts (#802); start_line is the 1-based line, in the file before the edit, of the first line it removed or replaced, or with nothing removed the line the added lines went before; diff is a unified diff of that one hunk (--- and +++ naming the path, one @@ -a,b +c,d @@ header, a line of context either side), cut at a line once it passes 8192 bytes with a last line saying how many diff lines were cut, while the counts stay the whole edit's. diff is repository text and model output: a client shows it as text and never interprets it (CLAUDE.md rule 10). A client draws an edit's counts and diff from these (#831, #853). duration_ms is the tool call's time in milliseconds by the monotonic clock, with any wait on a person in approve mode taken out, and on the governance audit's turn the audit's own time (#800). completion_tokens_used is the count run budget's max_completion_tokens is checked against, over the run so far: the completion (output) tokens the replies reported, format retries included; a hosted reply that reported none is counted at its request's max_tokens, so the ceiling trips early rather than never. It is not this turn's completion_tokens, and prompt tokens are never in it. A scripted run calls no model and has no count, so it carries none. A client draws a check's time and the tokens spent against max_completion_tokens from these (#832, #854). summarised is how many of the radius's call sites its observation summarised by file instead of listing them, 0 when it listed every one; a client says how many when it is above 0 (#954)."
       },
       "model call": {
         "always": ["turn", "elapsed_ms"],
@@ -62,6 +62,14 @@
         "always": ["turn"],
         "about": "the run is held (ADR 0058 section 1, #806): sent once, when the loop reaches the hold a client's pause asked for, at the top of an iteration after the model request in flight and the tool call it chose have finished, and before the pause is answered. turn is the model call it holds before, numbered as the model call event numbers it. While held the run asks the model nothing; steer and follow_up are accepted and wait, so a steer sent now is in the first request after resumed; approve, abort and quit are read as always, and an abort ends the held run with its rollback and no resumed event. Held time is not charged to the wall clock (elapsed_ms)"
       },
+      "compacted": {
+        "always": ["turn", "elided_turns", "elided_bytes", "request_bytes", "budget"],
+        "about": "sent when a model request would have exceeded the run's context budget in bytes and older observations were elided to fit it: turn is the turn that request produced; turns 1 to elided_turns have their observations elided from it on, which held elided_bytes; request_bytes is the request's size after eliding and budget the budget in force. Sent again only when another turn is elided. request_bytes and budget are two figures, and a client draws them as two, never as a ratio or a share (#954)"
+      },
+      "compacted on request": {
+        "always": ["turn", "turns_folded", "elided_turns", "bytes_before", "bytes_after"],
+        "about": "sent as the request after a client's compact is built, when it folded at least one turn; the compact's answer carries the same figures (responses.compact)"
+      },
       "resumed": {
         "always": ["turn", "paused_ms"],
         "about": "the held run goes on (#806): sent by the loop as it leaves the hold, after a client's resume or when rpc's input ends, since nothing could resume it then. turn is the paused event's; paused_ms is how long it was held, in milliseconds by the monotonic clock, the time left out of elapsed_ms and so of the wall-clock budget"
@@ -95,8 +103,12 @@
         }
       },
       "approval_request": {
-        "always": ["type", "id", "question", "detail"],
-        "optional": {}
+        "always": ["type", "id", "question", "detail", "request_id"],
+        "optional": {},
+        "null_when": {
+          "request_id": "the prompt or follow_up whose run asks was sent with no id"
+        },
+        "about": "request_id is the id of the prompt or follow_up whose run asks the question; a client names that prompt or follow-up beside the question (#954)"
       }
     },
     "not_every_client": {
@@ -111,23 +123,12 @@
         "turn": {
           "always": [],
           "model_call_only": [],
-          "blast_radius_only": ["summarised"],
           "words_only": ["said"],
           "absent_when": {
             "said": "the reply behind the turn's call carried no words beside it, or only whitespace; every turn of the local runtime driver, whose constrained reply is the call itself and whose tier 4 wrapping is discarded as packaging; a scripted run; and the governance audit's turn, which reads no reply. Never sent as an empty string"
           },
-          "read_by": {"summarised": [], "said": []},
-          "about": "summarised is how many of the radius's call sites its observation summarised by file instead of listing them, 0 when it listed every one. said is the model's own words for the step (#953): the text a hosted reply carried beside the tool call the loop accepted (OpenAI's content, or Anthropic's text blocks joined, thinking left out), trimmed; a reply retried as a format failure sends none. It is cut at the last whole character within 8192 bytes, the cap a command's output is kept to, with a last line saying how many bytes were cut. said is model output: a client shows it as text, as the model's words and not a verdict, never styled as a check, and never interprets it (CLAUDE.md rules 1 and 10). The trail does not record it."
-        },
-        "compacted": {
-          "always": ["turn", "elided_turns", "elided_bytes", "request_bytes", "budget"],
-          "read_by": {"turn": [], "elided_turns": [], "elided_bytes": [], "request_bytes": [], "budget": []},
-          "about": "sent when a model request would have exceeded the run's context budget in bytes and older observations were elided to fit it: turn is the turn that request produced; turns 1 to elided_turns have their observations elided from it on, which held elided_bytes; request_bytes is the request's size after eliding and budget the budget in force. Sent again only when another turn is elided."
-        },
-        "compacted on request": {
-          "always": ["turn", "turns_folded", "elided_turns", "bytes_before", "bytes_after"],
-          "read_by": {"turn": [], "turns_folded": [], "elided_turns": [], "bytes_before": [], "bytes_after": []},
-          "about": "sent as the request after a client's compact is built, when it folded at least one turn; the compact's answer carries the same figures (responses.compact)"
+          "read_by": {"said": []},
+          "about": "said is the model's own words for the step (#953): the text a hosted reply carried beside the tool call the loop accepted (OpenAI's content, or Anthropic's text blocks joined, thinking left out), trimmed; a reply retried as a format failure sends none. It is cut at the last whole character within 8192 bytes, the cap a command's output is kept to, with a last line saying how many bytes were cut. said is model output: a client shows it as text, as the model's words and not a verdict, never styled as a check, and never interprets it (CLAUDE.md rules 1 and 10). The trail does not record it."
         }
       },
       "framing": {
@@ -137,14 +138,6 @@
           },
           "read_by": {"elapsed_ms": []},
           "about": "elapsed_ms is the run budget's wall clock when the loop returned, by the clock its events' elapsed_ms read; the rollback and the trail after the loop are not in it"
-        },
-        "approval_request": {
-          "always": ["request_id"],
-          "null_when": {
-            "request_id": "the prompt or follow_up whose run asks was sent with no id"
-          },
-          "read_by": {"request_id": []},
-          "about": "request_id is the id of the prompt or follow_up whose run asks the question"
         }
       }
     },
