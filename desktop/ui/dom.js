@@ -52,7 +52,9 @@ export function atEnd(pane) {
 
 // Draws a feed the core sends (#827; desktop/src/feed.rs) into the log
 // `pane`: `feed.rows`, each with its `seq`, each drawn by `draw(row)` into
-// an element this marks with its seq and turn. With `feed.whole` the rows
+// an element this marks with its seq, its turn and its kind (the actions
+// log's filters hide rows by data-kind in style.css, #949, so a filter
+// drops none). With `feed.whole` the rows
 // replace what the pane holds; otherwise a row whose seq the pane holds
 // replaces that row in place (it changed, as a steer does once delivered)
 // and the rest are appended, so a capped log appends instead of redrawing
@@ -72,6 +74,7 @@ export function drawFeed(doc, pane, feed, { draw, divider, empty }) {
     const e = draw(row);
     e.dataset.seq = String(row.seq);
     if (Number.isFinite(row.turn)) e.dataset.turn = String(row.turn);
+    if (typeof row.kind === "string") e.dataset.kind = row.kind;
     return e;
   };
   let drawn = [...pane.children].filter((c) => c.dataset.seq !== undefined);

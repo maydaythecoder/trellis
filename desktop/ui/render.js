@@ -26,7 +26,7 @@
 // unreported: a dash with the reason as its title, never 0.
 
 import { atEnd, drawFeed, el, fill, muted } from "./dom.js";
-import { budgetRows, dsStatus, figure, railRows, stats, txEntry, txTurn, unreported } from "./ds.js";
+import { budgetRows, dsStatus, figure, railRows, stats, txEntry, unreported } from "./ds.js";
 import { isCount, str } from "./fmt.js";
 import { drawGraph } from "./graph.js";
 import { drawNow, drawWhere } from "./now.js";
@@ -34,8 +34,9 @@ import { drawPlan } from "./plan.js";
 import { lineId, send } from "./rpc.js";
 
 // The actions log: the transcript as the design system's Transcript
-// (#827), one entry per row the core sent, typed by what it came from, a
-// rule ahead of each turn's first row. The core sends each row once, and
+// (#827), one entry per row the core sent, typed by what it came from, the
+// reducer's turn entry the rule ahead of each turn's rows (#949). The core
+// sends each row once, and
 // again only when it changes, and dom.js's drawFeed appends or replaces
 // rows rather than redrawing the log. It follows its end only while the
 // reader is there (#643, as the TUI has since #244); otherwise their place
@@ -45,8 +46,6 @@ import { lineId, send } from "./rpc.js";
 function transcript(doc, pane, feed) {
   const { followed, drawn, missing } = drawFeed(doc, pane, feed, {
     draw: (row) => txEntry(doc, row),
-    divider: (row, before) =>
-      isCount(row.turn) && (before === null || before.dataset.turn !== String(row.turn)) ? txTurn(doc, row.turn) : null,
     empty: "Nothing has run yet.",
   });
   const jump = doc.getElementById("log-jump");
@@ -57,8 +56,14 @@ function transcript(doc, pane, feed) {
 
 // Wires the actions log once: the jump button takes the reader to the end,
 // scrolling there by hand puts the button away, since what it offered is
-// done, and a click or Enter on a tool row opens or closes its raw call and
-// observation. One listener each for the whole log, so its rows add none.
+// done, and the filter bar's buttons set what the log shows. A tool row's
+// raw call and observation is a <details> (ds.js's txEntry), which opens
+// with no listener, so the log's rows add none.
+//
+// A filter or quiet mode only marks the log (#949): its data-filter and its
+// log-quiet class, which style.css hides rows by. No row is removed or
+// redrawn, so turning a filter off shows every row again, and the feed
+// goes on appending under it.
 export function wireLog(doc) {
   const pane = doc.getElementById("pane-transcript");
   const jump = doc.getElementById("log-jump");
@@ -70,18 +75,22 @@ export function wireLog(doc) {
   pane.addEventListener("scroll", () => {
     if (atEnd(pane)) jump.hidden = true;
   });
-  const toggle = (e) => {
-    const row = e.target.closest(".cd-tx-tool");
-    if (row === null || !pane.contains(row)) return;
-    const raw = row.querySelector(".cd-tx-raw");
-    raw.hidden = !raw.hidden;
-    row.setAttribute("aria-expanded", String(!raw.hidden));
-  };
-  pane.addEventListener("click", toggle);
-  pane.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter") return;
-    e.preventDefault();
-    toggle(e);
+  const bar = pane.parentElement.querySelector(".log-filters");
+  bar.addEventListener("click", (e) => {
+    const button = e.target.closest("button");
+    if (button === null || !bar.contains(button)) return;
+    if (button.dataset.quiet !== undefined) {
+      const quiet = pane.classList.toggle("log-quiet");
+      button.classList.toggle("cd-q-opt-on", quiet);
+      button.setAttribute("aria-pressed", String(quiet));
+      return;
+    }
+    pane.dataset.filter = button.dataset.filter;
+    for (const option of bar.querySelectorAll("button[data-filter]")) {
+      const on = option === button;
+      option.classList.toggle("cd-q-opt-on", on);
+      option.setAttribute("aria-pressed", String(on));
+    }
   });
 }
 
