@@ -117,7 +117,7 @@
         "always": ["level"],
         "level_values": ["INFO", "WARN", "ERROR"],
         "read_by": {"level": ["tui"]},
-        "about": "the key of every event's line beside fields, as tracing's JSON layer writes it. The stdout layer passes trellis's events at info and above whatever RUST_LOG says (main.rs), so level is one of level_values. The TUI shows a WARN or ERROR event it has no record for as a warning."
+        "about": "the key of every event's line beside fields, as tracing's JSON layer writes it. The stdout layer passes trellis's events at info and above whatever RUST_LOG says (startup.rs), so level is one of level_values. The TUI shows a WARN or ERROR event it has no record for as a warning."
       },
       "events": {
         "turn": {
