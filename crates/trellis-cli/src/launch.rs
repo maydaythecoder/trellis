@@ -599,7 +599,7 @@ mod tests {
 
     /// Runs the stub just written at `path`, told by `TRELLIS_STUB_PROBE` to
     /// exit at once, until the kernel stops refusing it as busy, and at most
-    /// for a few seconds, as `wait_until_executable` in tests/cli.rs does
+    /// for a few seconds, as `wait_until_executable` in tests/cli/main.rs does
     /// (#581).
     ///
     /// The risk: `ETXTBSY` failing a launch test that has nothing wrong with

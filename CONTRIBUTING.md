@@ -62,7 +62,7 @@ command is in `docs/COMMANDS.md`.
 **Run tests with `RUST_BACKTRACE` unset or `0`.** With `RUST_BACKTRACE=1`,
 anyhow appends a backtrace to the CLI's error output, and
 `no_model_message_is_the_same_from_run_and_from_bare_trellis_on_a_pipe` in
-`crates/trellis-cli/tests/cli.rs` fails, because it requires the text
+`crates/trellis-cli/tests/cli/user_dir.rs` fails, because it requires the text
 `trellis run` prints to appear whole in what bare `trellis` prints.
 
 `qa/run-guards.py` runs whichever `trellis` is first on `PATH`; put
@@ -231,7 +231,8 @@ ticketing commands became a separate binary for exactly this reason
 2. The implementation in its own module under `crates/trellis-cli/src/`,
    declared in `main.rs`.
 3. `docs/COMMANDS.md`: one line with the ADR that added it.
-4. `crates/trellis-cli/tests/cli.rs`: tests that run the binary.
+4. `crates/trellis-cli/tests/cli/`: tests that run the binary, one module per
+   command, declared in its `main.rs`.
 
 ### Add a queue routine or an agent profile
 
