@@ -74,7 +74,7 @@ pub(crate) fn finish(
             let _ = writeln!(
                 out,
                 "replay:   {} (--model scripted:<this file> on {} replays it)",
-                crate::log_cmd::plain(&shown.display().to_string()),
+                crate::plain(&shown.display().to_string()),
                 &rec.base_commit[..rec.base_commit.len().min(12)]
             );
         }
