@@ -34,6 +34,7 @@ func shellState() State {
 	s.Actions = []Action{{Tool: "blast_radius", Target: "parse_expr"}, {Tool: "edit", Target: "src/parser.py", Wrote: true}, {Tool: "run_checks"}}
 	s.Budget = Budget{Iteration: 3, MaxIterations: u(40), PromptBytes: u(24100), ElapsedSecs: u(83)}
 	s.Now = Now{Phase: Phase{Kind: "tool", Turn: 3, Tool: "edit", Target: "src/parser.py"},
+		Call: Call{Tool: "edit", Target: "src/parser.py"}, Control: "approve",
 		Runtime: "ollama · qwen2.5-coder:32b", Root: "/work/trellis-demo"}
 	return s
 }
@@ -163,6 +164,10 @@ func TestShellGoldenRenders(t *testing.T) {
 	}{
 		{"run-80x24", 80, 24, ""},
 		{"run-120x40", 120, 40, ""},
+		// Where it is gone into (#952): at 80 columns its rows are the
+		// whole width, folded out of the right column.
+		{"where-80x24", 80, 24, PanelWhere},
+		{"where-120x40", 120, 40, PanelWhere},
 		{"actions-80x24", 80, 24, PanelActions},
 		{"actions-120x40", 120, 40, PanelActions},
 		// The code level and a file's diff (#853), from codeState.

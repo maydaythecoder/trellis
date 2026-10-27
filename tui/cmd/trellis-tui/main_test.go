@@ -207,3 +207,23 @@ func TestMainRegisterIsSeriousOrPlayful(t *testing.T) {
 		t.Fatalf("--register cheerful: exit %d, stderr %q", code, errb.String())
 	}
 }
+
+// The risk (#952): a mistyped --control sent to trellis, which refuses it
+// only once a prompt is sent, or dropped, so the run takes the
+// repository's mode while the person believes they chose one. approve is
+// the default, the desktop's; anything but approve or auto is refused
+// before the child starts.
+func TestMainControlIsApproveOrAuto(t *testing.T) {
+	if a, err := parseArgs([]string{"--root", "r"}, &bytes.Buffer{}); err != nil || a.control != "approve" {
+		t.Fatalf("without --control: %+v %v", a, err)
+	}
+	if a, err := parseArgs([]string{"--root", "r", "--control", "auto"}, &bytes.Buffer{}); err != nil || a.control != "auto" {
+		t.Fatalf("--control auto: %+v %v", a, err)
+	}
+	for _, bad := range []string{"Auto", "yolo", ""} {
+		var out, errb bytes.Buffer
+		if code := run([]string{"--root", t.TempDir(), "--control", bad}, &out, &errb); code != 2 || !strings.Contains(errb.String(), "--control") {
+			t.Fatalf("--control %q: exit %d, stderr %q", bad, code, errb.String())
+		}
+	}
+}
