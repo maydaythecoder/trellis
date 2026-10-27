@@ -2472,6 +2472,77 @@ mod compaction_and_hosted_tests {
         assert_eq!(h.await.unwrap().len(), 2);
     }
 
+    #[tokio::test]
+    async fn a_hosted_step_sends_the_accepted_reply_s_words_and_none_when_blank() {
+        // The risks (#953): the words a reply carried beside its call are
+        // dropped, so no client can show what the model said; a retried
+        // reply's words are sent with a call they did not come with; and a
+        // reply with no words is sent as "", which reads as words.
+        let call = |content: Value| {
+            json!({"choices":[{"message":{"role":"assistant","content":content,"tool_calls":[
+                {"id":"c1","type":"function","function":{"name":"read_file",
+                 "arguments":"{\"path\":\"a.py\"}"}}]}}],
+                "usage":{"completion_tokens":7}})
+            .to_string()
+        };
+        let retried =
+            json!({"choices":[{"message":{"role":"assistant","content":"words of no call"}}]})
+                .to_string();
+        let (base, _h) = stub(vec![
+            retried,
+            call(json!("  I will read a.py first.\n")),
+            call(json!(" \n ")),
+            call(Value::Null),
+        ])
+        .await;
+        let client = HostedClient::with_key(Protocol::OpenAiChat, &base, "m", "K", None).unwrap();
+        let mut m = HostedModel::new(client);
+        let t = transcript(Vec::new());
+        m.next_step(&t).await.unwrap();
+        assert_eq!(m.said(), Some("I will read a.py first."));
+        m.next_step(&t).await.unwrap();
+        assert_eq!(m.said(), None, "whitespace is no words");
+        m.next_step(&t).await.unwrap();
+        assert_eq!(m.said(), None, "a null content is no words");
+
+        // Anthropic's text blocks, joined; its thinking is not what it said.
+        let blocks = json!({"content":[
+            {"type":"thinking","thinking":"private reasoning","signature":"s"},
+            {"type":"text","text":"Reading it."},
+            {"type":"tool_use","id":"t1","name":"read_file","input":{"path":"a.py"}},
+            {"type":"text","text":"Then the tests."}]});
+        assert_eq!(
+            hosted::said_in(&blocks).as_deref(),
+            Some("Reading it.\nThen the tests.")
+        );
+    }
+
+    #[test]
+    fn said_is_cut_at_a_character_and_says_so() {
+        // The risks (#953): a reply as long as a file puts all of it on one
+        // event line; a cut inside a character panics or sends invalid
+        // UTF-8; a silent cut reads as all the model said.
+        let fits = "a".repeat(hosted::SAID_CAP);
+        assert_eq!(hosted::cut_said(&fits), fits);
+        // A three-byte character straddling the cap.
+        let long = format!(
+            "{}\u{20ac}{}",
+            "a".repeat(hosted::SAID_CAP - 1),
+            "b".repeat(99)
+        );
+        let cut = hosted::cut_said(&long);
+        let kept = format!("{}\n", "a".repeat(hosted::SAID_CAP - 1));
+        assert!(
+            cut.starts_with(&kept),
+            "cut before the character, not in it"
+        );
+        assert!(
+            cut.ends_with("...(102 more bytes cut at 8192 bytes)..."),
+            "{}",
+            &cut[cut.len() - 60..]
+        );
+    }
+
     fn done_without_usage() -> String {
         json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[
             {"id":"c1","type":"function","function":{"name":"done","arguments":"{\"summary\":\"x\"}"}}

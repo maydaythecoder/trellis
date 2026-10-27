@@ -548,6 +548,10 @@ impl<M: trellis_loop::Model> trellis_loop::Model for Watched<'_, M> {
     fn step_usage(&self) -> trellis_loop::StepUsage {
         self.model.step_usage()
     }
+
+    fn said(&self) -> Option<&str> {
+        self.model.said()
+    }
 }
 
 /// The run of a chain in progress. A follow-up replaces it when it starts.
