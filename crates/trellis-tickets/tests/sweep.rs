@@ -194,7 +194,8 @@ fn sweep_apply_never_touches_a_parked_or_split_issue() {
 
 #[test]
 fn sweep_apply_changes_only_the_triage_block_lines_and_keeps_every_other_byte() {
-    // `--body-file` replaces the whole body. A rewrite that normalised the
+    // The REST `PATCH` replaces the whole body, and the whole label list,
+    // so every label kept is named. A rewrite that normalised the
     // `\r\r\n` endings, or touched `ready:` (sync-ready.py's), would be a
     // change to every issue nobody asked for.
     let before = drifted_77();
@@ -214,15 +215,32 @@ fn sweep_apply_changes_only_the_triage_block_lines_and_keeps_every_other_byte() 
     assert_eq!(
         args,
         [
-            "issue",
-            "edit",
-            "77",
-            "--add-label",
-            "effort:m",
-            "--remove-label",
-            "effort:l",
-            "--body-file",
-            "-"
+            "api",
+            "-X",
+            "PATCH",
+            "repos/{owner}/{repo}/issues/77",
+            "-f",
+            "labels[]=P2",
+            "-f",
+            "labels[]=area:cli",
+            "-f",
+            "labels[]=kind:feature",
+            "-f",
+            "labels[]=risk:medium",
+            "-f",
+            "labels[]=surface:cli",
+            "-f",
+            "labels[]=origin:manual",
+            "-f",
+            "labels[]=!agent-ok",
+            "-f",
+            "labels[]=triage:auto",
+            "-f",
+            "labels[]=type:ticket",
+            "-f",
+            "labels[]=effort:m",
+            "-F",
+            "body=@-"
         ]
     );
     let old = body(&before);
@@ -328,20 +346,25 @@ fn sweep_never_writes_the_ready_label_or_agent_ok_and_never_lowers_risk() {
     let e = edits(&events);
     assert_eq!(e.len(), 1, "{events:?}");
     let (args, stdin) = e[0];
-    for forbidden in ["ready", "!agent-ok", "risk:high", "risk:medium"] {
-        assert!(
-            !args.iter().any(|a| a == forbidden),
-            "{forbidden} in {args:?}"
-        );
+    // The REST `PATCH` sets the whole label list, so not writing a label
+    // means sending it exactly as it was read: kept, and no lower risk
+    // beside it.
+    let sent: Vec<&str> = args
+        .iter()
+        .filter_map(|a| a.strip_prefix("labels[]="))
+        .collect();
+    for kept in ["ready", "!agent-ok", "risk:high"] {
+        assert!(sent.contains(&kept), "{kept} dropped from {args:?}");
     }
+    assert!(!sent.contains(&"risk:medium"), "risk lowered in {args:?}");
     let new = stdin.unwrap();
     assert!(new.contains("ready: false\r\r\n"));
 }
 
 #[test]
 fn sweep_does_not_write_an_issue_that_changed_after_it_was_read() {
-    // `--body-file` replaces the whole body, so writing a plan made from an
-    // older body would undo whatever changed it (a sync-ready.py run).
+    // The REST `PATCH` replaces the whole body, so writing a plan made from
+    // an older body would undo whatever changed it (a sync-ready.py run).
     let listed = drifted_77();
     let mut now = listed.clone();
     let b = body(&now).replace("ready: false", "ready: true");
@@ -358,8 +381,9 @@ fn sweep_does_not_write_an_issue_that_changed_after_it_was_read() {
 
 #[test]
 fn sweep_refuses_a_list_that_may_have_been_cut_short() {
-    // A list at `gh`'s limit may be missing issues, and a sweep over it
-    // would report "no drift" for ones it never read.
+    // A list at the ceiling is refused, not read. Before #957 the ceiling
+    // was `gh issue list --limit`, and a sweep over a list cut there would
+    // report "no drift" for issues it never read.
     let many: Vec<Value> = (1..=SWEEP_LIST_LIMIT as u64)
         .map(|n| {
             let mut v = quiet_202();
