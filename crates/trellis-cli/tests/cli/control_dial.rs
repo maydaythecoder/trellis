@@ -5,7 +5,7 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 /// A repository whose config puts runs in approve mode, committed.
-fn repo_in_approve_mode(name: &str) -> PathBuf {
+fn repo_in_approve_mode(name: &str) -> Scratch {
     let d = repo(name);
     std::fs::create_dir_all(d.join(".trellis")).unwrap();
     std::fs::write(
@@ -24,8 +24,9 @@ fn approve_mode_without_a_terminal_refuses_before_anything_is_touched() {
     // the ADR names: nobody to ask. Starting and then denying every edit
     // would be a run that looks as though it worked without doing the work.
     let d = repo_in_approve_mode("approve-no-tty");
+    let s_dir = scratch("approve-no-tty-script");
     let spec = format!("scripted:{}", {
-        let s = scratch("approve-no-tty-script").join("s.json");
+        let s = s_dir.join("s.json");
         std::fs::write(
             &s,
             r#"{"steps":[{"tool":"edit","path":"app/core.py","old":"hello","new":"hi"}]}"#,
@@ -85,7 +86,8 @@ fn a_session_on_a_pipe_in_approve_mode_refuses_the_task_and_stays_open() {
     // mode meets a pipe most often. The task is refused before a snapshot;
     // the session itself carries on, because a refused task is not an exit.
     let d = repo_in_approve_mode("approve-session");
-    let s = scratch("approve-session-script").join("s.json");
+    let s_dir = scratch("approve-session-script");
+    let s = s_dir.join("s.json");
     std::fs::write(
         &s,
         r#"{"steps":[{"tool":"edit","path":"app/core.py","old":"hello","new":"hi"}]}"#,

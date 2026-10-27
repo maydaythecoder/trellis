@@ -45,7 +45,7 @@ fn path_without_gh() -> Vec<PathBuf> {
 /// holding only wrappers that run the real ones puts them back; the stubs
 /// name `/bin/cat` and `/bin/sleep` for the same reason. `None` on Windows,
 /// where `gh` has a directory of its own.
-fn tools_beside_gh(name: &str) -> Option<PathBuf> {
+fn tools_beside_gh(name: &str) -> Option<Scratch> {
     if cfg!(windows) {
         return None;
     }
@@ -74,13 +74,8 @@ fn tools_beside_gh(name: &str) -> Option<PathBuf> {
     Some(dir)
 }
 
-/// `scratch`'s path for `name`, without emptying it.
-fn scratch_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("trellis-cli-it-{name}-{}", std::process::id()))
-}
-
 /// The stub's directory: `gh.cmd` or `gh`, beside the JSON it prints.
-fn gh_stub(name: &str, windows: &str, unix: &str) -> PathBuf {
+fn gh_stub(name: &str, windows: &str, unix: &str) -> Scratch {
     let dir = scratch(&format!("{name}-gh"));
     std::fs::write(
         dir.join("pr.json"),
@@ -115,14 +110,33 @@ fn gh_stub(name: &str, windows: &str, unix: &str) -> PathBuf {
 /// `trellis <args>` in `cwd`, with `user` as its user directory and the
 /// `gh` that `gh` names on PATH.
 fn overview_in(name: &str, cwd: &Path, user: &Path, gh: Gh, args: &[&str]) -> Output {
+    overview_with_stub(name, cwd, user, gh, args).0
+}
+
+/// [`overview_in`], with the stub's directory when `gh` is one, for a test
+/// that reads what the stub wrote there. The wrappers' directory goes when
+/// this returns: `output()` has waited for trellis, and trellis for its
+/// `gh`.
+fn overview_with_stub(
+    name: &str,
+    cwd: &Path,
+    user: &Path,
+    gh: Gh,
+    args: &[&str],
+) -> (Output, Option<Scratch>) {
     let mut dirs = path_without_gh();
-    if let Some(tools) = tools_beside_gh(name) {
-        dirs.insert(0, tools);
+    let tools = tools_beside_gh(name);
+    if let Some(tools) = &tools {
+        dirs.insert(0, tools.to_path_buf());
     }
-    if let Gh::Stub { windows, unix } = gh {
-        dirs.insert(0, gh_stub(name, windows, unix));
+    let stub = match gh {
+        Gh::Stub { windows, unix } => Some(gh_stub(name, windows, unix)),
+        Gh::Absent => None,
+    };
+    if let Some(stub) = &stub {
+        dirs.insert(0, stub.to_path_buf());
     }
-    Command::new(env!("CARGO_BIN_EXE_trellis"))
+    let out = Command::new(env!("CARGO_BIN_EXE_trellis"))
         .args(args)
         .current_dir(cwd)
         .env("NO_COLOR", "1")
@@ -130,7 +144,8 @@ fn overview_in(name: &str, cwd: &Path, user: &Path, gh: Gh, args: &[&str]) -> Ou
         .env("TRELLIS_CONFIG_DIR", user)
         .env("PATH", std::env::join_paths(dirs).unwrap())
         .output()
-        .expect("the binary is built before its tests")
+        .expect("the binary is built before its tests");
+    (out, stub)
 }
 
 /// The one JSON object `--json overview` prints: the whole of stdout.
@@ -141,7 +156,7 @@ fn overview_json(o: &Output) -> serde_json::Value {
 }
 
 /// A user directory whose `recent.json` lists `repos`, newest first.
-fn user_dir_listing(name: &str, repos: &[&Path]) -> PathBuf {
+fn user_dir_listing(name: &str, repos: &[&Path]) -> Scratch {
     let dir = scratch(&format!("{name}-user"));
     let list: Vec<String> = repos.iter().map(|r| r.display().to_string()).collect();
     std::fs::write(
@@ -636,7 +651,7 @@ fn overview_lists_pull_requests_and_runs_from_a_gh_on_path() {
     // 2026-10-07), started in the current root.
     let d = repo("overview-gh");
     let user = scratch("overview-gh-user");
-    let o = overview_in("overview-gh", &d, &user, GH_OK, &["--json", "overview"]);
+    let (o, stub) = overview_with_stub("overview-gh", &d, &user, GH_OK, &["--json", "overview"]);
     let v = overview_json(&o);
     let pr_ci = &v["board"]["pr_ci"];
     assert_eq!(pr_ci["available"], true, "{v}");
@@ -655,7 +670,8 @@ fn overview_lists_pull_requests_and_runs_from_a_gh_on_path() {
     assert_eq!(r["workflow"], "CI", "{v}");
     assert_eq!(r["branch"], "t558-overview", "{v}");
     assert_eq!(r["conclusion"], "success", "{v}");
-    let cwd = std::fs::read_to_string(scratch_path("overview-gh-gh").join("cwd.txt")).unwrap();
+    let stub = stub.expect("GH_OK is a stub");
+    let cwd = std::fs::read_to_string(stub.join("cwd.txt")).unwrap();
     let name = d.file_name().unwrap().to_string_lossy().into_owned();
     assert!(
         cwd.trim().ends_with(&name),
@@ -666,7 +682,6 @@ fn overview_lists_pull_requests_and_runs_from_a_gh_on_path() {
     assert!(s.contains("CI  t558-overview  completed/success"), "{s}");
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&user);
-    let _ = std::fs::remove_dir_all(scratch_path("overview-gh-gh"));
 }
 
 #[test]
@@ -692,7 +707,6 @@ fn wait_line_overview_json_stdout_stays_one_json_object_while_gh_is_asked() {
     );
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&user);
-    let _ = std::fs::remove_dir_all(scratch_path("overview-wait-line-gh"));
 }
 
 #[test]
@@ -751,7 +765,6 @@ fn overview_says_gh_is_not_logged_in_when_it_asks_for_auth() {
     );
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&user);
-    let _ = std::fs::remove_dir_all(scratch_path("overview-gh-auth-gh"));
 }
 
 #[test]
@@ -876,5 +889,4 @@ fn client_contract_overview_lists_what_the_overview_object_carries() {
     for p in [&d, &user, &here] {
         let _ = std::fs::remove_dir_all(p);
     }
-    let _ = std::fs::remove_dir_all(scratch_path("overview-contract-gh"));
 }

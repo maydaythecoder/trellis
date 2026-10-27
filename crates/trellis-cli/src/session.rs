@@ -2220,8 +2220,8 @@ def other():
     // ADR 0025 §6 -----------------------------------------------------------
 
     /// A committed repository with a template, and a session over it holding
-    /// a script from outside it.
-    fn with_template(d: &Path) -> Session {
+    /// a script from outside it, with the directory the script is in.
+    fn with_template(d: &Path) -> (Session, tempfile::TempDir) {
         std::fs::create_dir_all(d.join("app")).unwrap();
         std::fs::write(d.join("app/m.py"), "def go():\n    return 1\n").unwrap();
         std::fs::create_dir_all(d.join(".trellis/prompts")).unwrap();
@@ -2231,19 +2231,19 @@ def other():
         )
         .unwrap();
         git_repo(d);
-        let scripts = tempfile::tempdir().unwrap().keep();
-        let script = scripts.join("s.json");
+        let scripts = tempfile::tempdir().unwrap();
+        let script = scripts.path().join("s.json");
         std::fs::write(&script, r#"{"steps":[{"tool":"done","summary":"x"}]}"#).unwrap();
         let mut s = Session::open(d, None).unwrap();
         s.dispatch(&format!("/model scripted:{}", script.display()))
             .unwrap();
-        s
+        (s, scripts)
     }
 
     #[test]
     fn a_template_name_runs_its_expansion_as_a_task() {
         let d = tempfile::tempdir().unwrap();
-        let mut s = with_template(d.path());
+        let (mut s, _scripts) = with_template(d.path());
         s.dispatch("/prompts").expect("lists");
         s.dispatch("/fixit \"app/m.py\"").expect("runs");
         assert_eq!(s.tasks_run, 1, "a template is a task");
@@ -2255,7 +2255,7 @@ def other():
     #[test]
     fn skill_without_a_task_asks_for_one_and_starts_nothing() {
         let d = tempfile::tempdir().unwrap();
-        let mut s = with_template(d.path());
+        let (mut s, _scripts) = with_template(d.path());
         let e = s.dispatch("/skill release").unwrap_err();
         assert!(e.to_string().contains("a skill and a task"), "{e}");
         assert_eq!(s.tasks_run, 0);
@@ -2266,7 +2266,7 @@ def other():
         // The risk: `!ls` falling through to the loop, which takes a
         // snapshot and writes a trail for a line that was never a task.
         let d = tempfile::tempdir().unwrap();
-        let mut s = with_template(d.path());
+        let (mut s, _scripts) = with_template(d.path());
         s.dispatch("!git status --short").expect("runs");
         s.dispatch("!!git status --short").expect("runs");
         assert_eq!(s.tasks_run, 0);
@@ -2288,7 +2288,7 @@ def other():
         // The risk: a label set and shown at the prompt that never reaches
         // the record it exists to find a run by.
         let d = tempfile::tempdir().unwrap();
-        let mut s = with_template(d.path());
+        let (mut s, _scripts) = with_template(d.path());
         s.dispatch("/name release prep").expect("sets");
         s.dispatch("/name").expect("shows");
         assert_eq!(s.label.as_deref(), Some("release prep"));
@@ -2311,7 +2311,7 @@ def other():
         // The risk: an unnamed session writing `"label": null`, which changes
         // the shape and the digest of every trail that has no label.
         let d = tempfile::tempdir().unwrap();
-        let mut s = with_template(d.path());
+        let (mut s, _scripts) = with_template(d.path());
         s.dispatch("/fixit \"app/m.py\"").expect("runs");
         let json = only_trail_json(d.path());
         assert!(!json.contains("\"label\""), "{json}");
@@ -2356,7 +2356,7 @@ def other():
         // ends on `done` with summary "x"; with no check passing the run does
         // not converge, and the summary is still the model's last word.
         let d = tempfile::tempdir().unwrap();
-        let mut s = with_template(d.path());
+        let (mut s, _scripts) = with_template(d.path());
         s.clipboards = &[("trellis-no-such-clipboard-program-109", &[])];
         s.dispatch("/fixit \"app/m.py\"").expect("runs");
         assert_eq!(s.last_done.as_deref(), Some("x"));
@@ -2587,7 +2587,7 @@ def other():
         // with the skill dropped on the way, so the run goes ahead without
         // the instructions the person named.
         let d = tempfile::tempdir().unwrap();
-        let mut s = with_template(d.path());
+        let (mut s, _scripts) = with_template(d.path());
         let e = s
             .dispatch("/skill no-such-skill-248 fix it")
             .expect_err("a skill that is not there");
@@ -2599,7 +2599,7 @@ def other():
     #[test]
     fn a_steered_run_carries_its_skill() {
         let d = tempfile::tempdir().unwrap();
-        let mut s = with_template(d.path());
+        let (mut s, _scripts) = with_template(d.path());
         let (typing, read) = crate::session_extra::scripted_stdin::stdin();
         drop(typing);
         let e = s
@@ -2731,7 +2731,7 @@ def other():
         // other test here passes on trails no run ever hands the session.
         // A scripted run reports neither figure, so both are unknown.
         let d = tempfile::tempdir().unwrap();
-        let mut s = with_template(d.path());
+        let (mut s, _scripts) = with_template(d.path());
         s.dispatch("/fixit \"app/m.py\"").expect("runs");
         assert_eq!(s.trails.len(), 1, "the run's trail was read back");
         let model = s.model.as_ref().unwrap().to_string();
