@@ -148,8 +148,9 @@ func keycaps(s State) string {
 }
 
 // logKeys are the transcript's own keys at the top level (#948): ^F the
-// next filter, ^N quiet mode on or off, and ^O while a turn's call is
-// drawn for it to open. Which filter is on, and quiet, the transcript's
+// next filter, ^N quiet mode on or off, and ^O while any row the filter
+// draws carries a turn's call (HasCall); ^O then opens the newest on the
+// page, or says to scroll to one. Which filter is on, and quiet, the transcript's
 // title says; a label that changed with them would make the row longer
 // in one state than the other, and at 120 columns the longer one did not
 // fit beside the worktree.

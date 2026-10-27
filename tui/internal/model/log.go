@@ -56,9 +56,13 @@ func nextFilter(f view.LogFilter) view.LogFilter {
 // transcript draws now. Inside a pane the transcript is not drawn, so
 // there is no turn on screen to open.
 func (m *Model) openCall() {
+	if m.nav.Open != "" {
+		m.push(view.RoleNote, "· the transcript is not on screen inside a pane; ESC out to it, then ^O")
+		return
+	}
 	w, h := m.size()
 	raw, ok := view.TranscriptCall(m.viewState(), w, h)
-	if m.nav.Open != "" || !ok {
+	if !ok {
 		m.push(view.RoleNote, "· no turn's call is in the transcript on screen; scroll to one, or change the filter")
 		return
 	}
