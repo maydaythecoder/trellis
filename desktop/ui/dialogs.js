@@ -123,6 +123,9 @@ function drawApprovals(doc, list) {
   shown = q.id;
   doc.getElementById("approval-question").textContent =
     str(q.question) ?? "trellis did not say what it asks";
+  // The prompt or follow-up whose run asks (#954), as the reducer named
+  // it from request_id: the person's own words, written as text.
+  doc.getElementById("approval-for").textContent = `for ${str(q.asked_for) ?? "a request trellis did not name"}`;
   doc.getElementById("approval-detail").textContent = str(q.detail) ?? "";
   const path = review.pathOf(q.id);
   doc.getElementById("approval-review").hidden = path === null;

@@ -58,6 +58,11 @@ const (
 	// Plan is the model's latest plan (#810), sent only where the
 	// repository enables the plan tool.
 	Plan
+	// Compacted is the loop's word that older observations were elided so
+	// a model request fit the run's context budget, and CompactedOnRequest
+	// that the request after a client's compact folded a turn (#954).
+	Compacted
+	CompactedOnRequest
 )
 
 // Frame is one typed line. Only the fields of its Kind are set.
@@ -91,6 +96,33 @@ type Frame struct {
 	PausedMs *uint64
 	// PlanFields is a Plan event's.
 	PlanFields *PlanFields
+	// CompactedFields is a Compacted event's, and CompactedOnRequestFields
+	// a CompactedOnRequest one's.
+	CompactedFields          *CompactedFields
+	CompactedOnRequestFields *CompactedOnRequestFields
+}
+
+// CompactedFields is a compacted event as sent: the turn the request
+// produced, turns 1 to ElidedTurns elided, holding ElidedBytes, and the
+// request's size after eliding beside the budget in force, two figures
+// and never a share. Each is nil when the line did not carry it.
+type CompactedFields struct {
+	Turn         *uint64
+	ElidedTurns  *uint64
+	ElidedBytes  *uint64
+	RequestBytes *uint64
+	Budget       *uint64
+}
+
+// CompactedOnRequestFields is a compacted on request event as sent: the
+// request a client's compact built, the turns it folded and its size
+// before and after.
+type CompactedOnRequestFields struct {
+	Turn        *uint64
+	TurnsFolded *uint64
+	ElidedTurns *uint64
+	BytesBefore *uint64
+	BytesAfter  *uint64
 }
 
 // PlanFields is a plan event as sent. Steps is the plan as trellis kept
@@ -122,10 +154,13 @@ type TurnFields struct {
 	Verdict     *string
 	CheckKind   *string
 	Observation *string
-	// Present only on a blast_radius turn.
+	// Present only on a blast_radius turn. Summarised is how many of the
+	// radius's call sites its observation summarised by file instead of
+	// listing them, 0 when it listed every one.
 	Resolved   *uint64
 	Candidates *uint64
 	Unresolved *uint64
+	Summarised *uint64
 	// Absent when the driver sent no prompt (a scripted run).
 	PromptBytes *uint64
 	// The wall time of the step's model call, queue wait included.
@@ -205,6 +240,9 @@ type ApprovalFields struct {
 	ID       string
 	Question *string
 	Detail   *string
+	// RequestID is the id of the prompt or follow-up whose run asks; nil
+	// when it was sent with no id (trellis sends null).
+	RequestID *string
 }
 
 // FromStderr types a stderr line: Human, whatever it holds.
@@ -252,9 +290,10 @@ func Parse(l rpc.Line) Frame {
 				return Frame{Kind: Ignored}
 			}
 			return Frame{Kind: ApprovalRequest, Approval: &ApprovalFields{
-				ID:       *id,
-				Question: s(o, "question"),
-				Detail:   s(o, "detail"),
+				ID:        *id,
+				Question:  s(o, "question"),
+				Detail:    s(o, "detail"),
+				RequestID: s(o, "request_id"),
 			}}
 		}
 		return Frame{Kind: Ignored}
@@ -294,6 +333,7 @@ func Parse(l rpc.Line) Frame {
 			Diff:             s(f, "diff"),
 			// Below the rest, so their names do not realign every field above.
 			CompletionTokensUsed: u(f, "completion_tokens_used"),
+			Summarised:           u(f, "summarised"),
 		}}
 	case msg != nil && *msg == "model call":
 		// Without its turn it names nothing.
@@ -318,6 +358,16 @@ func Parse(l rpc.Line) Frame {
 	case msg != nil && *msg == "run budget":
 		return Frame{Kind: RunBudget, MaxIterations: u(f, "max_iterations"),
 			MaxWallClockMs: u(f, "max_wall_clock_ms"), MaxCompletionTokens: u(f, "max_completion_tokens"), MaxContextBytes: u(f, "max_context_bytes")}
+	// Read whatever each carries: the event is the compaction, and a line
+	// missing a figure still says one happened.
+	case msg != nil && *msg == "compacted":
+		return Frame{Kind: Compacted, CompactedFields: &CompactedFields{Turn: u(f, "turn"),
+			ElidedTurns: u(f, "elided_turns"), ElidedBytes: u(f, "elided_bytes"),
+			RequestBytes: u(f, "request_bytes"), Budget: u(f, "budget")}}
+	case msg != nil && *msg == "compacted on request":
+		return Frame{Kind: CompactedOnRequest, CompactedOnRequestFields: &CompactedOnRequestFields{Turn: u(f, "turn"),
+			TurnsFolded: u(f, "turns_folded"), ElidedTurns: u(f, "elided_turns"),
+			BytesBefore: u(f, "bytes_before"), BytesAfter: u(f, "bytes_after")}}
 	case msg != nil && *msg == "steer delivered":
 		return Frame{Kind: SteerDelivered, AfterStep: u(f, "after_step")}
 	case msg != nil && *msg == "paused":
