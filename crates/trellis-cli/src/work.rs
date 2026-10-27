@@ -7,7 +7,7 @@
 //! followed by `trellis check`'s two checks.
 
 use crate::orchestrate::{load_profiles, load_routines, spend_records, this_month};
-use crate::{Human, RunControl, RunExit, RunSeeding, cmd_run, config};
+use crate::{Human, RunControl, RunExit, RunSeeding, cmd_run, config, plain};
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,7 +21,7 @@ use trellis_queue::profile::Profile;
 use trellis_queue::routine::{self, Routine};
 use trellis_queue::{
     Actor, Blocked, Event, NewTask, Priority, Queue, QueueError, RunEnd, Runner, State, Status,
-    WorkOptions, approval, ledger, plain,
+    WorkOptions, approval, ledger,
 };
 
 const PRIORITIES: [&str; 4] = ["critical", "high", "medium", "low"];
