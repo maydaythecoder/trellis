@@ -39,9 +39,10 @@ pub use adapter::{
     CompactRequests, Compacted, HostedModel, LOCAL_CONTEXT_BYTES, RequestedCompaction, RuntimeModel,
 };
 pub use agent::{
-    Hold, HoldRefused, Model, NotConverged, Outcome, PauseAnswer, PriorContext, RepoContext, Seed,
-    Steer, Steering, SteeringFates, SteeringLog, SteeringRx, Step, StepUsage, ToolCall, Transcript,
-    Turn, TurnAction, VaultContext, WithdrawRefused, run, run_seeded, summarise, turn_action,
+    Hold, HoldRefused, Model, NotConverged, Outcome, PauseAnswer, PriorContext, RepoContext,
+    RunControl, Seed, Steer, Steering, SteeringFates, SteeringLog, SteeringRx, Step, StepUsage,
+    ToolCall, Transcript, Turn, TurnAction, VaultContext, WithdrawRefused, run, run_seeded,
+    summarise, turn_action,
 };
 pub use agent_clone::{AgentClone, AgentCloneError, CarriedBack, NEW_FILE_WALK_CAP, NotCarried};
 pub use budget::{

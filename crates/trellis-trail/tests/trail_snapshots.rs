@@ -18,8 +18,9 @@
 //! `check_outcomes` as inert data.
 
 use trellis_trail::{
-    Action, Approval, CheckOutcome, ContextFill, Factual, Input, Integrity, Judgment, ModeCounts,
-    Provenance, RadiusCounts, SCHEMA, Steer, SteerKind, SuspectedRecallGap, Trail, UntrustedTrail,
+    Action, Approval, CheckOutcome, ContextFill, Control, Factual, Input, Integrity, Judgment,
+    ModeCounts, Provenance, RadiusCounts, SCHEMA, Steer, SteerKind, SuspectedRecallGap, Trail,
+    UntrustedTrail,
 };
 
 /// Builds a trail around `factual` with fixed identity fields and the digest
@@ -188,6 +189,24 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
             SteerKind::Steer,
             "keep the old name as an alias",
         )],
+        // One of each, so the snapshot pins every shape a control takes.
+        controls: vec![
+            Control::Pause {
+                turn: 2,
+                paused_ms: 4_210,
+            },
+            Control::Raise {
+                turn: 2,
+                ceiling: "max_iterations".into(),
+                old: 3,
+                new: 5,
+            },
+            Control::Withdraw {
+                turn: 3,
+                kind: SteerKind::FollowUp,
+                len: 21,
+            },
+        ],
         label: Some("installer rename".into()),
         // Present for its shape, though the final outcomes above passed: a
         // real run records a gap only for a failing integrated check.
@@ -237,6 +256,7 @@ fn trail_snapshot_rolled_back_run_omits_absent_optional_fields() {
         agent: None,
         inputs: vec![],
         steering: vec![],
+        controls: vec![],
         label: None,
         suspected_recall_gaps: vec![],
     };

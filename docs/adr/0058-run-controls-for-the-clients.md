@@ -1,8 +1,7 @@
 # ADR 0058 — Run controls for the clients: pause and resume, raising a limit, withdrawing a queued message, `read_file`, and a plan tool
 
-**Status:** Accepted (owner-directed). Sections 1 to 5 built (#806, #807,
-#808, #809, #810). Not built: #868 records the controls in the trail
-(section 6).
+**Status:** Accepted (owner-directed). Built: sections 1 to 5 (#806, #807,
+#808, #809, #810) and section 6, the trail's record of the controls (#868).
 **Date:** 2026-10-26
 **Issue:** #798 (story S20, #790).
 **Decided by:** the owner, 2026-10-25 about 22:50 New York time, in the
@@ -215,7 +214,10 @@ held, a raise with the ceiling and its old and new values, a withdrawal
 with the message's kind and its text cut as a steer's text is
 (`STEER_TEXT_MAX_CHARS`). The list is omitted when empty, so a trail with no
 control keeps its shape and its digest, and a trail written before it reads
-back with no list.
+back with no list. *Note 2026-10-27 (#868):* the owner decided that a
+withdrawal records its kind and length only, never its text, because a
+later run's model can read the trail through `read_file` or `bash`; ADR
+0007's amendment of that date records it.
 
 That changes the trail format, so it is a ticket of its own, risk:high,
 merged only with the owner's G7 approval (#868). Until it lands, #806, #807
@@ -278,7 +280,7 @@ each new command, and DESIGN.md §2.1's rows for these controls change from
 
 ## Status
 
-Accepted (owner-directed), 2026-10-25. Sections 1 to 5 built (#806, #807, #808, #809, #810); section 6 not built (#868).
+Accepted (owner-directed), 2026-10-25. Sections 1 to 5 built (#806, #807, #808, #809, #810); section 6 built (#868), as ADR 0007's amendment of 2026-10-27 says.
 
 ## Reversibility
 
