@@ -2,7 +2,7 @@
 <!--
   The TRELLIS desktop page (ADR 0048 section 5).
 
-  Static: Tauri serves this file, style.css and the ES modules from
+  Static: Tauri serves this file, the stylesheets and the ES modules from
   desktop/ui/ with no Node, npm or bundler; `trellis-desktop --web` serves
   the same files over HTTP on 127.0.0.1 (ADR 0050 section 5), where web.js,
   loaded first, stands in for Tauri's window.__TAURI__ over the page's own
@@ -95,6 +95,11 @@
     <link rel="icon" href="favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="ds.css">
     <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="run.css">
+    <link rel="stylesheet" href="codebase.css">
+    <link rel="stylesheet" href="trails.css">
+    <link rel="stylesheet" href="atlas.css">
+    <link rel="stylesheet" href="code.css">
     <script type="module" src="web.js"></script>
     <script type="module" src="main.js"></script>
     <script type="module" src="codebase.js"></script>

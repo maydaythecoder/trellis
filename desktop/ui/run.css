@@ -1,0 +1,608 @@
+/*
+  The run view's stylesheet (#978): the actions log and its filters, the
+  composer, Stop and the verbs, the alert banner, trellis's stderr, the
+  approval dialog, then the status bar's model chooser, the status bar and
+  the Now strip, and the action graph. The bars sit here because this is
+  where they fall in the cascade. index.html links it after style.css.
+*/
+
+/* The actions log is the design system's Transcript (ds.css's .cd-tx,
+   #827): its rows are grids, and only a tool's raw call keeps its spaces. */
+.log.cd-tx {
+  max-height: 640px;
+  white-space: normal;
+}
+
+.log.cd-tx > .empty {
+  padding: var(--space-2) var(--space-3);
+}
+
+/* The log's additions the run view wireframe draws and the bundle does not
+   carry yet (#949; docs/design/run-view-wireframe.html, "Transcript
+   additions"): the filter bar, a turn rule's figures, a check row's source,
+   the model's question, and the raw call's <details> in the row's grid.
+   They are named outside the bundle's cd- prefix: every cd- class ds.js
+   writes is one ds.css styles (ds_components_draw_the_bundles_markup), and
+   ds.css is the bundle. */
+.log-filters {
+  display: flex;
+  gap: var(--space-1);
+  align-items: center;
+  flex-wrap: wrap;
+  font: 500 11px/16px var(--font-mono);
+  color: var(--ink-muted);
+}
+
+.log-filters .cd-q-opt {
+  padding: 1px var(--space-2);
+}
+
+.log-filters .spacer {
+  flex: 1;
+}
+
+.cd-tx-turn .turn-meta {
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.tx-check-src {
+  color: var(--ink-muted);
+  font-weight: 400;
+  margin-left: var(--space-2);
+}
+
+.tx-ask {
+  background: var(--panel-raised);
+  border-left: 2px solid var(--warn);
+  margin: var(--space-1) 0;
+}
+
+.tx-ask .cd-tx-g,
+.tx-ask .cd-tx-label {
+  color: var(--warn);
+}
+
+.tx-details {
+  grid-column: 2 / -1;
+}
+
+.tx-details > summary {
+  cursor: pointer;
+}
+
+/* A filter or quiet mode hides rows and never drops them (#949): the rows
+   stay in the log, each marked with its kind (dom.js's drawFeed), and a
+   turn's rule shows under every filter, as the wireframe's does. The
+   groups are the wireframe's: You is the person's words and the model's
+   question to them, Tools the calls and what was refused, Notes trellis's
+   notes, refusals and the model's question. */
+.cd-tx[data-filter="you"] > [data-kind]:not([data-kind="turn"], [data-kind="task"], [data-kind="steer"], [data-kind="ask"]),
+.cd-tx[data-filter="tool"] > [data-kind]:not([data-kind="turn"], [data-kind="tool"], [data-kind="refusal"]),
+.cd-tx[data-filter="check"] > [data-kind]:not([data-kind="turn"], [data-kind="check"]),
+.cd-tx[data-filter="note"] > [data-kind]:not([data-kind="turn"], [data-kind="note"], [data-kind="refusal"], [data-kind="ask"]),
+.cd-tx.log-quiet > [data-kind="tool"]:not(.tx-edit) {
+  display: none;
+}
+
+.rows {
+  margin: 0;
+  padding-left: 18px;
+}
+
+/* The Open refusal's line (#659) is a list row with no marker. */
+.rows li[role="status"] {
+  list-style: none;
+}
+
+.rows li.empty {
+  list-style: none;
+  margin-left: -18px;
+}
+
+dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-0\.5) var(--space-3);
+  margin: 0;
+}
+
+dt {
+  color: var(--ink-muted);
+}
+
+dd {
+  margin: 0;
+}
+
+p {
+  margin: 0;
+}
+
+code {
+  font: 400 12px/16px var(--font-mono);
+}
+
+.passed {
+  color: var(--ok);
+}
+
+.failed {
+  color: var(--down);
+}
+
+/* The composer (#301), below every section. The textarea takes the
+   width it is given, never a fixed one. */
+/* The composer (#301), below every section, drawn as the design system's
+   Compose panel: its label in label-caps, the textarea as the Queue's
+   (.cd-q-text), Send as the signal Button. The verbs and the queue are
+   #830's. */
+.composer {
+  padding: var(--space-3);
+  background: var(--panel);
+  box-shadow: var(--frame);
+  overflow-wrap: anywhere;
+}
+
+.composer label {
+  color: var(--ink-muted);
+  font: 400 12px/16px var(--font-mono);
+}
+
+#composer-label {
+  font: 600 11px/16px var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-secondary);
+}
+
+.composer textarea {
+  display: block;
+  width: 100%;
+  min-height: 64px;
+  margin: var(--space-2) 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-xs);
+  background: var(--panel-inset);
+  color: var(--ink);
+  font: 400 13px/20px var(--font-mono);
+  resize: vertical;
+}
+
+.composer-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.composer select,
+.composer button {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--ink);
+  font: 500 13px/20px var(--font-mono);
+}
+
+.composer select {
+  border-color: var(--control-border);
+}
+
+.composer button {
+  border-color: transparent;
+  box-shadow: var(--frame-strong);
+  cursor: pointer;
+}
+
+#composer-send:not(:disabled) {
+  background: var(--signal);
+  color: var(--ink-inverse);
+  box-shadow: none;
+}
+
+.composer button:disabled,
+.composer select:disabled,
+.composer textarea:disabled {
+  color: var(--ink-muted);
+  cursor: default;
+}
+
+.composer select:focus-visible,
+.composer textarea:focus-visible {
+  outline: 2px solid var(--signal-ring);
+  outline-offset: 2px;
+}
+
+/* Stop (#637) aborts and rolls the run back, which cannot be undone, so it
+   must not read as Send's twin: it takes the failed colour, here and in the
+   dialog that confirms it, and sits at the far end of its row. */
+.composer button.danger,
+.approval button.danger {
+  color: var(--down);
+}
+
+#composer-stop {
+  margin-left: auto;
+}
+
+#stop-confirm-stop {
+  font-weight: 600;
+}
+
+.composer-list {
+  margin-top: var(--space-2);
+}
+
+/* The verbs (#830) are the Queue card's mode options (ds.css's .cd-q-opt):
+   the composer's own button look above is not theirs. */
+.composer .cd-q-opt {
+  padding: var(--space-0\.5) var(--space-2);
+  box-shadow: var(--frame);
+  color: var(--ink-secondary);
+  font: 500 12px/16px var(--font-mono);
+}
+
+.composer .cd-q-opt.cd-q-opt-on {
+  color: var(--signal);
+  background: var(--signal-soft);
+  box-shadow: var(--frame-signal);
+}
+
+/* The bundle's cool ring, inset: no frame token is cool. */
+.composer .cd-q-opt-cool.cd-q-opt-on {
+  color: var(--cool);
+  background: var(--cool-soft);
+  box-shadow: inset 0 0 0 1px var(--cool);
+}
+
+#composer-verbs {
+  margin-bottom: var(--space-2);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1\.5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* The alert banner (#302): one line per failure, until dismissed or a run
+   starts afresh. */
+.alert {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--down);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--down);
+  overflow-wrap: anywhere;
+}
+
+.alert p {
+  flex: 1 1 0;
+}
+
+.alert span {
+  display: block;
+}
+
+.alert button,
+.approval button {
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--ground);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+
+/* trellis's stderr, collapsed until opened. */
+.messages {
+  margin-top: var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.messages summary {
+  cursor: pointer;
+  color: var(--ink-muted);
+}
+
+.messages .log {
+  margin-top: var(--space-1\.5);
+}
+
+/* The approval question: a native modal dialog. */
+.approval {
+  width: 90%;
+  max-width: 640px;
+  padding: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+/* The scrim behind the approval dialog. A ::backdrop inherits custom
+   properties from its dialog only in newer engines (Chromium 122 and later,
+   which WebView2 is); WebKitGTK's, which the Linux window uses, is not known
+   to here, and a var() it could not resolve would draw no scrim at all. So
+   the one literal colour outside the token blocks is --scrim's Dark value,
+   as the var()'s fallback. */
+.approval::backdrop {
+  background: var(--scrim, #000000b3);
+}
+
+.approval-detail {
+  max-height: 320px;
+  overflow: auto;
+  margin: var(--space-2) 0 var(--space-3);
+  padding: var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--ground);
+  font: 12px/1.4 ui-monospace, monospace;
+  white-space: pre-wrap;
+}
+
+.approval-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+#approval-approve {
+  color: var(--signal);
+  font-weight: 600;
+}
+
+/* The model chooser (#564, #909): the status bar's model, a design-system
+   Status, opens it as a popover over the stage, raised, framed strong and
+   over the scrim, which the summary itself draws so a click outside closes
+   it. It is served open, since no model is chosen at launch. */
+.model-pop > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.model-pop > summary::-webkit-details-marker {
+  display: none;
+}
+
+.model-pop[open] > summary::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: var(--scrim);
+  cursor: default;
+}
+
+.status-right,
+.status-bar {
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+.model-pop > summary .cut {
+  max-width: 24ch;
+}
+
+.model-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.model-pop > .model-form {
+  position: fixed;
+  right: var(--space-4);
+  bottom: calc(var(--space-8) + var(--space-2));
+  z-index: 21;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 560px;
+  max-width: calc(100vw - 2 * var(--space-4));
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  background: var(--panel-raised);
+  box-shadow: var(--frame-strong);
+  border-radius: var(--radius-md);
+  color: var(--ink);
+  font: 400 13px/20px var(--font-sans);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.model-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--line);
+}
+
+.model-head h2 {
+  margin: 0;
+  font: 600 11px/16px var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-secondary);
+}
+
+.model-form h3 {
+  margin-top: var(--space-2);
+}
+
+.model-options,
+.model-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.model-rows li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.model-form input[type="text"] {
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-xs);
+  background: var(--panel-inset);
+  color: var(--ink);
+  font: 400 12px/18px var(--font-mono);
+}
+
+/* The status bar (#306, #909): a design-system Status or a short value per
+   cell, each label read by a screen reader and not drawn. */
+.status-bar {
+  margin: 0;
+}
+
+.status-bar > div {
+  display: contents;
+}
+
+/* One line per cell (#652): a long value ends in an ellipsis, never cut
+   off unmarked, and the binary and root cells carry their whole path as
+   their title. */
+.status-bar dd {
+  max-width: 32ch;
+  margin: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The Now strip (#828): the NowStrip card says it never scrolls away, so
+   it stays at the top of the stage while the Run level scrolls. The card's
+   one row wraps here rather than running past a narrow window, as the
+   run-view wireframe's strip does. */
+.now {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin-bottom: var(--space-4);
+}
+
+.now .cd-now {
+  flex-wrap: wrap;
+  row-gap: var(--space-2);
+  white-space: normal;
+}
+
+/* The playful register's face under the strip (#836). */
+.now .cd-ascii {
+  margin-top: var(--space-3);
+}
+
+/* The register dial (#836): two radios under Open another repository. */
+.register-dial {
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  border: 0;
+}
+
+/* Where it is (#828): a label and its value per row, the labels in one
+   column (ds.js's facts). */
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  font: 400 12px/18px var(--font-mono);
+}
+
+.facts > div {
+  display: contents;
+}
+
+.facts dt {
+  color: var(--ink-muted);
+}
+
+.facts dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The action graph (#303): SVG graph.js builds from the core's layout. It
+   scales to its pane through the viewBox, and nothing in it moves, so no
+   rule here declares a transition or an animation (graph_styles_have_no_motion). */
+.graph-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  font: 12px ui-monospace, monospace;
+}
+
+.graph-edge {
+  fill: none;
+  stroke: var(--ink-muted);
+  stroke-width: 1;
+}
+
+.graph-edge-idle {
+  stroke: var(--line);
+}
+
+.graph-node {
+  stroke-width: 1.5;
+}
+
+.graph-fill {
+  fill: var(--signal);
+  stroke: var(--signal);
+}
+
+/* The one node colour that carries a fact rather than a status: this tool
+   changed the tree. */
+.graph-wrote {
+  fill: var(--warn);
+  stroke: var(--warn);
+}
+
+.graph-ring {
+  fill: var(--panel);
+  stroke: var(--ink-muted);
+}
+
+.graph-focus {
+  fill: var(--ink);
+}
+
+.graph-name,
+.graph-target,
+.graph-focus-label {
+  fill: var(--ink);
+}
+
+.graph-idle,
+.graph-counts,
+.graph-caption {
+  fill: var(--ink-muted);
+}
+
+.graph-target {
+  font-size: 11px;
+}
