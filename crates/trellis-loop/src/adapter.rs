@@ -1393,6 +1393,7 @@ mod tests {
             }],
             final_notice: true,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: None,
             repo: crate::agent::RepoContext::default(),
         };
@@ -1437,6 +1438,7 @@ mod tests {
             }],
             final_notice: false,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: None,
             repo: crate::agent::RepoContext::default(),
         };
@@ -1671,6 +1673,7 @@ mod tests {
             turns: Vec::new(),
             final_notice: false,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: None,
             repo: crate::agent::RepoContext::default(),
         }
@@ -1865,6 +1868,7 @@ mod compaction_and_hosted_tests {
             turns,
             final_notice: false,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: None,
             repo: RepoContext::default(),
         }
@@ -2981,6 +2985,7 @@ mod context_budget_tests {
             turns,
             final_notice: true,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: Some(PriorContext {
                 source: ".trellis/runs/prior.json".into(),
                 lines: vec!["p".repeat(200); 4],
