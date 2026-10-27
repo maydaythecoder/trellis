@@ -9,11 +9,11 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("trellis-orch-it-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+mod common;
+use common::Scratch;
+
+fn scratch(name: &str) -> Scratch {
+    common::scratch_dir(&format!("trellis-orch-it-{name}"))
 }
 
 fn git(root: &Path, args: &[&str]) -> String {
@@ -75,7 +75,7 @@ fn ok(root: &Path, args: &[&str]) -> String {
 /// A repository whose checks always pass (`git --version`), with the
 /// scripts `converge.json` (edits and converges) and `stop.json` (stops at
 /// once, rolled back), and `extra` files committed alongside.
-fn fixture(name: &str, extra: &[(&str, &str)]) -> PathBuf {
+fn fixture(name: &str, extra: &[(&str, &str)]) -> Scratch {
     let d = scratch(name);
     git(&d, &["init", "-q"]);
     // CI has no global identity, and every run commits its trail.
@@ -739,7 +739,7 @@ fn a_bad_routine_or_profile_is_refused_before_anything_is_claimed() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-fn process_fixture(name: &str, command: &str, typecheck: &str) -> PathBuf {
+fn process_fixture(name: &str, command: &str, typecheck: &str) -> Scratch {
     let d = fixture(
         name,
         &[(
@@ -1763,7 +1763,7 @@ fn a_process_agent_that_switches_branch_is_refused_and_put_back_on_the_original(
 
 /// `process_fixture`, with `*.cfg` ignored by a committed `.gitignore`
 /// and `config` as `.trellis/config.toml`; trusted afterwards.
-fn ignored_fixture(name: &str, command: &str, config: &str) -> PathBuf {
+fn ignored_fixture(name: &str, command: &str, config: &str) -> Scratch {
     let d = process_fixture(name, command, PASSES);
     std::fs::write(d.join(".gitignore"), "*.cfg\n").unwrap();
     std::fs::write(d.join(".trellis/config.toml"), config).unwrap();
@@ -1967,7 +1967,7 @@ fn isolated_agent_writes_to_trellis_and_git_in_the_clone_never_reach_the_reposit
 /// A fixture whose agent edits `app/core.py`, creates `app/new.py`,
 /// deletes the tracked `app/old.py`, and records where it ran in
 /// `app/where.txt`, with `typecheck` as its typecheck command.
-fn edit_create_delete(name: &str, typecheck: &str) -> PathBuf {
+fn edit_create_delete(name: &str, typecheck: &str) -> Scratch {
     let d = process_fixture(
         name,
         &per_os(
@@ -2151,7 +2151,8 @@ fn export_then_import_with_dry_run_and_rename() {
         ],
     );
     ok(&d, &["queue", "add", "exported task", "--assignee", "rev"]);
-    let out = scratch("export-out").join("bundle");
+    let out_dir = scratch("export-out");
+    let out = out_dir.join("bundle");
     let s = ok(&d, &["queue", "export", out.to_str().unwrap()]);
     assert!(
         s.contains("1 agent(s)") && s.contains("1 task(s)") && s.contains("nothing secret"),

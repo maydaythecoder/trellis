@@ -18,15 +18,8 @@ fn a_run_with_only_skipped_skills_still_says_so() {
     );
     git(&d, &["add", "-A"]);
     git(&d, &["commit", "-qm", "skills"]);
-    let out = run(
-        &d,
-        &[
-            "run",
-            "--model",
-            &script_that_stops(&scratch("skills-only-invalid-script")),
-            "t",
-        ],
-    );
+    let scripts = scratch("skills-only-invalid-script");
+    let out = run(&d, &["run", "--model", &script_that_stops(&scripts), "t"]);
     let said = stdout(&out);
     let repo_line = said
         .lines()
@@ -57,7 +50,8 @@ fn check_failure_said(name: &str, n: usize) -> String {
     )
     .unwrap();
     std::fs::write(d.join("a.py"), "x = 1\n").unwrap();
-    let script = scratch(&format!("{name}-script")).join("s.json");
+    let scripts = scratch(&format!("{name}-script"));
+    let script = scripts.join("s.json");
     std::fs::write(
         &script,
         r#"{"steps":[{"tool":"run_checks","paths":[],"kinds":["typecheck"]}]}"#,

@@ -48,7 +48,7 @@ const V1_DATE: &str = "2024-06-01T00:00:00+02:00";
 /// holds `app/old.py`; the second deletes it and adds `app/new.py`. In
 /// both, `hub.py` calls into twelve modules, two more than `get_codebase`
 /// draws per module by default. Returns the root and `v1`'s commit.
-fn atlas_repo(name: &str) -> (PathBuf, String) {
+fn atlas_repo(name: &str) -> (Scratch, String) {
     let d = empty_repo(name);
     let mut hub = String::new();
     let mut body = String::from("\ndef hub():\n    return 0");
@@ -312,7 +312,7 @@ fn rpc_atlas_get_codebase_with_no_commit_or_no_git_says_so() {
 /// through a declared base is ambiguous between two overrides), a helper
 /// called from two places in it, and `app/use.py` calling the helper from
 /// another module.
-fn symbols_repo(name: &str) -> PathBuf {
+fn symbols_repo(name: &str) -> Scratch {
     let d = empty_repo(name);
     std::fs::create_dir_all(d.join("app")).unwrap();
     std::fs::write(d.join("app/__init__.py"), "").unwrap();
@@ -557,7 +557,7 @@ fn rpc_atlas_get_radius_lists_the_symbols_reached_and_the_sites_beside_the_count
 
 /// [`history_repo`]'s commits, by the names its comment gives them.
 struct History {
-    root: PathBuf,
+    root: Scratch,
     c: std::collections::BTreeMap<&'static str, String>,
 }
 

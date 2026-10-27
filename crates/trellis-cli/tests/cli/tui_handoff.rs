@@ -90,7 +90,7 @@ fn launch_a_tui_on_path_but_not_beside_the_binary_is_not_used() {
     stub_tui(&elsewhere);
     #[cfg(not(unix))]
     std::fs::write(elsewhere.join("trellis-tui.exe"), b"").unwrap();
-    let path = std::env::join_paths(std::iter::once(elsewhere.clone()).chain(
+    let path = std::env::join_paths(std::iter::once(elsewhere.to_path_buf()).chain(
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
     ))
     .unwrap();
@@ -189,7 +189,7 @@ fn launch_bare_with_a_terminal_and_no_tui_refuses_naming_the_session() {
     // model is configured: the refusal comes before first-run's picker,
     // which would otherwise wait here for a choice that has nowhere to go.
     let d = repo("pty-bare-no-tui");
-    let exe = trellis_copy("pty-bare-no-tui-bin");
+    let (_bin, exe) = trellis_copy("pty-bare-no-tui-bin");
     let (ok, s) = under_pty_as(&exe, "pty-bare-no-tui", &d, "", "");
     assert!(!ok, "{s}");
     let desktop = s

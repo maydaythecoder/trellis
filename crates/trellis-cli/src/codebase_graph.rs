@@ -103,9 +103,8 @@ pub(crate) fn truncate_module(m: &str, width: usize) -> String {
 mod tests {
     use super::*;
     use crate::index_cmd::{MAX_EDGES_DRAWN, graph_lines};
-    use std::path::PathBuf;
 
-    fn repo(name: &str) -> PathBuf {
+    fn repo(name: &str) -> crate::testutil::Scratch {
         let d = crate::testutil::scratch(&format!("init-{name}"));
         crate::testutil::git_init(&d);
         d

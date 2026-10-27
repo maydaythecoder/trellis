@@ -5,15 +5,15 @@
 //! the renderer in `doctor_supply.rs`; nothing here fetches an advisory
 //! database or needs cargo-audit installed.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
+
+mod common;
 
 /// A git repository with one Python file, so `doctor` has an index to
 /// report and the line under test is the only thing that varies.
-fn repo(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("trellis-lockfile-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
+fn repo(name: &str) -> common::Scratch {
+    let d = common::scratch_dir(&format!("trellis-lockfile-{name}"));
     let out = trellis_vcs::command()
         .args(["init", "-q"])
         .current_dir(&d)
