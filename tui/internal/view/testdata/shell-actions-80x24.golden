@@ -1,5 +1,5 @@
  Run ⟩ actions                                       L2 / 4  [ESC] out  TRELLIS 
- ● RUNNING  1:23*  █░░░░░░░ 3/40  [^P] pause  ran edit, turn 3 → src/parser.py  
+ ● RUNNING  1:23*  █░░░░░░░ 3/40  [^P] pause  running edit → src/parser.py      
  w ┌ actions ──────────────────────────────────────────────────────────────────┐
  h │  blast_radius           1 ●─┐                                             │
    │  read_file                ○─┤                                             │
