@@ -6077,3 +6077,86 @@ fn rpc_abort_while_paused_rolls_back_and_hands_back_the_held_steer() {
         "def f():\n    return 1\n"
     );
 }
+
+#[test]
+fn rpc_run_trail_records_its_pause_raise_and_withdrawal_with_their_turns() {
+    // The risk (ADR 0058 §6, #868): the person's controls sent on the
+    // stream and lost from the trail, so a reader sees a run go past the
+    // ceiling it started with and no sign a person raised it; or recorded
+    // against a turn other than the one they took effect at, or with a
+    // figure other than the event's. All three are sent while the loop
+    // waits on turn 1's question, so each takes effect at the top of the
+    // iteration before model call 2, in the order the loop meets them:
+    // the hold, the budget check, the drain. Order is read from the
+    // stream, never a clock.
+    let c = contract();
+    let f = one_iteration_budget("rpc-trail-controls");
+    let (mut rpc, server, q) = at_the_edit_s_question(
+        &f,
+        "TRELLIS_TEST_RPC_TRAIL_CONTROLS_KEY",
+        vec![
+            edit_a(),
+            openai_call("c2", "done", serde_json::json!({"summary": "changed it"})),
+        ],
+    );
+    let gone = "STEER-868 look at g instead";
+    rpc.send(serde_json::json!({"id": "s", "type": "steer", "message": gone}));
+    rpc.send(serde_json::json!({"id": "s", "type": "withdraw"}));
+    let w = withdrawn(&mut rpc, "s");
+    assert_eq!(w["success"], true, "{w}");
+    rpc.send(serde_json::json!({"id": "b", "type": "set_budget", "max_iterations": 3}));
+    let b = rpc.response("b");
+    assert_eq!(b["success"], true, "{b}");
+    rpc.send(serde_json::json!({"id": "h", "type": "pause"}));
+    rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": true}));
+    let held = rpc.response("h");
+    assert_eq!(held["data"]["turn"], 2, "{held}");
+    rpc.send(serde_json::json!({"id": "r", "type": "resume"}));
+    assert_eq!(rpc.response("r")["success"], true);
+    let end = rpc.seen_or_next(|v| v["type"] == "run_end");
+    assert_eq!(end["id"], "p", "{end}");
+    let records = rpc.finish();
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert!(
+        !requests[1].contains(BUDGET_NOTICE),
+        "the raise was not enforced, so this tests nothing: {}",
+        requests[1]
+    );
+
+    let resumed = &records[first(&records, "resumed event", |r| {
+        r["fields"]["message"] == "resumed"
+    })];
+    let trails = trails(&f);
+    assert_eq!(trails.len(), 1, "{trails:?}");
+    assert_eq!(
+        trails[0]["factual"]["controls"],
+        serde_json::json!([
+            {"control": "pause", "turn": 2, "paused_ms": resumed["fields"]["paused_ms"]},
+            {"control": "raise", "turn": 2, "ceiling": "max_iterations", "old": 1, "new": 3},
+            {"control": "withdraw", "turn": 2, "kind": "steer", "text": gone,
+             "len": gone.chars().count()},
+        ]),
+        "{}",
+        trails[0]
+    );
+    assert!(
+        trails[0]["factual"].get("steering").is_none(),
+        "a withdrawn steer is a control, never a steering entry: {}",
+        trails[0]
+    );
+
+    // `log --json` carries the list, as the contract says it may.
+    assert!(
+        c["log_json"]["not_every_client"]["optional"]
+            .as_object()
+            .unwrap()
+            .contains_key("trail.factual.controls")
+    );
+    let o = run(&f, &["--json", "log"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let lines = jsonl(&o);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(carries(&lines[0], "trail.factual.controls"), "{}", lines[0]);
+    assert_eq!(lines[0]["integrity"], "intact", "{}", lines[0]);
+}
