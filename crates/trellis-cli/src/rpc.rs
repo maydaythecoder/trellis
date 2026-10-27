@@ -3,8 +3,8 @@
 //!
 //! A `prompt` runs a task through `cmd_run_with`, the path `trellis run`
 //! takes, on its own thread. The main thread keeps reading, so `abort`,
-//! `approve`, `get_state`, `steer` and `follow_up` are answered while the
-//! run is in flight. One run at a time; the clean-worktree rule is
+//! `approve`, `get_state`, `steer`, `follow_up`, `pause`, `resume`, `set_budget` and `withdraw` are
+//! answered while the run is in flight. One run at a time; the clean-worktree rule is
 //! `cmd_run`'s and is unchanged. A follow-up is the one way a run starts
 //! other than `prompt`: after the run it was sent during ends.
 //!
@@ -83,6 +83,27 @@ const COMMANDS: &[(&str, &str)] = &[
         "a task to run as a new prompt once the run in flight ends: {message}",
     ),
     (
+        "pause",
+        "hold the run in flight before its next model request; answered once it holds: \
+         {turn}, the model call it holds before. Held time is not charged to the wall clock",
+    ),
+    (
+        "resume",
+        "let a paused run go on, or withdraw a pause it has not reached yet",
+    ),
+    (
+        "set_budget",
+        "raise the run in flight's ceilings, never lower one: any of {max_iterations?, \
+         max_wall_clock_ms?, max_completion_tokens?}; answered with every ceiling after it, in force \
+         from the loop's next budget check, where `run budget` is sent again",
+    ),
+    (
+        "withdraw",
+        "take back a steer or follow_up not yet delivered: {id}, the id it was sent with; \
+         answered {id, type}, refused once a model request carries the steer or the \
+         follow_up's run has started",
+    ),
+    (
         "compact",
         "elide every observation but the newest from the run's next model request; \
          answers with what was folded",
@@ -116,6 +137,11 @@ const COMMANDS: &[(&str, &str)] = &[
         "list_paths",
         "the paths `@` completion offers that start with {prefix}, read-only: at most 10, \
          shortest first; tracked or untracked, never ignored",
+    ),
+    (
+        "read_file",
+        "one file's text, read-only: {path}, a path `list_paths` offers; refused outside \
+         the root, into .git or not UTF-8; {path, text, bytes, cut}, cut past 256 KiB",
     ),
     (
         "vault_search",
@@ -244,12 +270,15 @@ pub(crate) fn at_file_paths(root: &Path) -> Result<Vec<String>> {
 /// How many paths `list_paths` answers with: the TUI's `@` list length.
 const LIST_PATHS_LIMIT: usize = 10;
 
+/// How much of a file `read_file` answers with, in bytes (ADR 0058 §4). A
+/// display limit for a client's whole-file view, not a measurement: past
+/// it the file is cut, and the answer says so.
+const READ_FILE_CAP: usize = 256 * 1024;
+
 /// `list_paths`'s `prefix`, refused unless it can only be the start of a
 /// repository-relative path. It only filters git's listing, so no prefix
 /// could read a file; it is refused anyway, by the rule it breaks, so a
 /// client learns its input was wrong rather than seeing an empty list.
-/// Both separators are checked, whatever the platform, since the client
-/// may not share it.
 fn path_prefix(cmd: &Value) -> Result<&str, String> {
     let Some(prefix) = cmd.get("prefix").and_then(Value::as_str) else {
         return Err(
@@ -258,20 +287,169 @@ fn path_prefix(cmd: &Value) -> Result<&str, String> {
                 .into(),
         );
     };
-    if prefix.chars().any(char::is_control) {
-        return Err("`prefix` holds a control character; a repository path does not".into());
-    }
-    let bytes = prefix.as_bytes();
-    let drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
-    if prefix.starts_with(['/', '\\']) || drive {
-        return Err("`prefix` is absolute; it is the start of a repository-relative path".into());
-    }
-    if prefix.split(['/', '\\']).any(|c| c == "..") {
-        return Err(
-            "`prefix` holds a `..` component; it names paths inside the repository only".into(),
-        );
-    }
+    relative_path_rule("prefix", prefix, "the start of a repository-relative path")?;
     Ok(prefix)
+}
+
+/// The rule `list_paths`'s `prefix` and `read_file`'s `path` are both held
+/// to, named by `field` in the refusal: no control character, not absolute,
+/// no `..` component. Both separators are checked, whatever the platform,
+/// since the client may not share it.
+fn relative_path_rule(field: &str, value: &str, what: &str) -> Result<(), String> {
+    if value.chars().any(char::is_control) {
+        return Err(format!(
+            "`{field}` holds a control character; a repository path does not"
+        ));
+    }
+    let bytes = value.as_bytes();
+    let drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    if value.starts_with(['/', '\\']) || drive {
+        return Err(format!("`{field}` is absolute; it is {what}"));
+    }
+    if value.split(['/', '\\']).any(|c| c == "..") {
+        return Err(format!(
+            "`{field}` holds a `..` component; it names paths inside the repository only"
+        ));
+    }
+    Ok(())
+}
+
+/// `set_budget`'s ceilings, under the names and units `run budget` sends
+/// them in. Each is refused by the rule it breaks: a client that sent
+/// `max_wall_clock_s`, `"5"` or `-1` learns its request was wrong rather than
+/// seeing a ceiling it did not mean, and nothing is raised.
+fn budget_raise(cmd: &Value) -> Result<trellis_loop::Raise, String> {
+    let Some(fields) = cmd.as_object() else {
+        return Err("a command is a JSON object".into());
+    };
+    let mut raise = trellis_loop::Raise::default();
+    for (name, value) in fields {
+        match name.as_str() {
+            "id" | "type" => {}
+            "max_iterations" => {
+                let v = positive(name, value)?;
+                raise.max_iterations = Some(u32::try_from(v).map_err(|_| {
+                    format!(
+                        "`max_iterations` {v} is past the most a run can count, {}",
+                        u32::MAX
+                    )
+                })?);
+            }
+            "max_wall_clock_ms" => {
+                raise.max_wall_clock =
+                    Some(std::time::Duration::from_millis(positive(name, value)?));
+            }
+            "max_completion_tokens" => raise.max_tokens = Some(positive(name, value)?),
+            // `run budget` carries it, but it is the driver's prompt size,
+            // fixed when the driver is built, and no budget check reads it.
+            "max_context_bytes" => {
+                return Err(format!(
+                    "`max_context_bytes` is the driver's prompt size, fixed for the run; \
+                     set_budget raises {SET_BUDGET_FIELDS}"
+                ));
+            }
+            other => {
+                return Err(format!(
+                    "`{other}` is not a set_budget field; it raises {SET_BUDGET_FIELDS}"
+                ));
+            }
+        }
+    }
+    if raise == trellis_loop::Raise::default() {
+        return Err(format!("name a ceiling to raise: {SET_BUDGET_FIELDS}"));
+    }
+    Ok(raise)
+}
+
+/// A ceiling's value: a whole number above zero, as JSON writes one.
+fn positive(name: &str, value: &Value) -> Result<u64, String> {
+    match value.as_u64() {
+        Some(0) => Err(format!(
+            "`{name}` is 0; a ceiling of 0 ends the run, and set_budget only raises"
+        )),
+        Some(v) => Ok(v),
+        None => Err(format!(
+            "`{name}` must be a whole number above 0, at most {}; got {value}",
+            u64::MAX
+        )),
+    }
+}
+
+/// `read_file`'s `path`, refused by the rule it breaks, as `list_paths`
+/// refuses a prefix.
+fn read_file_path(cmd: &Value) -> Result<&str, String> {
+    let Some(path) = cmd.get("path").and_then(Value::as_str) else {
+        return Err("`path` is required, as a string: a repository-relative file path".into());
+    };
+    if path.is_empty() {
+        return Err("`path` is empty; it names one repository file".into());
+    }
+    relative_path_rule("path", path, "a repository-relative file path")?;
+    Ok(path)
+}
+
+/// `read_file`'s answer for `path`, or why it is refused (ADR 0058 §4).
+///
+/// The order is the point. Membership in `at_file_paths` comes first, so a
+/// path `@` completion would not offer — an ignored `.env`, anything in
+/// `.git` — is refused with one message whether or not it exists, and is
+/// never opened. Membership is byte-exact against git's `/`-spelled
+/// listing: `a\b` is refused, not normalised. Then the path is resolved
+/// through `resolve_repo_input` (ADR 0025), so a tracked link that leads
+/// outside the root or into `.git` is refused, and what was checked is what
+/// is read.
+///
+/// At most `READ_FILE_CAP` bytes are read, so a large file costs no more
+/// than the cap. A file past it is cut at the last whole character before
+/// the cap. The bytes read must be UTF-8, or the file is refused as not
+/// text; bytes past the cap are not read, so they are not checked.
+fn read_repo_file(root: &Path, path: &str) -> Result<Value, String> {
+    use std::io::Read;
+    let offered = at_file_paths(root).map_err(|e| format!("{e:#}"))?;
+    if offered.binary_search_by(|p| p.as_str().cmp(path)).is_err() {
+        return Err(format!(
+            "`path` {path:?} is not a path `list_paths` offers (tracked, or untracked and \
+             not ignored), so it is not read"
+        ));
+    }
+    let real = match trellis_core::paths::resolve_repo_input(root, &root.join(path)) {
+        Ok(Some(real)) => real,
+        Ok(None) => return Err(format!("`path` {path:?}: no file is there now")),
+        Err(e) => return Err(format!("`path` {path:?}: {e}")),
+    };
+    let file = std::fs::File::open(&real).map_err(|e| format!("`path` {path:?}: {e}"))?;
+    let meta = file
+        .metadata()
+        .map_err(|e| format!("`path` {path:?}: {e}"))?;
+    if !meta.is_file() {
+        return Err(format!(
+            "`path` {path:?} is not a file (a directory or a submodule); read_file reads one file"
+        ));
+    }
+    let bytes = meta.len();
+    let mut read = Vec::new();
+    file.take(READ_FILE_CAP as u64)
+        .read_to_end(&mut read)
+        .map_err(|e| format!("`path` {path:?}: {e}"))?;
+    // The length read, not `bytes`: the file may have grown or shrunk since
+    // its size was taken, and only a cap actually reached cuts.
+    let cut = read.len() == READ_FILE_CAP && bytes > READ_FILE_CAP as u64;
+    let text = match String::from_utf8(read) {
+        Ok(t) => t,
+        // A character the cap split in two: keep what comes before it.
+        Err(e) if cut && e.utf8_error().error_len().is_none() => {
+            let whole = e.utf8_error().valid_up_to();
+            let mut v = e.into_bytes();
+            v.truncate(whole);
+            String::from_utf8(v).map_err(|e| format!("`path` {path:?}: {e}"))?
+        }
+        Err(_) => {
+            return Err(format!(
+                "`path` {path:?} is not UTF-8 text, so it is not read"
+            ));
+        }
+    };
+    Ok(json!({"path": path, "text": text, "bytes": bytes, "cut": cut}))
 }
 
 /// The first `LIST_PATHS_LIMIT` of `paths` that start with `prefix`,
@@ -346,6 +524,22 @@ impl<S: tracing::Subscriber> Layer<S> for TurnCapture {
 /// loop will read the channel no more.
 const STEER_ENDED: &str = "the run ended before its next model request; not delivered";
 
+/// What a `steer` is answered when a `withdraw` takes it back first.
+const STEER_WITHDRAWN: &str = "withdrawn before a model request carried it; not delivered";
+
+/// What a `pause` is answered with, and a held run released by, when input
+/// ends: nobody is left to send `resume`.
+const INPUT_ENDED: &str = "input ended; nothing could resume the run, so it did not hold";
+
+/// What a `pause` the run never reached is answered with once it has ended.
+const HOLD_ENDED: &str = "the run ended before it reached the hold; it did not pause";
+
+/// What a `set_budget` is refused with once the run has ended.
+const BUDGET_ENDED: &str = "the run has ended; nothing changed";
+
+/// The fields `set_budget` reads, as `run budget` names them.
+const SET_BUDGET_FIELDS: &str = "max_iterations, max_wall_clock_ms or max_completion_tokens";
+
 /// What `prompt` and `classify` are refused with while a run is in flight.
 const ONE_AT_A_TIME: &str = "a run is in progress; one at a time (abort it, or wait)";
 
@@ -364,6 +558,10 @@ const ONE_AT_A_TIME: &str = "a run is in progress; one at a time (abort it, or w
 pub(crate) struct SteeringPort {
     state: Mutex<PortState>,
     receiver: Mutex<Option<trellis_loop::SteeringRx>>,
+    /// The loop's record of what became of each message, by its place in
+    /// the channel's order: where `withdraw` and the drain decide which
+    /// came first (ADR 0058 §3). Taken under `state` when both are.
+    fates: Arc<trellis_loop::SteeringFates>,
 }
 
 struct PortState {
@@ -372,8 +570,12 @@ struct PortState {
     sent: Vec<Sent>,
     /// Steers that have reached a model request. The channel is FIFO and
     /// the loop delivers every steer it takes before a request, so these
-    /// are the first `delivered` steers in `sent`.
+    /// are the first `delivered` steers in `sent`; a withdrawn steer is
+    /// never delivered and leaves `sent` when withdrawn, so that holds.
     delivered: usize,
+    /// How many messages have gone on the channel: the next one's place in
+    /// its order, which the loop counts the same way (`SteeringFates`).
+    next: u64,
 }
 
 /// A steer's answer: the step it was delivered after, or why it was not.
@@ -382,6 +584,8 @@ type SteerAnswer = Result<usize, String>;
 struct Sent {
     id: Option<String>,
     what: Steering,
+    /// Its place in the channel's order.
+    seq: u64,
     /// Set for a steer until it is answered.
     reply: Option<tokio::sync::oneshot::Sender<SteerAnswer>>,
 }
@@ -410,9 +614,17 @@ impl SteeringPort {
                 tx: Some(tx),
                 sent: Vec::new(),
                 delivered: 0,
+                next: 0,
             }),
             receiver: Mutex::new(Some(rx)),
+            fates: Arc::default(),
         })
+    }
+
+    /// The record the run's loop keeps of each message's fate, given to it
+    /// with the receiver.
+    pub(crate) fn fates(&self) -> Arc<trellis_loop::SteeringFates> {
+        self.fates.clone()
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, PortState> {
@@ -455,6 +667,10 @@ impl SteeringPort {
         // run's end. The record below still holds the message, and the
         // close that follows hands it back.
         let _ = tx.send(what.clone());
+        // Numbered under the lock the send was made under, so the numbers
+        // follow the channel's order.
+        let seq = st.next;
+        st.next += 1;
         let (reply, answer) = match what {
             Steering::Steer(_) => {
                 let (t, r) = tokio::sync::oneshot::channel();
@@ -465,6 +681,7 @@ impl SteeringPort {
         st.sent.push(Sent {
             id: id.map(str::to_string),
             what,
+            seq,
             reply,
         });
         Ok(answer)
@@ -490,21 +707,47 @@ impl SteeringPort {
         st.delivered = delivered.len();
     }
 
+    /// Everything sent and not yet delivered, in the order received, for
+    /// `get_state` (#801). It takes nothing: it names what `close` would
+    /// hand back now, by the same rule, so the two must agree. A steer is
+    /// delivered once the loop has marked it, before its `steer delivered`
+    /// event (#808), so a client that has read the event never finds it
+    /// listed.
+    fn pending(&self) -> Vec<Value> {
+        let st = self.state();
+        let mut out = Vec::new();
+        for s in &st.sent {
+            if self.delivered(s).is_some() {
+                continue;
+            }
+            out.push(
+                Unsent {
+                    id: s.id.clone(),
+                    what: s.what.clone(),
+                }
+                .json(),
+            );
+        }
+        out
+    }
+
     /// Ends the channel and hands back everything sent and not delivered,
     /// in the order it was received. A steer among them is answered as not
     /// delivered.
     fn close(&self) -> Vec<Unsent> {
         let mut st = self.state();
         st.tx = None;
-        let delivered = st.delivered;
-        let mut steers = 0;
         let mut unsent = Vec::new();
         for mut s in std::mem::take(&mut st.sent) {
-            if matches!(s.what, Steering::Steer(_)) {
-                steers += 1;
-                if steers <= delivered {
-                    continue;
+            if let Some(after_step) = self.delivered(&s) {
+                // `observe` answers it as the request carrying it is made,
+                // with no await between that and the mark. Answered here
+                // too, so a steer the model was sent is never told it was
+                // not.
+                if let Some(r) = s.reply.take() {
+                    let _ = r.send(Ok(after_step));
                 }
+                continue;
             }
             if let Some(r) = s.reply.take() {
                 let _ = r.send(Err(STEER_ENDED.into()));
@@ -516,6 +759,59 @@ impl SteeringPort {
         }
         unsent
     }
+
+    /// The step a steer followed once the loop has put it in a request;
+    /// `None` for one still waiting, and always for a follow-up, which
+    /// is never delivered into the run it was sent during.
+    fn delivered(&self, s: &Sent) -> Option<usize> {
+        match s.what {
+            Steering::Steer(_) => self.fates.delivered(s.seq),
+            Steering::FollowUp(_) => None,
+        }
+    }
+
+    /// Takes back the first message sent with `id` that is still waiting
+    /// (ADR 0058 §3), answering a steer's `steer` as withdrawn. Decided
+    /// under the loop's record, so a steer the drain reaches first is
+    /// refused as delivered and one withdrawn first never reaches it.
+    fn withdraw(&self, id: &str) -> Withdrawal {
+        let mut st = self.state();
+        let mut delivered = false;
+        let mut found = None;
+        for (i, s) in st.sent.iter().enumerate() {
+            if s.id.as_deref() != Some(id) {
+                continue;
+            }
+            match self.fates.withdraw(s.seq) {
+                Ok(()) => {
+                    found = Some(i);
+                    break;
+                }
+                Err(trellis_loop::WithdrawRefused::AlreadyDelivered) => delivered = true,
+            }
+        }
+        let Some(i) = found else {
+            return if delivered {
+                Withdrawal::Delivered
+            } else {
+                Withdrawal::NotHere
+            };
+        };
+        let mut s = st.sent.remove(i);
+        if let Some(r) = s.reply.take() {
+            let _ = r.send(Err(STEER_WITHDRAWN.into()));
+        }
+        Withdrawal::Withdrawn(s.what)
+    }
+}
+
+/// What [`SteeringPort::withdraw`] found.
+enum Withdrawal {
+    Withdrawn(Steering),
+    /// Every message sent with the id is a steer already in a request.
+    Delivered,
+    /// No message sent to this run carries the id.
+    NotHere,
 }
 
 /// A model whose requests are reported to a [`SteeringPort`].
@@ -580,17 +876,29 @@ impl<M: trellis_loop::Model> trellis_loop::Model for Watched<'_, M> {
 struct Current {
     /// The command that started it: the `prompt`, or the `follow_up`.
     id: Option<String>,
+    /// Started by a `follow_up`, so `withdraw` names its id delivered: its
+    /// run has started. The `prompt`'s id names no queued message.
+    follow_up: bool,
     /// `compact` requests, answered by the driver at its next request.
     compact: Arc<trellis_loop::CompactRequests>,
     steering: Arc<SteeringPort>,
+    /// `pause` and `resume` (ADR 0058 §1), honoured by the loop at the top
+    /// of its next iteration. Closed when the run ends.
+    hold: Arc<trellis_loop::Hold>,
+    /// `set_budget` (ADR 0058 §2): the run's whole ceiling, enforced by the
+    /// loop from its next budget check. Closed when the run ends.
+    budget: Arc<trellis_loop::LiveBudget>,
 }
 
 impl Current {
     fn new(id: Option<String>) -> Self {
         Self {
             id,
+            follow_up: false,
             compact: Arc::new(trellis_loop::CompactRequests::default()),
             steering: SteeringPort::new(),
+            hold: Arc::default(),
+            budget: Arc::default(),
         }
     }
 }
@@ -606,19 +914,80 @@ struct Running {
     /// thread instead of being refused (#495).
     ended: Arc<AtomicBool>,
     current: Arc<Mutex<Current>>,
+    /// `Chain::queue`.
+    queue: FollowUps,
     /// What was sent and never delivered when the chain stopped on an
     /// abort, in the order it was received, for `abort`'s answer.
     leftover: Arc<Mutex<Vec<Value>>>,
 }
 
+/// Follow-ups whose run has not started, as `(id, text)` in the order
+/// received. Shared, not the chain's own, so `get_state` can name them.
+type FollowUps = Arc<Mutex<VecDeque<(Option<String>, String)>>>;
+
+/// A follow-up that never started, as `abort` and `get_state` name it.
+fn queued_json(id: Option<String>, text: String) -> Value {
+    Unsent {
+        id,
+        what: Steering::FollowUp(text),
+    }
+    .json()
+}
+
 impl Running {
+    /// What `get_state` reports as `pending` (#801): the follow-ups queued
+    /// behind the run in flight, then what was sent to that run and not yet
+    /// delivered. The queue's were sent during earlier runs of the chain,
+    /// so this is oldest first. The queue's lock is held while the port is
+    /// read, as the chain holds it from closing a port to starting the next
+    /// run, so a follow-up moving from one to the other is seen once.
+    fn pending(&self) -> Vec<Value> {
+        let queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut out: Vec<Value> = queue
+            .iter()
+            .map(|(id, text)| queued_json(id.clone(), text.clone()))
+            .collect();
+        out.extend(self.current().steering.pending());
+        out
+    }
+
     fn current(&self) -> Current {
         self.current
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
+
+    /// `withdraw` (ADR 0058 §3): takes back the first waiting steer or
+    /// follow-up sent with `id`, answering with its type. Under the queue's
+    /// lock, as `pending` reads, which the chain holds from closing a run's
+    /// port to starting the next run: a follow-up is then in the queue, in
+    /// the port's record, or started, and never between two of them.
+    /// Queued follow-ups come first, since they were sent earlier.
+    fn withdraw(&self, id: &str) -> Result<&'static str, String> {
+        let mut queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(i) = queue.iter().position(|(q, _)| q.as_deref() == Some(id)) {
+            queue.remove(i);
+            return Ok("follow_up");
+        }
+        let cur = self.current();
+        match cur.steering.withdraw(id) {
+            Withdrawal::Withdrawn(Steering::Steer(_)) => Ok("steer"),
+            Withdrawal::Withdrawn(Steering::FollowUp(_)) => Ok("follow_up"),
+            Withdrawal::Delivered => Err(ALREADY_DELIVERED.into()),
+            Withdrawal::NotHere if cur.follow_up && cur.id.as_deref() == Some(id) => {
+                Err(ALREADY_DELIVERED.into())
+            }
+            Withdrawal::NotHere => Err(format!(
+                "unknown id: no steer or follow_up waiting to be delivered was sent with `{id}`"
+            )),
+        }
+    }
 }
+
+/// What `withdraw` is refused with once the message is in a model request,
+/// or its follow-up's run has started.
+const ALREADY_DELIVERED: &str = "already delivered";
 
 /// A `classify` being asked, on its own thread (#518).
 struct Classifying {
@@ -802,6 +1171,16 @@ fn serve_with(
     if !aborting && let Ok(mut a) = s.approvals.lock() {
         s.input_closed.store(true, Ordering::SeqCst);
         a.clear();
+    }
+    // No `resume` can arrive either, and the join below would wait on a
+    // held run forever. Released as a question is declined: the run goes on
+    // to its end. A follow-up's run after it gets a fresh hold, which
+    // nothing can ask to hold. Not after an `abort`, for the reason above:
+    // released before the run takes the abort path, the loop would make a
+    // model request the person had stopped, and dropping its future ends a
+    // held run without a release.
+    if !aborting && let Some(r) = &s.running {
+        r.current().hold.close(INPUT_ENDED);
     }
     if let Some(r) = s.running.take() {
         let _ = r.thread.join();
@@ -1027,6 +1406,27 @@ impl Server {
         }));
     }
 
+    /// `read_file`: one file's text for a client's whole-file view, refused
+    /// for anything `list_paths` would not offer or that resolves outside
+    /// the root or into `.git` (ADR 0058 §4, `read_repo_file`). The client's
+    /// read, not the model's: nothing it answers enters a prompt, and
+    /// nothing is written. It reads the working tree as it is when asked,
+    /// from another thread, as `list_paths` does.
+    fn read_file(&mut self, cmd: &Value, id: Option<&str>) {
+        let path = match read_file_path(cmd) {
+            Ok(p) => p.to_string(),
+            Err(e) => {
+                self.respond(id, "read_file", Err(e));
+                return;
+            }
+        };
+        let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
+        self.waiters.push(std::thread::spawn(move || {
+            let result = read_repo_file(&root, &path);
+            respond_on(&sink, id.as_deref(), "read_file", result);
+        }));
+    }
+
     /// `vault_search`: the hits `trellis vault search` prints, from the same
     /// function, as data; nothing is written. Every vault write stays a
     /// `trellis vault` command (#70). Answered from another thread, as
@@ -1163,6 +1563,108 @@ impl Server {
         }
     }
 
+    /// `pause`: answered from another thread once the loop holds, with the
+    /// turn of the model call it holds before, or, if the run ends first or
+    /// a `resume` withdraws it, with why it did not. On this thread only the
+    /// request is made, as `abort`'s is, so `approve` and `abort` are still
+    /// read while the loop finishes its turn (ADR 0058 §1).
+    fn pause(&mut self, id: Option<&str>) {
+        if !self.in_flight() {
+            self.respond(id, "pause", Err("no run in flight".into()));
+            return;
+        }
+        let Some(r) = &self.running else {
+            return;
+        };
+        let answer = match r.current().hold.pause() {
+            Ok(a) => a,
+            Err(e) => {
+                self.respond(id, "pause", Err(e.to_string()));
+                return;
+            }
+        };
+        let (sink, id) = (self.sink.clone(), id.map(str::to_string));
+        self.waiters.push(std::thread::spawn(move || {
+            let result = match answer.blocking_recv() {
+                Ok(Ok(turn)) => Ok(json!({"turn": turn})),
+                Ok(Err(e)) => Err(e),
+                // The hold answers every pause it holds before it is
+                // dropped; this is the hold gone some other way.
+                Err(_) => Err(HOLD_ENDED.into()),
+            };
+            respond_on(&sink, id.as_deref(), "pause", result);
+        }));
+    }
+
+    /// `resume`: answered at once. The loop says how long it was held in
+    /// the `resumed` event it sends as it goes on.
+    fn resume(&mut self) -> Result<Value, String> {
+        if !self.in_flight() {
+            return Err("no run in flight".into());
+        }
+        let Some(r) = &self.running else {
+            return Err("no run in flight".into());
+        };
+        r.current()
+            .hold
+            .resume()
+            .map(|()| Value::Null)
+            .map_err(|e| e.to_string())
+    }
+
+    /// `set_budget` (ADR 0058 §2): answered at once with every ceiling after
+    /// the raise, which the loop enforces from its next budget check and
+    /// announces there with `run budget`. Refused whole, changing nothing,
+    /// when any value is not a raise or not a ceiling's.
+    fn set_budget(&mut self, cmd: &Value) -> Result<Value, String> {
+        if !self.in_flight() {
+            return Err("no run in flight".into());
+        }
+        let Some(r) = &self.running else {
+            return Err("no run in flight".into());
+        };
+        let raise = budget_raise(cmd)?;
+        let b = r
+            .current()
+            .budget
+            .raise(&raise)
+            .map_err(|e| e.to_string())?;
+        Ok(json!({
+            "max_iterations": b.max_iterations,
+            "max_wall_clock_ms": u64::try_from(b.max_wall_clock.as_millis()).unwrap_or(u64::MAX),
+            "max_completion_tokens": b.max_tokens,
+        }))
+    }
+
+    /// `withdraw` (ADR 0058 §3): answered at once with `{id, type}` once the
+    /// steer or follow-up sent with the command's `id` is taken back, as
+    /// `approve` names its question by its `id`. The withdrawn message is
+    /// gone from `get_state`'s `pending` and `abort`'s `undelivered`.
+    fn withdraw(&mut self, cmd: &Value, id: Option<&str>) -> Result<Value, String> {
+        let id = match (id, cmd.get("id")) {
+            (Some(id), _) if !id.is_empty() => id,
+            (_, None) => {
+                return Err(
+                    "withdraw needs the \"id\" the steer or follow_up was sent with".into(),
+                );
+            }
+            (_, Some(v)) => {
+                return Err(format!(
+                    "withdraw's \"id\" is the id a steer or follow_up was sent with, \
+                     a non-empty string; got {v}"
+                ));
+            }
+        };
+        if !self.in_flight() {
+            return Err("no run in flight".into());
+        }
+        let Some(r) = &self.running else {
+            return Err("no run in flight".into());
+        };
+        let kind = r.withdraw(id)?;
+        Ok(json!({"id": id, "type": kind}))
+    }
+
     /// `abort`: answered once the run has ended, with everything sent on
     /// the steering channel and never delivered, in the order received.
     ///
@@ -1284,6 +1786,19 @@ impl Server {
                 self.respond(id, kind, r.map(|()| Value::Null));
             }
             "abort" => self.abort(id),
+            "pause" => self.pause(id),
+            "resume" => {
+                let r = self.resume();
+                self.respond(id, kind, r);
+            }
+            "set_budget" => {
+                let r = self.set_budget(cmd);
+                self.respond(id, kind, r);
+            }
+            "withdraw" => {
+                let r = self.withdraw(cmd, id);
+                self.respond(id, kind, r);
+            }
             "steer" | "follow_up" => self.steer(cmd, id, kind),
             "get_state" => {
                 let running = self.in_flight();
@@ -1292,8 +1807,17 @@ impl Server {
                     .lock()
                     .map(|a| a.keys().cloned().collect())
                     .unwrap_or_default();
+                // After `in_flight`, which drops a finished run: with none in
+                // flight nothing is waiting to be delivered.
+                let waiting = self
+                    .running
+                    .as_ref()
+                    .map(Running::pending)
+                    .unwrap_or_default();
                 let data = json!({
                     "running": running,
+                    // Each steer and follow-up not yet delivered (#801).
+                    "pending": waiting,
                     // Not a run, but it holds the slot `prompt` needs (#522).
                     "classifying": self.classify_pending(),
                     "run_request_id": self.running.as_ref().and_then(|r| r.current().id),
@@ -1398,6 +1922,7 @@ impl Server {
             "get_history" => self.get_history(cmd, id),
             "get_queue" => self.get_queue(id),
             "list_paths" => self.list_paths(cmd, id),
+            "read_file" => self.read_file(cmd, id),
             "vault_search" => self.vault_search(cmd, id),
             "vault_graph" => self.vault_graph(cmd, id),
             "vault_check" => self.vault_check(cmd, id),
@@ -1800,6 +2325,7 @@ impl Server {
         let ended = Arc::new(AtomicBool::new(false));
         let current = Arc::new(Mutex::new(Current::new(id.map(str::to_string))));
         let leftover: Arc<Mutex<Vec<Value>>> = Arc::default();
+        let queue: FollowUps = Arc::default();
         let chain = Chain {
             root: self.root.clone(),
             sink: self.sink.clone(),
@@ -1814,6 +2340,7 @@ impl Server {
             abort: abort.clone(),
             ended: ended.clone(),
             current: current.clone(),
+            queue: queue.clone(),
             model,
             model_from_user,
             unconstrained,
@@ -1835,6 +2362,7 @@ impl Server {
             done,
             ended,
             current,
+            queue,
             leftover,
         });
         Ok(())
@@ -1865,6 +2393,10 @@ struct Chain {
     /// `Running::ended`.
     ended: Arc<AtomicBool>,
     current: Arc<Mutex<Current>>,
+    /// Follow-ups waiting for the run they were sent during to end and the
+    /// ones before them to run. Held from a port's close to the next run's
+    /// start (#801).
+    queue: FollowUps,
     model: String,
     model_from_user: bool,
     unconstrained: bool,
@@ -1879,47 +2411,25 @@ impl Chain {
     /// sent and never delivered when it stopped on one; otherwise nothing,
     /// since every follow-up ran and every stranded steer was answered.
     fn run(&self, task: String) -> Vec<Value> {
-        let first = self.current().id;
-        let mut queue: VecDeque<(Option<String>, String)> = VecDeque::from([(first, task)]);
-        let mut started = false;
-        while let Some((id, task)) = queue.pop_front() {
-            if self.abort.requested() {
-                queue.push_front((id, task));
-                return queue
-                    .into_iter()
-                    .map(|(id, task)| {
-                        Unsent {
-                            id,
-                            what: Steering::FollowUp(task),
-                        }
-                        .json()
-                    })
-                    .collect();
-            }
-            // The first run's `Current` was made with the `prompt`, so a
-            // `steer` read before this thread got here still reaches it.
-            if started {
-                // Before the run is replaced, so a `prompt` waiting on this
-                // thread sees a run in flight from here on.
-                self.ended.store(false, Ordering::SeqCst);
-                *self.current.lock().unwrap_or_else(PoisonError::into_inner) =
-                    Current::new(id.clone());
-            }
-            started = true;
+        // The first run's `Current` was made with the `prompt`, so a
+        // `steer` read before this thread got here still reaches it.
+        if self.abort.requested() {
+            return vec![queued_json(self.current().id, task)];
+        }
+        let mut task = task;
+        loop {
             let cur = self.current();
             self.run_one_task(&task, &cur);
+            // Held until the next run is current, so a follow-up leaving
+            // the port's record is in the queue whenever `get_state` reads
+            // either, and is gone from both only once its run starts.
+            let mut queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
             let unsent = cur.steering.close();
             if self.abort.requested() {
                 // Queued before this run's own, so received before them.
                 let mut all: Vec<Value> = queue
-                    .into_iter()
-                    .map(|(id, task)| {
-                        Unsent {
-                            id,
-                            what: Steering::FollowUp(task),
-                        }
-                        .json()
-                    })
+                    .drain(..)
+                    .map(|(id, text)| queued_json(id, text))
                     .collect();
                 all.extend(unsent.iter().map(Unsent::json));
                 return all;
@@ -1932,8 +2442,18 @@ impl Chain {
                     queue.push_back((u.id, text));
                 }
             }
+            let Some((id, next)) = queue.pop_front() else {
+                return Vec::new();
+            };
+            // Before the run is replaced, so a `prompt` waiting on this
+            // thread sees a run in flight from here on.
+            self.ended.store(false, Ordering::SeqCst);
+            *self.current.lock().unwrap_or_else(PoisonError::into_inner) = Current {
+                follow_up: true,
+                ..Current::new(id)
+            };
+            task = next;
         }
-        Vec::new()
     }
 
     fn current(&self) -> Current {
@@ -2008,6 +2528,8 @@ impl Chain {
             tier: Some(self.tier.clone()),
             // This run's own, for its `run_end`.
             elapsed_ms: std::sync::OnceLock::new(),
+            hold: Some(cur.hold.clone()),
+            budget: Some(cur.budget.clone()),
         };
         // Cleared first, so a run that stops before it decides a tier
         // leaves none, rather than the last run's for another model.
@@ -2048,6 +2570,12 @@ impl Chain {
         // A `compact` still waiting will get no model request to act on.
         cur.compact
             .close("the run ended before its next model request; nothing was compacted");
+        // After `run_end`, which `cmd_run_with` framed: a pause the run never
+        // reached is answered after the frame that says how it ended.
+        cur.hold.close(HOLD_ENDED);
+        // The loop closes it as it returns; this is for a run whose loop
+        // never started or never returned (an error before it, an abort).
+        cur.budget.close(BUDGET_ENDED);
         // Questions still open when the run ended are dropped, which the
         // gate reads as a no; none can be answered now.
         if let Ok(mut a) = self.approvals.lock() {

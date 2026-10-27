@@ -1207,7 +1207,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
   var RUN = {
     id: 'r-2026-10-25-0912-7f3a', task: 'Fix the close-token underflow in parse() and add a regression test. Keep the public signature.',
     model: 'vllm:http://127.0.0.1:11434#qwen2.5-coder:32b', modelShort: 'qwen2.5-coder 32b · local',
-    tier: 'tier 2 · RuntimeConstrained', runtime: 'Ollama at 127.0.0.1:11434 (vllm dialect)', root: '~/src/parsekit', base: 'c41e9d0',
+    tier: '2', runtime: 'Ollama at 127.0.0.1:11434 (vllm dialect)', root: '~/src/parsekit', base: 'c41e9d0',
     control: 'approve', ctxBudgetBytes: 131072
   };
   var LIMITS0 = { iterations: 40, wall: 1200, tokens: 2000000 };
@@ -1297,7 +1297,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
     }
   }
   var STATE_WORD = { idle: 'Idle', running: 'Running', waiting: 'Needs you', paused: 'Paused', stopping: 'Stopping',
-    converged: 'Ended · converged', not_converged: 'Ended · not converged', interrupted: 'Ended · interrupted', error: 'Ended · error' };
+    converged: 'Ended · converged', not_converged: 'Ended · not_converged', interrupted: 'Ended · interrupted', error: 'Ended · error' };
   // run_end's `exit` for each outcome (RunExit::code and run_end in crates/trellis-cli). not_converged and
   // interrupted are drawn with the tree restored; an unrestored tree exits 2, which the sample never shows.
   // An error carries its message and no `restored` (client_contract.json), so nothing here says the tree
@@ -1338,7 +1338,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
         s === 'paused' ? h(T.Button, { variant: 'signal', shortcut: 'P', onClick: props.onResume }, 'Resume') : null,
         inFlight(s) && s !== 'stopping' ? h(T.Button, { variant: 'down', shortcut: '⇧S', onClick: props.onStop }, 'Stop') : null,
         isEnded(s) ? h(T.Button, { shortcut: '⏎', onClick: props.onSummary }, 'Summary') : h(T.Button, { variant: 'ghost', onClick: props.onSummary }, 'Summary so far')),
-      h(Src, { text: 'get_state.running + last turn/model call event + run_end; elapsed: NEW elapsed_ms on turn events (desktop refuses a client clock, TUI runs its own); Pause: NEW rpc pause/resume' }));
+      h(Src, { text: 'run_start, the last turn or model call event, run_end {outcome, exit}; elapsed: elapsed_ms on model call, turn and run_end; Pause: pause and resume, held from the paused event to resumed or run_end' }));
   }
 
   // ---------- Transcript ----------
@@ -1440,7 +1440,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
         h('button', { className: 'cd-q-opt' + (quiet ? ' cd-q-opt-on' : ''), onClick: function () { setQuiet(!quiet); }, title: 'hide reads and lookups; keep edits, checks, notes and your words' }, 'quiet', h(T.Keycap, { keys: 'Z' })),
         h('span', null, '⏎ expand · → diff')),
       h('div', { className: 'cd-tx' + (quiet ? ' cd-tx-quiet' : ''), role: 'log', 'aria-live': 'polite' }, rows),
-      h(Src, { text: 'turn events (call, verdict, observation, model_ms, completion_tokens, prompt_bytes); steer delivered; WARN/INFO lines; approval_request; run_start.task. Model text rows: NEW — the loop logs no assistant prose today (get_last_assistant_text only)' }));
+      h(Src, { text: 'turn events (tool, target, wrote, call, verdict, check_kind, observation, model_ms, completion_tokens, prompt_bytes, duration_ms, lines_added, lines_removed); steer delivered {after_step}; WARN/ERROR lines (level); approval_request; run_start.task. Check command (mypy src): NEW — no event names the command a check ran; model text rows: NEW — the loop logs no assistant prose today (get_last_assistant_text only)' }));
   }
 
   // ---------- Composer + queue ----------
@@ -1466,7 +1466,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
         h('div', { className: 'cd-q-enter' },
           h('span', null, running ? 'Enter ' + (props.verb === 'steer' ? 'steers' : props.verb === 'follow' ? 'queues' : 'stops and queues') + ' · Shift+Enter newline' : 'Enter starts a run · control: ' + RUN.control),
           h(T.Button, { variant: props.verb === 'stop' && running ? 'down' : 'signal', shortcut: '⏎', onClick: send }, running ? VERBS.filter(function (v) { return v[0] === props.verb; })[0][1] : 'Run'))),
-      h(Src, { text: 'prompt {task, control}; steer {message} → {after_step}; follow_up {message} (in-memory queue in rpc); Stop and send: abort then prompt — NEW as one command' }));
+      h(Src, { text: 'prompt {task, control}; steer {message} → {after_step}; follow_up {message} (in-memory queue in rpc); Stop and send: abort, then prompt once run_end arrives, sequenced by the client — NEW as one command' }));
   }
   function QueueList(props) {
     var items = props.items;
@@ -1489,7 +1489,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
             !done ? h('button', { title: 'take back into the composer', onClick: function () { props.onTakeBack(i); } }, '↩') : null,
             !done ? h('button', { className: 'x', title: 'cancel', onClick: function () { props.onCancel(i); } }, '×') : null));
       })) : h('div', { className: 'cd-q-empty' }, 'nothing queued — ', h(T.Keycap, { keys: 'Q' }), ' focuses the composer'),
-      h(Src, { text: 'steer answers {after_step} or success:false; follow_up list: NEW get_queue of the rpc follow-up queue, NEW take-back/cancel (the trellis-queue is a different thing: tasks on disk, read-only here)' }));
+      h(Src, { text: 'steer answers {after_step} or success:false; get_state pending {id, type, message}; ↩ and × send withdraw {id} → {id, type}; abort undelivered; reorder: NEW — no command reorders what was sent (the trellis-queue is a different thing: tasks on disk, read-only here)' }));
   }
 
   // ---------- Where / Budget / Plan ----------
@@ -1510,7 +1510,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       r('runtime', RUN.runtime),
       r('control', RUN.control + ' — each edit asks you first'),
       r('root', RUN.root + ' @ ' + RUN.base),
-      h(Src, { text: 'get_state (running, model, tier, root); phase from the last turn/model call event (status bar today); prompt_bytes from turn events; compacted events: NEW in the client contract' }));
+      h(Src, { text: 'get_state (model, tier, root); phase from the last turn (tool, target) or model call event; prompt_bytes from turn events against run budget max_context_bytes; runtime identified {runtime, served}; compacted {turn, elided_turns, elided_bytes, request_bytes}: in the contract, read by neither face yet' }));
   }
   function Budget(props) {
     var L = props.limits, ed = useState(false), editing = ed[0], setEditing = ed[1];
@@ -1525,7 +1525,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
           editing && running ? h('span', { className: 'cd-bud-raise' }, h('button', { className: 'cd-bud-ext', onClick: function () { props.onRaise(key, max + step); } }, '+' + fmt(step))) : h('span')),
         sub ? h('div', { className: 'cd-bud-sub' }, sub) : null);
     }
-    return h('div', { className: 'cd-bud cd-src-host' + (editing ? ' cd-src-host-new' : '') },
+    return h('div', { className: 'cd-bud cd-src-host' },
       row('turns', props.turn, L.iterations, String, 5, 'iterations'),
       row('time', props.elapsed, L.wall, T.fmtClock, 300, 'wall', 'wall clock · time waiting on you is not counted'),
       row('tokens', 61400, L.tokens, tok, 100000, 'tokens', 'completion tokens · prompt is measured in bytes above, never added to this'),
@@ -1533,15 +1533,15 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       h('div', { className: 'cd-bud-note' },
         running ? h(React.Fragment, null,
           h('button', { className: 'cd-bud-ext', onClick: function () { setEditing(!editing); } }, editing ? 'done' : 'raise a limit'),
-          editing ? ' — takes effect before the next model call; limits can be raised, never lowered, mid-run; the trail records it as your action.' : ' — the ceilings this run was started with.')
+          editing ? ' — takes effect at the next budget check, before the next model call; limits can be raised, never lowered, mid-run; no trail records a raise until #868.' : ' — the ceilings in force, from the latest run budget.')
         : 'Set in .trellis/config.toml [budget] and your user config; the lower of the two wins.'),
-      h(Src, { text: 'run budget {max_iterations} event (wall and token ceilings: NEW on the event); spend used from turn events; raise a limit: NEW rpc set_budget, loop takes an immutable &Budget today', isNew: editing }));
+      h(Src, { text: 'run budget {max_iterations, max_wall_clock_ms, max_completion_tokens, max_context_bytes}, sent again where a raise takes effect; used from turn events (turn, elapsed_ms, completion_tokens_used); raise a limit: set_budget' }));
   }
   function Plan(props) {
-    return h('div', { className: 'cd-src-host cd-src-host-new' },
-      h('div', { className: 'cd-plan-none', style: { marginBottom: '10px' } }, 'The loop keeps no plan. What it will do next is in its last message; what it did is in the transcript. A plan the model writes and you edit is not built (below is the shape it would take).'),
+    return h('div', { className: 'cd-src-host' },
+      h('div', { className: 'cd-plan-none', style: { marginBottom: '10px' } }, 'The model’s plan as its last plan call left it, only where the repository enables the plan tool. Its words, not a verdict; an edit goes back to it as a steer.'),
       h(T.Plan, { steps: props.steps, turn: props.turn, reasoning: undefined, onChange: props.onChange, onSteer: props.onSteer }),
-      h(Src, { text: 'plan steps: NEW — a plan tool + plan events in the contract; an edit here would be sent as a steer', isNew: true }));
+      h(Src, { text: 'plan {turn, steps, steps_cut, texts_cut}, the latest replacing the last; an edit is sent as a steer' }));
   }
   function LastWords(props) {
     return h('div', { className: 'cd-src-host' },
@@ -1563,7 +1563,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
     return h('div', { className: 'cd-src-host' }, h(T.Rail, { rows: props.files.map(function (f) {
       var st = fileState(f, props.state, props.waitKind);
       return { label: f.path, meta: '+' + f.add + ' −' + f.del + ' · t' + f.turn + ' · ' + st[0], tone: st[1], current: f.path === props.file, onClick: function () { props.onPick(f.path); } };
-    }) }), h(Src, { text: 'edit calls in turn events (+/- counts from the approval_request diff; NEW: an edit event with counts); state from run_end.outcome and restored' }));
+    }) }), h(Src, { text: 'turn events with wrote (target, lines_added, lines_removed, turn); state from run_end.outcome and restored' }));
   }
   function CodeView(props) {
     var f = props.files.filter(function (x) { return x.path === props.file; })[0];
@@ -1597,7 +1597,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
           h(T.Button, { variant: 'ghost', onClick: function () { setComment(null); } }, 'Cancel')) : null,
         body,
         h('div', { className: 'cd-code-hint' }, 'hover a line for ✉ — a comment on it is sent as a steer naming file:line · the diff is against ' + RUN.base + ', the base this run snapshotted'),
-        h(Src, { text: 'diff: approval_request.detail (unified diff) and NEW an edit event carrying the diff after auto edits; whole file: NEW rpc read_file at the worktree; approve {id, yes}; line comment → steer' })));
+        h(Src, { text: 'diff: the turn event’s diff, lines_added, lines_removed and start_line, and approval_request.detail while asked; whole file: read_file {path, text, bytes, cut}; approve {id, yes}; line comment → steer' })));
   }
 
   // ---------- Summary ----------
@@ -1618,14 +1618,14 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
               : ended ? 'The tree was reset to ' + RUN.base + '. Trail ' + RUN.id + ' committed anyway; integrity: sha256 matches.'
               : 'Nothing is settled until run_end. What is below is what trellis has reported so far.'),
             h('div', { className: 'cd-sum-fence', style: { marginTop: '12px' } }, h('div', { className: 'cd-sum-fence-head' }, 'the model’s closing words · fenced as untrusted'), LAST_MODEL_TEXT),
-            h(Src, { text: 'run_end {outcome, exit, restored}; trellis --json log {run_id, integrity}; get_last_assistant_text' }))),
+            h(Src, { text: 'run_end {outcome, exit, restored, elapsed_ms}; so far: the last turn event (turn, elapsed_ms); trellis --json log {run_id, integrity}; get_last_assistant_text' }))),
         h(T.Panel, { title: 'Checks', meta: CHECKS.filter(function (c) { return c.turn <= props.turn; }).length + ' run' },
           h('div', { className: 'cd-src-host' }, h('table', { className: 'cd-sum-table' },
             h('thead', null, h('tr', null, h('th', null, 'turn'), h('th', null, 'kind'), h('th', null, 'command'), h('th', null, 'verdict'), h('th', null, 'took'))),
             h('tbody', null, CHECKS.filter(function (c) { return c.turn <= props.turn; }).map(function (c, i) {
               return h('tr', { key: i }, h('td', { className: 'muted' }, c.turn), h('td', null, c.kind), h('td', { className: 'muted' }, c.cmd), h('td', { className: c.passed ? 'ok' : 'down' }, (c.passed ? 'passed' : 'failed') + (c.note ? ' — ' + c.note : '')), h('td', { className: 'num' }, ms(c.ms))); }))),
             h('div', { className: 'cd-plan-note', style: { marginTop: '8px' } }, 'Each row is a Verdict minted in trellis-checks. The client adds nothing and sums nothing.'),
-            h(Src, { text: 'turn events with verdict Some(true|false), check_kind, duration_ms; trail factual.check_outcomes' }))),
+            h(Src, { text: 'turn events with verdict Some(true|false), check_kind, duration_ms; trail factual.check_outcomes {kind, passed}; command column: NEW — no event names the command a check ran' }))),
         h(T.Panel, { title: 'Facts', meta: 'two counts and three counts, never one number' },
           h('div', { className: 'cd-facts cd-src-host' },
             h('div', null, h('h4', null, 'Edits, by how they were checked'),
@@ -1641,7 +1641,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
               h('div', { className: 'cd-fact' }, h('b', null, props.files.length), h('span', null, 'files')),
               h('div', { className: 'cd-fact' }, h('b', null, '+8'), h('span', null, '−2 lines')),
               h('div', { className: 'cd-fact' }, h('b', null, '1'), h('span', null, 'refusal ', h('small', null, '— a write into .trellis/')))),
-            h(Src, { text: 'trail factual.mode_counts {verified, reviewed} (no total, ADR 0003); radius {reached_resolved, reached_ambiguous, widest_unbound_in_touched_files} (ADR 0002/0014); actions[] changed_count' }))),
+            h(Src, { text: 'trail factual.mode_counts {verified, reviewed} (no total, ADR 0003); trail factual.radius, listed, its fields NEW in the contract (ADR 0002/0014); lines from turn events lines_added, lines_removed; refusals: NEW — no field counts them' }))),
         h(T.Panel, { title: 'Budget consumed', meta: 'against the ceilings this run started with' },
           h('div', { className: 'cd-src-host' }, h('table', { className: 'cd-sum-table' },
             h('tbody', null,
@@ -1652,7 +1652,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
               h('tr', null, h('td', null, 'prompt'), h('td', { className: 'num' }, 'peak ' + kb(98100)), h('td', { className: 'muted num' }, 'bytes, not tokens · first ' + kb(12400))),
               h('tr', null, h('td', null, 'prompt tokens'), h('td', { className: 'muted num' }, 'unreported'), h('td', { className: 'muted num' }, 'the runtime did not report them')),
               h('tr', null, h('td', null, 'spend'), h('td', { className: 'muted num' }, 'not metered'), h('td', { className: 'muted num' }, 'Local regime')))),
-            h(Src, { text: 'run budget event (max_iterations); turn events (model_ms, completion_tokens, prompt_bytes); trail context {first_prompt_bytes, peak_prompt_bytes}; get_session_stats (prompt and completion apart, never summed)' })))),
+            h(Src, { text: 'run budget (max_iterations, max_wall_clock_ms, max_completion_tokens); turn events (turn, elapsed_ms, completion_tokens_used, model_ms, prompt_bytes); trail factual.context, listed, its fields NEW in the contract; get_session_stats (prompt_tokens and completion_tokens apart, never summed)' })))),
       h('div', { className: 'cd-rv-col' },
         h(T.Panel, { title: 'The path', meta: props.turn + ' turns' },
           h('div', { className: 'cd-src-host' }, h(T.Rail, { rows: [
@@ -1662,16 +1662,16 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
             { label: 'Compacted 98 kB → 41 kB; edited tests/test_parser.py (+5)', meta: 't4', onClick: function () { props.onOpen('tests/test_parser.py'); } },
             { label: 'Refused a write into .trellis/; typecheck and tests passed', meta: 't5 · 4.0 s', tone: 'ok' },
             { label: props.turn >= 6 ? 'Asked you about the benchmark' : 'running', meta: props.turn >= 6 ? 't6' : 'now', tone: 'signal', current: true }
-          ].slice(0, Math.max(1, Math.min(6, props.turn))) }), h(Src, { text: 'trail factual.actions[] {turn, tool, target, outcome, wrote, duration_ms}; trellis log --actions' }))),
+          ].slice(0, Math.max(1, Math.min(6, props.turn))) }), h(Src, { text: 'turn events (turn, tool, target, wrote, duration_ms) for a run in flight; trail factual.actions, listed, its fields NEW in the contract; trellis log --actions' }))),
         h(T.Panel, { title: 'Files changed', meta: props.files.length }, h(FileRail, { files: props.files, state: s, waitKind: props.waitKind, file: props.file, onPick: props.onOpen })),
         h(T.Panel, { title: 'Your steers', meta: steers.filter(function (q) { return q.state === 'delivered'; }).length + ' delivered · ' + steers.filter(function (q) { return q.state === 'queued'; }).length + ' pending' },
           h('div', { className: 'cd-src-host' }, h(T.Rail, { rows: steers.map(function (q) {
             return { label: '“' + q.text + '”', meta: q.state === 'delivered' ? 'delivered after turn ' + q.turn : q.state === 'queued' ? 'pending' : 'not delivered', tone: q.state === 'delivered' ? 'signal' : q.state === 'queued' ? undefined : 'down' }; }) }),
-            h(Src, { text: 'trail factual.steering[] {turn, kind, text}; steer delivered events' }))),
+            h(Src, { text: 'steer delivered {after_step} and the steer answer {after_step}; get_state pending; trail factual.steering, listed, its fields NEW in the contract' }))),
         h(T.Panel, { title: 'Prompt size over the run', meta: 'bytes per turn' },
           h('div', { className: 'cd-src-host' }, h(T.Sparkline, { values: PROMPT_BYTES.slice(0, Math.max(2, props.turn)).map(function (b) { return Math.round(b / 1024); }), width: 520, height: 56, tone: 'cool', baseline: 115, label: 'prompt bytes per turn' }),
             h('div', { className: 'cd-plan-note', style: { marginTop: '8px' } }, 'dotted line: 115 kB, where compaction runs · bytes, not tokens'),
-            h(Src, { text: 'prompt_bytes on each turn event; compacted {budget}' })))));
+            h(Src, { text: 'prompt_bytes on each turn event; run budget max_context_bytes; compacted {budget}, read by neither face yet' })))));
   }
 
   // ---------- TUI artboard ----------
@@ -1709,14 +1709,14 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       ['tool    ', h('span', { className: 'c', key: 1 }, s === 'running' ? 'run_checks → tests' : '—')],
       ['prompt  ████░░░░░░░░ 41 kB / 128 kB'],
       ['model   qwen2.5-coder 32b · local'],
-      ['tier    2 · RuntimeConstrained'],
+      ['tier    2'],
       [' '],
       [h('span', { className: 'm', key: 1 }, 'BUDGET')],
       ['turns   ██░░░░░░░░░░  7 / 40'],
       ['time    ███░░░░░░░░░  ' + T.fmtClock(props.elapsed) + ' / 20:00'],
       ['tokens  █░░░░░░░░░░░  61k / 2.0M'],
       ['spend   not metered · Local'],
-      [h('span', { className: 'm', key: 1 }, '[+] raise a limit'), '  ', h('span', { className: 'd', key: 2 }, 'not built')],
+      [h('span', { className: 'm', key: 1 }, '^R raise a ceiling'), '  ', h('span', { className: 'm', key: 2 }, 'set_budget')],
       [' '],
       [h('span', { className: 'm', key: 1 }, 'EDITS')],
       [h('span', { className: 'w', key: 1 }, '~ src/parser.py'), '        +3 −2 t2'],
@@ -1733,11 +1733,11 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       ['─'.repeat(W)],
       [h('span', { className: 'm', key: 1 }, 'QUEUE · ' + queue.length + ' pending   '), queue.map(function (q, k) { return h('span', { key: k }, h('span', { className: q.kind === 'steer' ? 's' : 'c' }, (k + 1) + ' ' + q.kind + ' '), '“' + q.text.slice(0, 36) + (q.text.length > 36 ? '…' : '') + '”  '); })],
       [h('span', { className: 'inv', key: 1 }, ' ' + (inFlight(s) ? (props.verb === 'steer' ? 'steer' : props.verb === 'follow' ? 'queue' : 'stop+send') : 'task') + ' > '), ' ', h('span', { className: 'm', key: 2 }, inFlight(s) ? 'type, Enter ' + (props.verb === 'steer' ? 'steers at the next model call' : props.verb === 'follow' ? 'queues for after this run' : 'aborts then runs') + ' · Tab cycles steer / queue / stop+send' : 'type a task, Enter starts a run')],
-      [h('span', { className: 'm', key: 1 }, '^c stop  p pause  y/n approve  z quiet  ↑↓ scroll  d diff  s summary  ? help')]
+      [h('span', { className: 'm', key: 1 }, '^c stop  ^p pause  ^r raise  ^t take back  y/n approve  z quiet  ↑↓ scroll  d diff  s summary  ? help')]
     ];
     return h('div', { className: 'cd-tui-wrap' },
       h('pre', { className: 'cd-tui cd-src-host' }, rows.map(function (r, i) { return h('div', { key: 'h' + i }, r); }), body, foot.map(function (r, i) { return h('div', { key: 'f' + i }, r); }),
-        h(Src, { text: 'same sources as the desktop; tui/PARITY.md rows for the transcript, steer channel, budget line and approval modal' })),
+        h(Src, { text: 'run_start, turn, model call, run budget, steer delivered, paused, resumed, plan, approval_request and run_end, each as docs/design/events.md’s TUI column marks it; tui/PARITY.md rows for the transcript, steer channel, budget line and approval modal' })),
       h('div', { className: 'cd-tui-note' }, '120 × 40, the TUI’s minimum is 80 × 24: at 80 columns the right column folds under the transcript and the budget keeps its two numbers. Same state words, same rows, same three composer verbs as the desktop; keyboard only.'));
   }
 
@@ -1751,8 +1751,8 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
         h('div', null, h('b', null, 'not metered'), ' — no currency anywhere: the Local regime budgets by clock and tokens'),
         h('div', null, h('b', null, 'Verified / Reviewed'), ' — two rows, never summed (ADR 0003); radius three counts, never a ratio (ADR 0002, 0014)'),
         h('div', null, h('b', null, 'check rows'), ' — only from a trellis-checks Verdict; the model’s words are labelled as its words'),
-        h('div', null, h('b', null, 'outcome words'), ' — converged · not converged · interrupted · error, from run_end (#653)'),
-        h('div', null, h('b', null, 'not built, by count'), ' — pause/resume, elapsed on the stream, set_budget, plan events, follow-up queue reads, edit events with diffs, read_file over rpc, stop-and-send, model prose rows')));
+        h('div', null, h('b', null, 'outcome words'), ' — converged · not_converged · interrupted · error, run_end’s own words with its exit code (#653, #803)'),
+        h('div', null, h('b', null, 'not built, by count'), ' — model prose rows, a check’s command, a refusal count, stop-and-send as one command, reordering what was sent, and the fields inside the trail’s radius, context, actions and steering')));
   }
 
   // ---------- Page ----------
@@ -1829,7 +1829,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
             h(T.Panel, { title: 'Where it is', meta: h(T.Status, { tone: state === 'running' ? 'signal' : state === 'waiting' ? 'warn' : 'idle', live: state === 'running' }, state === 'running' ? 'live' : state) }, h(Where, { state: state, phase: phase, turn: turn || 7, limits: limits })),
             h(T.Panel, { title: 'Budget', meta: inFlight(state) ? 'two numbers per row' : 'ceilings' }, h(Budget, { state: state, turn: turn || 7, elapsed: elapsed, limits: limits, onRaise: function (k, v) { var n = Object.assign({}, limits); n[k] = v; setLimits(n); } })),
             h(T.Panel, { title: 'Last message', meta: 'the model’s words' }, h(LastWords, { text: LAST_MODEL_TEXT, turn: 6, onReply: function () { steerText('About your last message: '); } })),
-            h(T.Panel, { title: 'Plan', meta: h(T.Status, { tone: 'down' }, 'not built') }, h(Plan, { steps: plan, turn: turn || 7, onChange: setPlan, onSteer: function (t) { steerText('Plan update: ' + t); } }))),
+            h(T.Panel, { title: 'Plan', meta: 'the model’s, from plan events' }, h(Plan, { steps: plan, turn: turn || 7, onChange: setPlan, onSteer: function (t) { steerText('Plan update: ' + t); } }))),
           h(T.Panel, { title: 'Action log', meta: h(React.Fragment, null, h(T.Status, { tone: 'signal', live: state === 'running' }, (turnsShown) + ' turns'), state === 'running' ? h(T.Keycap, { keys: '↧', label: 'follows the end' }) : null), style: { padding: 0 } },
             h(Transcript, { turns: TURNS, turnsShown: turnsShown, state: state, phase: phase, pendingSteers: pendingSteers, onOpen: openFile, onAnswer: function () { setState('running'); } })),
           h('div', { className: 'cd-rv-col' },

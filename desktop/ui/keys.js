@@ -125,6 +125,7 @@ function drawTrail(doc) {
 }
 
 // The overview's panels, collapsed down the left, below the overview only.
+// Below a section (#831) the section the person came through stays marked.
 function drawSiblings(doc) {
   const rail = doc.getElementById("siblings");
   if (path.length < 2) {
@@ -133,7 +134,7 @@ function drawSiblings(doc) {
     return;
   }
   const { signal } = levelScope();
-  const here = path[path.length - 1];
+  const here = path[1];
   const items = sections(doc).map((id) => {
     const b = el(doc, "button", title(doc, id));
     b.type = "button";
@@ -158,7 +159,12 @@ function go(doc, i) {
   leave(doc);
   const left = path.splice(i + 1);
   show(doc);
-  const panel = doc.querySelector(`button[data-enter="${left[0]}"]`);
+  // A level below a section (#831) was entered by a data-burrow button, the
+  // one for the file shown marked current; a section, by its panel.
+  const panel =
+    doc.querySelector(`button[data-enter="${left[0]}"]`) ??
+    doc.querySelector(`button[data-burrow="${left[0]}"][aria-current="true"]`) ??
+    doc.querySelector(`button[data-burrow="${left[0]}"]`);
   if (panel) panel.focus();
 }
 
@@ -170,6 +176,20 @@ export function enter(doc, id) {
   if (section === null || id === "overview") return;
   leave(doc);
   path.splice(1, path.length - 1, id);
+  show(doc);
+  const heading = doc.getElementById(section.getAttribute("aria-labelledby"));
+  if (heading) heading.focus();
+}
+
+// Shows the levels `below` the overview, a section and what the person
+// burrows into under it (#831: the Code level below Run, a file below
+// Code), whatever level is shown now. The last one's heading takes the
+// focus, as entering a section's does.
+export function burrow(doc, below) {
+  const section = doc.getElementById(below[below.length - 1]);
+  if (section === null || below.length + 1 > LEVELS) return;
+  leave(doc);
+  path.splice(1, path.length - 1, ...below);
   show(doc);
   const heading = doc.getElementById(section.getAttribute("aria-labelledby"));
   if (heading) heading.focus();

@@ -9,7 +9,8 @@ import (
 // the Trail that says what is happening right now, the pane that says where
 // the run is, and trellis's newest stderr line. Every figure is one trellis
 // reported or this view's own clock, marked * as its own; one that was not
-// reported is Dash, never 0 or a guess (#911).
+// reported is Dash, never 0 or a guess (#911). The clock is trellis's own
+// once it reports one (#906).
 
 // Phase is what a run is on, as its last event said: the model being
 // called for a turn, or the tool the last turn ran.
@@ -30,8 +31,17 @@ type Now struct {
 	Phase Phase
 	// Waiting is set while a question trellis asked waits on the person.
 	Waiting bool
+	// EngineClock is set when the Budget's elapsed time counts on from an
+	// elapsed_ms trellis sent (#906), and clear when it is this view's own.
+	EngineClock bool
 	// Stopping is set once a stop was sent and the run has not ended.
 	Stopping bool
+	// Paused is set from the loop's paused event to its resumed event or
+	// the run's end (#806): only the event says the run is held. PauseAsked
+	// is set from a pause sent until that event or the pause's answer: the
+	// strip still says RUNNING, and offers resume, which withdraws a pause
+	// not yet reached, as trellis counts a pause asked as one.
+	Paused, PauseAsked bool
 	// Outcome and Exit are the last run_end's own words, for an ended run;
 	// "" and nil when no run has ended or it did not say.
 	Outcome string
@@ -55,6 +65,8 @@ func stateWord(s State) string {
 		return "STOPPING"
 	case s.Running && s.Now.Waiting:
 		return "WAITING ON YOU"
+	case s.Running && s.Now.Paused:
+		return "PAUSED"
 	case s.Running:
 		return "RUNNING"
 	case s.Now.Outcome != "":
@@ -84,16 +96,20 @@ func Activity(p Phase) string {
 }
 
 // nowStrip is the Now strip's row as spans (#911, the NowStrip card): the
-// state as a Status, the time by this view's clock, the turn as a Meter
-// against the run's ceiling, what the run is on (the last turn's tool →
-// target when it ran one), and while a question waits the keys that
-// answer it.
+// state as a Status, the run's time (clockText), the turn as a Meter
+// against the run's ceiling, the pause key, what the run is on (the last
+// turn's tool → target when it ran one), and while a question waits the
+// keys that answer it. The pause key comes before what the run is on,
+// which is the part the row cuts when it runs short.
 func nowStrip(s State) []Span {
 	gap := Span{Text: "  "}
 	out := []Span{{Text: " "}, statusSpan(stateWord(s), nowRole(s))}
 	if s.Running || s.Now.Outcome != "" {
 		out = append(out, gap, Span{Text: clockText(s)}, gap)
 		out = append(out, meter("", turnUsed(s), s.Budget.MaxIterations, meterCellsShort)...)
+	}
+	if k, ok := pauseKey(s); ok {
+		out = append(out, gap, Span{Text: keyRow(k), Role: RoleLabel})
 	}
 	// Before its first model call a run is on nothing yet, and the strip
 	// says nothing for it rather than "none".
@@ -110,12 +126,67 @@ func nowStrip(s State) []Span {
 	return out
 }
 
-// clockText is the run's time by this view's clock, marked * as its own:
-// trellis does not report its own yet (#906), and this one pauses while a
-// question waits on the person. A run in flight reads 0:00* until the
-// clock's first second; a run whose time this view never measured, Dash.
+// pauseKey is the Now strip's one pause control (#857), as the desktop's
+// (#837): pause, or resume once a pause is asked or held, while a run is in
+// flight and not stopping. Not while a question waits: the box takes the
+// keys then.
+func pauseKey(s State) (key, bool) {
+	switch {
+	case !s.Running || s.Now.Stopping || s.Now.Waiting:
+		return key{}, false
+	case s.Now.Paused || s.Now.PauseAsked:
+		return key{"^P", "resume"}, true
+	}
+	return key{"^P", "pause"}, true
+}
+
+// The register dial's faces (#857), the brand book's Ascii and the
+// desktop's (#836): one for a screen with no run yet and one for a run
+// that has ended, the same face whatever the outcome, since a face that
+// differed by outcome would be a status, which play never is (DESIGN.md
+// section 3.1).
+const (
+	FaceEmpty = "(•_•)"
+	FaceEnded = "(•‿•)"
+)
+
+// playFace is the playful register's face and copy for the Now strip,
+// only where the strip has no run to show: before any run, and once one
+// has ended. Serious, and while a run is in flight, nothing. It is chosen
+// from the strip's state alone and names no figure, state word or outcome.
+func playFace(s State) (Span, bool) {
+	switch {
+	case !s.Playful || s.Running:
+		return Span{}, false
+	case s.Now.Outcome != "":
+		// Ended, as the strip's own word says it.
+		return Span{Text: FaceEnded + " that one is over", Role: RolePlay}, true
+	}
+	return Span{Text: FaceEmpty + " nothing here yet", Role: RolePlay}, true
+}
+
+// withFace is the strip with the playful face after it, when the face fits
+// beside the strip and what stands on its right (right cells, 0 for
+// nothing): the face is the first thing the row gives up, never a key or
+// a figure.
+func withFace(s State, now []Span, right, w int) []Span {
+	f, ok := playFace(s)
+	if !ok || spansWidth(now)+2+Width(f.Text)+right+1 > w {
+		return now
+	}
+	return append(append([]Span{}, now...), Span{Text: "  "}, f)
+}
+
+// clockText is the run's time. Once trellis reports its own (elapsed_ms,
+// #906) it is that figure, counted on between events, and unmarked; until
+// then, and for a run whose run_end carried none, it is this view's clock,
+// marked * as its own. Either pauses while a question waits on the person.
+// A run in flight reads 0:00* until the first figure; a run whose time
+// nothing measured, Dash.
 func clockText(s State) string {
 	switch {
+	case s.Budget.ElapsedSecs != nil && s.Now.EngineClock:
+		return Clock(*s.Budget.ElapsedSecs)
 	case s.Budget.ElapsedSecs != nil:
 		return Clock(*s.Budget.ElapsedSecs) + "*"
 	case s.Running:
@@ -151,8 +222,13 @@ func where(s State, w, h int) []string {
 	if r := Plain(s.Now.Root); r != "" {
 		root = baseName(r)
 	}
+	phase := Activity(s.Now.Phase)
+	if s.Running && s.Now.Paused {
+		// The desktop's words for a held run (#837).
+		phase = "paused before the next model call"
+	}
 	rows := []Row{
-		{Text: "  phase    " + Activity(s.Now.Phase)},
+		{Text: "  phase    " + phase},
 		{Text: "  runtime  " + runtime},
 		{Text: "  control  " + Dash, Role: RoleLabel},
 		{Text: "  root     " + root},

@@ -3,30 +3,42 @@
   "rpc": {
     "events": {
       "turn": {
-        "always": ["turn", "call", "verdict", "check_kind", "observation"],
+        "always": ["turn", "call", "verdict", "check_kind", "observation", "tool", "target", "wrote", "elapsed_ms", "duration_ms"],
         "model_call_only": ["model_ms"],
         "blast_radius_only": ["resolved", "candidates", "unresolved"],
-        "prompt_driver_only": ["prompt_bytes", "completion_tokens"],
+        "prompt_driver_only": ["prompt_bytes", "completion_tokens", "completion_tokens_used"],
         "response_header_only": ["queue_wait_ms"],
+        "edit_applied_only": ["lines_added", "lines_removed", "start_line", "diff"],
         "absent_when": {
           "model_ms": "the governance audit's turn event, which makes no model call (trellis-loop agent.rs ~909-919)",
           "prompt_bytes": "the governance audit's turn event, which sends no prompt",
           "completion_tokens": "the governance audit's turn event, which reads no reply; or a reply the step read reported no output tokens (the provider stub's replies all report them)",
-          "queue_wait_ms": "a reply the step read carried no x-colibri-queue-wait-ms header"
+          "completion_tokens_used": "a driver that calls no model, the scripted one, which has no count; the governance audit's turn carries the run's count when the driver has one",
+          "queue_wait_ms": "a reply the step read carried no x-colibri-queue-wait-ms header",
+          "lines_added": "any turn but an edit that applied: a refused edit, write_file, bash, a custom tool, and the governance audit's turn",
+          "lines_removed": "as lines_added",
+          "start_line": "as lines_added",
+          "diff": "as lines_added"
         },
         "verdict_values": ["None", "Some(true)", "Some(false)"],
         "check_kind_values": ["", "Typecheck", "Tests", "Import", "Governance"],
-        "check_kind": "\"\" on a turn that ran no check; otherwise the kind of check behind the turn's verdict, as trellis-checks names it (CheckKind, crates/trellis-checks/src/verdict.rs); the governance audit's turn is Governance"
+        "check_kind": "\"\" on a turn that ran no check; otherwise the kind of check behind the turn's verdict, as trellis-checks names it (CheckKind, crates/trellis-checks/src/verdict.rs); the governance audit's turn is Governance",
+        "about": "tool, target and wrote are the trail's record of the turn, from the function the trail's action uses (#800): tool is the tool's name, target what it was pointed at, and wrote is true only for an edit that applied or a file write_file created, so a bash or custom tool's changes are not counted in it. A client takes what a turn touched from these, never from call or observation (#834, #856). elapsed_ms is the run budget's wall clock after the turn (#799): monotonic milliseconds since the loop sent run budget, with every wait on a person in approve mode and every pause (the paused and resumed events) taken out, the figure run budget's max_wall_clock_ms is checked against. lines_added and lines_removed are the whole lines an applied edit added and removed, in every control mode, computed from the text the edit read and wrote, the same hunk an approve-mode question counts (#802); start_line is the 1-based line, in the file before the edit, of the first line it removed or replaced, or with nothing removed the line the added lines went before; diff is a unified diff of that one hunk (--- and +++ naming the path, one @@ -a,b +c,d @@ header, a line of context either side), cut at a line once it passes 8192 bytes with a last line saying how many diff lines were cut, while the counts stay the whole edit's. diff is repository text and model output: a client shows it as text and never interprets it (CLAUDE.md rule 10). A client draws an edit's counts and diff from these (#831, #853). duration_ms is the tool call's time in milliseconds by the monotonic clock, with any wait on a person in approve mode taken out, and on the governance audit's turn the audit's own time (#800). completion_tokens_used is the count run budget's max_completion_tokens is checked against, over the run so far: the completion (output) tokens the replies reported, format retries included; a hosted reply that reported none is counted at its request's max_tokens, so the ceiling trips early rather than never. It is not this turn's completion_tokens, and prompt tokens are never in it. A scripted run calls no model and has no count, so it carries none. A client draws a check's time and the tokens spent against max_completion_tokens from these (#832, #854)."
       },
       "model call": {
-        "always": ["turn"],
+        "always": ["turn", "elapsed_ms"],
         "absent_when": {
           "prompt_bytes": "always: the driver builds the prompt inside next_step, so before the call its size is not yet measured (#614)"
         },
-        "about": "sent before each model call, with the turn number the turn event it produces will carry; the governance audit's turn, which makes no call, has none"
+        "about": "sent before each model call, with the turn number the turn event it produces will carry; the governance audit's turn, which makes no call, has none. elapsed_ms is the run budget's wall clock as the call is made, by the clock the turn's elapsed_ms reads"
       },
       "run budget": {
-        "always": ["max_iterations"]
+        "always": ["max_iterations", "max_wall_clock_ms", "max_completion_tokens"],
+        "prompt_driver_only": ["max_context_bytes"],
+        "absent_when": {
+          "max_context_bytes": "a driver that sends no prompt, the scripted one, which holds nothing to a size. A runtime or hosted driver always has one ([model] context_bytes, else its default)"
+        },
+        "about": "the ceilings the run enforces, sent once as the run's loop starts and again, with every ceiling and in the same shape, at the budget check where a client's set_budget raise takes effect (ADR 0058 section 2, #807), before that iteration's model call; the latest is the one in force. Beside max_iterations (#799), each in the unit of the figure checked against it: max_wall_clock_ms against elapsed_ms ([budget] max_wall_clock_s); max_completion_tokens against the turn's completion_tokens_used ([budget] max_tokens, which counts completion tokens only); max_context_bytes, the byte budget each request is held to ([model] context_bytes, or the endpoint's default; ADR 0024 section 5, ADR 0033), against a turn's prompt_bytes, older observations being elided to fit it (the compacted event). max_context_bytes is the budget as the run starts: a hosted provider's context-overflow refusal lowers it, which a later compacted event's budget shows. A multi-agent run sends one run budget per partition with that partition's share (ADR 0008), and each partition's elapsed_ms reads its own clock. A run budget sent again after a set_budget raise (#807) carries each of these too; max_context_bytes is never raised"
       },
       "steer delivered": {
         "always": ["after_step"]
@@ -41,6 +53,18 @@
           "tiers_disk": "as tiers_vram"
         },
         "about": "sent once per run, before the run's first model request, for an endpoint identified as colibri (ADR 0047 decision 13; #627); never for any other endpoint. runtime is always \"colibri\"; served is the model id colibri listed, cut to 200 characters. kv_slots, tiers_vram, tiers_ram and tiers_disk are colibri's own counts and are absent, never 0, when it did not report them; the three tier counts are separate figures, and no total or share is derived from them. Not in the trail (ADR 0047 decision 13)."
+      },
+      "plan": {
+        "always": ["turn", "steps", "steps_cut", "texts_cut"],
+        "about": "the model's plan (ADR 0058 section 5, #810), sent after the turn of a plan call the gates let through, and only in a run whose repository enables the tool ([tools] enable = [\"plan\"]); a disabled or declined plan call sends none. turn is that turn's number. steps is the plan as kept, a JSON array in one string, since an event's fields are flat: each element {\"text\", \"state\"}, state one of todo, current and done, in the model's order. At most eight are kept, each text at most 200 characters: steps_cut is how many steps past the eighth were dropped and texts_cut how many kept texts were shortened, so a client can say the plan was cut. The text and the state are the model's words (rule 1): a client shows them as text, never interprets them (CLAUDE.md rule 10), and makes no count of done steps. A later plan event replaces the earlier one. A person's edit to the plan goes back as a steer; nothing edits this plan but the model's next plan call"
+      },
+      "paused": {
+        "always": ["turn"],
+        "about": "the run is held (ADR 0058 section 1, #806): sent once, when the loop reaches the hold a client's pause asked for, at the top of an iteration after the model request in flight and the tool call it chose have finished, and before the pause is answered. turn is the model call it holds before, numbered as the model call event numbers it. While held the run asks the model nothing; steer and follow_up are accepted and wait, so a steer sent now is in the first request after resumed; approve, abort and quit are read as always, and an abort ends the held run with its rollback and no resumed event. Held time is not charged to the wall clock (elapsed_ms)"
+      },
+      "resumed": {
+        "always": ["turn", "paused_ms"],
+        "about": "the held run goes on (#806): sent by the loop as it leaves the hold, after a client's resume or when rpc's input ends, since nothing could resume it then. turn is the paused event's; paused_ms is how long it was held, in milliseconds by the monotonic clock, the time left out of elapsed_ms and so of the wall-clock budget"
       }
     },
     "framing": {
@@ -53,7 +77,8 @@
         "optional": {
           "run_id": "when a trail was written",
           "restored": "when the outcome is not_converged or interrupted",
-          "error": "when the outcome is error"
+          "error": "when the outcome is error",
+          "elapsed_ms": "when the agent loop ran and returned: its wall-clock spend in milliseconds as the budget measured it, with every wait on a person in approve mode and every pause taken out, the figure the turn's elapsed_ms counts up to. Absent, never a partial figure, for a run the loop did not finish: an interrupt or abort, an error before the loop started, and a partitioned run, whose partitions each spend their own wall clock"
         },
         "outcome_values": ["converged", "not_converged", "error", "interrupted"]
       },
@@ -84,26 +109,11 @@
       },
       "events": {
         "turn": {
-          "always": ["elapsed_ms"],
-          "model_call_only": ["duration_ms"],
+          "always": [],
+          "model_call_only": [],
           "blast_radius_only": ["summarised"],
-          "prompt_driver_only": ["completion_tokens_used"],
-          "absent_when": {
-            "duration_ms": "the governance audit's turn event, which sends none (trellis-loop agent.rs)"
-          },
-          "read_by": {"elapsed_ms": [], "duration_ms": [], "summarised": [], "completion_tokens_used": []},
-          "about": "duration_ms is the tool call's time in milliseconds by the monotonic clock, with any wait on a person in approve mode taken out; summarised is how many of the radius's call sites its observation summarised by file instead of listing them, 0 when it listed every one. elapsed_ms is the run budget's wall clock after the turn: monotonic milliseconds since the loop sent run budget, with every wait on a person in approve mode taken out, the figure run budget's max_wall_clock_ms is checked against. completion_tokens_used is the count max_completion_tokens is checked against, over the run so far: the completion tokens the replies reported, a hosted reply that reported none counted at its request's max_tokens. It is not this turn's completion_tokens, and prompt tokens are never in it. A scripted run calls no model and has no count."
-        },
-        "model call": {
-          "always": ["elapsed_ms"],
-          "read_by": {"elapsed_ms": []},
-          "about": "elapsed_ms is the run budget's wall clock as the call is made, by the clock the turn's elapsed_ms reads"
-        },
-        "run budget": {
-          "always": ["max_wall_clock_ms", "max_completion_tokens"],
-          "prompt_driver_only": ["max_context_bytes"],
-          "read_by": {"max_wall_clock_ms": [], "max_completion_tokens": [], "max_context_bytes": []},
-          "about": "the ceilings beside max_iterations, each in the unit of the figure checked against it: max_wall_clock_ms against elapsed_ms ([budget] max_wall_clock_s); max_completion_tokens against completion_tokens_used ([budget] max_tokens, which counts completion tokens only); max_context_bytes, the byte budget each request is held to ([model] context_bytes, or the endpoint's default; ADR 0024 section 5, ADR 0033), against a turn's prompt_bytes. max_context_bytes is the budget as the run starts: a hosted provider's context-overflow refusal lowers it, which a later compacted event's budget shows. A scripted run sends no prompt and holds none to a size. A multi-agent run sends one run budget per partition with that partition's share (ADR 0008), and each partition's elapsed_ms reads its own clock."
+          "read_by": {"summarised": []},
+          "about": "summarised is how many of the radius's call sites its observation summarised by file instead of listing them, 0 when it listed every one."
         },
         "compacted": {
           "always": ["turn", "elided_turns", "elided_bytes", "request_bytes", "budget"],
@@ -142,6 +152,27 @@
       },
       "list_paths": {
         "always": ["paths"]
+      },
+      "pause": {
+        "always": ["turn"],
+        "about": "takes no fields (ADR 0058 section 1, #806) and is answered once the loop holds, after the paused event: turn is the model call it holds before. Refused with no run in flight; already paused while a pause is held or still asked for; and, after the run's run_end, with the run ended before it reached the hold when the run ended first. A resume before the hold is reached withdraws the pause, which is then refused saying so. When rpc's input ends a pause still waiting is refused and a held run goes on."
+      },
+      "resume": {
+        "always": [],
+        "about": "takes no fields and has no data (#806): answered at once, and the loop's resumed event says how long the run was held. Refused with no run in flight, and not paused when no pause is held or asked for. Before the hold is reached it withdraws the pause, and the run goes on without holding."
+      },
+      "set_budget": {
+        "always": ["max_iterations", "max_wall_clock_ms", "max_completion_tokens"],
+        "about": "{max_iterations?, max_wall_clock_ms?, max_completion_tokens?}, at least one, raises the run in flight's ceilings under the names and units run budget sends them in (ADR 0058 section 2, #807), and is answered at once with every ceiling after the change. A raise is to the run's whole ceiling; a partitioned run would deal it through its shares, never grant it to each partition (CLAUDE.md rule 9). It takes effect at the loop's next budget check, at the top of its next iteration, after any pause and before the steering drain, where run budget is sent again; a tool call or check already under way finishes under the ceiling it started with. A raise that lifts every exhausted ceiling above the spend after the run's one extra turn was granted ends that escalation. A value equal to the ceiling in force changes nothing and sends no run budget, and so does a raise accepted during the run's last turn, which reaches no budget check. Refused whole, changing nothing: with no run in flight; before the loop's first budget check, and once the loop has returned; for a value below the ceiling in force, naming it; for a value that is not a whole number above 0, or for max_iterations one past 4294967295; for max_context_bytes, the driver's, fixed for the run; for any other field; and with no ceiling named. Recorded in no trail until #868."
+      },
+      "withdraw": {
+        "always": ["id", "type"],
+        "type_values": ["steer", "follow_up"],
+        "about": "{id}, the command's own id as approve's is, names the steer or follow_up to take back by the id it was sent with (ADR 0058 section 3, #808); answered at once with that id and the message's type once it is withdrawn. The withdrawn message is never delivered: a steer is in no model request and its own steer response is answered success false, so a client reads two responses with this id, told apart by command; a follow_up's run never starts. It leaves get_state's pending and is not in abort's undelivered. The loop's drain and withdraw decide under one lock, so a steer is either withdrawn or delivered, never both. With several messages sent under one id, the first still waiting is taken. Refused, changing nothing: already delivered once a model request carries the steer or the follow_up's run has started; unknown id when no steer or follow_up waiting in the run in flight, or queued behind it, carries the id (the prompt's own id, and a message delivered in an earlier run of the chain, among them); no run in flight; and an id that is missing or not a non-empty string. Recorded in no trail until #868: a message withdrawn before the loop's drain reached it is in no steering record, and a steer or follow_up withdrawn after the drain set it aside (a follow_up, or a steer drained as the run ended) stays in that run's record as set aside."
+      },
+      "read_file": {
+        "always": ["path", "text", "bytes", "cut"],
+        "about": "{path} answers with one file's text for a whole-file view (ADR 0058 section 4, #809), read-only. path is repository-relative and is refused, by the rule it breaks, when it is absolute, holds a .. component or a control character (list_paths' prefix rule), when list_paths would not offer it (tracked, or untracked and not ignored, byte for byte as git spells it with /), when it resolves outside the root or into .git through a link (trellis_core::paths::resolve_repo_input), when it is not a file, and when the bytes read are not UTF-8. path is the path asked; bytes is the file's size on disk; text is at most 262144 bytes (256 KiB, a display limit), and a file past that is cut at the last whole character before it, with cut true. Bytes past the cap are not read, so they are not checked for UTF-8. text is repository text: a client shows it and never interprets it (CLAUDE.md rule 10), and nothing it answers enters a prompt."
       },
       "list_models": {
         "always": [
@@ -316,14 +347,22 @@
           "root",
           "last_run",
           "pending_approvals",
+          "pending",
           "tier"
         ],
+        "pending_entries": ["pending[].id", "pending[].type", "pending[].message"],
+        "pending_type_values": ["steer", "follow_up"],
+        "pending_about": "each steer and follow_up sent and not yet delivered, oldest first: follow_ups queued behind the run in flight, then what was sent to that run (#801). A steer leaves it as the loop puts it in the model request that carries it, marked before its steer delivered event is written (#808), so a get_state read after that event never lists it; a follow_up leaves it when its own run starts. A steer still waiting when its run ends leaves it then, answered as not delivered. A withdrawn steer or follow_up leaves it when withdraw is answered (#808). message is the text as it was sent.",
         "last_run": "the last run's run_end framing fields, without type, run_id and elapsed_ms",
         "null_when": {
           "run_request_id": "no run is in flight, or the one in flight was started by a command sent with no id",
           "model": "neither set_model nor the configuration's [model] spec names one",
           "last_run": "no run of this rpc process has ended",
-          "tier": "no run of this rpc process has decided its tier yet, or the last run stopped before deciding one; never guessed from the spec"
+          "tier": "no run of this rpc process has decided its tier yet, or the last run stopped before deciding one; never guessed from the spec",
+          "pending[].id": "the steer or follow_up was sent with no id"
+        },
+        "empty_when": {
+          "pending": "no run is in flight, or nothing sent to it is still waiting"
         },
         "tier_label": {
           "heads": ["1", "2", "3", "4", "unknown", "scripted"],
@@ -333,7 +372,7 @@
       },
       "steer": {
         "always": ["after_step"],
-        "about": "answered once a model request carries the steer: after_step is the step it followed, so the request after that step was the first to carry it. Refused, success false, when the run ends before another request."
+        "about": "answered once a model request carries the steer: after_step is the step it followed, so the request after that step was the first to carry it. Refused, success false, when the run ends before another request, or when a withdraw takes it back first (#808)."
       },
       "abort": {
         "always": ["undelivered", "undelivered[].id", "undelivered[].type", "undelivered[].message"],

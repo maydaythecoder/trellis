@@ -252,6 +252,14 @@ on stderr.
   - `get_queue` (*added 2026-10-05, #294; see "get_queue" below*)
   - `list_paths {prefix}` (*added 2026-10-07, #502, ADR 0052; see
     "list_paths" below*)
+  - `read_file {path}` (*added 2026-10-26, #809; ADR 0058 §4 holds its
+    rules*)
+  - `pause` and `resume` (*added 2026-10-26, #806; ADR 0058 §1 holds
+    their rules*)
+  - `set_budget {max_iterations?, max_wall_clock_ms?, max_completion_tokens?}`
+    (*added 2026-10-26, #807; ADR 0058 §2 holds its rules*)
+  - `withdraw {id}` (*added 2026-10-26, #808; ADR 0058 §3 holds its
+    rules*)
   - `vault_search {query, limit?}` and `vault_graph {note}` (*added
     2026-10-06, #295; see "vault_search and vault_graph" below*)
   - `vault_check` (*added 2026-10-12, #631; see "vault_check" below*)
@@ -277,7 +285,10 @@ on stderr.
   `list_paths`, trellis's own, adds one more to what `get_commands` lists
   (#502), and `list_models`, trellis's own, one more again (#564);
   `get_symbols` and `get_history`, trellis's own, two more (the Atlas,
-  2026-10-11).)
+  2026-10-11); `read_file`, trellis's own, one more (ADR 0058, #809);
+  `pause` and `resume`, trellis's own, two more (ADR 0058, #806);
+  `set_budget`, trellis's own, one more (ADR 0058, #807); `withdraw`,
+  trellis's own, one more (ADR 0058, #808).)
   - `steer`, `follow_up` and `clear_queue` need mid-run input (ADR 0021
     1.2, deferred). *Amended 2026-09-29 (#114): `steer` and `follow_up`
     are built, on the owner's decision of 2026-09-28 recorded there; see
@@ -423,8 +434,34 @@ on stderr.
   - No `clear_queue`, by the owner's decision. *Amended 2026-10-26 (#798,
     ADR 0058 §3):* `withdraw {id}` takes back one steer or follow-up the
     person names while it is still waiting, and is refused once it has been
-    delivered; `clear_queue` stays excluded. Accepted, not built (#808).
-    The steering record in the trail is #117's.
+    delivered; `clear_queue` stays excluded. Built 2026-10-26 (#808): the
+    loop's drain and `withdraw` decide each message under one lock
+    (`trellis_loop::SteeringFates`), so a steer is either withdrawn and in
+    no request or delivered and refused, and the `id` is the command's
+    own, as `approve`'s is. The steering record in the trail is #117's,
+    and a withdrawal is recorded there by #868, not before.
+  - *Amended 2026-10-26 (#801):* `get_state` answers with `pending`, each
+    steer and follow-up sent and not yet delivered, as `{id, type,
+    message}`, oldest first, so a client reads what is waiting from the
+    engine instead of keeping its own copy. The follow-ups queued behind
+    the run in flight come first, then what was sent to that run. The
+    chain's follow-up queue is held where `get_state` reads it, under one
+    lock from the moment a run's steering record is closed until the next
+    run starts, so a follow-up moving from one to the other is listed once
+    and leaves the list when its own run starts. A steer leaves it at the
+    model request that carries it, the one its `steer delivered` event
+    announces, before its `steer` response is written. *Amended
+    2026-10-26 (#808):* the loop marks the steer delivered as it drains it,
+    before that event is written, so a `get_state` read after the event no
+    longer lists it; until #808 the server learned of the delivery only as
+    the request was made, after the event. A steer still
+    waiting when its run ends leaves it then, answered as not delivered.
+    `message` is the text as sent, a string and nothing else (ADR 0007).
+    With no run in flight it is `[]`. Listed in
+    `tests/client_contract.json`; evidence:
+    `rpc_get_state_lists_what_is_not_yet_delivered` in `tests/modes.rs`
+    and `rpc_contract_lists_every_field_get_state_answers` in
+    `tests/cli.rs`.
   - Evidence: `rpc_steer_reaches_the_next_model_request_and_cannot_converge_the_run`,
     `rpc_steer_and_follow_up_are_refused_with_no_run_in_flight` and
     `rpc_steer_follow_ups_start_as_new_prompts_after_run_end_in_order` in
@@ -706,7 +743,7 @@ on stderr.
     | `steer` | built | #114 |
     | `follow_up` | built | #114 |
     | `abort` | built | the Ctrl-C path: rollback, then a trail |
-    | `clear_queue` | not built | excluded by the owner; `abort` hands back everything queued, and `withdraw` (ADR 0058 §3, 2026-10-26; not built, #808) is to take back one item |
+    | `clear_queue` | not built | excluded by the owner; `abort` hands back everything queued, and `withdraw` (ADR 0058 §3, built 2026-10-26, #808) takes back one item |
     | `new_session` | not built | deferred with the session-tree commands (ADR 0021 8.1–8.4); each prompt is a fresh run |
     | `get_state` | built | |
     | `get_messages` | built | the current or last run's turns |

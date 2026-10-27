@@ -24,7 +24,7 @@ func TestPanesCheckRowsComeOnlyFromASomeVerdict(t *testing.T) {
 	feed(m, turn(3, "run_checks", map[string]any{"verdict": "Some(false)", "check_kind": ""}))
 	feed(m, turn(4, "edit a.py", map[string]any{"verdict": "None"}))
 	feed(m, turn(5, "read_file a.py", map[string]any{"verdict": "true"}))
-	want := []view.Check{{Name: "pytest", Passed: true}, {Name: "mypy", Passed: false}, {Name: "check", Passed: false}}
+	want := []view.Check{{Name: "pytest", Passed: true, Turn: 1}, {Name: "mypy", Passed: false, Turn: 2}, {Name: "check", Passed: false, Turn: 3}}
 	if m.Checks.Len() != len(want) {
 		t.Fatalf("checks %+v", m.Checks.Slice())
 	}
@@ -40,16 +40,16 @@ func TestPanesCheckRowsComeOnlyFromASomeVerdict(t *testing.T) {
 	}
 }
 
-// An edit whose observation has applied: true, and a write_file that
-// created its file, are writes and pending edits; a refused edit is an
-// action and not an edit, so the panes never contradict each other.
+// An edit that applied, and a write_file that created its file, are writes
+// and pending edits; a refused edit is an action and not an edit, so the
+// panes never contradict each other.
 func TestPanesOnlyAnAppliedWriteIsAPendingEdit(t *testing.T) {
 	m := running(t)
-	feed(m, turn(1, "edit app/calc.py", map[string]any{"observation": "error: old text not found"}))
-	feed(m, turn(2, "edit app/calc.py", map[string]any{"observation": "applied: false"}))
-	feed(m, turn(3, "edit app/calc.py", map[string]any{"observation": "applied: true\n1 line changed"}))
-	feed(m, turn(4, "write_file app/new.py", map[string]any{"observation": "created app/new.py"}))
-	feed(m, turn(5, "write_file app/x.py", map[string]any{"observation": "error: exists"}))
+	feed(m, turn(1, "edit app/calc.py", map[string]any{"observation": "error: old text not found", "tool": "edit", "target": "app/calc.py", "wrote": false}))
+	feed(m, turn(2, "edit app/calc.py", map[string]any{"observation": "applied: false", "tool": "edit", "target": "app/calc.py", "wrote": false}))
+	feed(m, turn(3, "edit app/calc.py", map[string]any{"observation": "applied: true\n1 line changed", "tool": "edit", "target": "app/calc.py", "wrote": true}))
+	feed(m, turn(4, "write_file app/new.py", map[string]any{"observation": "created app/new.py", "tool": "write_file", "target": "app/new.py", "wrote": true}))
+	feed(m, turn(5, "write_file app/x.py", map[string]any{"observation": "error: exists", "tool": "write_file", "target": "app/x.py", "wrote": false}))
 	if m.Actions.Len() != 5 {
 		t.Fatalf("%d actions, want every turn", m.Actions.Len())
 	}
@@ -68,6 +68,40 @@ func TestPanesOnlyAnAppliedWriteIsAPendingEdit(t *testing.T) {
 	}
 }
 
+// The risk (#856): the TUI reads what a turn touched from its call label and
+// observation text while the trail reads it from wrote (#800), so the edits
+// pane lists a file the trail says no turn wrote, or misses one it did. A
+// file the model read can hold the text applied: true; an edit's
+// observation need not say it.
+func TestPanesATurnsEditsComeFromWroteNotFromItsObservation(t *testing.T) {
+	m := running(t)
+	feed(m, turn(1, "read_file notes.txt", map[string]any{
+		"observation": "edit notes.txt\napplied: true (+1 -1)",
+		"tool":        "read_file", "target": "notes.txt", "wrote": false,
+	}))
+	if m.Edits.Len() != 0 || m.Actions.Slice()[0].Wrote {
+		t.Fatalf("a read whose text says applied: true was an edit: %+v %+v", m.Edits.Slice(), m.Actions.Slice())
+	}
+
+	// An applied edit whose observation does not say so.
+	feed(m, turn(2, "edit a.py", map[string]any{
+		"observation": "    return 2", "tool": "edit", "target": "a.py", "wrote": true,
+	}))
+	if m.Edits.Len() != 1 || m.Edits.Slice()[0].Path != "a.py" {
+		t.Fatalf("an applied edit is not pending: %+v", m.Edits.Slice())
+	}
+	if a := m.Actions.Slice()[1]; a != (view.Action{Tool: "edit", Target: "a.py", Wrote: true}) {
+		t.Fatalf("the action is not the event's: %+v", a)
+	}
+
+	// A turn whose event carried no wrote is not counted as an edit,
+	// whatever its call and observation say.
+	feed(m, turn(3, "edit b.py", map[string]any{"observation": "applied: true (+1 -1)"}))
+	if m.Edits.Len() != 1 || m.Actions.Slice()[2].Wrote {
+		t.Fatalf("a turn with no wrote was an edit: %+v %+v", m.Edits.Slice(), m.Actions.Slice())
+	}
+}
+
 // #635: an approval answer is about the next call, not the edits already
 // shown. The loop reports an edit once it has written it and asks before
 // the next call, so a.py is in the tree whatever the answer: marking it
@@ -81,10 +115,10 @@ func TestPanesAnApprovalAnswerKeepsTheEditsAsReported(t *testing.T) {
 		said string
 	}{{'y', true, "approved"}, {'n', false, "declined"}} {
 		m := running(t)
-		feed(m, turn(1, "edit a.py", map[string]any{"observation": "applied: true"}))
+		feed(m, turn(1, "edit a.py", map[string]any{"observation": "applied: true", "tool": "edit", "target": "a.py", "wrote": true}))
 		feed(m, approval("a1", "edit a.py (+1 -1)", "apply the edit?"))
 		key(m, c.key)
-		if m.Edits.Len() != 1 || m.Edits.Slice()[0] != (view.Edit{Path: "a.py", Status: view.Proposed}) {
+		if m.Edits.Len() != 1 || m.Edits.Slice()[0] != (view.Edit{Path: "a.py", Status: view.Proposed, Turn: 1}) {
 			t.Fatalf("%c: %+v", c.key, m.Edits.Slice())
 		}
 		out := m.TakeOutbox()
@@ -245,7 +279,7 @@ func TestPanesAResizeKeepsTheOffsetWithinTheTop(t *testing.T) {
 // The next run starts with empty panes; the last run's stay until then.
 func TestPanesANewRunStartsClean(t *testing.T) {
 	m := running(t)
-	feed(m, turn(1, "edit a.py", map[string]any{"observation": "applied: true", "verdict": "Some(true)"}))
+	feed(m, turn(1, "edit a.py", map[string]any{"observation": "applied: true", "verdict": "Some(true)", "tool": "edit", "target": "a.py", "wrote": true}))
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
 	if m.Edits.Len() != 1 || m.Checks.Len() != 1 {
 		t.Fatal("the panes were cleared at the run's end")

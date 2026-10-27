@@ -190,3 +190,20 @@ func TestMainFinishSaysWhenTheChildExitedUnasked(t *testing.T) {
 		t.Fatalf("a quit that ended cleanly: exit %d, stderr %q", code, errb.String())
 	}
 }
+
+// The risk (#857): a mistyped --register drawn as serious, or as playful,
+// without a word, so the person cannot tell the dial did not take. Serious
+// is the default; anything but serious or playful is refused, as --theme's
+// values are.
+func TestMainRegisterIsSeriousOrPlayful(t *testing.T) {
+	if a, err := parseArgs([]string{"--root", "r"}, &bytes.Buffer{}); err != nil || a.reg != "serious" {
+		t.Fatalf("without --register: %+v %v", a, err)
+	}
+	if a, err := parseArgs([]string{"--root", "r", "--register", "playful"}, &bytes.Buffer{}); err != nil || a.reg != "playful" {
+		t.Fatalf("--register playful: %+v %v", a, err)
+	}
+	var out, errb bytes.Buffer
+	if code := run([]string{"--root", t.TempDir(), "--register", "cheerful"}, &out, &errb); code != 2 || !strings.Contains(errb.String(), "--register") {
+		t.Fatalf("--register cheerful: exit %d, stderr %q", code, errb.String())
+	}
+}

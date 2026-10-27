@@ -8,7 +8,9 @@
 source "$(dirname "$0")/lib.sh"
 n="${1:?usage: ticket-verify.sh <issue-number>}"
 
-cmd=$(gh issue view "$n" --json body -q .body \
+# shellcheck source=../tickets/issues.sh
+source "$ROOT/scripts/tickets/issues.sh"
+cmd=$(issue_body "$n" \
   | awk '/^## Verify/{v=1; next} v && /^```/{ if (in_) exit; in_=1; next } in_{print}')
 [ -n "$cmd" ] || fail "#$n has no fenced command under '## Verify'"
 

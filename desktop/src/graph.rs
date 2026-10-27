@@ -704,7 +704,7 @@ mod tests {
 
     #[test]
     fn edit_counts_applied_writes_apart_from_calls() {
-        // The risk (tui_bridge.rs): a refused edit counted as a write, or
+        // The risk: a refused edit counted as a write, or
         // writes folded into calls, so the graph says the run changed the
         // tree more (or less) than it did.
         let l = layout([
