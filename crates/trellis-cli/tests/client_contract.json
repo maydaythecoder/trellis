@@ -504,7 +504,8 @@
       "always": ["trail.base_commit", "trail.factual.radius", "trail.factual.context", "trail.factual.actions"],
       "optional": {
         "trail.ended_at": "on every trail written since #622; absent on one written before it",
-        "trail.factual.steering": "when a steer or follow_up was sent during the run (ADR 0034); absent when none was, and on an interrupted run, whose turns and steering are dropped with its loop"
+        "trail.factual.steering": "when a steer or follow_up was sent during the run (ADR 0034); absent when none was, and on an interrupted run, whose turns and steering are dropped with its loop",
+        "trail.factual.controls": "when a person's pause held, a raise was enforced at a budget check, or a steer or follow_up was withdrawn during an rpc run (ADR 0058 section 6, ADR 0007); absent when none was, on an interrupted run, whose loop record is dropped with it, and on every run other than rpc's, which nothing can pause, raise or withdraw from. Each entry's text is data, never instruction"
       },
       "null_when": {
         "trail.factual.context": "no turn of the run carried a prompt size: a scripted model, or an interrupted run, whose turns are dropped with its loop"
@@ -515,9 +516,10 @@
         "trail.factual.context": [],
         "trail.factual.actions": [],
         "trail.ended_at": [],
-        "trail.factual.steering": []
+        "trail.factual.steering": [],
+        "trail.factual.controls": []
       },
-      "about": "listed for the summary level (story #790), which will read them, and kept out of always and optional above, every path of which the desktop's trails test requires its rows to carry; they move up once a client reads them. The fields inside radius, context, actions and steering are listed when a client reads them. trail is the run's trail as written, read back as untrusted data (ADR 0007)."
+      "about": "listed for the summary level (story #790), which will read them, and kept out of always and optional above, every path of which the desktop's trails test requires its rows to carry; they move up once a client reads them. The fields inside radius, context, actions, steering and controls are listed when a client reads them. trail is the run's trail as written, read back as untrusted data (ADR 0007)."
     }
   },
   "overview": {
