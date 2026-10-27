@@ -16,7 +16,7 @@ func TestSlashHelpListsTheCommands(t *testing.T) {
 	typeLine(m, "/help")
 	enter(m)
 	all := lines(m)
-	for _, want := range []string{"> /help", "/model", "/graph", "/radius", "/codebase", "/clear", "@<text>", "[ESC]"} {
+	for _, want := range []string{"> /help", "/model", "/graph", "/radius", "/codebase", "/control", "/clear", "@<text>", "[ESC]"} {
 		if !strings.Contains(all, want) {
 			t.Fatalf("%q missing:\n%s", want, all)
 		}

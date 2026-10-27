@@ -189,11 +189,11 @@ func TestRaiseSendsSetBudgetAndDrawsOnlyTheRunBudget(t *testing.T) {
 		t.Fatalf("the line was not given back: %q, raising %q", m.Input, m.raising)
 	}
 	respond(m, out[0].Cmd["id"], "set_budget", map[string]any{"max_iterations": 30, "max_wall_clock_ms": 300000, "max_completion_tokens": 5000})
-	if v := screen(m); !strings.Contains(v, "TURNS ████░░░░░░░░░░░░ 3/10") || strings.Contains(v, "/30") {
+	if v := screen(m); !strings.Contains(v, "TURNS        ████░░░░░░░░░░░░ 3/10") || strings.Contains(v, "/30") {
 		t.Fatalf("the ceiling moved before the run budget said so:\n%s", v)
 	}
 	feed(m, event("run budget", map[string]any{"max_iterations": 30, "max_wall_clock_ms": 300000, "max_completion_tokens": 5000}))
-	if v := screen(m); !strings.Contains(v, "TURNS █░░░░░░░░░░░░░░░ 3/30") || !strings.Contains(v, "TIME 1:00") {
+	if v := screen(m); !strings.Contains(v, "TURNS        █░░░░░░░░░░░░░░░ 3/30") || !strings.Contains(v, "WALL CLOCK   ███░░░░░░░░░░░░░ 1:00/5:00") {
 		t.Fatalf("the run budget sent again did not move the ceiling, or emptied what was counted:\n%s", v)
 	}
 
