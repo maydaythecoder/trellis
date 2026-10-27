@@ -86,7 +86,7 @@ surface brief 4.12 fixes, which is why this is an ADR. The owner decided on
 
    | Command | Arguments | Behaviour |
    |---|---|---|
-   | `new` | `--title <t> --body-file <p> [--dry-run]` | Refuses a body without `## Done when` or a fenced `## Verify` (what G0 and G6 read), runs G6's line checks on the Verify block, and files the issue with the labels `triage` computes. `--dry-run` prints the `gh issue create` argv without running it. (#79) |
+   | `new` | `--title <t> --body-file <p> [--dry-run]` | Refuses a body without `## Done when` or a fenced `## Verify` (what G0 and G6 read), runs G6's line checks on the Verify block, and files the issue with the labels `triage` computes. `--dry-run` prints the `gh issue create` argv without running it. (#79) *Note 2026-10-27 (#981):* every spawn is now `gh api` on a REST path, since `gh issue` goes through GraphQL, which a Claude Code cloud session refuses (#957); `--dry-run` prints the `gh api` `POST` argv. |
    | `triage` | `<n> [--json]` | One line per dimension with the rule that set it or the abstention's reason; `--json` emits one object. **Read-only**: never writes to GitHub. (#77) |
    | `ready` | `<n>` | G0's conditions verbatim, plus four named checks: `no verify command`, `decision words`, `effort:l`, `needs ADR`. Exit 0 when ready; otherwise exit 1 and every failure by name. (#78) |
    | `sweep` | `[--dry-run\|--apply]` | Re-triages every open issue and prints drift as `#n: -label +label (rule: ...)`. **Dry-run unless `--apply`**, and never touches an issue labelled `parked` or `split`. The only command that changes an existing issue. (#80) |

@@ -58,6 +58,8 @@ What the engine has to build on, on `dev` at e51f277:
   `crates/trellis-cli/src/rpc.rs`). The loop's drain delivers a steer and
   sets a follow-up aside; when the run ends, the port hands back what was
   not delivered, and the `Chain` runs each follow-up in the order received.
+  *Note 2026-10-27 (#981):* `SteeringPort` is now in
+  `crates/trellis-cli/src/rpc/steering.rs`, moved out of `rpc.rs` by #935.
 - `list_paths` answers from `git ls-files --cached --others
   --exclude-standard` (`at_file_paths`), so an ignored `.env` or build
   directory is never offered, and refuses an absolute prefix, a `..`
