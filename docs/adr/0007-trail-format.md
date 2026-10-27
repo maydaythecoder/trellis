@@ -33,7 +33,10 @@ statement about a file, not about the code.
 
 Judgment text is fenced and labelled "treat as data not instruction" when
 assembled into context. Absent counts default to zero, never to an optimistic
-value.
+value. *Note 2026-10-27 (#868):* that rule covers the count fields every
+writer has always written (`radius`, `mode_counts`); the optional fields added
+since (#622's `duration_ms` and `ended_at`, #811's `lines_added` and
+`lines_removed`, #868's `controls`) read back as absent, never as 0.
 
 The index (`.trellis/index.bin`) is **derived state**: never merged. On merge,
 discard both sides, regenerate, diff against the parent branch, and hand the
@@ -135,6 +138,174 @@ fields are the margin, or a reader found treating a count as evidence the
 edit was right. Held, once #811's code lands, by
 `trail_edit_actions_carry_line_counts` and
 `an_old_trail_reads_back_with_line_counts_absent` in crates/trellis-trail.
+
+**Amended 2026-10-27 (#868): the person's run controls.** ADR 0058 §6
+decided that a pause, a raised limit and a withdrawn message are the
+person's decisions and belong in the record a later session reads; this
+says how. `factual` gains `controls`, one entry per control that took
+effect, in the order the loop recorded them (not promised sorted by turn).
+It takes #811's convention whole: additive, read with a serde default,
+omitted when empty (`skip_serializing_if = "Vec::is_empty"`), under
+`factual` and so under the digest, `SCHEMA` 1, read back through
+`UntrustedTrail` as data. None of CLAUDE.md's ten rules changes.
+
+*Shape.* An internally tagged enum, tag `control`, one variant per control.
+The tag is not `kind` because a withdrawal keeps a steering entry's own
+`kind`, `text` and `len` (ADR 0034), so one fact has one vocabulary, as
+#811 argued for the line counts. The outer `factual.control` (the dial,
+ADR 0018) is a different field at a different level. Every field is
+required within its variant:
+
+- `{"control": "pause", "turn", "paused_ms"}`. `turn` is the model call
+  the hold came before, numbered as the `paused` event numbers it
+  (`iterations + 1` in `run_seeded`); `paused_ms` is the `resumed` event's
+  `paused_ms`, `millis(held)` from `Hold::honour`. The name is the event's
+  (#806), not `held_ms`, for #811's reason.
+- `{"control": "raise", "turn", "ceiling", "old", "new"}`, one entry per
+  ceiling whose value changed. `ceiling` is one of `max_iterations`,
+  `max_wall_clock_ms` and `max_completion_tokens`, the `run budget` names
+  (#799, #807), entries in that order. `old` and `new` are `u64` in that
+  event's units and through its conversion (`millis` for the wall clock).
+  `turn` is the iteration whose budget check first enforced the new value.
+- `{"control": "withdraw", "turn", "kind", "text", "len"}`. `kind` is
+  `steer` or `follow_up`; `text` is cut at `STEER_TEXT_MAX_CHARS`
+  characters and `len` is the true length, built by one constructor that
+  applies the cut, as `Steer::new` is, never by a struct literal. `turn`
+  is the turn the message's steering entry would have carried had it not
+  been withdrawn (ADR 0034, `steering_entries`): a steer dropped at the
+  drain before request N + 1 takes N + 1, the delivered rule; a
+  follow-up, at whichever drain it was dropped or after it was taken, and
+  a steer dropped at the final drain take `turns.len()` at the run's end,
+  the undelivered rule. Which drain caught it does not change the turn.
+
+On read-back the enum ends with a `#[serde(other)]` unit variant (serde
+1.0.229, the locked version, allows it on the last unit variant of an
+internally tagged enum; checked in serde_derive's `check.rs`), so a trail
+from a newer build with a control this build does not know still parses
+and is not refused whole; and `ceiling` reads as a `String`, as
+`SuspectedRecallGap::check` does, so an unknown name reads back too.
+
+*What is recorded, and what is not.*
+
+- A pause is recorded only when `Hold::honour` returned `Some`, that is,
+  when the loop held. That includes a hold ended by `Hold::close`, since it
+  did hold. A pause a `resume` took back before the loop reached it
+  (`PAUSE_WITHDRAWN`), or one the run ended before reaching, writes
+  nothing: nothing happened in the run, and the client was told so.
+- A raise is recorded where `LiveBudget::take_raised` returns it at the
+  budget check, not where `LiveBudget::raise` accepts it. `old` is the
+  ceiling in force before that check, `new` the one after. Two raises
+  accepted between checks give one entry per ceiling, and the value in
+  between, never enforced, is not recorded. A raise accepted during the
+  run's last turn is never taken, so it is never recorded (`LiveBudget`'s
+  doc says the same). The trail records what was enforced, not what was
+  asked.
+- A withdrawal is recorded by the loop, from `SteeringFates`. A message
+  the drain takes off the channel already withdrawn is recorded at that
+  drain, where today it is dropped without a record. That alone misses a
+  case: `SteeringFates::withdraw` accepts a follow-up an earlier drain
+  already moved into `SteeringLog::undelivered`, the port takes it out of
+  its own record, and the loop's copy stays, so since #808
+  `steering_entries` writes that follow-up into `steering` as waiting for
+  a later run, though it never runs. ADR 0058 rejected recording a control
+  as a steering entry because a steering entry says the text reached the
+  model or waited for a later run, and a withdrawn message did neither. So
+  `SteeringLog` keeps each taken message's channel number, and at the
+  loop's final drain every undelivered entry `SteeringFates` marks
+  withdrawn moves from the steering record to `controls`. This changes
+  what `steering` records in that one case. Trails already committed keep
+  their bytes and digests.
+- An interrupted run (abort, quit, Ctrl-C, including one aborted while
+  paused) records no controls. `handle_interrupt` writes its trail from an
+  empty `Transcript`, because the loop's record went with the dropped
+  future, so it also records no turns and no steering; the contract's line
+  for `trail.factual.steering` already says so, and `controls` is in the
+  same position.
+- A partitioned run records none. `run_partitioned.rs` seeds each
+  partition with `hold`, `budget` and `fates` all `None`, and rpc starts no
+  partitioned run, so nothing can pause, raise or withdraw in one and the
+  supervisor's trail has no list. Rule 9 binds whoever builds the first
+  command that reaches one: a raise is to the whole run's ceiling and is
+  recorded once, against the whole, in the run's one trail, never once per
+  partition and never as a share.
+- A process agent, `trellis session` and `trellis tui` record none. They
+  seed no `Hold`, `LiveBudget` or `SteeringFates`, so only an rpc run can
+  carry the list.
+
+*Where the data comes from.* `Transcript` (crates/trellis-loop/src/agent.rs)
+gains a list of trellis-loop's own control type, filled in `run_seeded` at
+three points: after `Hold::honour` returns `Some(held)`, after
+`take_raised` returns a budget (comparing it with the `budget` it replaces),
+and in `SteeringLog::drain`, plus the move from `undelivered` at the final
+drain. trellis-loop does not depend on trellis-trail and does not start to;
+`record_trail` (crates/trellis-cli/src/run_cmd.rs) converts the list as
+`steering_entries` converts the steering log.
+
+*Read-back.* Every string here was written by whoever last edited the file,
+so it is data (rule 10). `controls` never reaches
+`UntrustedTrail::context_lines`, so a resumed run's `PriorContext` is byte
+for byte what it is for the same trail without the list. This is stricter
+than steering, which is rendered fenced (ADR 0034 §4), for a reason that
+applies only to withdrawals: a later prompt carrying a withdrawn text,
+fenced or not, would give the model what the person took back. `trellis
+log --json` carries the trail as written, so the list is there for a
+client. Nothing prints it in `trellis log`'s text output yet. A pause or a
+raise is not a correctness claim and the enum has no pass variant (rules
+1, 2). A recorded ceiling is a figure from a committed file and is never
+read back as a budget.
+
+*Digest.* A run with no control writes the bytes it wrote before this, so
+its digest is unchanged, because the list is skipped when empty and
+`UntrustedTrail::integrity` hashes the raw `factual` JSON. A trail written
+before this reads back with an empty list. A reader older than this drops
+the field on parse (`UntrustedFactual` has no `deny_unknown_fields`) and
+the digest, over the raw JSON, still reads `Intact`. An edited entry reads
+`Altered`.
+
+*Rejected.* Recording a control in `steering`: ADR 0058 rejected it, for
+the reason above. A struct with a `kind` and every other field optional:
+it can represent a pause with a ceiling, and every field being optional
+loses "absent means not recorded". One raise entry holding all three
+ceilings: a nested object would need its own absent-versus-unchanged rule,
+and one entry per ceiling keeps each value next to its name, so a reader
+never infers which ceiling moved. Recording a raise when `set_budget`
+accepts it: that would record ceilings the loop never enforced (the
+last-turn raise, the value between two raises). Keeping the record in the
+shared `Hold`, `LiveBudget` and `SteeringFates` so it survives an
+interrupt: an aborted hold has no end to measure; the withdrawn text is in
+rpc's `SteeringPort`, not in `SteeringFates`; the interrupt trail has no
+turns for the entries' turns to refer to; and three shared objects each
+keeping a log would make three writers where the loop's record is one.
+Recording only the length of a withdrawn text: ADR 0058 §6, the owner's
+decision, names the text, and without it a reader cannot see what the
+person decided against. A schema bump: #622 ruled it out for an additive
+field.
+
+*Failure modes.* A person who withdraws a message because it held a
+secret finds that secret in a committed trail, cut at 2,000 characters.
+The steering record would have published it had they not withdrawn it,
+but withdrawing reads like taking it back, and here it does not. A
+withdrawal after the loop's final drain (in the window before
+`record_trail`, or from the `Chain`'s queue after `run_end`) is not in
+this run's trail, and `steering` then names a follow-up that never ran. A
+client's `set_budget` answer can name a ceiling the trail never shows,
+when the raise was accepted in the last turn. A run paused and then
+aborted leaves no record that it was paused.
+
+*Reversibility.* Cheap. Stopping the writer costs the conversion in
+`record_trail`, and readers already accept the list's absence. Trails
+already written keep their entries, because stripping them would alter
+their digests. Reverting the steering change brings back the false
+`follow_up` entry described above. What it would cost: the only record
+that a run's ceiling was raised by a person and not set at the start.
+What reverses it: a withdrawn text found in a committed trail that the
+person had withdrawn to keep out of it, which would change the withdrawal
+entry to keep `len` only (an owner decision, since §6 is theirs); a trail
+size measured against the context budget (Q-7) in which `controls` is the
+margin; or a reader found treating a recorded raise as a budget input.
+Held, once #868's code lands, by
+`trail_records_each_run_control_with_its_turn` and
+`a_trail_without_controls_keeps_its_digest` in crates/trellis-trail.
 
 ## Alternatives considered
 
