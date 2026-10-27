@@ -413,6 +413,29 @@ format is unchanged. The field is under `rpc.not_every_client` with empty
 `said_is_cut_at_a_character_and_says_so` and
 `a_hosted_step_sends_the_accepted_reply_s_words_and_none_when_blank` in
 trellis-loop, and `rpc_turn_carries_the_models_words` in `tests/modes.rs`.
+*Added 2026-10-27 (#868):* `log --json`'s trail carries
+`trail.factual.controls`, the person's run controls that took effect (ADR
+0058 §6, ADR 0007's amendment of this date): a pause with its turn and
+`paused_ms`, the `resumed` event's figure; one raise per ceiling a budget
+check first enforced, with its `run budget` name and its old and new
+values in that event's units; and a withdrawn steer or follow-up with its
+`kind` and its length in characters, `len`, never its text (the owner's
+decision of 2026-10-27: a later run's model can read the trail). Absent
+when none took effect, on an interrupted run, and on every run but rpc's,
+the only one a person can pause, raise or withdraw from. A follow-up
+withdrawn after the loop took it off the channel, at or before the loop's
+final drain, is now in `controls` and no longer in
+`trail.factual.steering`; one withdrawn after the final drain stays in
+`steering`, as ADR 0007's amendment describes. Every field is data a
+client shows and never interprets (CLAUDE.md rule 10); nothing of the
+list reaches a resumed run's prompt. Listed under
+`log_json.not_every_client.optional` with empty `read_by`; drawing it is
+the summary level's (#790). Held by
+`rpc_run_trail_records_its_pause_raise_and_withdrawal_with_their_turns` in
+`tests/modes.rs`, `trail_records_each_run_control_with_its_turn` and
+`a_trail_without_controls_keeps_its_digest` in trellis-trail, and
+`a_follow_up_withdrawn_after_the_drain_is_in_controls_not_steering` in
+trellis-loop.
 
 ### 7. Auditing Tauri's tree
 

@@ -472,6 +472,7 @@ mod tests {
             turns: vec![],
             final_notice: false,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: None,
             repo: crate::agent::RepoContext::default(),
         };

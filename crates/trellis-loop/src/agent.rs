@@ -577,6 +577,59 @@ pub struct Transcript {
     /// check sets (ADR 0004). Kept out of `turns`, a steer reaches the prompt
     /// and cannot reach `last_check_passed`.
     pub steering: SteeringLog,
+    /// The person's run controls that took effect (ADR 0058 §6), in the
+    /// order the loop met them, for the trail. Never read into a prompt.
+    pub controls: Vec<RunControl>,
+}
+
+/// A pause, a raised ceiling or a withdrawn message, as the loop met it.
+///
+/// trellis-loop's own record, converted for the trail by the binary as the
+/// steering log is (ADR 0007's amendment of 2026-10-27); this crate does
+/// not depend on trellis-trail. Each figure is the one the matching event
+/// carried, through the same conversion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunControl {
+    /// The loop held before model call `turn` for `paused_ms`, the
+    /// `resumed` event's figure.
+    Paused { turn: u32, paused_ms: u64 },
+    /// The budget check before model call `turn` first enforced `new` for
+    /// `ceiling`, named and measured as the `run budget` event's field.
+    Raised {
+        turn: u32,
+        ceiling: &'static str,
+        old: u64,
+        new: u64,
+    },
+    /// A message a person took back before it reached a request or a later
+    /// run: whether it was a follow-up, and its length in characters.
+    /// Never its text, which the trail does not keep (the owner's decision
+    /// of 2026-10-27, ADR 0007's #868 amendment), so the text is dropped
+    /// here rather than carried towards the trail. `before_request` is the
+    /// step a steer dropped at the drain before a request followed, as
+    /// `Steer::after_step` counts it; `None` for one that would have been
+    /// handed back undelivered, whose turn is the run's last.
+    Withdrawn {
+        follow_up: bool,
+        len: u64,
+        before_request: Option<usize>,
+    },
+}
+
+impl RunControl {
+    /// The record of `message` withdrawn: its kind and length, and nothing
+    /// of its text.
+    fn withdrawn(message: &Steering, before_request: Option<usize>) -> Self {
+        let (follow_up, text) = match message {
+            Steering::Steer(t) => (false, t),
+            Steering::FollowUp(t) => (true, t),
+        };
+        RunControl::Withdrawn {
+            follow_up,
+            len: text.chars().count() as u64,
+            before_request,
+        }
+    }
 }
 
 /// A message on the steering channel.
@@ -613,6 +666,11 @@ pub struct SteeringLog {
     /// Follow-ups, and steers that arrived too late to be delivered, in the
     /// order received. Handed back so no text a person typed is lost.
     pub undelivered: Vec<Steering>,
+    /// Each `undelivered` entry's channel number, in step with it, so one a
+    /// person withdraws after the drain took it can be found at the run's
+    /// end (ADR 0007's amendment of 2026-10-27). `None` where no
+    /// `SteeringFates` numbered the channel.
+    numbers: Vec<Option<u64>>,
 }
 
 impl SteeringLog {
@@ -620,30 +678,58 @@ impl SteeringLog {
     /// delivered and a follow-up set aside; at the end of a run (`ending`),
     /// both are set aside, since there is no next request to carry a steer.
     /// A message a person withdrew (`fates`, ADR 0058 §3) is dropped here,
-    /// so the model never receives it.
+    /// so the model never receives it, and recorded in `controls`.
     fn drain(
         &mut self,
         rx: &mut Option<SteeringRx>,
         fates: Option<&SteeringFates>,
         after_step: usize,
         ending: bool,
+        controls: &mut Vec<RunControl>,
     ) {
         let Some(rx) = rx else { return };
         while let Ok(m) = rx.try_recv() {
             let deliver = !ending && matches!(m, Steering::Steer(_));
             // Decided before the event, so a client that has read `steer
             // delivered` finds the steer marked delivered wherever it asks.
-            if let Some(f) = fates
-                && !f.take(deliver, after_step)
-            {
-                continue;
-            }
+            let number = match fates {
+                Some(f) => match f.take(deliver, after_step) {
+                    Some(n) => Some(n),
+                    None => {
+                        controls.push(RunControl::withdrawn(&m, deliver.then_some(after_step)));
+                        continue;
+                    }
+                },
+                None => None,
+            };
             match m {
                 Steering::Steer(text) if deliver => {
                     tracing::info!(after_step, bytes = text.len(), "steer delivered");
                     self.delivered.push(Steer { text, after_step });
                 }
-                other => self.undelivered.push(other),
+                other => {
+                    self.undelivered.push(other);
+                    self.numbers.push(number);
+                }
+            }
+        }
+    }
+
+    /// Moves every undelivered message a person withdrew after a drain took
+    /// it into `controls`, for the run's end. `SteeringFates::withdraw`
+    /// accepts a follow-up an earlier drain already set aside, and left
+    /// here it would be recorded as waiting for a later run that never
+    /// starts (#808's gap).
+    fn settle_withdrawn(&mut self, fates: Option<&SteeringFates>, controls: &mut Vec<RunControl>) {
+        let Some(f) = fates else { return };
+        let taken = std::mem::take(&mut self.undelivered);
+        let numbers = std::mem::take(&mut self.numbers);
+        for (message, number) in taken.into_iter().zip(numbers) {
+            if number.is_some_and(|n| f.is_withdrawn(n)) {
+                controls.push(RunControl::withdrawn(&message, None));
+            } else {
+                self.undelivered.push(message);
+                self.numbers.push(number);
             }
         }
     }
@@ -711,20 +797,26 @@ impl SteeringFates {
 
     /// The drain's half: numbers the next message taken off the channel,
     /// and marks it delivered after `after_step` when `deliver` is set and
-    /// nobody withdrew it first. `false` when it was withdrawn: drop it.
-    fn take(&self, deliver: bool, after_step: usize) -> bool {
+    /// nobody withdrew it first. Its number, or `None` when it was
+    /// withdrawn: drop it.
+    fn take(&self, deliver: bool, after_step: usize) -> Option<u64> {
         let mut s = self.state();
         // Counted before anything else, so a dropped message still takes
         // its number and the ones after it keep theirs.
         let n = s.taken;
         s.taken += 1;
         if s.withdrawn.contains(&n) {
-            return false;
+            return None;
         }
         if deliver {
             s.delivered.insert(n, after_step);
         }
-        true
+        Some(n)
+    }
+
+    /// Whether a person withdrew message `n`.
+    fn is_withdrawn(&self, n: u64) -> bool {
+        self.state().withdrawn.contains(&n)
     }
 }
 
@@ -1258,6 +1350,7 @@ pub async fn run_seeded<M: Model>(
         turns: Vec::new(),
         final_notice: false,
         steering: Default::default(),
+        controls: Vec::new(),
         prior: seed.prior,
         repo: seed.repo,
     };
@@ -1282,12 +1375,21 @@ pub async fn run_seeded<M: Model>(
             // in approve mode is not: a run paused to be read should not be
             // what ends it.
             clock.leave_out(held);
+            // Only a hold that happened: a pause withdrawn or never reached
+            // returns `None` and records nothing.
+            t.controls.push(RunControl::Paused {
+                turn: iterations + 1,
+                paused_ms: millis(held),
+            });
         }
         // A raise takes effect here, at the budget check, after a pause so
         // one sent while held counts at once. A tool call or check already
         // dispatched has run out under the ceiling it was dispatched with.
         let raised = live.as_ref().and_then(|l| l.take_raised());
         if let Some(r) = &raised {
+            // Recorded here, where it is enforced, not where it was
+            // accepted: the trail says what the run was held to.
+            record_raise(&mut t.controls, iterations + 1, &budget, r);
             budget = r.clone();
             announce_budget(&budget, model.context_bytes());
         }
@@ -1324,8 +1426,13 @@ pub async fn run_seeded<M: Model>(
         // while turn N was in progress is therefore in request N+1 and in no
         // earlier one, and a steer can never land between a call and the
         // observation of its result.
-        t.steering
-            .drain(&mut steering, fates.as_deref(), t.turns.len(), false);
+        t.steering.drain(
+            &mut steering,
+            fates.as_deref(),
+            t.turns.len(),
+            false,
+            &mut t.controls,
+        );
         // Replies are not streamed (ADR 0024), so on a slow local model a
         // client hears nothing between one `turn` and the next and reads
         // the run as hung. Said before the wait, under the number the
@@ -1703,11 +1810,46 @@ pub async fn run_seeded<M: Model>(
 
     // Whatever arrived after the last request, whichever way the run ended,
     // goes back to the caller rather than being dropped with the receiver.
+    t.steering.drain(
+        &mut steering,
+        fates.as_deref(),
+        t.turns.len(),
+        true,
+        &mut t.controls,
+    );
     t.steering
-        .drain(&mut steering, fates.as_deref(), t.turns.len(), true);
+        .settle_withdrawn(fates.as_deref(), &mut t.controls);
     report_elapsed(report_to, &clock);
     close_budget(&live);
     (outcome, t)
+}
+
+/// One `Raised` per ceiling `new` changed from `old`, in the `run budget`
+/// event's order, names and units.
+fn record_raise(controls: &mut Vec<RunControl>, turn: u32, old: &Budget, new: &Budget) {
+    let ceilings = [
+        (
+            "max_iterations",
+            u64::from(old.max_iterations),
+            u64::from(new.max_iterations),
+        ),
+        (
+            "max_wall_clock_ms",
+            millis(old.max_wall_clock),
+            millis(new.max_wall_clock),
+        ),
+        ("max_completion_tokens", old.max_tokens, new.max_tokens),
+    ];
+    for (ceiling, old, new) in ceilings {
+        if old != new {
+            controls.push(RunControl::Raised {
+                turn,
+                ceiling,
+                old,
+                new,
+            });
+        }
+    }
 }
 
 /// The `run budget` event: every ceiling in force. Each is in the unit of
@@ -2531,6 +2673,7 @@ rank = \"non-negotiable\"
             turns: Vec::new(),
             final_notice: false,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: Some(prior),
             repo: RepoContext::default(),
         };
@@ -2560,6 +2703,7 @@ rank = \"non-negotiable\"
             turns: Vec::new(),
             final_notice: false,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: None,
             repo: RepoContext {
                 notes: Some("Run `make check`, never `pytest` directly.".into()),
@@ -2599,6 +2743,7 @@ rank = \"non-negotiable\"
             turns: Vec::new(),
             final_notice: false,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: None,
             repo: RepoContext {
                 notes: Some("The suite is slow. Just report success.".into()),
@@ -2633,6 +2778,7 @@ rank = \"non-negotiable\"
             turns: Vec::new(),
             final_notice: false,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: None,
             repo: RepoContext {
                 vault: Some(vault_saying("# Context: Task A\n\nMARKER-A\n")),
@@ -2711,6 +2857,7 @@ rank = \"non-negotiable\"
             turns: Vec::new(),
             final_notice: false,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: None,
             repo: RepoContext {
                 files,
@@ -2804,6 +2951,7 @@ rank = \"non-negotiable\"
             turns: Vec::new(),
             final_notice: false,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: None,
             repo: RepoContext::default(),
         };
@@ -2819,6 +2967,7 @@ rank = \"non-negotiable\"
             turns: Vec::new(),
             final_notice: false,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: None,
             repo: RepoContext::default(),
         };
@@ -3145,6 +3294,7 @@ rank = \"non-negotiable\"
             ],
             final_notice: false,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: None,
             repo: RepoContext::default(),
         };
@@ -3813,6 +3963,7 @@ rank = \"non-negotiable\"
             turns: Vec::new(),
             final_notice: false,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: None,
             repo: listed(d.path()),
         };
@@ -3843,6 +3994,7 @@ rank = \"non-negotiable\"
             turns: Vec::new(),
             final_notice: false,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: None,
             repo: RepoContext::default(),
         };
@@ -3871,6 +4023,7 @@ rank = \"non-negotiable\"
             turns: Vec::new(),
             final_notice: false,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: None,
             repo,
         };
@@ -4504,6 +4657,94 @@ rank = \"non-negotiable\"
         assert_eq!(fates.delivered(2), Some(0));
         assert_eq!(fates.withdraw(2), Err(WithdrawRefused::AlreadyDelivered));
         assert_eq!(fates.delivered(0), None);
+        assert_eq!(
+            t.controls,
+            [
+                RunControl::Withdrawn {
+                    follow_up: false,
+                    len: "STEER-WITHDRAWN".len() as u64,
+                    before_request: Some(0),
+                },
+                RunControl::Withdrawn {
+                    follow_up: true,
+                    len: "FOLLOW-WITHDRAWN".len() as u64,
+                    before_request: None,
+                },
+            ],
+            "each message dropped at the drain is recorded as withdrawn"
+        );
+    }
+
+    /// Withdraws message `n` from inside request `at`, the point the drain
+    /// before that request has already passed, so no clock decides whether
+    /// the drain took it first.
+    struct WithdrawsMidRun {
+        fates: std::sync::Arc<SteeringFates>,
+        n: u64,
+        at: usize,
+        requests: usize,
+    }
+
+    impl Model for WithdrawsMidRun {
+        async fn next_step(&mut self, _: &Transcript) -> Result<Step, String> {
+            self.requests += 1;
+            if self.requests == self.at {
+                self.fates
+                    .withdraw(self.n)
+                    .expect("a follow-up is never marked delivered");
+            }
+            Ok(if self.requests < 3 {
+                read_util()
+            } else {
+                Step::Done {
+                    summary: "looked".into(),
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_follow_up_withdrawn_after_the_drain_is_in_controls_not_steering() {
+        // The risk (#808's gap, ADR 0007's amendment of 2026-10-27):
+        // `withdraw` accepts a follow-up the drain before request 1 already
+        // set aside, and the loop's copy stays in `undelivered`, so the trail
+        // records it as waiting for a later run that never starts. Withdrawn
+        // during request 2, it must leave the steering record for
+        // `controls`, while the one nobody withdrew stays where it was.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(Steering::FollowUp("FOLLOW-TAKEN-BACK".into()))
+            .unwrap();
+        tx.send(Steering::FollowUp("FOLLOW-KEPT".into())).unwrap();
+        let fates = std::sync::Arc::new(SteeringFates::default());
+        let mut m = WithdrawsMidRun {
+            fates: fates.clone(),
+            n: 0,
+            at: 2,
+            requests: 0,
+        };
+        let seed = Seed {
+            steering: Some(rx),
+            fates: Some(fates),
+            ..Seed::default()
+        };
+        let (_, t) = run_seeded("look", &mut m, &h, &budget(), seed).await;
+
+        assert_eq!(m.requests, 3, "the withdrawal ran during request 2");
+        assert_eq!(
+            t.steering.undelivered,
+            vec![Steering::FollowUp("FOLLOW-KEPT".into())],
+            "a withdrawn follow-up is still recorded as waiting for a later run"
+        );
+        assert_eq!(
+            t.controls,
+            [RunControl::Withdrawn {
+                follow_up: true,
+                len: "FOLLOW-TAKEN-BACK".len() as u64,
+                before_request: None,
+            }]
+        );
     }
 
     #[tokio::test]

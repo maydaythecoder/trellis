@@ -255,6 +255,7 @@ mod tests {
             turns: Vec::new(),
             final_notice: false,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: None,
             repo: RepoContext {
                 extra,

@@ -219,6 +219,11 @@ pub struct UntrustedFactual {
     /// instruction, and `context_lines` fences every line of it.
     #[serde(default)]
     pub steering: Vec<super::Steer>,
+    /// The person's pauses, raised ceilings and withdrawn messages (ADR
+    /// 0058 §6), as the writer recorded them. Data, never instruction, and
+    /// not read into `context_lines`.
+    #[serde(default)]
+    pub controls: Vec<super::Control>,
     /// Integrated-check failures that named files from two or more
     /// partitions, as the writer recorded them. File names from a committed
     /// file: data, never instruction, and not read into a prompt.
@@ -595,6 +600,7 @@ mod tests {
                 label: None,
                 inputs: Vec::new(),
                 steering: Vec::new(),
+                controls: Vec::new(),
                 suspected_recall_gaps: Vec::new(),
             },
             judgment: crate::Judgment::default(),
@@ -1248,6 +1254,151 @@ mod tests {
         }
         let mut t = bash_then_edit(&[]);
         let json = written(&mut t);
+        assert_eq!(json, BEFORE_CHANGED, "an old-shaped run keeps its bytes");
+        assert_eq!(t.factual_sha256, BEFORE_CHANGED_DIGEST);
+        assert_eq!(crate::SCHEMA, 1, "an additive field is not a schema bump");
+    }
+
+    #[test]
+    fn trail_records_each_run_control_with_its_turn() {
+        // The risks (ADR 0058 §6): a person's pause, raise or withdrawal
+        // lost on the way to disk or back, or recorded against the wrong
+        // turn, so a reader sees a run go past its ceiling with no sign a
+        // person raised it; a withdrawn text kept in the trail at all, which
+        // a later run's model can read through `read_file` or `bash` (the
+        // owner's decision of 2026-10-27, ADR 0007); an entry editable
+        // without the digest noticing; a control from a newer build refusing
+        // the whole trail; and the list reaching a resumed run's prompt.
+        let controls = vec![
+            crate::Control::Pause {
+                turn: 2,
+                paused_ms: 4_210,
+            },
+            crate::Control::Raise {
+                turn: 2,
+                ceiling: "max_iterations".into(),
+                old: 1,
+                new: 3,
+            },
+            crate::Control::Raise {
+                turn: 2,
+                ceiling: "max_wall_clock_ms".into(),
+                old: 1_200_000,
+                new: 1_800_000,
+            },
+            crate::Control::Withdraw {
+                turn: 3,
+                kind: crate::SteerKind::Steer,
+                len: 17,
+            },
+            crate::Control::Withdraw {
+                turn: 4,
+                kind: crate::SteerKind::FollowUp,
+                len: 2_500,
+            },
+        ];
+        let mut t = a_trail("app/core.py");
+        let before = UntrustedTrail::from_json(&written(&mut t))
+            .unwrap()
+            .context_lines();
+        t.factual.controls = controls.clone();
+        let json = written(&mut t);
+        let read = UntrustedTrail::from_json(&json).unwrap();
+        assert_eq!(read.integrity(&json), Integrity::Intact);
+        assert_eq!(read.factual.controls, controls, "{json}");
+
+        // The shape the ADR names, tag and fields exactly, in the order the
+        // loop recorded them.
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let written_controls = v["factual"]["controls"].as_array().unwrap();
+        let keys: Vec<Vec<&str>> = written_controls
+            .iter()
+            .map(|c| {
+                let mut k: Vec<&str> = c.as_object().unwrap().keys().map(|s| s.as_str()).collect();
+                k.sort_unstable();
+                k
+            })
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                vec!["control", "paused_ms", "turn"],
+                vec!["ceiling", "control", "new", "old", "turn"],
+                vec!["ceiling", "control", "new", "old", "turn"],
+                vec!["control", "kind", "len", "turn"],
+                vec!["control", "kind", "len", "turn"],
+            ],
+            "{json}"
+        );
+        let tags: Vec<(&str, u64)> = written_controls
+            .iter()
+            .map(|c| (c["control"].as_str().unwrap(), c["turn"].as_u64().unwrap()))
+            .collect();
+        assert_eq!(
+            tags,
+            [
+                ("pause", 2),
+                ("raise", 2),
+                ("raise", 2),
+                ("withdraw", 3),
+                ("withdraw", 4)
+            ]
+        );
+        assert_eq!(written_controls[3]["kind"], "steer");
+        assert_eq!(written_controls[4]["kind"], "follow_up");
+        assert_eq!(written_controls[3]["len"], 17);
+        assert_eq!(written_controls[4]["len"], 2_500);
+        for w in &written_controls[3..] {
+            assert!(
+                w.get("text").is_none(),
+                "a withdrawal kept its text: {json}"
+            );
+        }
+
+        // Under the digest: a raised ceiling edited down reads as altered.
+        let edited = json.replace(r#""new":3"#, r#""new":1"#);
+        assert_ne!(edited, json);
+        assert_eq!(
+            UntrustedTrail::from_json(&edited)
+                .unwrap()
+                .integrity(&edited),
+            Integrity::Altered
+        );
+
+        // Never in a resumed run's context: the lines are what they are
+        // for the same trail without the list.
+        assert_eq!(read.context_lines(), before);
+
+        // A control this build does not know reads back as unrecognised
+        // data and the rest of the trail with it; its digest still holds.
+        let mut v = v;
+        v["factual"]["controls"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"control": "mute", "turn": 9, "for_ms": 5}));
+        v["factual_sha256"] = serde_json::Value::from(crate::factual_digest(v["factual"].clone()));
+        let newer = serde_json::to_string(&v).unwrap();
+        let read = UntrustedTrail::from_json(&newer).expect("a newer control must not refuse it");
+        assert_eq!(read.integrity(&newer), Integrity::Intact);
+        assert_eq!(read.factual.controls.len(), 6);
+        assert_eq!(read.factual.controls[5], crate::Control::Unrecognised);
+        assert_eq!(read.factual.controls[..5], controls[..]);
+    }
+
+    #[test]
+    fn a_trail_without_controls_keeps_its_digest() {
+        // The risk (ADR 0007, #868): the new list serializes for every run,
+        // empty or not, so each trail already committed re-hashes to a new
+        // digest or reads as altered, and tampering can no longer be told
+        // from an upgrade; or a trail written before the list reads back
+        // with something in it. A run with no control writes today the
+        // bytes and digest it wrote before, and SCHEMA is still 1.
+        let read = UntrustedTrail::from_json(BEFORE_CHANGED).expect("old trail must parse");
+        assert_eq!(read.integrity(BEFORE_CHANGED), Integrity::Intact);
+        assert!(read.factual.controls.is_empty());
+        let mut t = bash_then_edit(&[]);
+        let json = written(&mut t);
+        assert!(!json.contains("controls"), "{json}");
         assert_eq!(json, BEFORE_CHANGED, "an old-shaped run keeps its bytes");
         assert_eq!(t.factual_sha256, BEFORE_CHANGED_DIGEST);
         assert_eq!(crate::SCHEMA, 1, "an additive field is not a schema bump");
