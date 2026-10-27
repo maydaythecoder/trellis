@@ -2729,6 +2729,10 @@ pub(crate) fn action_from(index: usize, t: &trellis_loop::Turn) -> trellis_trail
         target,
         wrote,
     } = trellis_loop::turn_action(&t.call, &t.observation);
+    // The `EditDiff` the turn event reported (#811): set by the loop only
+    // for an edit that applied, so every other action records neither.
+    // `usize` to `u64` is lossless on every target Rust supports.
+    let edit = t.edit.as_ref();
     trellis_trail::Action {
         turn: index as u32 + 1,
         tool,
@@ -2740,6 +2744,8 @@ pub(crate) fn action_from(index: usize, t: &trellis_loop::Turn) -> trellis_trail
         // The loop's own timing of the call (#622), never a figure from
         // inside the check.
         duration_ms: Some(t.duration_ms),
+        lines_added: edit.map(|e| e.lines_added as u64),
+        lines_removed: edit.map(|e| e.lines_removed as u64),
     }
     .with_changed(&t.changed)
 }
@@ -2763,6 +2769,9 @@ pub(crate) fn read_only_action(
         changed_count: 0,
         // Not a timed call: absent, never 0 (#622).
         duration_ms: None,
+        // Not an edit: absent, never 0 (#811).
+        lines_added: None,
+        lines_removed: None,
     }
 }
 
@@ -3334,6 +3343,7 @@ mod interrupt_tests {
             may_have_changed_tree: false,
             changed: Vec::new(),
             duration_ms: 0,
+            edit: None,
         };
         let transcript = |turns| trellis_loop::Transcript {
             task: "a wide radius".to_string(),
@@ -3565,6 +3575,7 @@ mod interrupt_tests {
             may_have_changed_tree: false,
             changed: Vec::new(),
             duration_ms: 0,
+            edit: None,
         };
         let t = trellis_loop::Transcript {
             task: "two reads".to_string(),
