@@ -321,7 +321,7 @@ fn read_request(s: &mut std::net::TcpStream) -> String {
 /// probe `--agents` makes (#483) measures continuous batching, and plays
 /// `steps[target]` to the agent whose task names `target`, one step per
 /// completion. A partition's prompt carries `Yours works on: <targets>.`
-/// (`run_cmd::partition_task`), which is how a request is told apart. A
+/// (`run_partitioned::partition_task`), which is how a request is told apart. A
 /// `GET` of `/models` is answered 404 as by a server that is not colibri
 /// (ADR 0047 decision 3). Each connection is served on its own thread, so
 /// agents running at once are answered at once.
