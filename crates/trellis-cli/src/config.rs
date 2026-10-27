@@ -593,8 +593,8 @@ mod tests {
         std::fs::create_dir_all(&deep).unwrap();
         std::fs::create_dir_all(repo.join(".git")).unwrap();
 
-        assert_eq!(crate::root_from(&deep), Some(repo.clone()));
-        assert_eq!(crate::root_from(&repo), Some(repo));
+        assert_eq!(crate::startup::root_from(&deep), Some(repo.clone()));
+        assert_eq!(crate::startup::root_from(&repo), Some(repo));
     }
 
     #[test]
@@ -611,7 +611,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let sub = d.path().join("a/b");
         std::fs::create_dir_all(&sub).unwrap();
-        assert_eq!(crate::root_from(&sub), None);
+        assert_eq!(crate::startup::root_from(&sub), None);
     }
 
     #[test]
@@ -627,7 +627,7 @@ mod tests {
         std::fs::create_dir_all(outer.join(".git")).unwrap();
         std::fs::create_dir_all(inner.join(".git")).unwrap();
 
-        assert_eq!(crate::root_from(&deep), Some(inner));
+        assert_eq!(crate::startup::root_from(&deep), Some(inner));
     }
 
     #[test]
