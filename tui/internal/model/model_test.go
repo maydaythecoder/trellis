@@ -90,7 +90,7 @@ func TestModelSentTaskBecomesOnePrompt(t *testing.T) {
 	if out[0].Cmd["id"] == nil {
 		t.Fatal("the prompt has no id to match its run_end by")
 	}
-	if !m.Running || m.Input != "" || texts(m)[len(m.Transcript)-1] != "> fix the bug" {
+	if !m.Running || m.Input != "" || texts(m)[len(m.Transcript)-1] != "you · task  fix the bug" {
 		t.Fatalf("running %v, input %q, transcript %q", m.Running, m.Input, texts(m))
 	}
 	// A second Enter while it runs starts no second run (it is a steer,
@@ -125,8 +125,9 @@ func TestModelTypingBackspaceAndAnEmptyLine(t *testing.T) {
 	}
 }
 
-// Each turn frame adds one transcript line on its own, never on the end of
-// the task echo, with the verdict trellis reported and nothing computed.
+// Each turn frame adds its rows on their own, never on the end of the task
+// echo: its divider, its call, and a check row with the verdict trellis
+// reported and nothing computed.
 func TestModelTurnsFillTheTranscript(t *testing.T) {
 	m := fresh(t)
 	submit(m, "change f")
@@ -135,10 +136,16 @@ func TestModelTurnsFillTheTranscript(t *testing.T) {
 	feed(m, turn(3, "run_check types", map[string]any{"verdict": "Some(false)"}))
 	feed(m, turn(4, "edit a.py", map[string]any{"verdict": "None"}))
 	want := []string{
-		"> change f",
+		"you · task  change f",
+		"─ turn 1 · model — ms · — tok out · — B prompt",
 		"· read_file a.py",
-		"· run_check tests  ✓ check passed",
-		"· run_check types  ✗ check failed",
+		"─ turn 2 · model — ms · — tok out · — B prompt",
+		"· run_check tests",
+		"✓ check passed · trellis-checks verdict",
+		"─ turn 3 · model — ms · — tok out · — B prompt",
+		"· run_check types",
+		"✗ check failed · trellis-checks verdict",
+		"─ turn 4 · model — ms · — tok out · — B prompt",
 		"· edit a.py",
 	}
 	if strings.Join(texts(m), "\n") != strings.Join(want, "\n") {
@@ -147,7 +154,9 @@ func TestModelTurnsFillTheTranscript(t *testing.T) {
 }
 
 // The transcript keeps the newest TranscriptCap lines, as the Rust TUI
-// does: a long run would otherwise grow it without bound.
+// does: a long run would otherwise grow it without bound. Each turn here
+// writes two rows, its divider and its call (#947), so the newest
+// TranscriptCap/2 turns are the ones kept, the oldest of them whole.
 func TestModelTranscriptCapHolds(t *testing.T) {
 	m := fresh(t)
 	for i := 1; i <= TranscriptCap+500; i++ {
@@ -156,8 +165,10 @@ func TestModelTranscriptCapHolds(t *testing.T) {
 	if len(m.Transcript) != TranscriptCap {
 		t.Fatalf("%d lines kept, want %d", len(m.Transcript), TranscriptCap)
 	}
-	if texts(m)[0] != "· step 501" || texts(m)[TranscriptCap-1] != fmt.Sprintf("· step %d", TranscriptCap+500) {
-		t.Fatalf("kept %q .. %q", texts(m)[0], texts(m)[TranscriptCap-1])
+	first := uint64(TranscriptCap+500) - TranscriptCap/2 + 1
+	if texts(m)[0] != view.TurnDivider(first, nil, nil, nil) || texts(m)[1] != fmt.Sprintf("· step %d", first) ||
+		texts(m)[TranscriptCap-1] != fmt.Sprintf("· step %d", TranscriptCap+500) {
+		t.Fatalf("kept %q, %q .. %q", texts(m)[0], texts(m)[1], texts(m)[TranscriptCap-1])
 	}
 }
 
@@ -185,7 +196,7 @@ func TestModelRunEndSetsTheOutcome(t *testing.T) {
 		t.Fatal("the outcome was dropped before the next run")
 	}
 	submit(m, "next")
-	if last := texts(m)[len(m.Transcript)-1]; last != "> next" {
+	if last := texts(m)[len(m.Transcript)-1]; last != "you · task  next" {
 		t.Fatalf("the second task's echo is not a line of its own: %q", last)
 	}
 	if m.Outcome != "" {
@@ -320,7 +331,7 @@ func TestModelServedTextIsPlainAndBlankLinesAreDropped(t *testing.T) {
 			t.Fatalf("a control character reached the transcript: %q", l)
 		}
 	}
-	if len(m.Transcript) != 2 || texts(m)[0] != "[2Jcleared" {
+	if len(m.Transcript) != 3 || texts(m)[0] != "[2Jcleared" {
 		t.Fatalf("transcript %q", texts(m))
 	}
 }
@@ -620,7 +631,8 @@ func TestClientFixturesOutcomeWords(t *testing.T) {
 // The risk (#803): a tool call read one way here and another on the
 // desktop, or worded from the call's own text, which the model writes.
 // Each turn is the one sentence both faces show, from the engine's tool
-// and target, and a check row's words are the kind and its verdict's word.
+// and target, and a check row's words are the kind and its verdict's word,
+// on a row of their own (#947), as the desktop's check entry is.
 func TestClientFixturesToolSentences(t *testing.T) {
 	f := readClientFixtures(t)
 	if len(f.ToolSentences.Cases) == 0 {
@@ -634,21 +646,31 @@ func TestClientFixturesToolSentences(t *testing.T) {
 		}
 		feed(m, jsonLine(map[string]any{"level": "INFO", "fields": fields}))
 		var row string
-		for _, l := range texts(m) {
-			if strings.HasPrefix(l, "· ") && !strings.HasPrefix(l, "· queued") {
-				row = l
+		var checks []view.Row
+		for _, r := range m.Transcript {
+			if strings.HasPrefix(r.Text, "· ") {
+				row = r.Text
+			}
+			if r.Role == view.RolePassed || r.Role == view.RoleFailed {
+				checks = append(checks, r)
 			}
 		}
-		want := "· " + c.Sentence
-		if c.Check != nil {
-			mark := "✓"
-			if strings.HasSuffix(*c.Check, " failed") {
-				mark = "✗"
-			}
-			want += "  " + mark + " " + *c.Check
-		}
-		if row != want {
+		if want := "· " + c.Sentence; row != want {
 			t.Errorf("%s: row %q, want %q", c.Name, row, want)
+		}
+		if c.Check == nil {
+			if len(checks) != 0 {
+				t.Errorf("%s: a turn with no verdict wrote check rows %+v", c.Name, checks)
+			}
+			continue
+		}
+		mark, role := "✓", view.RolePassed
+		if strings.HasSuffix(*c.Check, " failed") {
+			mark, role = "✗", view.RoleFailed
+		}
+		want := mark + " " + *c.Check + " · trellis-checks verdict"
+		if len(checks) != 1 || checks[0].Text != want || checks[0].Role != role {
+			t.Errorf("%s: check rows %+v, want one %q in role %d", c.Name, checks, want, role)
 		}
 	}
 }

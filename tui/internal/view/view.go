@@ -307,9 +307,42 @@ func TranscriptRows(s State, w, h int) int {
 	inner := transcriptW(s, w, h) - 2
 	n := 0
 	for _, r := range s.Transcript {
-		n += len(WrapWords(Plain(r.Text), inner))
+		n += len(transcriptLines(r, inner))
 	}
 	return n
+}
+
+// YouBar is the left bar the person's own entries are drawn under.
+const YouBar = "▎ "
+
+// transcriptLines is one transcript row wrapped to inner cells: under
+// YouBar on each line when the row is the person's. TranscriptRows and
+// transcript both count through it, so the scroll limits are the rows
+// drawn; counted apart, they drifted once before (#843).
+func transcriptLines(r Row, inner int) []string {
+	if !r.Bar {
+		return WrapWords(Plain(r.Text), inner)
+	}
+	lines := WrapWords(Plain(r.Text), max(inner-Width(YouBar), 1))
+	for i, l := range lines {
+		lines[i] = YouBar + l
+	}
+	return lines
+}
+
+// TurnDivider is the rule a turn's rows start under: its number, the
+// model call's time, the completion tokens and the prompt's size, each in
+// its unit. A figure the turn event did not carry is Dash with its unit
+// beside it, never 0 (rule 2), and the prompt, measured in bytes, and the
+// completion, in tokens, are two figures, never one sum (rule 5).
+func TurnDivider(turn uint64, modelMs, completionTokens, promptBytes *uint64) string {
+	fig := func(n *uint64) string {
+		if n == nil {
+			return Dash
+		}
+		return fmt.Sprintf("%d", *n)
+	}
+	return fmt.Sprintf("─ turn %d · model %s ms · %s tok out · %s B prompt", turn, fig(modelMs), fig(completionTokens), fig(promptBytes))
 }
 
 // TranscriptTop is the scroll back that shows the transcript's first row
@@ -408,7 +441,7 @@ func transcript(s State, w, h int) []string {
 	inner := w - 2
 	var rows []Row
 	for _, r := range s.Transcript {
-		rows = append(rows, rowsOf(r.Role, WrapWords(Plain(r.Text), inner)...)...)
+		rows = append(rows, rowsOf(r.Role, transcriptLines(r, inner)...)...)
 	}
 	// A pane too short for an inside shows no rows: h-2 below zero made
 	// start pass end and the slice panicked (#842).

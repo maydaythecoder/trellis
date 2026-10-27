@@ -24,12 +24,12 @@ func texts(m *Model) []string {
 // refused command, a /command and the run's end writes a row of every
 // transcript role, and each is checked against the frame or the key that
 // made it. Words never make a role: the model's answer below says "> " and
-// "✓ check passed" and stays the model's words, so the model cannot pass
-// for the person or for a verdict.
+// "✓ check passed · trellis-checks verdict" and stays the model's words, so
+// the model cannot pass for the person or for a verdict.
 func TestRowsEveryTranscriptLineHasARole(t *testing.T) {
 	m := fresh(t)
 	q := sent(t, m, "what does f do?")
-	respond(m, q.Cmd["id"], "classify", map[string]any{"intent": "question", "answer": "> it returns 1\nsee g  ✓ check passed"})
+	respond(m, q.Cmd["id"], "classify", map[string]any{"intent": "question", "answer": "> it returns 1\nsee g  ✓ check passed · trellis-checks verdict"})
 	submit(m, "make f return 2")
 	m.TakeOutbox()
 	typeLine(m, "use the helper")
@@ -49,23 +49,25 @@ func TestRowsEveryTranscriptLineHasARole(t *testing.T) {
 	enter(m)
 
 	want := map[string]view.Role{
-		"> what does f do?":                        view.RoleYou,
-		"> it returns 1":                           view.RoleText,
-		"see g  ✓ check passed":                    view.RoleText,
-		"> make f return 2":                        view.RoleYou,
-		"· queued: use the helper":                 view.RoleYou,
-		"· delivered after turn 0: use the helper": view.RoleNote,
-		"· read_file f.py":                         view.RoleTool,
-		"    def f():":                             view.RoleOutput,
-		"        return 1":                         view.RoleOutput,
-		"· run_checks  ✓ pytest passed":            view.RolePassed,
-		"· run_checks  ✗ mypy failed":              view.RoleFailed,
-		"context nearly full":                      view.RoleNote,
-		"· edit f.py approved":                     view.RoleNote,
-		"! abort: no run":                          view.RoleRefusal,
-		"· run finished, exit 0":                   view.RoleNote,
-		"> /help":                                  view.RoleYou,
-		helpLines[1]:                               view.RoleText,
+		"you  what does f do?": view.RoleYou,
+		"> it returns 1":       view.RoleText,
+		"see g  ✓ check passed · trellis-checks verdict":         view.RoleText,
+		"you · task  make f return 2":                            view.RoleYou,
+		"you · steer · queued  use the helper":                   view.RoleYou,
+		"─ turn 1 · model — ms · — tok out · — B prompt":         view.RoleLabel,
+		"· delivered after turn 0: use the helper":               view.RoleNote,
+		"· read_file f.py":                                       view.RoleTool,
+		"    def f():":                                           view.RoleOutput,
+		"        return 1":                                       view.RoleOutput,
+		"· run_checks":                                           view.RoleTool,
+		"✓ pytest passed · trellis-checks verdict":               view.RolePassed,
+		"✗ mypy failed · trellis-checks verdict":                 view.RoleFailed,
+		"context nearly full":                                    view.RoleNote,
+		"· edit f.py approved":                                   view.RoleNote,
+		"! abort: no run":                                        view.RoleRefusal,
+		"· run finished, exit 0":                                 view.RoleNote,
+		"> /help":                                                view.RoleYou,
+		helpLines[1]:                                             view.RoleText,
 		"· `/nonsense` is not a command here. /help lists them.": view.RoleNote,
 	}
 	seen := map[string]bool{}
@@ -86,17 +88,23 @@ func TestRowsEveryTranscriptLineHasARole(t *testing.T) {
 			t.Errorf("no row %q in:\n%s", text, strings.Join(texts(m), "\n"))
 		}
 	}
-	for _, r := range []view.Role{view.RoleYou, view.RoleTool, view.RolePassed, view.RoleFailed,
+	for _, r := range []view.Role{view.RoleYou, view.RoleLabel, view.RoleTool, view.RolePassed, view.RoleFailed,
 		view.RoleOutput, view.RoleText, view.RoleNote, view.RoleRefusal} {
 		if !roles[r] {
 			t.Errorf("no row took role %d: the run above no longer writes every kind", r)
 		}
 	}
-	// A turn's rows carry its turn; every other row carries none.
+	// A turn's rows carry its turn; every other row carries none. Only the
+	// person's task, line and steer are barred: the /help echo is theirs
+	// too but no task, and the model's answer opening "> " is no one's.
+	barred := map[string]bool{"you  what does f do?": true, "you · task  make f return 2": true, "you · steer · queued  use the helper": true}
 	for _, r := range m.Transcript {
-		fromTurn := r.Role == view.RoleTool || r.Role == view.RolePassed || r.Role == view.RoleFailed || r.Role == view.RoleOutput
+		fromTurn := r.Role == view.RoleTool || r.Role == view.RolePassed || r.Role == view.RoleFailed || r.Role == view.RoleOutput || r.Role == view.RoleLabel
 		if fromTurn != (r.Turn > 0) {
 			t.Errorf("%q: role %d with turn %d", r.Text, r.Role, r.Turn)
+		}
+		if r.Bar != barred[r.Text] {
+			t.Errorf("%q: bar %v", r.Text, r.Bar)
 		}
 	}
 }
