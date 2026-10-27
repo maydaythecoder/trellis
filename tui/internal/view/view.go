@@ -211,7 +211,7 @@ func Render(s State, w, h int) string {
 	entry, bodyH := layout(s, w, h)
 	var out []string
 	out = append(out, line(s.Theme, trail(s, w), w))
-	now := nowStrip(s)
+	now := nowStrip(s, w)
 	if !folded(w, h) && s.Nav.Open == "" {
 		way := levelWays(s)
 		now = spread(withFace(s, now, spansWidth(way), w), way, w)

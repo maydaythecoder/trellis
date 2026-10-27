@@ -11,7 +11,13 @@ import (
 // stripOf is the Now strip's row as the screen draws it at 120x40.
 func stripOf(t *testing.T, m *Model) string {
 	t.Helper()
-	m.Update(windowSize(120, 40))
+	return stripAt(t, m, 120, 40)
+}
+
+// stripAt is the Now strip's row as the screen draws it at w by h.
+func stripAt(t *testing.T, m *Model, w, h int) string {
+	t.Helper()
+	m.Update(windowSize(w, h))
 	rows := strings.Split(m.View(), "\n")
 	if len(rows) < 2 {
 		t.Fatalf("no strip:\n%s", m.View())
@@ -40,7 +46,7 @@ func TestNowStripShowsStateTurnAndActivity(t *testing.T) {
 		t.Fatalf("calling the model: %q", s)
 	}
 	feed(m, turn(1, "edit app/calc.py", map[string]any{"observation": "applied: true", "tool": "edit", "target": "app/calc.py", "wrote": true}))
-	if s := stripOf(t, m); !strings.Contains(s, "█░░░░░░░ 1/40") || !strings.Contains(s, "ran edit, turn 1 → app/calc.py") {
+	if s := stripOf(t, m); !strings.Contains(s, "█░░░░░░░ 1/40") || !strings.Contains(s, "running edit → app/calc.py") {
 		t.Fatalf("after the turn: %q", s)
 	}
 	feed(m, approval("a1", "edit app/calc.py", "+x"))
@@ -282,5 +288,102 @@ func TestNowClockIsTheEnginesWhenReported(t *testing.T) {
 	s := stripOf(t, m)
 	if !strings.Contains(s, "0:07*") || strings.Contains(s, "0:57") {
 		t.Fatalf("a run_end without elapsed_ms kept a figure trellis did not give: %q", s)
+	}
+}
+
+// The risk (#950): a steer sent and not yet in a model request looking
+// lost, or the strip's figure disagreeing with the queue the task box
+// lists. The strip says how many items get_state's pending listed are
+// still queued, the same items the queue draws as queued, and says
+// nothing at 0, never "0 queued": before get_state has listed the steer,
+// and once its delivered event has settled it.
+func TestNowStripShowsTheQueuedCount(t *testing.T) {
+	m := running(t)
+	feed(m, modelCall(1))
+	for _, line := range []string{"keep tokens.py", "and the comments"} {
+		typeLine(m, line)
+		enter(m)
+	}
+	out := m.TakeOutbox()
+	if s := stripOf(t, m); strings.Contains(s, "queued") {
+		t.Fatalf("counted before get_state listed anything: %q", s)
+	}
+	var pending []any
+	for _, o := range out {
+		if o.Cmd["type"] == "steer" {
+			pending = append(pending, map[string]any{"id": o.Cmd["id"], "type": "steer", "message": o.Cmd["message"]})
+		}
+	}
+	pendingAnswer(t, m, out, pending)
+	if s := stripOf(t, m); !strings.Contains(s, "  2 queued  ") {
+		t.Fatalf("two steers listed as pending: %q", s)
+	}
+	feed(m, steerDelivered(1))
+	if s := stripAt(t, m, 80, 24); !strings.Contains(s, "  1 queued  ") {
+		t.Fatalf("one steer delivered, one still queued, at 80 columns: %q", s)
+	}
+	feed(m, steerDelivered(1))
+	if s := stripOf(t, m); strings.Contains(s, "queued") {
+		t.Fatalf("both delivered: %q", s)
+	}
+}
+
+// The risk (#950): the strip saying what the run did, "ran edit", as
+// though it were the run's state now. What the run is on reads in -ing
+// form from the last event, the turn's figure being the meter's beside
+// it; before the first model call it says nothing, never "none"; and
+// Where it is keeps the sentence the desktop's Where it is also says.
+func TestNowStripActivityIsAnIngLine(t *testing.T) {
+	m := running(t)
+	feed(m, jsonLine(map[string]any{"level": "INFO", "fields": map[string]any{"message": "run budget", "max_iterations": 40}}))
+	if s := stripOf(t, m); strings.Contains(s, "none") || strings.Contains(s, "calling") || strings.Contains(s, "running") {
+		t.Fatalf("before the first call: %q", s)
+	}
+	feed(m, modelCall(3))
+	if s := stripAt(t, m, 80, 24); !strings.Contains(s, "calling the model, turn 3") {
+		t.Fatalf("calling the model, at 80 columns: %q", s)
+	}
+	feed(m, turn(3, "edit src/a.py", map[string]any{"observation": "applied: true", "tool": "edit", "target": "src/a.py", "wrote": true}))
+	s := stripAt(t, m, 80, 24)
+	if !strings.Contains(s, "running edit → src/a.py") || strings.Contains(s, "ran edit") {
+		t.Fatalf("after the turn, at 80 columns: %q", s)
+	}
+	m.Update(windowSize(120, 40))
+	if v := m.View(); !strings.Contains(v, "phase    ran edit, turn 3") {
+		t.Fatalf("Where it is changed its sentence:\n%s", v)
+	}
+}
+
+// The risk (#950): WAITING ON YOU with nothing to say what is waited on,
+// or a long question pushing the keys that answer it off the row. The
+// strip names the question in the place what the run is on takes, cut
+// with "…" to the room the keys leave, and the keys are the row's end at
+// 80 columns as at 120.
+func TestNowStripWaitingNamesTheQuestion(t *testing.T) {
+	m := running(t)
+	feed(m, modelCall(1))
+	feed(m, approval("a1", "edit app/calc.py", "+x"))
+	s := stripOf(t, m)
+	if !strings.Contains(s, "● WAITING ON YOU") || !strings.Contains(s, "  edit app/calc.py  [y] accept  [n] reject") {
+		t.Fatalf("the question waiting: %q", s)
+	}
+	if strings.Contains(s, "calling the model") {
+		t.Fatalf("the call the run made, beside the question it waits on: %q", s)
+	}
+	key(m, 'y')
+	long := "bash " + strings.Repeat("python -m pytest tests/test_parser.py ", 4)
+	feed(m, approval("a2", long, ""))
+	for _, w := range []int{80, 120} {
+		s := strings.TrimRight(stripAt(t, m, w, 40), " ")
+		if !strings.HasSuffix(s, "  [y] accept  [n] reject") {
+			t.Fatalf("at %d columns the keys are not the row's end: %q", w, s)
+		}
+		if !strings.Contains(s, "  bash python -m") || !strings.Contains(s, "…  [y] accept") {
+			t.Fatalf("at %d columns the question is not there, cut: %q", w, s)
+		}
+	}
+	key(m, 'n')
+	if s := stripOf(t, m); strings.Contains(s, "bash python") || strings.Contains(s, "WAITING") {
+		t.Fatalf("answered, the question stays: %q", s)
 	}
 }

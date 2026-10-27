@@ -197,7 +197,7 @@ func CallView(s State, r RawCall, scroll, w, h int) string {
 	if !fits(w, h) {
 		return modalWith(s.Theme, callTitle(r), bottom, callText(r), scroll, w, h)
 	}
-	top := line(s.Theme, trail(s, w), w) + "\n" + line(s.Theme, nowStrip(s), w)
+	top := line(s.Theme, trail(s, w), w) + "\n" + line(s.Theme, nowStrip(s, w), w)
 	return top + "\n" + modalWith(s.Theme, callTitle(r), bottom, callText(r), scroll, w, h-askingRows) + "\n" + line(s.Theme, statusBar(s, w), w)
 }
 
