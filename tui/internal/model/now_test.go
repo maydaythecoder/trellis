@@ -30,8 +30,8 @@ func modelCall(turn int) string {
 }
 
 // #850: the Now strip says what is happening now: the state word, the
-// turn against the run's ceiling, and what the run is on, in the words the
-// desktop uses; a question waiting on the person, and how to answer it; an
+// turn against the run's ceiling, and what the run is on, in -ing form
+// (#950); a question waiting on the person, and how to answer it; an
 // ended run in run_end's own words and exit code, never "done" or
 // "failed"; and IDLE before any run.
 func TestNowStripShowsStateTurnAndActivity(t *testing.T) {
