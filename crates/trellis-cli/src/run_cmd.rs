@@ -2490,6 +2490,7 @@ fn handle_interrupt(
         turns: Vec::new(),
         final_notice: false,
         steering: trellis_loop::SteeringLog::default(),
+        controls: Vec::new(),
         prior: None,
         repo: trellis_loop::RepoContext::default(),
     };
@@ -2729,6 +2730,10 @@ pub(crate) fn action_from(index: usize, t: &trellis_loop::Turn) -> trellis_trail
         target,
         wrote,
     } = trellis_loop::turn_action(&t.call, &t.observation);
+    // The `EditDiff` the turn event reported (#811): set by the loop only
+    // for an edit that applied, so every other action records neither.
+    // `usize` to `u64` is lossless on every target Rust supports.
+    let edit = t.edit.as_ref();
     trellis_trail::Action {
         turn: index as u32 + 1,
         tool,
@@ -2740,6 +2745,8 @@ pub(crate) fn action_from(index: usize, t: &trellis_loop::Turn) -> trellis_trail
         // The loop's own timing of the call (#622), never a figure from
         // inside the check.
         duration_ms: Some(t.duration_ms),
+        lines_added: edit.map(|e| e.lines_added as u64),
+        lines_removed: edit.map(|e| e.lines_removed as u64),
     }
     .with_changed(&t.changed)
 }
@@ -2763,6 +2770,9 @@ pub(crate) fn read_only_action(
         changed_count: 0,
         // Not a timed call: absent, never 0 (#622).
         duration_ms: None,
+        // Not an edit: absent, never 0 (#811).
+        lines_added: None,
+        lines_removed: None,
     }
 }
 
@@ -2858,6 +2868,58 @@ pub(crate) fn steering_entries(
         Steering::FollowUp(text) => Steer::new(reached, SteerKind::FollowUp, text),
     });
     delivered.chain(undelivered).collect()
+}
+
+/// The trail's record of the person's run controls (ADR 0058 §6), in the
+/// order the loop met them.
+///
+/// A withdrawal takes the turn its steering entry would have carried, by
+/// `steering_entries`' rules: a steer dropped at the drain before request
+/// N + 1 takes N + 1, anything else the turn the run had reached. A
+/// withdrawal is its kind and length only; the loop never hands this the
+/// text (ADR 0007's #868 amendment).
+pub(crate) fn control_entries(
+    controls: &[trellis_loop::RunControl],
+    reached: usize,
+) -> Vec<trellis_trail::Control> {
+    use trellis_loop::RunControl;
+    use trellis_trail::{Control, SteerKind};
+    controls
+        .iter()
+        .map(|c| match c {
+            RunControl::Paused { turn, paused_ms } => Control::Pause {
+                turn: *turn,
+                paused_ms: *paused_ms,
+            },
+            RunControl::Raised {
+                turn,
+                ceiling,
+                old,
+                new,
+            } => Control::Raise {
+                turn: *turn,
+                ceiling: (*ceiling).to_string(),
+                old: *old,
+                new: *new,
+            },
+            RunControl::Withdrawn {
+                follow_up,
+                len,
+                before_request,
+            } => Control::Withdraw {
+                turn: match before_request {
+                    Some(after_step) => *after_step as u32 + 1,
+                    None => reached as u32,
+                },
+                kind: if *follow_up {
+                    SteerKind::FollowUp
+                } else {
+                    SteerKind::Steer
+                },
+                len: *len,
+            },
+        })
+        .collect()
 }
 
 /// Records what happened, factual and judgment kept apart.
@@ -3044,6 +3106,9 @@ pub(crate) fn record_trail(
         // Empty on a run nobody steered, and empty is omitted on disk, so
         // such a trail has the bytes it had before the field (ADR 0034).
         steering: steering_entries(&turns.steering, turns.turns.len()),
+        // Empty on a run nobody paused, raised or withdrew from, and empty
+        // is omitted on disk, so such a trail keeps its bytes (ADR 0007).
+        controls: control_entries(&turns.controls, turns.turns.len()),
         // A single-agent run has no partitions, so no failure of its can
         // name files from two of them, and its gaps are empty (ADR 0042).
         // Empty is omitted on disk.
@@ -3334,12 +3399,14 @@ mod interrupt_tests {
             may_have_changed_tree: false,
             changed: Vec::new(),
             duration_ms: 0,
+            edit: None,
         };
         let transcript = |turns| trellis_loop::Transcript {
             task: "a wide radius".to_string(),
             turns,
             final_notice: false,
             steering: trellis_loop::SteeringLog::default(),
+            controls: Vec::new(),
             prior: None,
             repo: trellis_loop::RepoContext::default(),
         };
@@ -3565,12 +3632,14 @@ mod interrupt_tests {
             may_have_changed_tree: false,
             changed: Vec::new(),
             duration_ms: 0,
+            edit: None,
         };
         let t = trellis_loop::Transcript {
             task: "two reads".to_string(),
             turns: vec![read("a.py"), read("b.py")],
             final_notice: false,
             steering: trellis_loop::SteeringLog::default(),
+            controls: Vec::new(),
             prior: None,
             repo: trellis_loop::RepoContext::default(),
         };

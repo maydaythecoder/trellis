@@ -3465,6 +3465,84 @@ fn rpc_turn_tool_target_wrote_match_the_trail_actions() {
 }
 
 #[test]
+fn rpc_turn_line_counts_match_the_trail_edit_actions() {
+    // The risk (#811): the trail's line counts come from somewhere other
+    // than the `EditDiff` the turn event reported, so the summary level,
+    // which reads the trail, and the live view disagree about what an edit
+    // changed; or a refused edit or a created file is recorded with counts.
+    // Compared in order over the whole run; every trail action is a turn's
+    // (no approvals, gates, partitions, services or compaction).
+    let f = fixture("rpc-turn-lines");
+    commit_passing_checks(&f);
+    let config = f.root.join(".trellis/config.toml");
+    let mut cfg = std::fs::read_to_string(&config).unwrap();
+    cfg.push_str("[tools]\nenable = [\"write_file\"]\n");
+    std::fs::write(&config, cfg).unwrap();
+    git(&f.root, &["commit", "-qam", "write_file"]);
+    let script_dir = scratch("rpc-turn-lines-steps");
+    let script = script_dir.join("s.json");
+    std::fs::write(
+        &script,
+        r#"{"steps":[
+            {"tool":"edit","path":"a.py","old":"return 9","new":"return 2"},
+            {"tool":"edit","path":"a.py","old":"    return 1","new":"    x = 2\n    return x"},
+            {"tool":"write_file","path":"b.py","content":"X = 1\n"},
+            {"tool":"run_checks","paths":["a.py"],"kinds":["tests"]},
+            {"tool":"done","summary":"changed it"}
+        ]}"#,
+    )
+    .unwrap();
+    let spec = format!("scripted:{}", script.display());
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.choose(&spec);
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                                "model": spec}),
+    );
+    let records = rpc.finish();
+    let end = records.iter().find(|r| r["type"] == "run_end").unwrap();
+    assert_eq!(end["outcome"], "converged", "{end}\n{records:?}");
+
+    let pair = |o: &Value| (o["lines_added"].clone(), o["lines_removed"].clone());
+    let from_events: Vec<(Value, Value)> = records
+        .iter()
+        .filter(|r| r["fields"]["message"] == "turn")
+        .map(|r| pair(&r["fields"]))
+        .collect();
+    let trails = trails(&f);
+    assert_eq!(trails.len(), 1, "{trails:?}");
+    let actions = trails[0]["factual"]["actions"].as_array().unwrap();
+    let from_trail: Vec<(Value, Value)> = actions.iter().map(pair).collect();
+    assert_eq!(
+        from_events, from_trail,
+        "the turn events and the trail disagree about an edit's lines\n{records:?}"
+    );
+    // Each case named, so a run that reached none of them cannot pass by
+    // agreeing on nothing: the refused edit, the applied one (+2 -1), the
+    // created file and the check.
+    let none = (Value::Null, Value::Null);
+    let tools: Vec<&str> = actions
+        .iter()
+        .map(|a| a["tool"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        tools,
+        ["edit", "edit", "write_file", "run_checks"],
+        "{actions:?}"
+    );
+    assert_eq!(
+        from_trail,
+        [
+            none.clone(),
+            (Value::from(2), Value::from(1)),
+            none.clone(),
+            none
+        ],
+        "{actions:?}"
+    );
+}
+
+#[test]
 fn rpc_run_budget_carries_every_ceiling() {
     // The risk (#799): a client draws progress against a ceiling the engine
     // never sent, so it keeps a copy or a constant of its own; or a ceiling
@@ -5998,4 +6076,103 @@ fn rpc_abort_while_paused_rolls_back_and_hands_back_the_held_steer() {
         std::fs::read_to_string(f.root.join("a.py")).unwrap(),
         "def f():\n    return 1\n"
     );
+}
+
+#[test]
+fn rpc_run_trail_records_its_pause_raise_and_withdrawal_with_their_turns() {
+    // The risk (ADR 0058 §6, #868): the person's controls sent on the
+    // stream and lost from the trail, so a reader sees a run go past the
+    // ceiling it started with and no sign a person raised it; or recorded
+    // against a turn other than the one they took effect at, or with a
+    // figure other than the event's. All three are sent while the loop
+    // waits on turn 1's question, so each takes effect at the top of the
+    // iteration before model call 2, in the order the loop meets them:
+    // the hold, the budget check, the drain. Order is read from the
+    // stream, never a clock.
+    let c = contract();
+    let f = one_iteration_budget("rpc-trail-controls");
+    let (mut rpc, server, q) = at_the_edit_s_question(
+        &f,
+        "TRELLIS_TEST_RPC_TRAIL_CONTROLS_KEY",
+        vec![
+            edit_a(),
+            openai_call("c2", "done", serde_json::json!({"summary": "changed it"})),
+        ],
+    );
+    // Built at run time, so the only way it reaches the trail is the run.
+    let gone = format!(
+        "STEER-868-WITHDRAWN-{} look at g instead",
+        std::process::id()
+    );
+    rpc.send(serde_json::json!({"id": "s", "type": "steer", "message": gone}));
+    rpc.send(serde_json::json!({"id": "s", "type": "withdraw"}));
+    let w = withdrawn(&mut rpc, "s");
+    assert_eq!(w["success"], true, "{w}");
+    rpc.send(serde_json::json!({"id": "b", "type": "set_budget", "max_iterations": 3}));
+    let b = rpc.response("b");
+    assert_eq!(b["success"], true, "{b}");
+    rpc.send(serde_json::json!({"id": "h", "type": "pause"}));
+    rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": true}));
+    let held = rpc.response("h");
+    assert_eq!(held["data"]["turn"], 2, "{held}");
+    rpc.send(serde_json::json!({"id": "r", "type": "resume"}));
+    assert_eq!(rpc.response("r")["success"], true);
+    let end = rpc.seen_or_next(|v| v["type"] == "run_end");
+    assert_eq!(end["id"], "p", "{end}");
+    let records = rpc.finish();
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert!(
+        !requests[1].contains(BUDGET_NOTICE),
+        "the raise was not enforced, so this tests nothing: {}",
+        requests[1]
+    );
+
+    let resumed = &records[first(&records, "resumed event", |r| {
+        r["fields"]["message"] == "resumed"
+    })];
+    let trails = trails(&f);
+    assert_eq!(trails.len(), 1, "{trails:?}");
+    assert_eq!(
+        trails[0]["factual"]["controls"],
+        serde_json::json!([
+            {"control": "pause", "turn": 2, "paused_ms": resumed["fields"]["paused_ms"]},
+            {"control": "raise", "turn": 2, "ceiling": "max_iterations", "old": 1, "new": 3},
+            {"control": "withdraw", "turn": 2, "kind": "steer",
+             "len": gone.chars().count()},
+        ]),
+        "{}",
+        trails[0]
+    );
+    assert!(
+        trails[0]["factual"].get("steering").is_none(),
+        "a withdrawn steer is a control, never a steering entry: {}",
+        trails[0]
+    );
+    // The owner's decision of 2026-10-27 (ADR 0007): a later run's model can
+    // read this file through `read_file` or `bash`, so the text a person
+    // took back is in none of its bytes, under any key.
+    for e in std::fs::read_dir(f.root.join(".trellis/runs")).unwrap() {
+        let p = e.unwrap().path();
+        let file = String::from_utf8_lossy(&std::fs::read(&p).unwrap()).into_owned();
+        assert!(
+            !file.contains("STEER-868-WITHDRAWN"),
+            "a withdrawn text is in {}: {file}",
+            p.display()
+        );
+    }
+
+    // `log --json` carries the list, as the contract says it may.
+    assert!(
+        c["log_json"]["not_every_client"]["optional"]
+            .as_object()
+            .unwrap()
+            .contains_key("trail.factual.controls")
+    );
+    let o = run(&f, &["--json", "log"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let lines = jsonl(&o);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(carries(&lines[0], "trail.factual.controls"), "{}", lines[0]);
+    assert_eq!(lines[0]["integrity"], "intact", "{}", lines[0]);
 }

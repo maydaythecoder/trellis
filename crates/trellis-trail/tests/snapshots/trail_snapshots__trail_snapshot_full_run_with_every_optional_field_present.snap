@@ -70,7 +70,9 @@ expression: "trail_json(\"rename Installer.run\", Some(\"2026-09-18T05:14:32Z\")
         "target": "src/pkg/installer.py",
         "outcome": "applied",
         "wrote": true,
-        "duration_ms": 4
+        "duration_ms": 4,
+        "lines_added": 3,
+        "lines_removed": 1
       },
       {
         "turn": 2,
@@ -124,6 +126,26 @@ expression: "trail_json(\"rename Installer.run\", Some(\"2026-09-18T05:14:32Z\")
         "len": 29
       }
     ],
+    "controls": [
+      {
+        "control": "pause",
+        "turn": 2,
+        "paused_ms": 4210
+      },
+      {
+        "control": "raise",
+        "turn": 2,
+        "ceiling": "max_iterations",
+        "old": 3,
+        "new": 5
+      },
+      {
+        "control": "withdraw",
+        "turn": 3,
+        "kind": "follow_up",
+        "len": 21
+      }
+    ],
     "suspected_recall_gaps": [
       {
         "partitions": [
@@ -138,7 +160,7 @@ expression: "trail_json(\"rename Installer.run\", Some(\"2026-09-18T05:14:32Z\")
       }
     ]
   },
-  "factual_sha256": "978bd9544934c861e7cf9dcaace684e762d39e618089b4fc1197129a5a79c85e",
+  "factual_sha256": "721ceea8068aea20b664f79f17ae8838a56eb1d421a5d3cb9742258720df7faa",
   "judgment": {
     "tech_debt_projection": "the alias will need removing",
     "rationale": "kept the old name as an alias"

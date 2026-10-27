@@ -9,8 +9,8 @@ and follows it. Changing this file changes what the next session does, so it
 changes through a ticket like any other file.
 
 The goal it works toward, and stops at: every ticket under S20 (#790, the UI
-in both faces) and S21 (the code-quality story filed from the 2026-10-26
-audit) is closed. What is left after that waits on the owner, and the ledger
+in both faces) and S21 (#927, the code-quality story filed from the
+2026-10-26 audit) is closed. What is left after that waits on the owner, and the ledger
 says so.
 
 ## Owner decisions this runs under (2026-10-26)
@@ -76,6 +76,8 @@ with HTTP 403. Use `gh api` (REST) for everything; the scripts already do
    2. `git checkout -b t<n>-<slug> origin/dev`. If a `blocked_by` ticket's
       work is in `origin/audit` but not yet in `origin/dev`, merge
       `origin/audit` into the branch first.
+      If `origin` already has a `t<n>-...` branch for this ticket, an
+      earlier session started it: check that out and continue from it.
    3. `!needs-adr` → dispatch the **architect** for the ADR (or the dated
       amendment) the ticket names, on the branch, before any code.
    4. Dispatch the **implementer** with the ticket's full text. One cargo
@@ -83,6 +85,10 @@ with HTTP 403. Use `gh api` (REST) for everything; the scripts already do
    5. `bash scripts/gates/run-all.sh <n>` (or the **verifier**, to keep the
       output out of your context). A failure goes back to the implementer
       with the output verbatim. The same gate failing three times: park.
+      A gate that fails because the network policy denied a host (G5's
+      govulncheck needs `vuln.go.dev`) did not pass: push the branch, name
+      the host on the ledger once, and end the session. The owner allows
+      the host in the environment's settings; nothing else stands in.
    6. `!security`, `area:protocol`, `area:checks`, keys, trust or sandboxing
       → the **security** agent reviews the diff; each finding is a ticket,
       and a finding that is a defect in this change is fixed before merge.
@@ -102,9 +108,9 @@ with HTTP 403. Use `gh api` (REST) for everything; the scripts already do
    comment to the ledger (#925): tickets merged / parked / skipped with the
    reason, PRs merged, the queue counts from `next.sh --why`, and the owner
    tasks waiting.
-8. **Goal reached.** If every sub-ticket of #790 and of the S21 story is
-   closed, say so in the ledger comment, close the ledger, and disable the
-   schedule as in step 3.
+8. **Goal reached.** If every ticket whose body says `story: S20` or
+   `story: S21` is closed (#790 and #927 list them), say so in the ledger
+   comment, close the ledger, and disable the schedule as in step 3.
 
 ## Never
 
