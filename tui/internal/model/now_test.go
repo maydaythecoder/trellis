@@ -39,7 +39,7 @@ func TestNowStripShowsStateTurnAndActivity(t *testing.T) {
 	if s := stripOf(t, m); !strings.Contains(s, "● RUNNING") || !strings.Contains(s, "█░░░░░░░ 1/40") || !strings.Contains(s, "calling the model, turn 1") {
 		t.Fatalf("calling the model: %q", s)
 	}
-	feed(m, turn(1, "edit app/calc.py", map[string]any{"observation": "applied: true"}))
+	feed(m, turn(1, "edit app/calc.py", map[string]any{"observation": "applied: true", "tool": "edit", "target": "app/calc.py", "wrote": true}))
 	if s := stripOf(t, m); !strings.Contains(s, "█░░░░░░░ 1/40") || !strings.Contains(s, "ran edit, turn 1 → app/calc.py") {
 		t.Fatalf("after the turn: %q", s)
 	}
@@ -108,11 +108,12 @@ func TestViewDrawsTheNewestStderrLine(t *testing.T) {
 	}
 }
 
-// #850: trellis does not report its own elapsed time yet (#906), so the
-// strip's clock is this view's and says so, marked * (#911, which /help
-// explains), and it leaves out the time a question waited on the person,
-// as trellis's budget does: 10 s of run, 30 s waiting on a question, then
-// 5 s more read 0:15, while the wait is on and after it.
+// #850: for a run whose events carry no elapsed_ms the strip's clock is
+// this view's and says so, marked * (#911, which /help explains), and it
+// leaves out the time a question waited on the person, as trellis's budget
+// does: 10 s of run, 30 s waiting on a question, then 5 s more read 0:15,
+// while the wait is on and after it. With elapsed_ms the clock is
+// trellis's (TestNowClockIsTheEnginesWhenReported).
 func TestNowClockIsLabelledAndSkipsApprovalWaits(t *testing.T) {
 	m := fresh(t)
 	clock := time.Date(2026, 10, 26, 7, 0, 0, 0, time.UTC)
@@ -203,5 +204,83 @@ func TestUnreportedFigureIsADash(t *testing.T) {
 		if !strings.Contains(help, want) {
 			t.Fatalf("/help does not say %q:\n%s", want, help)
 		}
+	}
+}
+
+// #906: the risk is a strip whose time is not the one the wall-clock budget
+// checks, so a run seems to end early against it, or a figure drawn as
+// trellis's that trellis never sent. Once a model call or turn carries
+// elapsed_ms the strip shows that figure, unmarked, and counts on from it
+// with this view's tick, holding while a question waits on the person; the
+// next event's figure replaces the count, and run_end's is the run's
+// total. A run whose events carry none keeps the own clock, marked *; and
+// a run_end without one (a run the loop did not finish) does not keep the
+// last figure counted on as if trellis had given it, but falls back to the
+// own clock, marked.
+func TestNowClockIsTheEnginesWhenReported(t *testing.T) {
+	m := fresh(t)
+	clock := time.Date(2026, 10, 26, 7, 0, 0, 0, time.UTC)
+	m.now = func() time.Time { return clock }
+	call := func(turn, ms int) string {
+		return jsonLine(map[string]any{"level": "INFO", "fields": map[string]any{"message": "model call", "turn": turn, "elapsed_ms": ms}})
+	}
+	// The strip draws its clock between two-space gaps; the own clock's *
+	// would sit against the figure.
+	shows := func(when, want string) {
+		t.Helper()
+		if s := stripOf(t, m); !strings.Contains(s, "  "+want+"  ") {
+			t.Fatalf("%s: the strip does not show %s unmarked: %q", when, want, s)
+		}
+	}
+
+	submit(m, "t")
+	feed(m, jsonLine(map[string]any{"type": "run_start", "id": "tui-3"}))
+	clock = clock.Add(3 * time.Second)
+	feed(m, call(1, 125_000))
+	shows("at the model call", "2:05")
+	clock = clock.Add(4 * time.Second)
+	m.Update(TickMsg{})
+	shows("4 s after it", "2:09")
+	feed(m, approval("a1", "edit a.py", "+x"))
+	clock = clock.Add(30 * time.Second)
+	m.Update(TickMsg{})
+	shows("while the question waits", "2:09")
+	key(m, 'y')
+	clock = clock.Add(2 * time.Second)
+	m.Update(TickMsg{})
+	shows("2 s after the answer", "2:11")
+	feed(m, turn(1, "edit a.py", map[string]any{"tool": "edit", "target": "a.py", "wrote": true, "elapsed_ms": 200_000}))
+	shows("at the turn, whose figure replaces the count", "3:20")
+	if v := m.View(); !strings.Contains(v, "TIME 3:20") || strings.Contains(v, "TIME 3:20*") {
+		t.Fatalf("the budget line's figure is not the strip's:\n%s", v)
+	}
+	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0, "elapsed_ms": 201_999}))
+	clock = clock.Add(20 * time.Second)
+	m.Update(TickMsg{})
+	if s := stripOf(t, m); !strings.Contains(s, "  3:21  ") || !strings.Contains(s, "ENDED · converged") {
+		t.Fatalf("an ended run keeps run_end's figure: %q", s)
+	}
+
+	// A run whose events carry no elapsed_ms: the own clock, marked.
+	submit(m, "u")
+	feed(m, jsonLine(map[string]any{"type": "run_start", "id": "tui-6"}))
+	clock = clock.Add(10 * time.Second)
+	feed(m, turn(1, "read_file a.py", map[string]any{"tool": "read_file", "target": "a.py", "wrote": false}))
+	m.Update(TickMsg{})
+	if s := stripOf(t, m); !strings.Contains(s, "0:10*") {
+		t.Fatalf("no elapsed_ms, and the clock is not the own one, marked: %q", s)
+	}
+
+	// trellis's figures, then a run_end without one.
+	submit(m, "v")
+	feed(m, jsonLine(map[string]any{"type": "run_start", "id": "tui-9"}))
+	feed(m, call(1, 50_000))
+	clock = clock.Add(7 * time.Second)
+	m.Update(TickMsg{})
+	shows("counting on in the third run", "0:57")
+	feed(m, runEnd(map[string]any{"outcome": "interrupted", "exit": 130, "restored": true}))
+	s := stripOf(t, m)
+	if !strings.Contains(s, "0:07*") || strings.Contains(s, "0:57") {
+		t.Fatalf("a run_end without elapsed_ms kept a figure trellis did not give: %q", s)
 	}
 }

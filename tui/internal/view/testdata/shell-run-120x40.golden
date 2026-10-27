@@ -1,11 +1,11 @@
  Run                                                                                                    L1 / 4  TRELLIS 
- ● RUNNING  1:23*  █░░░░░░░ 3/40  ran edit, turn 3 → src/parser.py                                                      
+ ● RUNNING  1:23*  █░░░░░░░ 3/40  [^P] pause  ran edit, turn 3 → src/parser.py                     plan  summary so far 
 ┌ transcript ──────────────────────────────────────────────────────────┐┌ where ───────────────────────────────────────┐
 │> fix the failing parser test                                         ││  phase    ran edit, turn 3                   │
-│· blast_radius parse_expr                                             ││  runtime  ollama · qwen2.5-coder:32b         │
+│· Measured the blast radius of parse_expr                             ││  runtime  ollama · qwen2.5-coder:32b         │
 │    resolved 12 · candidates 1                                        ││  control  —                                  │
 │The parser drops the last token when the input ends in a comment.     ││  root     trellis-demo                       │
-│· run_checks  ✓ check passed                                          │└──────────────────────────────────────────────┘
+│· Ran the checks: Tests on whole repository  ✓ Tests passed           │└──────────────────────────────────────────────┘
 │                                                                      │┌ actions ─────────────────────────────────────┐
 │                                                                      ││  blast_radius           1 ●─┐                │
 │                                                                      ││  read_file                ○─┤                │
@@ -16,7 +16,7 @@
 │                                                                      ││  · run_checks                                │
 │                                                                      │└──────────────────────────────────────────────┘
 │                                                                      │┌ edits ───────────────────────────────────────┐
-│                                                                      ││~ src/index/resolve.rs                        │
+│                                                                      ││~ src/index/resolve.rs                       —│
 │                                                                      ││                                              │
 │                                                                      │└──────────────────────────────────────────────┘
 │                                                                      │┌ checks ──────────────────────────────────────┐
@@ -31,7 +31,7 @@
 │                                                                      ││  unresolved     2 ○─┘                        │
 │                                                                      ││  a floor on reach, not a boundary            │
 └──────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────┘
-┌ budget ──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+┌ budget  [^R] raise ──────────────────────────────────────────────────────────────────────────────────────────────────┐
 │TURNS █░░░░░░░░░░░░░░░ 3/40  ·  PROMPT 24.1 kB  ·  TIME 1:23*                                                         │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌ steer  [⏎] queue for the next turn ──────────────────────────────────────────────────────────────────────────────────┐

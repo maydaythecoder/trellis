@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -51,6 +52,9 @@ type Options struct {
 	// Theme is the colours the screen is painted in, built from the
 	// terminal before the program starts. The zero Theme paints nothing.
 	Theme theme.Theme
+	// Playful is --register playful (#857): one Ascii face where the Now
+	// strip has no run to show. Serious, the default, draws none.
+	Playful bool
 }
 
 // Model is the TUI's whole state.
@@ -77,6 +81,11 @@ type Model struct {
 	steers []steer
 	// deliveries counts this run's steer delivered events.
 	deliveries int
+	// verb is what ⏎ does with a line while a run is in flight, queue the
+	// composer's list, and held the line a Stop and send holds (compose.go).
+	verb  view.Verb
+	queue []queued
+	held  *held
 
 	// Quitting is set once quit has been sent: the child is finishing (a
 	// run in flight rolls back) and the program ends when it exits.
@@ -115,12 +124,43 @@ type Model struct {
 	runStart time.Time
 	waited   time.Duration
 	askedAt  time.Time
+	// engineMs is the last elapsed_ms trellis sent for the run (#906), the
+	// budget's own spend; engineMark is ownElapsed when it arrived, so the
+	// strip counts on from it by this view's clock, paused as that clock is
+	// while a question waits. nil when trellis has sent none, and the strip
+	// then draws this view's own clock, marked as its own.
+	engineMs   *uint64
+	engineMark time.Duration
 	// strip is what the Now strip and Where it is draw that the panes do
 	// not hold (#850): the run's phase, the runtime, the repository, a
 	// stop on its way, and the last run's own run_end words.
 	strip view.Now
 	// nav is the level shown and the pane selected (nav.go, #851).
 	nav view.Nav
+	// runID is the trail the last run_end named, for the summary (#854);
+	// "" until one has, and again once a run starts.
+	runID string
+	// closing is the model's closing words for the summary (#854).
+	closing closing
+
+	// The run controls (controls.go, #857): the hold the engine's paused
+	// event began, and a pause sent that neither that event nor its answer
+	// has settled; pausedAt is when the hold began, for this view's clock.
+	paused, pauseAsked bool
+	pausedAt           time.Time
+	// raising is the budget row a raise is being typed for, "" when none;
+	// stash is what the task line held when a raise or a plan edit took it.
+	raising view.Limit
+	stash   string
+	// plan is the run's latest plan event, read (plan.go), and planEdit the
+	// person's edit of it while it is typed.
+	plan     view.Plan
+	planEdit *view.PlanEdit
+	// planOrig is the edit's steps as it opened, so an unchanged plan is
+	// not sent.
+	planOrig []string
+	// playful is the register dial (Options).
+	playful bool
 
 	// theme is what the screen and the modal are painted with (Options).
 	theme theme.Theme
@@ -151,7 +191,7 @@ type Model struct {
 // New is a model that, once its outbox is drained, has asked trellis for
 // its state, chosen the model and, with a task given, sent it.
 func New(o Options) *Model {
-	m := &Model{now: time.Now, theme: o.Theme}
+	m := &Model{now: time.Now, theme: o.Theme, playful: o.Playful}
 	m.emptyPanes()
 	m.refreshState()
 	if o.ModelSpec != "" {
@@ -220,11 +260,24 @@ func (m *Model) Update(msg tea.Msg) {
 		if m.Modal != nil {
 			m.scrollModal(0)
 		}
+		if m.nav.Diff || m.nav.Open == view.PanelSummary || m.nav.Open == view.PanelPlan {
+			m.scrollLevel(0)
+		}
 	case FrameMsg:
 		m.frame(msg.Frame)
 	case ExitedMsg:
 		m.exited(msg.Err)
 	case SendFailedMsg:
+		// A failed write may have been a Stop and send's abort, and nothing
+		// written after it reaches trellis either: the held line is dropped
+		// rather than left holding the task line.
+		m.dropHeld("could not write to trellis rpc")
+		// Nor does a pause or a withdraw that may have been the failed
+		// write: neither waits on an answer that may never come.
+		m.pauseAsked = false
+		for i := range m.queue {
+			m.queue[i].item.Withdrawing = false
+		}
 		m.push(view.RoleRefusal, "! could not write to trellis rpc: "+view.Plain(msg.Err.Error()))
 	case TickMsg:
 		m.tick()
@@ -240,6 +293,17 @@ func (m *Model) key(k tea.KeyMsg) {
 	// are not the ones on screen.
 	if m.Modal != nil {
 		m.modalKey(k)
+		return
+	}
+	// The run controls and the modes they open take their keys before the
+	// composer and the levels (controls.go).
+	if m.controlKey(k) {
+		return
+	}
+	// A line with text takes Tab for its verb while a run is in flight
+	// (compose.go); an empty one keeps it for the panes.
+	if (k.Type == tea.KeyTab || k.Type == tea.KeyShiftTab) && m.composeTabs() {
+		m.verb = nextVerb(m.verb, k.Type == tea.KeyShiftTab)
 		return
 	}
 	// ESC, Tab and ⏎ on an empty line move between levels (nav.go).
@@ -320,6 +384,8 @@ func (m *Model) ctrlC() {
 	}
 	m.closeModal()
 	m.approvals = nil
+	// Nothing runs after leaving.
+	m.dropHeld("trellis is quitting")
 	if m.Running {
 		m.send("abort", nil)
 		m.strip.Stopping = true
@@ -344,14 +410,20 @@ func pasted(r []rune) string {
 }
 
 // submit hands the typed line to trellis: a task when no run is in
-// flight, one at a time, and a steer for the run when one is (steer.go).
+// flight, one at a time, and the line under the composer's verb when one
+// is (compose.go). While a Stop and send's line waits on the stop, a new
+// task would race it, so the line stays where it is.
 func (m *Model) submit() {
 	task := strings.TrimSpace(m.Input)
 	if task == "" || m.Quitting {
 		return
 	}
 	if m.Running {
-		m.steer(task)
+		m.compose(task)
+		return
+	}
+	if m.held != nil {
+		m.push(view.RoleNote, "· still stopping the last run; the held line runs once trellis answers the stop, and this one stays on the task line")
 		return
 	}
 	if m.classifying {
@@ -389,19 +461,31 @@ func (m *Model) frame(f frames.Frame) {
 			m.newRun()
 			m.clearPanes()
 		}
+		m.composeRunStarted(f.RunStartFields.ID)
 		m.runStart = m.now()
 		m.Running = true
 		m.Outcome = ""
 	case frames.ModelCall:
 		m.strip.Phase = view.Phase{Kind: "model", Turn: *f.ModelCallTurn}
+		if f.ModelCallElapsedMs != nil {
+			m.reportedElapsed(f.ModelCallElapsedMs)
+			secs := uint64(m.elapsed() / time.Second)
+			m.Budget.ElapsedSecs = &secs
+		}
 	case frames.RuntimeIdentified:
 		m.strip.Runtime = runtimeText(f.Runtime)
 	case frames.ApprovalRequest:
 		m.approvalRequested(*f.Approval)
 	case frames.SteerDelivered:
 		m.steerDeliveredEvent(f.AfterStep)
+	case frames.Paused:
+		m.pausedEvent(f.HoldTurn)
+	case frames.Resumed:
+		m.resumedEvent(f.PausedMs)
+	case frames.Plan:
+		m.planEvent(f.PlanFields)
 	case frames.RunBudget:
-		m.runBudget(f.MaxIterations)
+		m.runBudget(f)
 	case frames.RunEnd:
 		m.runEnd(f.RunEndFields)
 	case frames.Response:
@@ -420,23 +504,25 @@ func (m *Model) frame(f frames.Frame) {
 	}
 }
 
-// turn adds the turn's row: what was called and, when a check ran, what
-// trellis said it returned. The verdict is shown, never computed (ADR 0004),
-// and it alone makes the row a passed or a failed check.
+// turn adds the turn's row: what was called, as ToolSentence words it, and,
+// when a check ran, what trellis said it returned. The verdict is shown,
+// never computed (ADR 0004), and it alone makes the row a passed or a
+// failed check.
 func (m *Model) turn(t *frames.TurnFields) {
-	row := view.Row{Text: "· " + view.Plain(t.Call), Role: view.RoleTool, Turn: int(t.Turn)}
+	row := view.Row{Text: "· " + ToolSentence(t), Role: view.RoleTool, Turn: int(t.Turn)}
 	if t.Verdict != nil {
 		switch *t.Verdict {
 		case "Some(true)":
-			row.Text += "  ✓ check passed"
+			row.Text += "  ✓ " + checkWords(t, "passed")
 			row.Role = view.RolePassed
 		case "Some(false)":
-			row.Text += "  ✗ check FAILED"
+			row.Text += "  ✗ " + checkWords(t, "failed")
 			row.Role = view.RoleFailed
 		}
 	}
 	m.pushRow(row)
-	// The observation's first lines under it, as tui_bridge.rs shows them.
+	// The observation's first six lines under it, so a turn's result is
+	// in the transcript without one long observation filling the screen.
 	if t.Observation != nil {
 		n := 0
 		for _, l := range strings.Split(*t.Observation, "\n") {
@@ -453,11 +539,74 @@ func (m *Model) turn(t *frames.TurnFields) {
 	m.panesTurn(t)
 }
 
+// ToolSentence is a turn's call as the one sentence both clients show for
+// it (client_fixtures.json's tool_sentences, #803), made from the tool and
+// target the engine reported (#800) and never from splitting the call. A
+// turn whose event carried no tool shows its call as it came. The target is
+// the model's text, so it is made plain here.
+func ToolSentence(t *frames.TurnFields) string {
+	if t.Tool == nil || *t.Tool == "" {
+		return view.Plain(t.Call)
+	}
+	target := ""
+	if t.Target != nil {
+		target = view.Plain(*t.Target)
+	}
+	wrote := t.Wrote != nil && *t.Wrote
+	switch tool := *t.Tool; tool {
+	case "read_file":
+		return "Read " + target
+	case "edit":
+		if !wrote {
+			return "Edit to " + target + " not applied"
+		}
+		if t.LinesAdded != nil && t.LinesRemoved != nil {
+			return fmt.Sprintf("Edited %s (+%d −%d)", target, *t.LinesAdded, *t.LinesRemoved)
+		}
+		return "Edited " + target
+	case "write_file":
+		if !wrote {
+			return "Write to " + target + " not applied"
+		}
+		return "Wrote " + target
+	case "grep":
+		return "Searched for " + target
+	case "bash":
+		return "Ran " + target
+	case "run_checks":
+		return "Ran the checks: " + target
+	case "blast_radius":
+		return "Measured the blast radius of " + target
+	default:
+		return strings.TrimSpace(view.Plain(tool) + " " + target)
+	}
+}
+
+// checkWords is a check row's words: the kind trellis-checks named, or
+// "check" when it named none, then the word for the verdict it sent.
+func checkWords(t *frames.TurnFields, word string) string {
+	kind := "check"
+	if t.CheckKind != nil && strings.TrimSpace(*t.CheckKind) != "" {
+		kind = view.Plain(*t.CheckKind)
+	}
+	return kind + " " + word
+}
+
 // runEnd hands input back, whatever the ending, and says how it ended from
 // the frame's outcome and exit, never from model text.
 func (m *Model) runEnd(e *frames.RunEndFields) {
+	// A held run's hold ends with it, before this view's clock is read
+	// below; and the raise and the plan edit go with the run.
+	m.controlsEnded()
 	m.Running = false
 	m.promptID = ""
+	m.verb = view.VerbSteer
+	// A Stop and send's line goes once its abort is answered too, which
+	// rpc writes after this; the run's own lines are written first.
+	if m.held != nil {
+		m.held.ended = true
+		defer m.sendHeld()
+	}
 	m.refreshState()
 	m.steersNotDelivered()
 	// A question its run no longer waits on cannot be answered.
@@ -465,14 +614,28 @@ func (m *Model) runEnd(e *frames.RunEndFields) {
 	m.approvals = nil
 	m.Outcome = OutcomeLine(e)
 	m.restored = e.Restored
+	m.runID = ""
+	if e.RunID != nil {
+		m.runID = view.Plain(*e.RunID)
+	}
+	m.askClosing(e.Outcome)
 	// The strip names the ending in run_end's own words and exit code, and
-	// keeps the time the run took by this view's clock.
+	// keeps the time the run took: trellis's own figure when run_end carries
+	// one, else this view's clock, marked as its own. A run_end without one
+	// is a run the loop did not finish, and the last turn's figure counted
+	// on would be a total trellis declined to give (#906).
 	m.strip.Phase, m.strip.Stopping = view.Phase{}, false
 	m.strip.Outcome, m.strip.Exit = "", e.Exit
 	if e.Outcome != nil {
 		m.strip.Outcome = *e.Outcome
 	}
-	if !m.runStart.IsZero() {
+	m.engineMs = nil
+	switch {
+	case e.ElapsedMs != nil:
+		m.reportedElapsed(e.ElapsedMs)
+		secs := *e.ElapsedMs / 1000
+		m.Budget.ElapsedSecs = &secs
+	case !m.runStart.IsZero():
 		secs := uint64(m.ownElapsed() / time.Second)
 		m.Budget.ElapsedSecs = &secs
 	}
@@ -505,8 +668,10 @@ func (m *Model) errorLines(e *string) {
 	}
 }
 
-// OutcomeLine is how a run ended, in one line for the transcript's border,
-// worded as tui_run.rs's outcome_line words it.
+// OutcomeLine is how a run ended, in one line for the transcript's border:
+// run_end's own word and its exit code, as the desktop shows them
+// (DESIGN.md section 2 rule 5; client_fixtures.json's outcome_words, #803),
+// then whether the tree was restored or why it failed.
 func OutcomeLine(e *frames.RunEndFields) string {
 	restored := func() string {
 		if e.Restored == nil {
@@ -517,13 +682,15 @@ func OutcomeLine(e *frames.RunEndFields) string {
 	if e.Outcome == nil {
 		return "ended; trellis reported no outcome"
 	}
+	head := view.Plain(*e.Outcome)
+	if e.Exit != nil {
+		head += fmt.Sprintf(" · exit %d", *e.Exit)
+	} else {
+		head += " · trellis reported no exit code"
+	}
 	switch *e.Outcome {
-	case "converged":
-		return "converged"
-	case "not_converged":
-		return "did not converge; worktree restored: " + restored()
-	case "interrupted":
-		return "interrupted; worktree restored: " + restored()
+	case "not_converged", "interrupted":
+		return head + "; worktree restored: " + restored()
 	case "error":
 		first := "no reason given"
 		if e.Error != nil {
@@ -531,9 +698,9 @@ func OutcomeLine(e *frames.RunEndFields) string {
 				first = l
 			}
 		}
-		return "failed: " + view.Plain(first)
+		return head + ": " + view.Plain(first)
 	}
-	return view.Plain(*e.Outcome)
+	return head
 }
 
 // response handles an answer to a command this model sent. A refused
@@ -564,6 +731,9 @@ func (m *Model) response(r *frames.ResponseFields) {
 		case forClassify:
 			m.classified(r, true)
 			return
+		case forClosing:
+			m.closingAnswered(r, true)
+			return
 		}
 		if cmd == "set_model" && r.ID != nil && *r.ID == m.setModelID {
 			// A model is chosen: its tier can now be asked for.
@@ -577,16 +747,37 @@ func (m *Model) response(r *frames.ResponseFields) {
 		case forClassify:
 			m.classified(r, false)
 			return
+		case forClosing:
+			m.closingAnswered(r, false)
+			return
 		}
 	}
 	switch cmd {
 	case "steer":
 		m.steerAnswered(r, ok)
 		return
+	case "pause":
+		// Either answer ends the wait for it: held, which the paused event
+		// has already said, or refused, whose reason is said below.
+		m.pauseAsked = false
+	case "withdraw":
+		if ok {
+			m.takenBack(r)
+			return
+		}
+		// Refused: the item stands where it did, and the reason is said
+		// below.
+		m.withdrawSettled(r.ID)
 	case "abort":
 		if ok {
-			m.abortAnswered(r.Data)
+			m.abortAnswered(r.ID, r.Data)
 			return
+		}
+		// A refused abort stops nothing, and a Stop and send's line is
+		// not sent after it; the reason is said below.
+		if m.held != nil && r.ID != nil && *r.ID == m.held.abortID {
+			m.strip.Stopping = false
+			m.dropHeld("the stop was refused")
 		}
 	}
 	if ok {
@@ -599,11 +790,89 @@ func (m *Model) response(r *frames.ResponseFields) {
 	if cmd == "prompt" && r.ID != nil && *r.ID == m.promptID {
 		m.Running = false
 		m.promptID = ""
+		m.settle(kindPrompt, *r.ID, view.FateNot, 0, view.FirstLine(why))
 	}
 	if cmd == "" {
 		cmd = "a command"
 	}
 	m.push(view.RoleRefusal, "! "+view.Plain(cmd)+": "+view.Plain(view.FirstLine(why)))
+}
+
+// closing is where the summary's closing words stand (#854): asked, with
+// the id of the question in flight; said, with what this view cut of them;
+// or unsaid, with why. The zero closing has asked nothing.
+type closing struct {
+	id         string
+	words      *string
+	cut, total int
+	why        string
+}
+
+// askClosing asks trellis for the model's closing words, after a converged
+// run only: trellis keeps the words of the last run that ended on done, so
+// after any other outcome the answer could be an earlier run's, shown as
+// this one's. Whatever the last run's words were, they go.
+func (m *Model) askClosing(outcome *string) {
+	m.closing = closing{}
+	if outcome != nil && *outcome == "converged" {
+		m.closing.id = m.ask("get_last_assistant_text", forClosing, nil)
+	}
+}
+
+// closingAnswered reads get_last_assistant_text's answer, only while this
+// run's question is the one open: a new run forgets it, so an answer that
+// comes after one has started is not read as that run's. The words are
+// model output, cut to ClosingCap at a character's start and kept as sent;
+// the view makes them plain line by line.
+func (m *Model) closingAnswered(r *frames.ResponseFields, ok bool) {
+	if r.ID == nil || m.closing.id == "" || *r.ID != m.closing.id {
+		return
+	}
+	m.closing.id = ""
+	if !ok {
+		why := "no reason given"
+		if r.Error != nil && strings.TrimSpace(*r.Error) != "" {
+			why = view.FirstLine(*r.Error)
+		}
+		m.closing.why = "get_last_assistant_text refused: " + view.Plain(why)
+		return
+	}
+	d, _ := r.Data.(map[string]any)
+	text, isStr := d["text"].(string)
+	if !isStr {
+		m.closing.why = "trellis holds no closing words: no run of this trellis rpc has ended on done"
+		return
+	}
+	m.closing.total = len(text)
+	if len(text) > ClosingCap {
+		end := ClosingCap
+		for end > 0 && !utf8.RuneStart(text[end]) {
+			end--
+		}
+		text = text[:end]
+	}
+	m.closing.cut = m.closing.total - len(text)
+	m.closing.words = &text
+}
+
+// closingState is the closing words as the summary draws them, or why
+// there are none yet.
+func (m *Model) closingState() view.Closing {
+	c := view.Closing{Words: m.closing.words, Cut: m.closing.cut, Total: m.closing.total}
+	switch {
+	case c.Words != nil:
+	case m.closing.why != "":
+		c.Why = m.closing.why
+	case m.closing.id != "":
+		c.Why = "asked trellis for the model's closing words"
+	case m.Running:
+		c.Why = "the model's closing words come once the run has converged"
+	case m.Outcome != "":
+		c.Why = "this run did not converge, and trellis keeps only the closing words of the last run that ended on done, which may be an earlier run's"
+	default:
+		c.Why = "no run has converged"
+	}
+	return c
 }
 
 // exited ends the program. A child that exits without having been asked to
@@ -616,6 +885,8 @@ func (m *Model) exited(err error) {
 			m.push(view.RoleRefusal, "! whether the run in flight rolled back is not known here; check `git status` before rerunning")
 		}
 	}
+	m.dropHeld("trellis rpc exited before the run ended")
+	m.controlsEnded()
 	m.Running = false
 	m.closeModal()
 	m.approvals = nil
@@ -632,7 +903,9 @@ func exitReason(err error) string {
 // View draws the screen: the six regions, or the approval modal over them.
 func (m *Model) View() string {
 	w, h := m.size()
-	if m.Modal != nil {
+	// A question set aside for its file's diff (#853) is answered there,
+	// in the run view, until ESC puts it back in its box.
+	if m.Modal != nil && !m.Modal.Reviewing {
 		return view.Asking(m.viewState(), m.Modal.Question, m.Modal.Diff, m.Modal.Scroll, w, h)
 	}
 	return view.Render(m.viewState(), w, h)

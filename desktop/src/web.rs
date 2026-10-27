@@ -75,6 +75,7 @@ pub const PAGE: &[(&str, &[u8])] = &[
     ("settings.js", include_bytes!("../ui/settings.js")),
     ("status.js", include_bytes!("../ui/status.js")),
     ("graph.js", include_bytes!("../ui/graph.js")),
+    ("now.js", include_bytes!("../ui/now.js")),
     ("codebase.js", include_bytes!("../ui/codebase.js")),
     ("radius.js", include_bytes!("../ui/radius.js")),
     ("trails.js", include_bytes!("../ui/trails.js")),
@@ -87,6 +88,9 @@ pub const PAGE: &[(&str, &[u8])] = &[
     ("ds.js", include_bytes!("../ui/ds.js")),
     ("favicon.svg", include_bytes!("../ui/favicon.svg")),
     ("keys.js", include_bytes!("../ui/keys.js")),
+    ("code.js", include_bytes!("../ui/code.js")),
+    ("summary.js", include_bytes!("../ui/summary.js")),
+    ("plan.js", include_bytes!("../ui/plan.js")),
 ];
 
 /// The page's commands (`commands.rs`), the same four `build.rs` lists.

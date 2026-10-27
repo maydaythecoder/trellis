@@ -160,6 +160,14 @@ pub(crate) struct RunExtras {
     /// (each partition keeps its own clock) leave it empty, and `run_end`
     /// then carries none, never a 0.
     pub elapsed_ms: OnceLock<u64>,
+    /// rpc's `pause` and `resume` (ADR 0058 §1), honoured by the agent loop
+    /// at the top of each iteration; its caller closes it when the run ends.
+    /// `None` everywhere but rpc.
+    pub hold: Option<Arc<trellis_loop::Hold>>,
+    /// rpc's `set_budget` (ADR 0058 §2): the run's whole ceiling, adopted
+    /// by the agent loop and raised from rpc's thread; `None` everywhere
+    /// but rpc.
+    pub budget: Option<Arc<trellis_loop::LiveBudget>>,
 }
 
 /// The shared cell `RunExtras::done` writes into. `Arc<Mutex<_>>` because
@@ -186,6 +194,8 @@ impl Default for RunExtras {
             run_ended: None,
             tier: None,
             elapsed_ms: OnceLock::new(),
+            hold: None,
+            budget: None,
         }
     }
 }
