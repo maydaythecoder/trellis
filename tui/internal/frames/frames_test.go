@@ -70,6 +70,9 @@ var numeric = map[string]bool{
 	"duration_ms": true, "completion_tokens_used": true,
 	"max_wall_clock_ms": true, "max_completion_tokens": true, "max_context_bytes": true,
 	"paused_ms": true, "steps_cut": true, "texts_cut": true,
+	"summarised": true, "elided_turns": true, "elided_bytes": true,
+	"request_bytes": true, "budget": true, "turns_folded": true,
+	"bytes_before": true, "bytes_after": true,
 }
 
 var kindOf = map[string]Kind{
@@ -77,7 +80,7 @@ var kindOf = map[string]Kind{
 	"run_start": RunStart, "run_end": RunEnd, "response": Response,
 	"approval_request": ApprovalRequest, "model call": ModelCall,
 	"runtime identified": RuntimeIdentified, "paused": Paused, "resumed": Resumed,
-	"plan": Plan,
+	"plan": Plan, "compacted": Compacted, "compacted on request": CompactedOnRequest,
 }
 
 // The risk (ADR 0048 section 6): trellis keeps a field the contract

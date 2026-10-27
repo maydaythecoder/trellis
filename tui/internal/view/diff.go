@@ -27,6 +27,8 @@ type Asked struct {
 	ID       string
 	Question string
 	Detail   string
+	// For names the prompt or follow-up whose run asks (#954), plain.
+	For string
 	// OnScreen is the question the approval box shows, the only one
 	// answered: the rest wait behind it, unseen.
 	OnScreen bool
