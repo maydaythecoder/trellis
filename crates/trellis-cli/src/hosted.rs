@@ -1867,7 +1867,7 @@ context_bytes = {set}
         assert_eq!(stub.model_reads(), 3, "{:?}", stub.requests());
     }
 
-    /// The `runtime identified` event as the human layer prints it (main.rs
+    /// The `runtime identified` event as the human layer prints it (startup.rs
     /// builds it the same way, minus the filter).
     fn printed_self_report(id: &str) -> String {
         #[derive(Clone, Default)]

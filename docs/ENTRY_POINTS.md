@@ -21,12 +21,15 @@ sends `quit` and waits, so a run in flight rolls back and writes its trail.
 ## trellis
 
 1. `crates/trellis-cli/src/main.rs` `fn main` parses the command line and
-   builds the tracing subscriber. With `--json` or `rpc`, stdout is the JSON
+   calls `crates/trellis-cli/src/startup.rs` `fn init_tracing`, which builds
+   the tracing subscriber. With `--json` or `rpc`, stdout is the JSON
    channel (ADR 0025 §4): the stdout event layer,
-   `crates/trellis-cli/src/main.rs` `let stdout_json`, writes each `trellis`
-   event at info as one JSON line, under a fixed filter so `RUST_LOG` cannot
-   change what a client receives. Then `main` dispatches the subcommand;
-   `rpc` goes to `crates/trellis-cli/src/main.rs` `Command::Rpc => rpc::serve(`.
+   `crates/trellis-cli/src/startup.rs` `let stdout_json`, writes each
+   `trellis` event at info as one JSON line, under a fixed filter so
+   `RUST_LOG` cannot change what a client receives. Then `main` finds the
+   root (`startup.rs` `fn resolve_root`) and `crates/trellis-cli/src/main.rs`
+   `fn dispatch` runs the subcommand; `rpc` goes to
+   `crates/trellis-cli/src/main.rs` `Command::Rpc => rpc::serve(`.
 2. `crates/trellis-cli/src/rpc.rs` `fn serve_with` reads commands until
    `quit` or the end of input, and
    `crates/trellis-cli/src/rpc.rs` `fn dispatch_command` matches each

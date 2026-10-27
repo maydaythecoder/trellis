@@ -1,6 +1,6 @@
 //! `trellis run`: one task, from a clean worktree to a trail.
 //!
-//! What starts here: `cmd_run_with`, which `trellis run` (`main.rs`) and
+//! What starts here: `cmd_run_with`, which `trellis run` (`cmd_run_args`) and
 //! `trellis rpc`'s `prompt` (`rpc.rs`) call; `cmd_run` is it with no extras.
 //! It frames the run's output and calls `run_body`, which refuses what it
 //! can before it touches the tree (the control mode, trust, whether the
@@ -15,9 +15,12 @@ use crate::approval::{Human, NEEDS_A_TERMINAL, RunControl, answer_on_the_line, p
 use crate::doctor_cmd::{runtime_tier_label, schema_report};
 use crate::driver::{Driver, SeesDone};
 use crate::plain;
-use crate::run_partitioned::{Partitioned, run_partitioned};
+use crate::run_partitioned::{
+    Agents, Fanout, Partitioned, agents_for, parse_agents, run_partitioned,
+};
 use crate::{
-    config, context_files, hosted, image_input, output, rpc, tooling, user_config, vault_cmd,
+    config, context_files, first_run, floor, hosted, image_input, output, rpc, templates, tooling,
+    user_config, vault_cmd,
 };
 use anyhow::{Context, Result};
 use std::io::Write as _;
@@ -174,6 +177,110 @@ pub(crate) fn cmd_run(
         control,
         output::RunExtras::default(),
         out,
+    )
+}
+
+/// `trellis run`'s flags, checked and handed to `cmd_run_with`. The exit
+/// code is returned rather than acted on: `main` is the caller that is the
+/// process (`RunExit`).
+pub(crate) fn cmd_run_args(root: &Path, flags: crate::RunArgs) -> Result<RunExit> {
+    let crate::RunArgs {
+        task,
+        model,
+        unconstrained,
+        agents,
+        target,
+        resume,
+        prompt,
+        args,
+        skill,
+        focus,
+        approve,
+        auto,
+        image,
+    } = flags;
+    // Checked here rather than in `cmd_run`: the session and the
+    // interface always run one agent, and this is the only caller
+    // that takes the flags. Every refusal below comes before
+    // `cmd_run_with`, which owns the snapshot.
+    let width = parse_agents(&agents)?;
+    if target.is_empty() && width != Agents::Count(1) {
+        anyhow::bail!(
+            concat!(
+                "--agents {} needs the run's work units named: pass --target <symbol> ",
+                "once per unit. `trellis partitions <symbol>...` shows the plan those ",
+                "targets would produce without running it (ADR 0045)."
+            ),
+            agents
+        );
+    }
+    // ADR 0025 §3: frontmatter stripped, `--args` substituted.
+    let task = templates::task_text(root, prompt.as_deref(), args.as_deref(), &task)?;
+    let model_from_user = model.is_some();
+    // A config that fails to load says why, rather than reading as
+    // "no model": the refusal may be the point (ADR 0024 §3).
+    let model = match model {
+        Some(m) => m,
+        None => config::RepoConfig::load(root)?
+            .model()
+            .with_context(first_run::no_model)?,
+    };
+    // Here, not in `run_body`: this is `trellis run`'s own path, and
+    // the session, the TUI and rpc share `run_body`, where a line on
+    // stderr would land under a drawn interface. Before `agents_for`
+    // and `cmd_run_with`, so before any request reaches the runtime.
+    // A spec that does not parse gets no warning; `cmd_run_with`
+    // refuses it with the reason.
+    if let Ok(spec) = model.parse::<trellis_model::ModelSpec>()
+        && let Some(w) = floor::run_warning(&spec)
+    {
+        eprintln!("{}", plain(&w));
+    }
+    // With no target the width is 1 (refused above otherwise), and
+    // the run is today's single-agent run with nothing added. With
+    // targets, the plan's partitions run each in its own agent (#466),
+    // one at a time at width 1 (ADR 0045 §2, #482), which is also the
+    // width of any N on a backend not measured to batch (#483).
+    let mut fanout = None;
+    if !target.is_empty() {
+        let (n, why) = agents_for(root, width, &target, &model, model_from_user)?;
+        fanout = Some(Fanout::plan(root, &target, n, why)?);
+    }
+    let flag = match (approve, auto) {
+        (true, _) => Some(config::ControlMode::Approve),
+        (_, true) => Some(config::ControlMode::Auto),
+        _ => None,
+    };
+    cmd_run_with(
+        root,
+        &task,
+        ModelChoice {
+            spec: &model,
+            unconstrained,
+        },
+        RunSeeding {
+            resume,
+            focus: focus.as_deref(),
+            profile: None,
+            model_from_user,
+            model_source: crate::hosted::SpecSource::Repository,
+            // `trellis run` has no task for a question to wait on.
+            queued: false,
+            services: &[],
+            trust_root: None,
+        },
+        RunControl {
+            flag,
+            human: Human::terminal(),
+            steering: None,
+        },
+        output::RunExtras {
+            skills: skill,
+            images: image,
+            fanout,
+            ..output::RunExtras::default()
+        },
+        &mut output::human(),
     )
 }
 
