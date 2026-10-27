@@ -1095,6 +1095,8 @@ mod tests {
                 changed: Vec::new(),
                 changed_count: 0,
                 duration_ms: None,
+                lines_added: None,
+                lines_removed: None,
             };
         t.factual.actions = vec![
             action(1, "bash", "python gen.py", "exit 0", false).with_changed(bash_changed),
@@ -1181,6 +1183,74 @@ mod tests {
                 .integrity(&edited),
             Integrity::Altered
         );
+    }
+
+    #[test]
+    fn trail_edit_actions_carry_line_counts() {
+        // The risk (#811): an applied edit's counts lost on the way to disk
+        // or back, written for actions that are not an applied edit, a
+        // recorded 0 dropped as if it were absent (a pure deletion adds no
+        // lines, and that is a measurement), or counts outside the digest,
+        // where an edited figure would still read as Intact.
+        let mut t = bash_then_edit(&[]);
+        t.factual.actions[1].lines_added = Some(2);
+        t.factual.actions[1].lines_removed = Some(1);
+        let mut deletion = t.factual.actions[1].clone();
+        deletion.turn = 3;
+        deletion.lines_added = Some(0);
+        deletion.lines_removed = Some(3);
+        t.factual.actions.push(deletion);
+        let json = written(&mut t);
+
+        let read = UntrustedTrail::from_json(&json).unwrap();
+        assert_eq!(read.integrity(&json), Integrity::Intact);
+        let counts: Vec<_> = read
+            .factual
+            .actions
+            .iter()
+            .map(|a| (a.lines_added, a.lines_removed))
+            .collect();
+        assert_eq!(
+            counts,
+            [(None, None), (Some(2), Some(1)), (Some(0), Some(3))],
+            "{json}"
+        );
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let actions = &v["factual"]["actions"];
+        for name in ["lines_added", "lines_removed"] {
+            assert!(actions[0].get(name).is_none(), "bash has {name}: {json}");
+        }
+        assert_eq!(actions[2]["lines_added"], 0, "a recorded 0 is written");
+
+        let edited = json.replace(r#""lines_added":2"#, r#""lines_added":20"#);
+        assert_ne!(edited, json);
+        assert_eq!(
+            UntrustedTrail::from_json(&edited)
+                .unwrap()
+                .integrity(&edited),
+            Integrity::Altered,
+            "the counts are under the digest"
+        );
+    }
+
+    #[test]
+    fn an_old_trail_reads_back_with_line_counts_absent() {
+        // The risk (#811): a trail written before the counts existed reads
+        // back with 0 for them, which claims an edit changed nothing, or
+        // reads as altered, or the same run written today gains keys and so
+        // a new digest. Its edit action has neither count, the bytes and
+        // digest are the old ones, and SCHEMA is still 1.
+        let read = UntrustedTrail::from_json(BEFORE_CHANGED).expect("old trail must parse");
+        assert_eq!(read.integrity(BEFORE_CHANGED), Integrity::Intact);
+        assert_eq!(read.factual.actions[1].tool, "edit");
+        for a in &read.factual.actions {
+            assert_eq!((a.lines_added, a.lines_removed), (None, None), "{a:?}");
+        }
+        let mut t = bash_then_edit(&[]);
+        let json = written(&mut t);
+        assert_eq!(json, BEFORE_CHANGED, "an old-shaped run keeps its bytes");
+        assert_eq!(t.factual_sha256, BEFORE_CHANGED_DIGEST);
+        assert_eq!(crate::SCHEMA, 1, "an additive field is not a schema bump");
     }
 
     #[test]

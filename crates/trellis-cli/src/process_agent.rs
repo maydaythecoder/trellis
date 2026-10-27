@@ -847,6 +847,10 @@ fn write_trail(root: &Path, t: TrailInput<'_>, out: &mut dyn Write) -> Option<St
                 changed: Vec::new(),
                 changed_count: 0,
                 duration_ms: None,
+                // Nothing diffed what the process did: no line counts
+                // (ADR 0007, #811).
+                lines_added: None,
+                lines_removed: None,
             }))
             // What it did to files git ignores: not `proposed`, which is what
             // a commit would carry, but recorded, since a converged run keeps
@@ -860,6 +864,10 @@ fn write_trail(root: &Path, t: TrailInput<'_>, out: &mut dyn Write) -> Option<St
                 changed: Vec::new(),
                 changed_count: 0,
                 duration_ms: None,
+                // Nothing diffed what the process did: no line counts
+                // (ADR 0007, #811).
+                lines_added: None,
+                lines_removed: None,
             }))
             .collect(),
         control: Some("auto (process agent)".into()),

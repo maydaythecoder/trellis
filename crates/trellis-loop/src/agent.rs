@@ -17,6 +17,7 @@
 //! executed check or it does not complete.
 
 use crate::budget::{Budget, Exhaustion, LiveBudget, Spend, WallClock};
+use crate::gate::EditDiff;
 use crate::orchestrator::Handle;
 use crate::radius_listing::{RadiusSite, render_radius};
 use crate::tools::ToolResult;
@@ -217,6 +218,10 @@ pub struct Turn {
     /// `trellis-checks` (rule 1): for a check it is the check call's time
     /// as the loop saw it. The trail records it per action and per check.
     pub duration_ms: u64,
+    /// What an edit that applied changed, the `EditDiff` its `turn` event
+    /// reported (#802); `None` on every other turn. Carried so the trail
+    /// takes its line counts from the same value as the event (#811).
+    pub edit: Option<EditDiff>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1428,6 +1433,7 @@ pub async fn run_seeded<M: Model>(
                             may_have_changed_tree: false,
                             changed: Vec::new(),
                             duration_ms: audit_ms,
+                            edit: None,
                         });
                         if !v.passed() {
                             // Asked only now, after the outcome is settled:
@@ -1642,6 +1648,7 @@ pub async fn run_seeded<M: Model>(
                     may_have_changed_tree,
                     changed,
                     duration_ms,
+                    edit: edit.cloned(),
                 });
 
                 // After the turn is recorded, so the trail shows the call
@@ -3119,6 +3126,7 @@ rank = \"non-negotiable\"
                     may_have_changed_tree: false,
                     changed: Vec::new(),
                     duration_ms: 0,
+                    edit: None,
                 },
                 Turn {
                     call: ToolCall::ReadFile { path: "b".into() },
@@ -3132,6 +3140,7 @@ rank = \"non-negotiable\"
                     may_have_changed_tree: false,
                     changed: Vec::new(),
                     duration_ms: 0,
+                    edit: None,
                 },
             ],
             final_notice: false,

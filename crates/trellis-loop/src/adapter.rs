@@ -1389,6 +1389,7 @@ mod tests {
                 may_have_changed_tree: false,
                 changed: Vec::new(),
                 duration_ms: 0,
+                edit: None,
             }],
             final_notice: true,
             steering: Default::default(),
@@ -1432,6 +1433,7 @@ mod tests {
                 may_have_changed_tree: false,
                 changed: Vec::new(),
                 duration_ms: 0,
+                edit: None,
             }],
             final_notice: false,
             steering: Default::default(),
@@ -1744,6 +1746,7 @@ mod tests {
             may_have_changed_tree: false,
             changed: Vec::new(),
             duration_ms: 0,
+            edit: None,
         });
 
         // The first reply names a tool the run does not have, which is the
@@ -1852,6 +1855,7 @@ mod compaction_and_hosted_tests {
             may_have_changed_tree: false,
             changed: Vec::new(),
             duration_ms: 0,
+            edit: None,
         }
     }
 
@@ -2936,6 +2940,7 @@ mod context_budget_tests {
             may_have_changed_tree: false,
             changed: Vec::new(),
             duration_ms: 0,
+            edit: None,
         }
     }
 
