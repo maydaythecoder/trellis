@@ -389,6 +389,27 @@ edit as an ordinary `steer`. Held by `take_back_withdraws_and_returns_the_text`,
 `whole_file_view_reads_through_read_file` and
 `a_plan_edit_is_sent_as_a_steer` in `src/commands.rs`, and by
 `every_field_in_the_rpc_contract_is_read` in `src/state.rs`.
+*Added 2026-10-27 (#953):* a `turn` carries `said`, the model's own words
+for that step: the text a hosted reply carried beside the tool call the
+loop accepted (OpenAI's `content`, or Anthropic's `text` blocks joined;
+thinking blocks are not words said), trimmed. Until now the loop dropped
+them, so neither client could show what the model said between calls. Only
+the accepted reply's words are sent; a reply retried as a format failure
+sends none. They are cut at the last whole character within 8192 bytes
+(the cap a command's output is kept to) with a last line saying how many
+bytes were cut. `said` is absent, never an empty string, when the reply
+carried no words or only whitespace, on every turn of the local runtime
+driver (a constrained tier's reply is the call itself, and the prose a tier
+4 reply wraps its call in is discarded as packaging, as before), on a
+scripted run, and on the governance audit's turn, which reads no reply.
+The words are model output: a client shows them as text, as the model's
+words and not a verdict, never styled as a check, and never interprets
+them (CLAUDE.md rules 1 and 10). The trail records none of them, and its
+format is unchanged. The field is under `rpc.not_every_client` with empty
+`read_by`; drawing it is the clients' own tickets. Held by
+`said_is_cut_at_a_character_and_says_so` and
+`a_hosted_step_sends_the_accepted_reply_s_words_and_none_when_blank` in
+trellis-loop, and `rpc_turn_carries_the_models_words` in `tests/modes.rs`.
 
 ### 7. Auditing Tauri's tree
 

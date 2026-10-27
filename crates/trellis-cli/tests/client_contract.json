@@ -112,8 +112,12 @@
           "always": [],
           "model_call_only": [],
           "blast_radius_only": ["summarised"],
-          "read_by": {"summarised": []},
-          "about": "summarised is how many of the radius's call sites its observation summarised by file instead of listing them, 0 when it listed every one."
+          "words_only": ["said"],
+          "absent_when": {
+            "said": "the reply behind the turn's call carried no words beside it, or only whitespace; every turn of the local runtime driver, whose constrained reply is the call itself and whose tier 4 wrapping is discarded as packaging; a scripted run; and the governance audit's turn, which reads no reply. Never sent as an empty string"
+          },
+          "read_by": {"summarised": [], "said": []},
+          "about": "summarised is how many of the radius's call sites its observation summarised by file instead of listing them, 0 when it listed every one. said is the model's own words for the step (#953): the text a hosted reply carried beside the tool call the loop accepted (OpenAI's content, or Anthropic's text blocks joined, thinking left out), trimmed; a reply retried as a format failure sends none. It is cut at the last whole character within 8192 bytes, the cap a command's output is kept to, with a last line saying how many bytes were cut. said is model output: a client shows it as text, as the model's words and not a verdict, never styled as a check, and never interprets it (CLAUDE.md rules 1 and 10). The trail does not record it."
         },
         "compacted": {
           "always": ["turn", "elided_turns", "elided_bytes", "request_bytes", "budget"],
