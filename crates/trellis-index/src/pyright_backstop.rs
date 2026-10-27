@@ -694,7 +694,7 @@ impl<'a> Files<'a> {
         if !path.starts_with(&self.root) {
             return None;
         }
-        let rel = crate::resolve::rel_path(&self.root, &path);
+        let rel = crate::discover::rel_path(&self.root, &path);
         self.by_path.get(rel.as_str()).copied()
     }
 
