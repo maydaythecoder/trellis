@@ -168,6 +168,11 @@ type Model struct {
 	planOrig []string
 	// playful is the register dial (Options).
 	playful bool
+	// filter and quiet choose the transcript rows drawn, and call is the
+	// turn's call ^O has open (log.go, #948).
+	filter view.LogFilter
+	quiet  bool
+	call   *callOpen
 
 	// theme is what the screen and the modal are painted with (Options).
 	theme theme.Theme
@@ -267,6 +272,9 @@ func (m *Model) Update(msg tea.Msg) {
 		if m.Modal != nil {
 			m.scrollModal(0)
 		}
+		if m.call != nil {
+			m.scrollCall(0)
+		}
 		if m.nav.Diff || m.nav.Open == view.PanelSummary || m.nav.Open == view.PanelPlan {
 			m.scrollLevel(0)
 		}
@@ -302,9 +310,19 @@ func (m *Model) key(k tea.KeyMsg) {
 		m.modalKey(k)
 		return
 	}
+	// The call box is over the run view, so its keys are the ones on
+	// screen, and ESC closes it rather than leaving a level (log.go).
+	if m.call != nil {
+		m.callKey(k)
+		return
+	}
 	// The run controls and the modes they open take their keys before the
 	// composer and the levels (controls.go).
 	if m.controlKey(k) {
+		return
+	}
+	// The transcript's filter, quiet mode and call (log.go).
+	if m.logKey(k) {
 		return
 	}
 	// A line with text takes Tab for its verb while a run is in flight
@@ -524,7 +542,11 @@ func (m *Model) turn(t *frames.TurnFields) {
 		m.dividedTurn = t.Turn
 		m.pushRow(view.Row{Text: view.TurnDivider(t.Turn, t.ModelMs, t.CompletionTokens, t.PromptBytes), Role: view.RoleLabel, Turn: n})
 	}
-	m.pushRow(view.Row{Text: "· " + ToolSentence(t), Role: view.RoleTool, Turn: n})
+	// Every row this event writes carries its call and observation for
+	// ^O, kept to RawCap (log.go), and the call's row whether it wrote,
+	// for quiet mode.
+	raw := rawCall(t)
+	m.pushRow(view.Row{Text: "· " + ToolSentence(t), Role: view.RoleTool, Turn: n, Wrote: t.Wrote != nil && *t.Wrote, Raw: raw})
 	// The observation's first six lines under it, so a turn's result is
 	// in the transcript without one long observation filling the screen.
 	if t.Observation != nil {
@@ -536,16 +558,16 @@ func (m *Model) turn(t *frames.TurnFields) {
 			if strings.TrimSpace(l) == "" && lines == 0 {
 				continue
 			}
-			m.pushRow(view.Row{Text: "    " + view.Plain(l), Role: view.RoleOutput, Turn: n})
+			m.pushRow(view.Row{Text: "    " + view.Plain(l), Role: view.RoleOutput, Turn: n, Raw: raw})
 			lines++
 		}
 	}
 	if t.Verdict != nil {
 		switch *t.Verdict {
 		case "Some(true)":
-			m.pushRow(view.Row{Text: "✓ " + checkWords(t, "passed") + " · " + checkSource, Role: view.RolePassed, Turn: n})
+			m.pushRow(view.Row{Text: "✓ " + checkWords(t, "passed") + " · " + checkSource, Role: view.RolePassed, Turn: n, Raw: raw})
 		case "Some(false)":
-			m.pushRow(view.Row{Text: "✗ " + checkWords(t, "failed") + " · " + checkSource, Role: view.RoleFailed, Turn: n})
+			m.pushRow(view.Row{Text: "✗ " + checkWords(t, "failed") + " · " + checkSource, Role: view.RoleFailed, Turn: n, Raw: raw})
 		}
 	}
 	m.panesTurn(t)
@@ -923,6 +945,9 @@ func (m *Model) View() string {
 	// in the run view, until ESC puts it back in its box.
 	if m.Modal != nil && !m.Modal.Reviewing {
 		return view.Asking(m.viewState(), m.Modal.Question, m.Modal.Diff, m.Modal.Scroll, w, h)
+	}
+	if m.call != nil {
+		return view.CallView(m.viewState(), *m.call.raw, m.call.scroll, w, h)
 	}
 	return view.Render(m.viewState(), w, h)
 }

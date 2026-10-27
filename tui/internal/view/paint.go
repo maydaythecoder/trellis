@@ -91,6 +91,14 @@ type Row struct {
 	// mark that says "you wrote this" (#947). The transcript draws the bar
 	// on every row the entry wraps to, so a long task is barred whole.
 	Bar bool
+	// Wrote marks a call's row when the call wrote to the tree, Ask the
+	// row saying the model asks the person something, and Raw the rows a
+	// turn event wrote, carrying its call and observation in full: the
+	// filters and quiet mode choose rows by them and by Role, never by the
+	// words (log.go, #948), and ^O opens Raw.
+	Wrote bool
+	Ask   bool
+	Raw   *RawCall
 	// Spans, when set, are the row in more than one role, drawn in order
 	// in place of Text and Role. Only rows the view builds carry them (the
 	// budget's Meters); a transcript row is one role.

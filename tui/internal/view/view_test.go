@@ -17,6 +17,8 @@ import (
 
 func u(n uint64) *uint64 { return &n }
 
+func strp(s string) *string { return &s }
+
 // populated is the ratatui view tests' populated(): a line, a pending
 // edit, a passing check, a radius and a budget two turns in.
 func populated() State {
