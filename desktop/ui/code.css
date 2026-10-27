@@ -1,0 +1,124 @@
+/*
+  The last stylesheet (#978): the icon set, then the Code level and the
+  summary level. index.html links it after atlas.css, last.
+*/
+
+/* The icon set (#835): the sprite of <symbol>s takes no room and is never
+   drawn itself; each icon is drawn where a label uses it, before its word,
+   in the label's own colour (the icons stroke in currentColor). */
+.icon-sprite {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+.icon {
+  width: 16px;
+  height: 16px;
+  margin-right: var(--space-1\.5);
+  vertical-align: -3px;
+  flex: none;
+}
+
+/* The Code level (#831). A file's way in is its path, drawn as the Rail
+   row's label; its counts and state word are the row's meta. */
+#code,
+#code-file {
+  display: grid;
+  gap: var(--space-4);
+  align-content: start;
+}
+
+.code-pick {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.code-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* The diff's gutters in px, not the bundle's ch (#831): the old and the
+   new line number, the sign, the text, and the comment button's cell. */
+.code-diff .cd-diff-line {
+  grid-template-columns: 48px 48px 24px minmax(0, 1fr) 32px;
+}
+
+.code-diff .cd-diff-text {
+  overflow-wrap: anywhere;
+}
+
+.code-comment {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-muted);
+  font: 400 12px/20px var(--font-mono);
+  cursor: pointer;
+}
+
+.code-comment:hover {
+  color: var(--signal);
+}
+
+/* While the run waits on this edit: what the person is asked, in the
+   signal colour, the user's (DESIGN.md §3.1). */
+.code-approve {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--signal-soft);
+  box-shadow: var(--frame-signal);
+}
+
+.code-approve p {
+  margin: 0 auto 0 0;
+}
+
+.code-comment-form {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.code-comment-form input {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--control-border);
+  background: var(--panel-inset);
+  color: var(--ink);
+  font: 400 13px/20px var(--font-mono);
+}
+
+/* The summary level (#832): its Panels in two columns where the window
+   has room for them, one where it has not. A check kind's runs and a
+   file's meta wrap as the Code level's do. */
+#summary {
+  display: grid;
+  gap: var(--space-4);
+  align-content: start;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.summary-runs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
