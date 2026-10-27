@@ -226,8 +226,7 @@ func logRun(t *testing.T) *Model {
 	feed(m, turn(3, "edit f.py", map[string]any{"tool": "edit", "target": "f.py", "wrote": true, "observation": "applied the edit"}))
 	feed(m, warn("the model is slow"))
 	feed(m, approval("a1", `ask_human "Keep the v1 endpoint?"`, ""))
-	m.Update(keyType(tea.KeyEsc))
-	m.Modal, m.approvals = nil, nil
+	key(m, 'n')
 	m.Update(SendFailedMsg{Err: errors.New("broken pipe")})
 	feed(m, "the model's own words")
 	m.TakeOutbox()
