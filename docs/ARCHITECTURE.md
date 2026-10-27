@@ -122,8 +122,8 @@ and the two outcomes in the picture.
 
 | # | Step | Where | Names |
 |---|---|---|---|
-| 1 | Parse arguments, set up `tracing`, find the repository root | `crates/trellis-cli/src/main.rs` | `Cli`, `Command::Run`, `main` |
-| 2 | Refuse `--agents N` without `--target`; expand a prompt template; pick the model from `--model` or `.trellis/config.toml`; build `RunSeeding`, `RunControl`, `output::RunExtras` | `main.rs`, the `Command::Run` arm | `templates::task_text`, `config::RepoConfig::load`, `cmd_run_with` |
+| 1 | Parse arguments, set up `tracing`, find the repository root | `crates/trellis-cli/src/main.rs`, `crates/trellis-cli/src/startup.rs` | `Cli`, `Command::Run`, `main`, `init_tracing`, `resolve_root` |
+| 2 | Refuse `--agents N` without `--target`; expand a prompt template; pick the model from `--model` or `.trellis/config.toml`; build `RunSeeding`, `RunControl`, `output::RunExtras` | `run_cmd.rs`, `cmd_run_args` | `templates::task_text`, `config::RepoConfig::load`, `cmd_run_with` |
 | 3 | Frame the run (JSONL brackets when `--json`) and enter the body | `crates/trellis-cli/src/run_cmd.rs` | `cmd_run_with` → `output::framed` → `run_body` |
 | 4 | Parse the model spec and build the driver; probe whether the runtime honours a schema, and fall back to tier 4 if it does not | `run_cmd.rs`, `driver.rs`; `crates/trellis-model/src/spec.rs`, `tier.rs` | `trellis_model::ModelSpec`, `Driver::build` (`Driver::Scripted`/`Runtime`/`Hosted`), `probe_constraint`, `AdapterTier` |
 | 5 | With `--resume`, read the newest trail back as untrusted data before anything is written | `run_cmd.rs`; `crates/trellis-trail/src/store.rs`, `untrusted.rs` | `trellis_trail::latest`, `UntrustedTrail::context_lines`, `trellis_loop::PriorContext` |
@@ -158,7 +158,7 @@ and the two outcomes in the picture.
 |---|---|---|---|
 | bare `trellis` | `crates/trellis-cli/src/main.rs` (`let Some(command) = cli.command else`) | at a terminal: the desktop via `launch::launch_desktop` or the TUI; on a pipe: `session::Session` | 0050 |
 | `trellis session` | `crates/trellis-cli/src/session.rs` | `cmd_run_with`, holding the index between tasks | — |
-| `trellis tui` | `crates/trellis-cli/src/main.rs` `terminal_ui`, handing off to `tui/` (`launch::hand_off`); refuses, naming where it looked, when no `trellis-tui` is found (#516) | `trellis rpc`'s, in `trellis-tui`'s child | 0052 |
+| `trellis tui` | `crates/trellis-cli/src/startup.rs` `terminal_ui`, handing off to `tui/` (`launch::hand_off`); refuses, naming where it looked, when no `trellis-tui` is found (#516) | `trellis rpc`'s, in `trellis-tui`'s child | 0052 |
 | `trellis rpc` (desktop and TUI clients) | `crates/trellis-cli/src/rpc.rs`, `serve` | `cmd_run_with` on its own thread, once a `set_model` has given the session a model (a `prompt` before then is refused, #564); `abort`, `approve`, `steer`, `get_state` answered meanwhile | 0025 §5, 0048, 0052 |
 | `trellis queue`, `trellis work` | `crates/trellis-cli/src/work.rs` (`queue`, `work`); `crates/trellis-queue/src/lib.rs` (`work`, `Runner`, `Queue`) | a `Runner` whose `run` is `cmd_run`; a process agent runs its command in a clone instead (`process_agent.rs`) | 0020, 0026 |
 | `trellis agents`, `trellis routines` | `crates/trellis-cli/src/orchestrate.rs` | not at all; they list and validate profiles and routines | 0026 |
