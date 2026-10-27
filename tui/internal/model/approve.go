@@ -55,6 +55,13 @@ func (m *Model) approvalRequested(a frames.ApprovalFields) {
 		d = *a.Detail
 	}
 	ap := Approval{ID: a.ID, Question: view.Plain(q), Diff: plainLines(strings.TrimRight(d, " \t\r\n"))}
+	// The gate names an ask_human call `ask_human "<question>"`
+	// (trellis-loop gate.rs), and no custom tool may take a built-in's
+	// name, so the prefix is the call's. The question is the model's, in
+	// the log as well as the box, whether it is shown, queued or declined.
+	if asked, ok := strings.CutPrefix(q, "ask_human "); ok {
+		m.push(view.RoleYou, "? model asks you  "+view.Plain(asked))
+	}
 	if m.Modal == nil {
 		m.showModal(&ap)
 		return
