@@ -115,7 +115,7 @@ func TestPanesClockKeepsElapsedCurrentWhileRunning(t *testing.T) {
 		t.Fatalf("elapsed %v, want 75", m.Budget.ElapsedSecs)
 	}
 	m.Update(windowSize(120, 24))
-	if v := m.View(); !strings.Contains(v, "TIME 1:15*") || !strings.Contains(v, "TURNS —/40") {
+	if v := m.View(); !strings.Contains(v, "WALL CLOCK   1:15*/—") || !strings.Contains(v, "TURNS        —/40") {
 		t.Fatalf("view:\n%s", v)
 	}
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
@@ -158,7 +158,7 @@ func TestPanesTurnWithoutAPromptSizeLeavesItUnreported(t *testing.T) {
 		t.Fatalf("budget %+v", m.Budget)
 	}
 	m.Update(windowSize(120, 24))
-	if v := m.View(); !strings.Contains(v, "PROMPT —") || strings.Contains(v, "PROMPT 0") {
+	if v := m.View(); !strings.Contains(v, "LAST PROMPT  —/—") || strings.Contains(v, "LAST PROMPT  0") {
 		t.Fatalf("view:\n%s", v)
 	}
 }

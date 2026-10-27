@@ -56,9 +56,11 @@ func TestBudgetLineUnknownQueueWaitIsZeroAndNotDrawn(t *testing.T) {
 }
 
 // Without reported tokens there is no rate and no wait; the rest stays.
+// The rate is "n tok, r tok/s"; the completion row's own "tokens" is not
+// it (#951).
 func TestBudgetLineWithoutTokensDrawsNoRateAndNoWait(t *testing.T) {
 	out := afterTurn(nil, u(25000), u(10000))
-	if strings.Contains(out, "tok") || strings.Contains(out, "queued") || !strings.Contains(out, "TURNS █░░░░░░░░░░░░░░░ 3/40") {
+	if strings.Contains(out, " tok,") || strings.Contains(out, "tok/s") || strings.Contains(out, "queued") || !strings.Contains(out, "TURNS        █░░░░░░░░░░░░░░░ 3/40") {
 		t.Fatalf("%s", out)
 	}
 }
@@ -75,25 +77,90 @@ func TestBudgetLineWithNoModelTimeLeftDrawsNoRate(t *testing.T) {
 }
 
 // A figure trellis did not report is Dash, never drawn as 0 (#641, #911);
-// the turns are a Meter against the run's own ceiling once it is known,
-// the prompt is in kB, and the elapsed time is a clock, this view's own.
+// each row is a Meter against the run's own ceiling once both figures are
+// known, the prompt is in kB, and the elapsed time is a clock, this view's
+// own.
 func TestBudgetLineNamesWhatWasNotReported(t *testing.T) {
 	s := State{Running: true, Budget: Budget{Iteration: 1}}
-	if got := BudgetLine(s); got != "TURNS 1/—  ·  PROMPT —  ·  TIME 0:00*" {
-		t.Fatalf("got %q", got)
+	got := strings.Join(paneRows(t, s, "budget", 120, 24), "\n")
+	for _, want := range []string{"TURNS        1/—", "WALL CLOCK   0:00*/—", "COMPLETION   —/— tokens", "LAST PROMPT  —/—"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("%q missing:\n%s", want, got)
+		}
 	}
 	s.Budget = Budget{Iteration: 2, MaxIterations: u(40), PromptBytes: u(8400), ElapsedSecs: u(18)}
-	if got := BudgetLine(s); got != "TURNS █░░░░░░░░░░░░░░░ 2/40  ·  PROMPT 8.4 kB  ·  TIME 0:18*" {
-		t.Fatalf("got %q", got)
+	got = strings.Join(paneRows(t, s, "budget", 120, 24), "\n")
+	for _, want := range []string{"TURNS        █░░░░░░░░░░░░░░░ 2/40", "WALL CLOCK   0:18*/—", "LAST PROMPT  8.4 kB/—"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("%q missing:\n%s", want, got)
+		}
+	}
+}
+
+// #951, CLAUDE.md rules 3 to 5 and UI rules 5 and 8: the budget box was
+// one row with a Meter for the turns only, so the wall clock, the
+// completion tokens and the context the run is stopped at were drawn
+// nowhere outside the summary level. Each ceiling run budget carries is a
+// row of its own, in the same four rows whatever was reported, each its
+// used figure and its ceiling as two numbers with a Meter of meterCells
+// cells; a ceiling trellis did not send is Dash and its row has no cells.
+// The prompt's bytes and the completion tokens are never summed, and no
+// row is a ratio, a percentage or a time left.
+func TestBudgetRowsOnePerCeilingTwoNumbers(t *testing.T) {
+	s := State{Running: true, Now: Now{EngineClock: true}, Budget: Budget{Iteration: 3, MaxIterations: u(40),
+		ElapsedSecs: u(83), MaxWallClockMs: u(321000), TokensUsed: u(540), MaxCompletionTokens: u(54321),
+		PromptBytes: u(24100), MaxContextBytes: u(123456), CompletionTokens: u(85), ModelMs: u(9600)}}
+	for _, w := range []int{80, 120} {
+		rows := paneRows(t, s, "budget", w, 24)
+		if len(rows) != 4 {
+			t.Fatalf("%d columns: %d rows, want one per ceiling:\n%s", w, len(rows), strings.Join(rows, "\n"))
+		}
+		for i, want := range [][2]string{
+			{"TURNS        █░░░░░░░░░░░░░░░ ", "3/40"},
+			{"WALL CLOCK   ████░░░░░░░░░░░░ ", "1:23/5:21"},
+			{"COMPLETION   █░░░░░░░░░░░░░░░ ", "540/54321 tokens"},
+			{"LAST PROMPT  ███░░░░░░░░░░░░░ ", "24.1 kB/123.5 kB"},
+		} {
+			if !strings.Contains(rows[i], want[0]+want[1]) {
+				t.Fatalf("%d columns, row %d: want %q, got %q", w, i, want[0]+want[1], rows[i])
+			}
+			if n := strings.Count(rows[i], "█") + strings.Count(rows[i], "░"); n != meterCells {
+				t.Fatalf("%d columns, row %d: %d cells, want %d: %q", w, i, n, meterCells, rows[i])
+			}
+		}
+		all := strings.Join(rows, "\n")
+		// 540 completion tokens and 24100 prompt bytes, summed either way.
+		for _, refused := range []string{"%", "24640", "24.6", "left", "remaining", "ratio", "total"} {
+			if strings.Contains(all, refused) {
+				t.Fatalf("%d columns: the budget shows %q:\n%s", w, refused, all)
+			}
+		}
+	}
+	// The scripted driver sends no context ceiling, and before a turn no
+	// completion tokens are counted: those rows say Dash and draw no cells,
+	// and the box keeps its four rows.
+	s.Budget.MaxContextBytes, s.Budget.TokensUsed = nil, nil
+	rows := paneRows(t, s, "budget", 80, 24)
+	if len(rows) != 4 || !strings.Contains(rows[2], "COMPLETION   —/54321 tokens") || !strings.Contains(rows[3], "LAST PROMPT  24.1 kB/—") ||
+		strings.ContainsAny(rows[2]+rows[3], "█░") {
+		t.Fatalf("an unreported figure drew cells or a row went:\n%s", strings.Join(rows, "\n"))
+	}
+	// While a raise is typed (#857) its row is marked and the others stay,
+	// so the ceiling being raised is read beside the rest.
+	s.Raise = LimitWallClock
+	rows = paneRows(t, s, "budget · raise wall clock", 80, 24)
+	if len(rows) != 4 || !strings.HasPrefix(rows[1], " › WALL CLOCK   ████░░░░░░░░░░░░ 1:23/5:21") || !strings.HasPrefix(rows[0], "   TURNS") {
+		t.Fatalf("the raised row is not marked among the four:\n%s", strings.Join(rows, "\n"))
 	}
 }
 
 // The six regions are on screen at 80x24, with the budget's turns against
-// their own ceiling, the prompt's size, and the elapsed time.
+// their own ceiling, the prompt's size, and the elapsed time, each its own
+// row (#951).
 func TestViewSixRegionsAtEightyByTwentyFour(t *testing.T) {
 	out := Render(populated(), 80, 24)
 	for _, want := range []string{"TRELLIS", "transcript", "edits", "checks", "radius", "budget",
-		"Reading blast radius", "PROMPT 8.4 kB", "TURNS █░░░░░░░░░░░░░░░ 2/40", "TIME 0:18*"} {
+		"Reading blast radius", "LAST PROMPT  8.4 kB/—", "TURNS        █░░░░░░░░░░░░░░░ 2/40", "WALL CLOCK   0:18*/—"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("%q missing from:\n%s", want, out)
 		}
@@ -160,10 +227,10 @@ func TestViewTranscriptFollowsScrollsBackAndKeepsTheOutcome(t *testing.T) {
 	s.Outcome = "not_converged · exit 1; worktree restored: true"
 	s.Budget = Budget{Iteration: 3, MaxIterations: u(6), PromptBytes: u(2435), ElapsedSecs: u(42)}
 	out = Render(s, 120, 30)
-	// The Now strip says the run ended (#850); the budget row keeps the
+	// The Now strip says the run ended (#850); the budget's turns row keeps the
 	// turns it used against its ceiling.
 	if !strings.Contains(out, "last run: not_converged · exit 1; worktree restored: true") ||
-		!strings.Contains(out, "TURNS ████████░░░░░░░░ 3/6") {
+		!strings.Contains(out, "TURNS        ████████░░░░░░░░ 3/6") {
 		t.Fatalf("outcome:\n%s", out)
 	}
 }
