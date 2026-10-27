@@ -34,7 +34,7 @@ pub enum IndexError {
     #[error("the issue list is not the JSON index reads: {0}")]
     ListJson(#[source] serde_json::Error),
     #[error(
-        "the list holds {limit} issues, the most asked for, so it may have been cut short; no index was written"
+        "the list holds {limit} or more open issues, the most one index covers; no index was written"
     )]
     Truncated { limit: usize },
     #[error("#{number} appears twice in the issue list")]
