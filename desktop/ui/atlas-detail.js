@@ -7,7 +7,7 @@
 // source as the label's meta (#910). Repository and git text reaches the
 // page through textContent alone (ADR 0007, S10).
 
-import { forward, nextId, progressText } from "./atlas.js";
+import { forward, nextId, progressText } from "./atlas-ask.js";
 import { selKey } from "./atlas-draw.js";
 import { renderAll, setLens, togglePin } from "./atlas-toolbar.js";
 import { byId, day, diff, fitT, focus, go, isHead, label, list, openK, present, radiusQuery, rowAt, short, snap, toward } from "./atlas-view.js";

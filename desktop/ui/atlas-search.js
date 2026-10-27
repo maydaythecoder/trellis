@@ -3,8 +3,8 @@
 // with / or its button, over the map and not modal. Names are repository
 // text and are written through textContent, the matched letters in <b>.
 
-import { moveTo } from "./atlas.js";
 import { select } from "./atlas-detail.js";
+import { moveTo } from "./atlas-toolbar.js";
 import { byId, label, list, rowAt } from "./atlas-view.js";
 import { el } from "./dom.js";
 import { isCount, notReported } from "./fmt.js";

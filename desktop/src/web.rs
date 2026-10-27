@@ -82,6 +82,7 @@ pub const PAGE: &[(&str, &[u8])] = &[
     ("vault.js", include_bytes!("../ui/vault.js")),
     ("queue.js", include_bytes!("../ui/queue.js")),
     ("atlas.js", include_bytes!("../ui/atlas.js")),
+    ("atlas-ask.js", include_bytes!("../ui/atlas-ask.js")),
     ("atlas-view.js", include_bytes!("../ui/atlas-view.js")),
     ("atlas-draw.js", include_bytes!("../ui/atlas-draw.js")),
     ("atlas-detail.js", include_bytes!("../ui/atlas-detail.js")),
