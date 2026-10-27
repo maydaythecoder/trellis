@@ -213,6 +213,15 @@ type Model struct {
 	nextID int
 	// The id of the prompt in flight, to match its response and run_end.
 	promptID string
+	// runRequest is the run in flight's run_start id and task: the prompt
+	// or follow-up an approval's request_id names (#954).
+	runRequest *runRequest
+}
+
+// runRequest is a run_start's id and its task, made plain and capped.
+type runRequest struct {
+	id, task string
+	hasTask  bool
 }
 
 // New is a model that, once its outbox is drained, has asked trellis for
@@ -509,6 +518,14 @@ func (m *Model) frame(f frames.Frame) {
 			m.clearPanes()
 		}
 		m.composeRunStarted(f.RunStartFields.ID)
+		m.runRequest = nil
+		if id := f.RunStartFields.ID; id != nil {
+			task := ""
+			if f.RunStartFields.Task != nil {
+				task = capLine(view.Plain(*f.RunStartFields.Task))
+			}
+			m.runRequest = &runRequest{id: *id, task: task, hasTask: f.RunStartFields.Task != nil}
+		}
 		m.runStart = m.now()
 		m.Running = true
 		m.Outcome = ""
@@ -531,6 +548,13 @@ func (m *Model) frame(f frames.Frame) {
 		m.resumedEvent(f.PausedMs)
 	case frames.Plan:
 		m.planEvent(f.PlanFields)
+	// Each is a compaction this run made (#954); only compacted says the
+	// request's size and the budget it was held to.
+	case frames.Compacted:
+		m.strip.Compactions++
+		m.strip.RequestBytes, m.strip.BudgetBytes = f.CompactedFields.RequestBytes, f.CompactedFields.Budget
+	case frames.CompactedOnRequest:
+		m.strip.Compactions++
 	case frames.RunBudget:
 		m.runBudget(f)
 	case frames.RunEnd:
@@ -632,6 +656,12 @@ func ToolSentence(t *frames.TurnFields) string {
 	case "run_checks":
 		return "Ran the checks: " + target
 	case "blast_radius":
+		// A radius whose observation folded call sites into per-file
+		// counts says how many, so a short list is not read as the whole
+		// (#954), in the desktop's words.
+		if t.Summarised != nil && *t.Summarised > 0 {
+			return fmt.Sprintf("Measured the blast radius of %s; %d call site(s) summarised by file", target, *t.Summarised)
+		}
 		return "Measured the blast radius of " + target
 	default:
 		return strings.TrimSpace(view.Plain(tool) + " " + target)
