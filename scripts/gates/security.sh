@@ -65,10 +65,16 @@ if go_module_present; then
   allowed=$(deny_allowed_licenses)
   [ -n "$allowed" ] || fail "could not read the licence allow-list from deny.toml"
   (cd tui && go mod verify) || fail "go mod verify failed in tui/: go.sum and the module cache disagree"
-  (cd tui && govulncheck ./...) || fail "govulncheck found a vulnerability in tui/ (above); none is ignored (tui/VULN-EXCEPTIONS.md)"
+  # govulncheck's own exit status and output say whether it found something
+  # or never read the database; either fails, but the reader is told which
+  # (#960). Its self-test first. Text mode: under -json it does not exit 3.
+  scripts/checks/govulncheck-outcome.sh --self-test
+  vout=$(cd tui && govulncheck ./... 2>&1) && vst=0 || vst=$?
+  printf '%s\n' "$vout"
+  printf '%s\n' "$vout" | scripts/checks/govulncheck-outcome.sh "$vst"
   (cd tui && go-licenses check ./... --ignore github.com/maydaythecoder/trellis/tui --allowed_licenses="$allowed") \
     || fail "go-licenses: a module under tui/ has a licence outside deny.toml's allow-list (above)"
-  gomsg="go-guards and its self-test; go mod verify, govulncheck and go-licenses over tui/"
+  gomsg="go-guards and its self-test; govulncheck-outcome's self-test; go mod verify, govulncheck and go-licenses over tui/"
 else
   gomsg="go-guards and its self-test (tui/ absent: its Go checks skipped)"
 fi
