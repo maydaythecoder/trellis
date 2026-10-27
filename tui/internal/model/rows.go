@@ -9,8 +9,9 @@ import (
 // The transcript is rows typed by role (#849), not strings: every place
 // that writes it says what the row is, through push or pushRow below, and
 // the view paints the role (view/paint.go). The markers stay in the text
-// ("> " the person, "· " a note or a call, "! " a refusal), since they
-// still read on a terminal with no colour.
+// ("you" and a bar for the person's line, task and steer, "> " a /command
+// they typed, "─ turn" a divider, "· " a note or a call, "✓"/"✗" a check,
+// "! " a refusal), since they still read on a terminal with no colour.
 //
 // The role a row takes:
 //   - RoleYou: what the person typed, echoed, and what needs them (`model
