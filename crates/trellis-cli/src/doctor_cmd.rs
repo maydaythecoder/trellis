@@ -1232,6 +1232,7 @@ mod report_tests {
             may_have_changed_tree: false,
             changed: Vec::new(),
             duration_ms: 0,
+            edit: None,
         }
     }
 

@@ -1095,6 +1095,8 @@ mod tests {
                 changed: Vec::new(),
                 changed_count: 0,
                 duration_ms: None,
+                lines_added: None,
+                lines_removed: None,
             };
         t.factual.actions = vec![
             action(1, "bash", "python gen.py", "exit 0", false).with_changed(bash_changed),

@@ -136,6 +136,9 @@ impl Services {
                 changed: Vec::new(),
                 changed_count: 0,
                 duration_ms: None,
+                // Not an edit: no line counts (ADR 0007, #811).
+                lines_added: None,
+                lines_removed: None,
             })
             .collect()
     }
