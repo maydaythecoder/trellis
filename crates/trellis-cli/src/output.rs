@@ -137,7 +137,7 @@ pub(crate) struct RunExtras {
     pub steer_watch: Option<Arc<crate::rpc::SteeringPort>>,
     /// `trellis run --agents N --target ...` with N above 1: the plan its
     /// agents run, one per partition (#466). `None` for every other run.
-    pub fanout: Option<crate::run_cmd::Fanout>,
+    pub fanout: Option<crate::run_partitioned::Fanout>,
     /// RPC's record of the trails its runs wrote, for `get_session_stats`
     /// (#319). `framed` pushes the run's id before it writes `run_end`, so
     /// a client that has read `run_end` and asks finds the run counted.

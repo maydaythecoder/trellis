@@ -1,6 +1,6 @@
 use crate::backstop_lines;
+use crate::codebase_graph::truncate_module;
 use crate::config;
-use crate::doctor_cmd::truncate_module;
 use anyhow::Result;
 use std::path::Path;
 

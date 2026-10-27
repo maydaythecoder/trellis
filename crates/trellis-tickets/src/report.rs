@@ -13,6 +13,7 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 
 use crate::labels::Flag;
@@ -21,19 +22,18 @@ use crate::{
     surface, triage,
 };
 
-/// The fields `triage` and `ready` ask `gh` for. `labels` comes back as objects; only
-/// their `name` is read.
+/// The fields the issue parser reads from the REST issue JSON. `labels`
+/// comes back as objects; only their `name` is read.
 pub const GH_VIEW_FIELDS: &str = "number,title,body,labels,state";
 
-/// The one `gh` argv `triage` and `ready` run, per issue: a read. Nothing
-/// in either command writes to GitHub, and this is the only argv they build.
-pub fn gh_view_args(number: u64) -> [String; 5] {
+/// The one `gh` argv `triage` and `ready` run, per issue: a REST read
+/// (`gh api`). `gh issue view` goes through GraphQL, which a Claude Code
+/// cloud session refuses (#957). Nothing in either command writes to
+/// GitHub, and this is the only argv they build.
+pub fn gh_view_args(number: u64) -> [String; 2] {
     [
-        "issue".to_string(),
-        "view".to_string(),
-        number.to_string(),
-        "--json".to_string(),
-        GH_VIEW_FIELDS.to_string(),
+        "api".to_string(),
+        format!("repos/{{owner}}/{{repo}}/issues/{number}"),
     ]
 }
 
@@ -61,15 +61,18 @@ pub enum TriageError {
     Intake(#[from] IntakeError),
 }
 
-/// One issue as `gh issue view --json` and `gh issue list --json` print it
-/// with [`GH_VIEW_FIELDS`].
+/// One issue as the REST issues endpoints print it, single or listed.
+/// Every other field REST sends is ignored.
 #[derive(Deserialize)]
 pub(crate) struct GhIssue {
     pub(crate) number: u64,
     title: String,
-    body: String,
+    /// REST sends `null` for an issue with no body.
+    body: Option<String>,
     labels: Vec<GhLabel>,
     pub(crate) state: String,
+    /// Present only on a pull request: the REST issue list holds those too.
+    pub(crate) pull_request: Option<IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -81,21 +84,23 @@ impl GhIssue {
     /// The ticket, or `None` when the state is neither of the two the rules
     /// read.
     pub(crate) fn into_ticket(self) -> Option<Ticket> {
-        let state = match self.state.as_str() {
+        // REST spells the state in lower case; compared upper-cased, as
+        // scripts/tickets/issues.sh's `issue_state_rest` does (#924).
+        let state = match self.state.to_uppercase().as_str() {
             "OPEN" => State::Open,
             "CLOSED" => State::Closed,
             _ => return None,
         };
         Some(Ticket {
             title: self.title,
-            body: self.body,
+            body: self.body.unwrap_or_default(),
             labels: self.labels.into_iter().map(|l| l.name).collect(),
             state,
         })
     }
 }
 
-/// Reads `gh issue view <asked> --json number,title,body,labels,state`.
+/// Reads what `gh api repos/{owner}/{repo}/issues/<asked>` prints.
 ///
 /// Refuses output for another issue: a blocker's state read from the wrong
 /// issue would unblock a ticket that is still waiting.
@@ -198,7 +203,7 @@ pub fn report(number: u64, t: &Ticket, blockers: &BTreeMap<u64, State>) -> Repor
 }
 
 /// Triage of issue `number`, reading every issue through `fetch`, which
-/// returns what `gh issue view <n> --json` [`GH_VIEW_FIELDS`] prints.
+/// returns what `gh` prints for [`gh_view_args`]`(n)`.
 ///
 /// `fetch` is called for `number`, then once for each distinct issue in its
 /// `blocked_by`, and for nothing else. A `blocked_by` that cannot be read

@@ -194,10 +194,10 @@ fn codebase(root: &Path) -> (Value, Option<&'static str>) {
     let sources = trellis_index::read_sources(root);
     match trellis_index::cache::load(&path, trellis_index::cache::fingerprint(&sources)) {
         Some(index) => (
-            crate::doctor_cmd::graph_json(
+            crate::codebase_graph::graph_json(
                 &trellis_index::module_graph(&index),
                 CODEBASE_LIMIT,
-                crate::doctor_cmd::Edges::Drawn,
+                crate::codebase_graph::Edges::Drawn,
             ),
             None,
         ),

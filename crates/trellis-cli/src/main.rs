@@ -12,18 +12,23 @@
 
 // One line per module: what it holds. Alphabetical; a command's
 // implementation lives in its `*_cmd` module or in the module it names.
+mod approval; // approve mode at a terminal: who answers, and the prompt (ADR 0018)
 mod ask; // a question answered, as distinct from a task run
 mod atlas; // the Atlas's reads: symbols, history and a codebase at a ref (rpc)
+mod check_cmd; // `check`: the checks run on their own
+mod codebase_graph; // the codebase graph as data, for the Atlas, `overview` and `index`
 mod config; // `.trellis/config.toml`
 mod context_files; // context files, system prompt and skills a run's prompt takes (ADR 0025)
-mod doctor_cmd; // `doctor`, `check` and `init`
+mod doctor_cmd; // `doctor`: tier, batching and tooling probes
 mod doctor_extra; // `doctor`'s lines on user config, context, trust, profiles and vault
 mod doctor_supply; // `doctor`'s lockfile line: advisories in Cargo.lock (ADR 0057)
+mod driver; // the model driver a run's loop is generic over
 mod first_run; // choosing a model on a first run with none configured (ADR 0050 §2)
 mod floor; // the S7 floor as measured: doctor's floor line and run's warning
 mod hosted; // hosted providers: a spec resolved against the user's config (ADR 0024)
 mod image_input; // `run --image` (ADR 0041)
 mod index_cmd; // `index`, `radius` and `partitions`
+mod init_cmd; // `init`: the `.trellis/` scaffold and its prerequisites
 mod install; // `install`: skills and prompt templates from a package source
 mod launch; // starting the desktop from `--dsk` (ADR 0050 §1, ADR 0048)
 mod liveness; // whether a pid is running on this machine
@@ -36,6 +41,7 @@ mod process_agent; // process agents and the carry-back of what they wrote
 mod replay; // the replay recording every run writes (ADR 0056)
 mod rpc; // `rpc`: JSONL commands on stdin
 mod run_cmd; // `run` and `resume`, and the trail a run writes
+mod run_partitioned; // a multi-agent run: `run --agents N --target ...` (ADR 0045)
 mod services; // services an agent profile declares (ADR 0026 §12)
 mod session; // the interactive session: bare `trellis` in a repository
 mod session_extra; // the session's slash commands, `!cmd` and in-flight stdin
@@ -54,17 +60,21 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use doctor_cmd::{cmd_check, cmd_doctor, cmd_init};
+#[cfg(test)]
+pub(crate) use approval::print_undelivered;
+pub(crate) use approval::{Human, RunControl, show_answer, show_question};
+use check_cmd::cmd_check;
+use doctor_cmd::cmd_doctor;
 use index_cmd::{cmd_index, cmd_partitions, cmd_radius};
+use init_cmd::cmd_init;
 pub(crate) use log_cmd::plain;
 use log_cmd::{cmd_log, cmd_why};
 use models_cmd::cmd_models;
 pub(crate) use run_cmd::{
-    Human, ModelChoice, RunControl, RunExit, RunSeeding, audit_modes, cmd_resume, cmd_run,
-    cmd_run_with, show_answer, show_question,
+    ModelChoice, RunExit, RunSeeding, audit_modes, cmd_resume, cmd_run, cmd_run_with,
 };
 #[cfg(test)]
-pub(crate) use run_cmd::{PANIC_IN_RUN, RUN_POLLED_ON, RUN_THREAD, print_undelivered};
+pub(crate) use run_cmd::{PANIC_IN_RUN, RUN_POLLED_ON, RUN_THREAD};
 
 #[derive(Parser)]
 #[command(
@@ -809,7 +819,7 @@ fn main() -> Result<()> {
             let mut fanout = None;
             if !target.is_empty() {
                 let (n, why) = agents_for(&root, width, &target, &model, model_from_user)?;
-                fanout = Some(run_cmd::Fanout::plan(&root, &target, n, why)?);
+                fanout = Some(run_partitioned::Fanout::plan(&root, &target, n, why)?);
             }
             let flag = match (approve, auto) {
                 (true, _) => Some(config::ControlMode::Approve),
