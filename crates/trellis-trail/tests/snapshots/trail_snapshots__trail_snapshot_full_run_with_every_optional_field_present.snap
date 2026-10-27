@@ -126,6 +126,27 @@ expression: "trail_json(\"rename Installer.run\", Some(\"2026-09-18T05:14:32Z\")
         "len": 29
       }
     ],
+    "controls": [
+      {
+        "control": "pause",
+        "turn": 2,
+        "paused_ms": 4210
+      },
+      {
+        "control": "raise",
+        "turn": 2,
+        "ceiling": "max_iterations",
+        "old": 3,
+        "new": 5
+      },
+      {
+        "control": "withdraw",
+        "turn": 3,
+        "kind": "follow_up",
+        "text": "then rename the tests",
+        "len": 21
+      }
+    ],
     "suspected_recall_gaps": [
       {
         "partitions": [
@@ -140,7 +161,7 @@ expression: "trail_json(\"rename Installer.run\", Some(\"2026-09-18T05:14:32Z\")
       }
     ]
   },
-  "factual_sha256": "f8ae4adc47501eecd3e0488074b635dd581d7477f10ed4042d1ce25ce4d2c32c",
+  "factual_sha256": "4ed7bcf957c5a4e075d08ea116143991c3ac17535c6f7ca7fcbf599062654452",
   "judgment": {
     "tech_debt_projection": "the alias will need removing",
     "rationale": "kept the old name as an alias"

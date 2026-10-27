@@ -141,6 +141,16 @@ pub struct Factual {
     /// empty, so a trail with no steering keeps its shape and its digest.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steering: Vec<Steer>,
+    /// The person's run controls that took effect (ADR 0058 §6, ADR 0007's
+    /// amendment of 2026-10-27): each pause, raised ceiling and withdrawn
+    /// message, in the order the loop recorded them.
+    ///
+    /// Not in `steering`, which says a text reached the model or waited for
+    /// a later run; a withdrawn message did neither. Inside `factual`, so
+    /// under the digest. Omitted when empty, so a run with no control keeps
+    /// its shape and its digest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub controls: Vec<Control>,
     /// Integrated-check failures that named files changed by two or more
     /// partitions (ADR 0005, ADR 0042): a collision the partition plan did
     /// not predict, and so evidence the graph's recall missed an edge.
@@ -221,6 +231,64 @@ impl Steer {
             kind,
             text: text.chars().take(STEER_TEXT_MAX_CHARS).collect(),
             len: text.chars().count() as u64,
+        }
+    }
+}
+
+/// One run control a person sent that took effect, as `Factual::controls`
+/// records it.
+///
+/// Tagged `control` rather than `kind`, because a withdrawal keeps a steering
+/// entry's own `kind`, `text` and `len`. None of it is a correctness claim,
+/// and there is no pass variant (ADR 0004). Read back, every field is data
+/// written by whoever last edited the file (ADR 0007): a recorded ceiling is
+/// never a budget, and a withdrawn text never reaches a prompt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "control", rename_all = "snake_case")]
+pub enum Control {
+    /// The loop held before model call `turn`, for `paused_ms`, the
+    /// `resumed` event's figure.
+    Pause { turn: u32, paused_ms: u64 },
+    /// A ceiling the budget check before model call `turn` first enforced
+    /// at `new`, in the `run budget` event's name and units. One entry per
+    /// ceiling that changed.
+    Raise {
+        turn: u32,
+        /// `max_iterations`, `max_wall_clock_ms` or `max_completion_tokens`.
+        /// A string, as `SuspectedRecallGap::check` is, so a name this build
+        /// does not know still reads back.
+        ceiling: String,
+        old: u64,
+        new: u64,
+    },
+    /// A message taken back before it reached the model or a later run.
+    /// `turn` is the one its steering entry would have carried. Built with
+    /// [`Control::withdraw`], never a struct literal, so the cut holds.
+    Withdraw {
+        turn: u32,
+        kind: SteerKind,
+        /// The text as typed, cut at [`STEER_TEXT_MAX_CHARS`] characters.
+        text: String,
+        /// The text's true length in characters.
+        len: u64,
+    },
+    /// A control written by a newer build. Kept so its trail still parses
+    /// rather than being refused whole; nothing reads anything from it.
+    #[serde(other)]
+    Unrecognised,
+}
+
+impl Control {
+    /// The one way a writer builds a withdrawal, so no path stores more
+    /// text than [`Steer::new`] would: cut by characters, with the true
+    /// length kept.
+    pub fn withdraw(turn: u32, kind: SteerKind, text: &str) -> Self {
+        let s = Steer::new(turn, kind, text);
+        Control::Withdraw {
+            turn: s.turn,
+            kind: s.kind,
+            text: s.text,
+            len: s.len,
         }
     }
 }
@@ -724,6 +792,7 @@ mod tests {
                 label: None,
                 inputs: Vec::new(),
                 steering: Vec::new(),
+                controls: Vec::new(),
                 suspected_recall_gaps: Vec::new(),
             },
 
