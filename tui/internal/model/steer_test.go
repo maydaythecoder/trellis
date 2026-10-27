@@ -24,7 +24,7 @@ func TestSteerMidRunLineIsASteerNotATask(t *testing.T) {
 	if len(out) != 2 || out[0].Cmd["type"] != "steer" || out[0].Cmd["message"] != "use the helper" || out[1].Cmd["type"] != "get_state" {
 		t.Fatalf("sent %+v", out)
 	}
-	if last(m) != "· queued: use the helper" || m.Input != "" {
+	if last(m) != "you · steer · queued  use the helper" || m.Input != "" {
 		t.Fatalf("last %q input %q", last(m), m.Input)
 	}
 }

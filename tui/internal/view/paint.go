@@ -86,6 +86,11 @@ type Row struct {
 	// Turn is the turn a transcript row came from, for the rows a turn
 	// wrote (its call and what the call returned); 0 for every other row.
 	Turn int
+	// Bar marks the person's own entries, `you · task` and `you · steer`:
+	// the Transcript card draws them under a left bar in signal, the one
+	// mark that says "you wrote this" (#947). The transcript draws the bar
+	// on every row the entry wraps to, so a long task is barred whole.
+	Bar bool
 	// Spans, when set, are the row in more than one role, drawn in order
 	// in place of Text and Role. Only rows the view builds carry them (the
 	// budget's Meters); a transcript row is one role.

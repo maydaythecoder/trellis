@@ -13,9 +13,15 @@ import (
 // still read on a terminal with no colour.
 //
 // The role a row takes:
-//   - RoleYou: what the person typed, echoed;
-//   - RoleTool: a turn's call; RolePassed or RoleFailed instead when the
-//     turn carried a verdict, and only then (ADR 0004);
+//   - RoleYou: what the person typed, echoed, and what needs them (`model
+//     asks you`); a task and a steer also carry their label, `you · task`
+//     or `you · steer`, and the left bar (Row.Bar, pushYou), as the
+//     Transcript card draws the person's entries;
+//   - RoleLabel: a turn's divider, its number and figures (view.TurnDivider);
+//   - RoleTool: a turn's call, whatever the call says;
+//   - RolePassed or RoleFailed: a check row, `✓`/`✗ <kind> passed/failed ·
+//     trellis-checks verdict`, written only when the turn carried a
+//     verdict trellis-checks produced (ADR 0004);
 //   - RoleOutput: what the call returned, under it;
 //   - RoleText: the model's words, and this view's answers to a /command;
 //   - RoleNote: what this view or trellis says about the run or the line:
@@ -27,6 +33,11 @@ func (m *Model) push(r view.Role, text string) {
 	m.pushRow(view.Row{Text: text, Role: r})
 }
 
+// pushYou adds one of the person's own entries: in signal, under the bar.
+func (m *Model) pushYou(text string) {
+	m.pushRow(view.Row{Text: text, Role: view.RoleYou, Bar: true})
+}
+
 // pushRow adds one whole row, its text cut past LineCap bytes (caps.go),
 // and keeps the transcript's cap. Every transcript row enters here.
 func (m *Model) pushRow(row view.Row) {
@@ -34,6 +45,8 @@ func (m *Model) pushRow(row view.Row) {
 	m.Transcript = append(m.Transcript, row)
 	if over := len(m.Transcript) - TranscriptCap; over > 0 {
 		m.Transcript = append([]view.Row(nil), m.Transcript[over:]...)
+		// The echo awaiting classify's answer moved up, or left the cap.
+		m.echoAt = max(m.echoAt-over, 0)
 	}
 }
 
