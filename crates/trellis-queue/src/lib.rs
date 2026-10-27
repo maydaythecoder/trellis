@@ -1447,18 +1447,12 @@ pub fn slugify(task: &str) -> String {
 /// it reaches a terminal, and an escape sequence in it could repaint the
 /// line that says how a run ended.
 ///
-/// Same output as `trellis_core::text::escape_controls`; kept as a copy
-/// because this crate does not depend on trellis-core.
+/// Delegates to `trellis_core::text::escape_controls` so the queue cannot
+/// drift from the escaping the rest of trellis prints. The name is kept
+/// because the crate's own call sites use it and `trellis_queue::plain` is
+/// a public path.
 pub fn plain(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_control() {
-                c.escape_debug().to_string()
-            } else {
-                c.to_string()
-            }
-        })
-        .collect()
+    trellis_core::text::escape_controls(s)
 }
 
 // ---------------------------------------------------------------------------

@@ -3506,3 +3506,41 @@ fn work_an_outcome_written_before_the_worktree_fields_reads_back_byte_for_byte()
         "written back unchanged"
     );
 }
+
+/// The escaping `plain` did before it delegated to trellis-core, kept here as
+/// the oracle: a task line that printed one way before #940 must print the
+/// same way after it.
+fn plain_as_it_was(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_control() {
+                c.escape_debug().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn plain_escapes_byte_for_byte_as_the_copy_it_replaced() {
+    // Risk: a change in how task text is escaped lets an escape sequence
+    // through to the terminal, or changes a line someone greps for.
+    let inputs = [
+        "",
+        "fix the parser",
+        "nul\0here",
+        "\x1b[2J\x1b[Hrepainted",
+        "tab\tnew\nline\rcr",
+        "\x7f del and \u{85} next-line and \u{9f} last C1",
+        // Bidi controls are format characters, not `is_control`: both
+        // versions leave them alone, and this pins that they still match.
+        "bidi \u{202e}evil\u{202c} \u{2066}iso\u{2069} \u{200f}",
+        "unicode caf\u{e9} \u{1f600} \u{4e2d}\u{6587} e\u{301}",
+        "mixed \u{1b}]0;title\u{7}\u{0}\u{202e}\u{1f600}\n",
+    ];
+    for s in inputs {
+        assert_eq!(plain(s), plain_as_it_was(s), "input {s:?}");
+    }
+    assert_eq!(plain("a\x1b[2Jb\0"), "a\\u{1b}[2Jb\\0");
+}
