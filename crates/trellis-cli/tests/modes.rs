@@ -2987,12 +2987,8 @@ fn rpc_stream_carries_every_field_the_desktop_reads() {
             .is_some_and(|c| c.starts_with("blast_radius "))
     }) {
         Some(t) => {
+            // summarised among them since both clients read it (#954).
             gaps.extend(missing(t, &turn["blast_radius_only"], "blast_radius turn"));
-            gaps.extend(missing(
-                t,
-                &later["events"]["turn"]["blast_radius_only"],
-                "blast_radius turn",
-            ));
             // A turn the provider's reply made: the driver sent a prompt.
             gaps.extend(missing(t, &turn["prompt_driver_only"], "blast_radius turn"));
             if t["check_kind"] != "" {
@@ -3031,7 +3027,7 @@ fn rpc_stream_carries_every_field_the_desktop_reads() {
     for e in compacted {
         gaps.extend(missing(
             e,
-            &later["events"]["compacted"]["always"],
+            &rpc_c["events"]["compacted"]["always"],
             "compacted",
         ));
     }
@@ -3770,7 +3766,6 @@ fn rpc_steer_abort_compact_answers_carry_what_the_contract_lists() {
     // compact arrive; the follow_up's own run held the same way and aborted
     // with another follow_up waiting; then the read-only answers and quit.
     let c = contract();
-    let later = &c["rpc"]["not_every_client"];
     let f = fixture("rpc-answers-contract");
     // Large enough that folding its read shrinks the request after it.
     std::fs::write(
@@ -3906,14 +3901,10 @@ fn rpc_steer_abort_compact_answers_carry_what_the_contract_lists() {
         .filter(|r| r["type"] == "approval_request")
         .collect();
     for a in &asked {
+        // request_id among them since both clients read it (#954).
         gaps.extend(missing(
             a,
             &c["rpc"]["framing"]["approval_request"]["always"],
-            "approval_request",
-        ));
-        gaps.extend(missing(
-            a,
-            &later["framing"]["approval_request"]["always"],
             "approval_request",
         ));
     }
@@ -3923,7 +3914,7 @@ fn rpc_steer_abort_compact_answers_carry_what_the_contract_lists() {
     {
         Some(e) => gaps.extend(missing(
             &e["fields"],
-            &later["events"]["compacted on request"]["always"],
+            &c["rpc"]["events"]["compacted on request"]["always"],
             "compacted on request",
         )),
         None => gaps.push("no compacted on request event".into()),

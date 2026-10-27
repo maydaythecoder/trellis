@@ -32,6 +32,7 @@ func (m *Model) clearPanes() {
 	m.strip.Phase, m.strip.Call = view.Phase{}, view.Call{}
 	m.strip.Stopping = false
 	m.strip.Outcome, m.strip.Exit = "", nil
+	m.strip.Compactions, m.strip.RequestBytes, m.strip.BudgetBytes = 0, nil, nil
 	m.runID = ""
 	m.closing = closing{}
 	m.plan = view.Plan{}
@@ -231,10 +232,10 @@ func (m *Model) viewState() view.State {
 func (m *Model) waiting() []view.Asked {
 	var out []view.Asked
 	if m.Modal != nil {
-		out = append(out, view.Asked{ID: m.Modal.ID, Question: m.Modal.Question, Detail: m.Modal.Diff, OnScreen: true})
+		out = append(out, view.Asked{ID: m.Modal.ID, Question: m.Modal.Question, Detail: m.Modal.Diff, For: m.Modal.For, OnScreen: true})
 	}
 	for _, a := range m.approvals {
-		out = append(out, view.Asked{ID: a.ID, Question: a.Question, Detail: a.Diff})
+		out = append(out, view.Asked{ID: a.ID, Question: a.Question, Detail: a.Diff, For: a.For})
 	}
 	return out
 }

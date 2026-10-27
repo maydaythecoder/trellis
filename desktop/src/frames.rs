@@ -61,6 +61,13 @@ pub enum Frame {
         steps_cut: Option<u64>,
         texts_cut: Option<u64>,
     },
+    /// The loop's `compacted` event: older observations were elided so a
+    /// model request fit the run's context budget. Each figure is `None`
+    /// when the line did not carry it; the event itself is the compaction.
+    Compacted(Compacted),
+    /// The loop's `compacted on request` event: the request after a
+    /// client's `compact` folded at least one turn.
+    CompactedOnRequest(CompactedOnRequest),
     /// The loop's `steer delivered` event.
     SteerDelivered {
         after_step: Option<u64>,
@@ -105,6 +112,9 @@ pub struct Turn {
     pub resolved: Option<u64>,
     pub candidates: Option<u64>,
     pub unresolved: Option<u64>,
+    /// How many of the radius's call sites its observation summarised by
+    /// file instead of listing them; 0 when it listed every one.
+    pub summarised: Option<u64>,
     /// Absent when the driver sent no prompt (a scripted run).
     pub prompt_bytes: Option<u64>,
     /// The wall time of the step's model call, queue wait included.
@@ -149,6 +159,30 @@ pub struct RunBudget {
     pub max_completion_tokens: Option<u64>,
     /// The ceiling on one prompt, in bytes.
     pub max_context_bytes: Option<u64>,
+}
+
+/// A `compacted` event's figures (client_contract.json): the turn the
+/// request produced, turns 1 to `elided_turns` elided, holding
+/// `elided_bytes`, and the request's size after eliding against the budget
+/// in force, two figures and never a share.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Compacted {
+    pub turn: Option<u64>,
+    pub elided_turns: Option<u64>,
+    pub elided_bytes: Option<u64>,
+    pub request_bytes: Option<u64>,
+    pub budget: Option<u64>,
+}
+
+/// A `compacted on request` event's figures: the request a client's
+/// `compact` built, the turns it folded and its size before and after.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CompactedOnRequest {
+    pub turn: Option<u64>,
+    pub turns_folded: Option<u64>,
+    pub elided_turns: Option<u64>,
+    pub bytes_before: Option<u64>,
+    pub bytes_after: Option<u64>,
 }
 
 /// colibri's self-report (client_contract.json's `runtime identified`).
@@ -209,6 +243,9 @@ pub struct ApprovalRequest {
     pub id: String,
     pub question: Option<String>,
     pub detail: Option<String>,
+    /// The id of the prompt or follow-up whose run asks; `None` when it was
+    /// sent with no id (trellis sends `null`).
+    pub request_id: Option<String>,
 }
 
 /// Types one stdout line. Never fails: a line that is not a JSON object is
@@ -249,6 +286,7 @@ pub fn parse_stdout(line: &str) -> Frame {
                     id,
                     question: json::string(&o, "question"),
                     detail: json::string(&o, "detail"),
+                    request_id: json::string(&o, "request_id"),
                 }),
                 None => Frame::Ignored,
             },
@@ -272,6 +310,7 @@ pub fn parse_stdout(line: &str) -> Frame {
                 resolved: json::u64(f, "resolved"),
                 candidates: json::u64(f, "candidates"),
                 unresolved: json::u64(f, "unresolved"),
+                summarised: json::u64(f, "summarised"),
                 prompt_bytes: json::u64(f, "prompt_bytes"),
                 model_ms: json::u64(f, "model_ms"),
                 completion_tokens: json::u64(f, "completion_tokens"),
@@ -317,6 +356,22 @@ pub fn parse_stdout(line: &str) -> Frame {
             steps_cut: json::u64(f, "steps_cut"),
             texts_cut: json::u64(f, "texts_cut"),
         },
+        // Read whatever each carries: the event is the compaction, and a
+        // line missing a figure still says one happened.
+        Some("compacted") => Frame::Compacted(Compacted {
+            turn: json::u64(f, "turn"),
+            elided_turns: json::u64(f, "elided_turns"),
+            elided_bytes: json::u64(f, "elided_bytes"),
+            request_bytes: json::u64(f, "request_bytes"),
+            budget: json::u64(f, "budget"),
+        }),
+        Some("compacted on request") => Frame::CompactedOnRequest(CompactedOnRequest {
+            turn: json::u64(f, "turn"),
+            turns_folded: json::u64(f, "turns_folded"),
+            elided_turns: json::u64(f, "elided_turns"),
+            bytes_before: json::u64(f, "bytes_before"),
+            bytes_after: json::u64(f, "bytes_after"),
+        }),
         Some("steer delivered") => Frame::SteerDelivered {
             after_step: json::u64(f, "after_step"),
         },

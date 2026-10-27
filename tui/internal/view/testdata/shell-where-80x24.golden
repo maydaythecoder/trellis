@@ -6,7 +6,7 @@
    │  model    ollama:qwen2.5-coder:32b · tier 2, native tool calls            │
  e │  root     trellis-demo · control approve                                  │
    │  runtime  ollama · qwen2.5-coder:32b                                      │
- c │                                                                           │
+ c │  context  0 compactions                                                   │
    │                                                                           │
  r │                                                                           │
    │                                                                           │
