@@ -12,7 +12,8 @@
 //! CSP, the capability, no dev server or build hook); `ui/index.html`'s
 //! elements and every `ui/*.js` module's source (what each draws, sends and
 //! listens for, the helpers that live in one module each, the icons and
-//! their labels); and `ui/style.css`'s rules (the tokens, field contrast,
+//! their labels); and the page's own stylesheets' rules, `ui/style.css`
+//! and the sheets split from it (the tokens, field contrast,
 //! the minimum window). An edit that widens one of these fails here.
 
 use tauri::Url;
@@ -3355,8 +3356,9 @@ mod tests {
                 && !js[i + 1..].starts_with("at-")
         });
         assert!(!hex, "atlas.js names a colour of its own");
-        // Each colour it reads is one style.css sets, in both themes.
-        let css = ui_file("style.css");
+        // Each colour it reads is one the page's stylesheets set, in both
+        // themes.
+        let css = page_css_from(&ui_file("index.html"), ui_file);
         let tokens = js
             .split("const TOKENS = [")
             .nth(1)
@@ -3369,7 +3371,7 @@ mod tests {
         {
             assert!(
                 css.matches(&format!("--{t}:")).count() >= 2,
-                "style.css does not set --{t} for both themes"
+                "the page's stylesheets do not set --{t} for both themes"
             );
         }
     }
@@ -3397,7 +3399,10 @@ mod tests {
             "go does not jump under reduced motion"
         );
         let (rules, moving) = crate::graph::motion_in_rules_naming("at-");
-        assert!(rules > 0, "style.css has no rule for the Atlas");
+        assert!(
+            rules > 0,
+            "the page's stylesheets have no rule for the Atlas"
+        );
         assert!(moving.is_empty(), "Atlas rules that move: {moving:?}");
     }
 
@@ -4232,7 +4237,7 @@ mod tests {
         // hides, so turning it off shows a log with holes, the feed's
         // append-or-replace by seq finds rows missing, or a turn's rule goes
         // with its rows. The filter bar only marks the log, its data-filter
-        // and its log-quiet class, and style.css hides rows by the kind
+        // and its log-quiet class, and run.css hides rows by the kind
         // drawFeed marks each with. No JavaScript runs under cargo test, so
         // this holds the text; the smoke run loads the page with the bar.
         let render = code_of("render.js");
@@ -4268,7 +4273,7 @@ mod tests {
         );
 
         // Each filter the bar offers, and quiet, hides by display in
-        // style.css, and a turn's rule is never hidden by a filter.
+        // run.css, and a turn's rule is never hidden by a filter.
         let page = page();
         let filters: Vec<&str> = page
             .iter()
@@ -4286,7 +4291,7 @@ mod tests {
             page[log].parent,
             "the bar is not beside the log"
         );
-        let css = ui_file("style.css");
+        let css = page_css_from(&ui_file("index.html"), ui_file);
         let rule = between(&css, ".cd-tx[data-filter=\"you\"]", "}");
         assert!(rule.contains("display: none;"), "{rule}");
         for f in &filters[1..] {
@@ -6018,19 +6023,69 @@ mod tests {
         }
     }
 
-    /// `style.css` with its comments removed, as `(selector, declarations)`
-    /// for each innermost rule, in order; an `@media` block's own rules
-    /// are listed, not the block.
-    fn css_rules() -> Vec<(String, String)> {
-        let css = ui_file("style.css");
+    /// The page's own stylesheets, in the order `index.html` links them:
+    /// `style.css` split by level (#978). The order is the cascade's, so it
+    /// is written down here and `page_links_its_stylesheets_in_cascade_order`
+    /// holds the page to it.
+    const PAGE_STYLESHEETS: [&str; 6] = [
+        "style.css",
+        "run.css",
+        "codebase.css",
+        "trails.css",
+        "atlas.css",
+        "code.css",
+    ];
+
+    /// Every stylesheet `html` links, in order, but the design system's
+    /// `ds.css`, which is the bundle's copy and is held by
+    /// `ds_css_is_the_design_systems_bundle`, not by the page's rules.
+    fn linked_stylesheets(html: &str) -> Vec<String> {
+        page_of(html)
+            .into_iter()
+            .filter(|e| {
+                e.tag == "link" && e.attrs.get("rel") == Some(&Some("stylesheet".to_string()))
+            })
+            .map(|e| {
+                e.attrs["href"]
+                    .clone()
+                    .expect("a stylesheet link names its file")
+            })
+            .filter(|href| href != "ds.css")
+            .collect()
+    }
+
+    /// The text of every stylesheet `html` links (but `ds.css`), each read
+    /// by `read`, joined in link order, so a test can plant a rule in one.
+    fn page_css_from(html: &str, read: impl Fn(&str) -> String) -> String {
+        linked_stylesheets(html)
+            .iter()
+            .map(|name| read(name))
+            .collect()
+    }
+
+    /// `css` with its comments removed.
+    fn without_comments(css: &str) -> String {
         let mut text = String::new();
-        let mut rest = css.as_str();
+        let mut rest = css;
         while let Some(i) = rest.find("/*") {
             text.push_str(&rest[..i]);
             let end = rest[i..].find("*/").expect("an unclosed CSS comment");
             rest = &rest[i + end + 2..];
         }
         text.push_str(rest);
+        text
+    }
+
+    /// The page's own stylesheets, as `index.html` links them, with their
+    /// comments removed, as `(selector, declarations)` for each innermost
+    /// rule, in order; an `@media` block's own rules are listed, not the
+    /// block.
+    fn css_rules() -> Vec<(String, String)> {
+        css_rules_of(&css_text())
+    }
+
+    /// [`css_rules`] over `text`, comments already removed.
+    fn css_rules_of(text: &str) -> Vec<(String, String)> {
         let mut open: Vec<String> = Vec::new();
         let mut segment = String::new();
         let mut rules = Vec::new();
@@ -6066,7 +6121,7 @@ mod tests {
         let rules = css_rules();
         assert!(
             rules.iter().any(|(_, d)| d.contains("display")),
-            "style.css was read: no display rule at all"
+            "the page's stylesheets were read: no display rule at all"
         );
         let hidden: Vec<&(String, String)> = rules
             .iter()
@@ -6116,25 +6171,28 @@ mod tests {
     fn page_css_fits_the_minimum_window() {
         // The risk: a fixed width wider than the narrowest window the shell
         // allows, so the page scrolls sideways or clips a pane there.
-        //
-        // Each `width`, `min-width`, `flex-basis` and `flex` declaration
-        // (and each length in `grid-template-columns`, which fixes widths
-        // the same way) is read value by value. A px length must be at most
-        // the window's minimum; %, vw, fr, auto, 0 and the content keywords
-        // are relative to the window or its contents and pass. Any other
-        // length (em, rem, ch, pt, calc() ...) fails: this test cannot
-        // measure it, so it is not taken on trust.
         let max = min_window_width();
-        let css = ui_file("style.css");
-        let mut text = String::new();
-        let mut rest = css.as_str();
-        while let Some(i) = rest.find("/*") {
-            text.push_str(&rest[..i]);
-            let end = rest[i..].find("*/").expect("an unclosed CSS comment");
-            rest = &rest[i + end + 2..];
-        }
-        text.push_str(rest);
+        let (read, wide) = too_wide(&css_text(), max);
+        assert!(
+            read > 0,
+            "the page's stylesheets set no width at all: read the right files?"
+        );
+        assert!(wide.is_empty(), "{}", wide.join("\n"));
+    }
+
+    /// Of `text`'s `width`, `min-width`, `flex-basis` and `flex`
+    /// declarations (and each length in `grid-template-columns`, which
+    /// fixes widths the same way), how many were read, and each value that
+    /// does not fit a `max` px window, said as why.
+    ///
+    /// Each is read value by value. A px length must be at most `max`; %,
+    /// vw, fr, auto, 0 and the content keywords are relative to the window
+    /// or its contents and pass. Any other length (em, rem, ch, pt, calc()
+    /// ...) is reported: this cannot measure it, so it is not taken on
+    /// trust.
+    fn too_wide(text: &str, max: f64) -> (usize, Vec<String>) {
         let mut read = 0;
+        let mut wide = Vec::new();
         for decl in text.split(['{', '}', ';']) {
             let Some((prop, value)) = decl.split_once(':') else {
                 continue;
@@ -6163,56 +6221,48 @@ mod tests {
                     .unwrap_or(v.len());
                 let (number, unit) = v.split_at(number_end);
                 if number.is_empty() {
-                    assert!(
-                        [
-                            "auto",
-                            "none",
-                            "max-content",
-                            "min-content",
-                            "fit-content",
-                            "repeat",
-                            "minmax",
-                            "auto-fill",
-                            "auto-fit",
-                            "inherit",
-                            "initial",
-                            "unset",
-                        ]
-                        .contains(&v.as_str()),
-                        "{prop}: {v} cannot be measured against the window"
-                    );
+                    if ![
+                        "auto",
+                        "none",
+                        "max-content",
+                        "min-content",
+                        "fit-content",
+                        "repeat",
+                        "minmax",
+                        "auto-fill",
+                        "auto-fit",
+                        "inherit",
+                        "initial",
+                        "unset",
+                    ]
+                    .contains(&v.as_str())
+                    {
+                        wide.push(format!("{prop}: {v} cannot be measured against the window"));
+                    }
                     continue;
                 }
-                let n: f64 = number
-                    .parse()
-                    .unwrap_or_else(|_| panic!("{prop}: {v} is not a number"));
+                let Ok(n) = number.parse::<f64>() else {
+                    wide.push(format!("{prop}: {v} is not a number"));
+                    continue;
+                };
                 match unit {
-                    "px" => assert!(n <= max, "{prop}: {v} is wider than the {max}px window"),
-                    "%" | "vw" | "fr" => {}
+                    "px" if n > max => {
+                        wide.push(format!("{prop}: {v} is wider than the {max}px window"));
+                    }
+                    "px" | "%" | "vw" | "fr" => {}
                     // A bare number: `flex`'s grow and shrink, or a 0 length.
                     "" => {}
-                    _ => panic!("{prop}: {v} is in a unit this test cannot measure"),
+                    _ => wide.push(format!("{prop}: {v} is in a unit this cannot measure")),
                 }
             }
         }
-        assert!(
-            read > 0,
-            "style.css sets no width at all: read the right file?"
-        );
+        (read, wide)
     }
 
-    /// `style.css` with its comments removed.
+    /// The page's own stylesheets, as `index.html` links them, joined in
+    /// that order with their comments removed.
     fn css_text() -> String {
-        let css = ui_file("style.css");
-        let mut text = String::new();
-        let mut rest = css.as_str();
-        while let Some(i) = rest.find("/*") {
-            text.push_str(&rest[..i]);
-            let end = rest[i..].find("*/").expect("an unclosed CSS comment");
-            rest = &rest[i + end + 2..];
-        }
-        text.push_str(rest);
-        text
+        without_comments(&page_css_from(&ui_file("index.html"), ui_file))
     }
 
     /// The custom properties of every rule whose selector, spaces dropped,
@@ -6303,6 +6353,19 @@ mod tests {
         // tokens, no declaration names a colour of its own but the
         // ::backdrop's commented var() fallback, and every box-shadow is an
         // inset line or a frame token.
+        let (shadows, own) = own_colours(&css_rules());
+        assert!(own.is_empty(), "{}", own.join("\n"));
+        assert!(
+            shadows > 0,
+            "the scan found no box-shadow at all; it reads nothing"
+        );
+    }
+
+    /// Of `rules`, how many `box-shadow`s were read, and each declaration
+    /// outside the token definitions that names a colour of its own (but
+    /// the ::backdrop's commented fallback) or draws a drop shadow, said as
+    /// `selector { declaration }` and why.
+    fn own_colours(rules: &[(String, String)]) -> (usize, Vec<String>) {
         let named = [
             "white", "black", "red", "green", "blue", "gray", "grey", "orange", "yellow", "silver",
             "purple", "pink", "brown",
@@ -6328,32 +6391,28 @@ mod tests {
             hex || function || word
         };
         let mut shadows = 0;
-        for (selector, decls) in css_rules() {
+        let mut own = Vec::new();
+        for (selector, decls) in rules {
             for d in decls.split(';').map(str::trim).filter(|d| !d.is_empty()) {
                 if d.starts_with("--") {
                     continue;
                 }
-                if colour(d) {
-                    assert!(
-                        selector == ".approval::backdrop"
-                            && d == "background: var(--scrim, #000000b3)",
-                        "{selector} {{ {d} }} names a colour of its own"
-                    );
+                if colour(d)
+                    && !(selector == ".approval::backdrop"
+                        && d == "background: var(--scrim, #000000b3)")
+                {
+                    own.push(format!("{selector} {{ {d} }} names a colour of its own"));
                 }
                 if let Some(v) = d.strip_prefix("box-shadow:") {
                     shadows += 1;
                     let v = v.trim();
-                    assert!(
-                        v.starts_with("inset ") || v == "none" || v.starts_with("var(--frame"),
-                        "{selector} {{ {d} }} draws a drop shadow"
-                    );
+                    if !(v.starts_with("inset ") || v == "none" || v.starts_with("var(--frame")) {
+                        own.push(format!("{selector} {{ {d} }} draws a drop shadow"));
+                    }
                 }
             }
         }
-        assert!(
-            shadows > 0,
-            "the scan found no box-shadow at all; it reads nothing"
-        );
+        (shadows, own)
     }
 
     /// Of `rules`' `margin`, `padding`, `gap` and `border-radius`
@@ -6505,7 +6564,7 @@ mod tests {
         let (read, off) = off_token_lengths(&rules, &exceptions);
         assert!(
             read > 0,
-            "style.css sets no spacing at all: read the right file?"
+            "the page's stylesheets set no spacing at all: read the right files?"
         );
         assert!(
             off.is_empty(),
@@ -6518,7 +6577,7 @@ mod tests {
         for (selector, d) in exceptions {
             assert!(
                 unlisted.contains(&format!("{selector} {{ {d} }}")),
-                "the exception {selector} {{ {d} }} matches nothing in style.css"
+                "the exception {selector} {{ {d} }} matches nothing in the page's stylesheets"
             );
         }
         // Panels are square: --radius-0, as ds.css's .cd-panel is.
@@ -6527,6 +6586,90 @@ mod tests {
                 .iter()
                 .any(|(s, d)| s.trim() == ".pane" && d.contains("border-radius: var(--radius-0)")),
             ".pane, the page's Panel, does not use --radius-0"
+        );
+    }
+
+    #[test]
+    fn page_links_its_stylesheets_in_cascade_order() {
+        // The risk (#978): style.css split into sheets linked out of the
+        // order its rules had, so a later rule that won a tie now loses; a
+        // sheet under ui/ the page never links, whose rules no page CSS test
+        // reads and no level draws; or one sheet grown back past 1,000
+        // lines, the limit the split is for.
+        let html = ui_file("index.html");
+        assert_eq!(
+            linked_stylesheets(&html),
+            PAGE_STYLESHEETS,
+            "index.html links the page's stylesheets in another order"
+        );
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
+        let on_disk: BTreeSet<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n.ends_with(".css") && n != "ds.css")
+            .collect();
+        let linked: BTreeSet<String> = PAGE_STYLESHEETS.iter().map(|n| n.to_string()).collect();
+        assert_eq!(on_disk, linked, "a stylesheet under ui/ is not linked");
+        for name in PAGE_STYLESHEETS {
+            let lines = ui_file(name).lines().count();
+            assert!(lines < 1000, "ui/{name} is {lines} lines");
+        }
+        // The list is the page's: one dropped from a copy of the page is
+        // not in it.
+        let dropped = html.replace(r#"<link rel="stylesheet" href="atlas.css">"#, "");
+        assert!(!linked_stylesheets(&dropped).contains(&"atlas.css".to_string()));
+    }
+
+    #[test]
+    fn page_css_tests_read_every_stylesheet_the_page_links() {
+        // The risk (#978): a page CSS test still reading style.css alone
+        // after its rules were split into other sheets, so a literal colour,
+        // spacing or width in run.css or atlas.css passes unread. A rule
+        // breaking all three is planted in each linked sheet in turn, and
+        // each scan names it; planted in a sheet a copy of the page does
+        // not link, no scan sees it, so what they read is the page's links.
+        let planted = "\n.planted978 { width: 2000px; color: #123456; padding: 7px; }\n";
+        let named = |text: &str| {
+            let rules = css_rules_of(text);
+            let (_, wide) = too_wide(text, min_window_width());
+            let (_, own) = own_colours(&rules);
+            let (_, off) = off_token_lengths(&rules, &[]);
+            [
+                wide.iter().any(|w| w.contains("2000px")),
+                own.iter().any(|c| c.starts_with(".planted978 ")),
+                off.iter().any(|o| o.starts_with(".planted978 ")),
+            ]
+        };
+        let html = ui_file("index.html");
+        assert_eq!(
+            named(&css_text()),
+            [false; 3],
+            "the page already breaks a scan"
+        );
+        for sheet in PAGE_STYLESHEETS {
+            let text = without_comments(&page_css_from(&html, |name| {
+                let css = ui_file(name);
+                if name == sheet { css + planted } else { css }
+            }));
+            assert_eq!(
+                named(&text),
+                [true; 3],
+                "a rule planted in {sheet}: [width, colour, spacing] seen"
+            );
+        }
+        let unlinked = html.replace(r#"<link rel="stylesheet" href="code.css">"#, "");
+        let text = without_comments(&page_css_from(&unlinked, |name| {
+            let css = ui_file(name);
+            if name == "code.css" {
+                css + planted
+            } else {
+                css
+            }
+        }));
+        assert_eq!(
+            named(&text),
+            [false; 3],
+            "a sheet the page does not link was read"
         );
     }
 
