@@ -89,8 +89,15 @@ for d in "$HOME/go/bin" "$HOME/.local/bin"; do
 done
 command -v zizmor >/dev/null 2>&1 \
   || fail "zizmor not installed (pipx install zizmor); G5 cannot audit .github/workflows/ without it"
-zizmor --min-severity medium .github/workflows/ \
-  || fail "zizmor found a medium-or-higher finding in .github/workflows/ (listed above)"
+# zizmor's own exit status and output say whether it found something or
+# could not reach GitHub and audited nothing; either fails, but the reader
+# is told which (#985, as #960 for govulncheck). Its self-test first. The
+# two variables that would make the run offline are unset: an offline run
+# skips the online audits and would pass on what is left.
+scripts/checks/zizmor-outcome.sh --self-test
+zout=$(env -u ZIZMOR_OFFLINE -u ZIZMOR_NO_ONLINE_AUDITS zizmor --min-severity medium .github/workflows/ 2>&1) && zst=0 || zst=$?
+printf '%s\n' "$zout"
+printf '%s\n' "$zout" | scripts/checks/zizmor-outcome.sh "$zst"
 # gitleaks over the commits this change adds, the scan the pre-commit hook
 # runs only where gitleaks is installed and only on commits made through the
 # hook (#236). Absent, it fails rather than skips. The self-test first: it
@@ -144,4 +151,4 @@ if [ -n "$hits" ]; then
   printf '%s\n' "$hits"
   exit 1
 fi
-echo "OK: fuzz/Cargo.lock current; desktop guards and their self-test pass; $gomsg; cargo deny, cargo audit (root, fuzz/Cargo.lock and desktop/Cargo.lock); zizmor clean and every workflow cargo command --locked; no CI job lost; pre-push, pre-commit and ci-local self-tests pass; gitleaks clean over $GATE_BASE..HEAD; no key-shaped literal or basic-auth URL added"
+echo "OK: fuzz/Cargo.lock current; desktop guards and their self-test pass; $gomsg; cargo deny, cargo audit (root, fuzz/Cargo.lock and desktop/Cargo.lock); zizmor-outcome's self-test, zizmor clean and every workflow cargo command --locked; no CI job lost; pre-push, pre-commit and ci-local self-tests pass; gitleaks clean over $GATE_BASE..HEAD; no key-shaped literal or basic-auth URL added"
