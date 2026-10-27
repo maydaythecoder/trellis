@@ -1,4 +1,3 @@
-use crate::backstop_lines;
 use crate::codebase_graph::truncate_module;
 use crate::config;
 use anyhow::Result;
@@ -484,6 +483,85 @@ pub(crate) fn cmd_index(root: &Path, graph: bool, limit: usize) -> Result<()> {
     Ok(())
 }
 
+/// The recall backstop's part of `trellis index` (ADR 0031).
+///
+/// Its counts stand beside the resolver's and are never added to `resolved`
+/// or divided by anything (rule 3). It runs after `index.bin` is written and
+/// its edges are not stored there: they depend on the server's version, which
+/// the file does not record. So the version is printed here instead.
+fn backstop_lines(index: &trellis_index::Index, root: &Path, enabled: bool) -> Vec<String> {
+    if !enabled {
+        return vec![BACKSTOP_OFF.to_string()];
+    }
+    let sites = trellis_index::doubt_sites(index);
+    let r = trellis_index::run_backstop(
+        index,
+        root,
+        &sites,
+        &trellis_index::BackstopServer::pyright(),
+    );
+    render_backstop(&r)
+}
+
+const BACKSTOP_OFF: &str = "backstop: off (no `[index] backstop` in .trellis/config.toml); \
+     the figures above are the resolver's alone";
+
+/// The report as `trellis index` prints it. Apart from running the server so
+/// the text can be asserted exactly without Pyright installed.
+fn render_backstop(r: &trellis_index::BackstopReport) -> Vec<String> {
+    let mut out = Vec::new();
+    match &r.status {
+        trellis_index::BackstopStatus::NotRun { reason } => {
+            out.push(format!("backstop: pyright did not run ({reason})"));
+            out.push(format!(
+                "  {} Unresolved or Candidates site(s) keep the resolver's verdict",
+                r.not_queried
+            ));
+            return out;
+        }
+        trellis_index::BackstopStatus::Ran { server, stopped } => {
+            out.push(format!(
+                "backstop: pyright ran ({})",
+                server.as_deref().unwrap_or("version unknown")
+            ));
+            if let Some(why) = stopped {
+                out.push(format!("  stopped part way: {why}"));
+            }
+        }
+    }
+    out.push(format!(
+        "  queried          {:>6}  Unresolved or Candidates sites only",
+        r.queried
+    ));
+    out.push(format!(
+        "  bound by pyright {:>6}  counted apart: not in `resolved`, not in the graph",
+        r.edges.len()
+    ));
+    out.push(format!(
+        "  no answer        {:>6}  the server returned no location; resolver's verdict kept",
+        r.no_answer
+    ));
+    out.push(format!(
+        "  refused          {:>6}  an answer this backstop would not bind; resolver's verdict kept",
+        r.refused_total()
+    ));
+    for (why, n) in &r.refused {
+        out.push(format!("    {:<28} {n:>6}", why.describe()));
+    }
+    if r.not_queried > 0 {
+        out.push(format!(
+            "  not queried      {:>6}  keep the resolver's verdict",
+            r.not_queried
+        ));
+    }
+    out.push(
+        "  A pyright-bound edge is the server's reading of the annotations, not a verified callee;"
+            .to_string(),
+    );
+    out.push("  those sites stay unpartitionable.".to_string());
+    out
+}
+
 /// How many outgoing edges one module draws before it says how many it left.
 ///
 /// Ten, because past that the row stops being a shape and becomes a list, and
@@ -612,6 +690,89 @@ mod tests {
         assert_eq!(
             v["sites"][0],
             serde_json::json!({"path": "m.py", "line": 4, "certain": true})
+        );
+    }
+}
+
+#[cfg(test)]
+mod backstop_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use trellis_index::{BackstopReport, BackstopStatus, Refusal};
+
+    fn report(status: BackstopStatus) -> BackstopReport {
+        BackstopReport {
+            status,
+            edges: Vec::new(),
+            queried: 7580,
+            no_answer: 5000,
+            refused: BTreeMap::from([
+                (Refusal::OutsideRepository, 700),
+                (Refusal::OutsideCandidates, 21),
+            ]),
+            not_queried: 22,
+            skipped_certain: 0,
+        }
+    }
+
+    #[test]
+    fn backstop_lines_print_single_spaces_and_split_no_answer_from_refused() {
+        // #177: a line continuation inside two literals printed "not a
+        // verified callee" with ten spaces in it, and one count stood for
+        // both "no answer" and "refused". The whole text is asserted, so a
+        // stray run of spaces or a merged count fails here.
+        let ran = report(BackstopStatus::Ran {
+            server: Some("pyright 1.1.414, from its package.json".into()),
+            stopped: None,
+        });
+        assert_eq!(
+            render_backstop(&ran),
+            [
+                "backstop: pyright ran (pyright 1.1.414, from its package.json)",
+                "  queried            7580  Unresolved or Candidates sites only",
+                "  bound by pyright      0  counted apart: not in `resolved`, not in the graph",
+                "  no answer          5000  the server returned no location; resolver's verdict kept",
+                "  refused             721  an answer this backstop would not bind; resolver's verdict kept",
+                "    outside the repository          700",
+                "    outside the Candidates set       21",
+                "  not queried          22  keep the resolver's verdict",
+                "  A pyright-bound edge is the server's reading of the annotations, not a verified callee;",
+                "  those sites stay unpartitionable.",
+            ]
+        );
+        assert_eq!(
+            backstop_lines(&trellis_index::Index::default(), Path::new("."), false),
+            [
+                "backstop: off (no `[index] backstop` in .trellis/config.toml); the figures above are the resolver's alone"
+            ]
+        );
+    }
+
+    #[test]
+    fn backstop_lines_say_version_unknown_only_when_no_source_named_one() {
+        let unknown = report(BackstopStatus::Ran {
+            server: None,
+            stopped: None,
+        });
+        assert_eq!(
+            render_backstop(&unknown)[0],
+            "backstop: pyright ran (version unknown)"
+        );
+    }
+
+    #[test]
+    fn backstop_lines_print_no_not_queried_row_when_every_site_was_queried() {
+        // #248: a "not queried 0" row would read as a figure to act on when
+        // there is none; the row is printed only for a count above zero.
+        let mut all_queried = report(BackstopStatus::Ran {
+            server: None,
+            stopped: None,
+        });
+        all_queried.not_queried = 0;
+        let lines = render_backstop(&all_queried);
+        assert!(
+            !lines.iter().any(|l| l.contains("not queried")),
+            "{lines:#?}"
         );
     }
 }

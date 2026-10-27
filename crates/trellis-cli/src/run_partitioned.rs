@@ -92,6 +92,110 @@ impl Fanout {
     }
 }
 
+/// `trellis run --agents`, parsed (ADR 0045 §3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Agents {
+    /// At least 1.
+    Count(u32),
+    /// From the backend's measured batching capacity (S18).
+    Auto,
+}
+
+/// `0` would be a run with no agent, and a fraction or a word other than
+/// `auto` has no meaning to guess at, so both are refused naming what is
+/// accepted.
+pub(crate) fn parse_agents(s: &str) -> Result<Agents> {
+    if s == "auto" {
+        return Ok(Agents::Auto);
+    }
+    match s.parse::<u32>() {
+        Ok(n) if n >= 1 => Ok(Agents::Count(n)),
+        _ => anyhow::bail!("--agents takes a number of at least 1, or `auto`; got `{s}`"),
+    }
+}
+
+/// Resolves every target and the number of agents `--agents` asks for, with
+/// why it is that number.
+///
+/// Called before the snapshot, so an unknown target costs nothing. Targets
+/// resolve before the number is judged, so a mistyped symbol is reported as
+/// that rather than hidden behind a width.
+pub(crate) fn agents_for(
+    root: &Path,
+    width: Agents,
+    targets: &[String],
+    spec: &str,
+    from_user: bool,
+) -> Result<(u32, String)> {
+    let index = trellis_index::build_cached(root);
+    for t in targets {
+        crate::index_cmd::resolve_symbol(&index, t)?;
+    }
+    let (n, why) = match width {
+        Agents::Count(1) => (1, "--agents is 1".to_string()),
+        // An explicit N asks the backend as `auto` does (exit gate item 10,
+        // #483): N agents on a runtime that serves one request at a time is
+        // slower than one after another, and a user who typed N would not
+        // know why. Only measured continuous batching keeps N.
+        Agents::Count(n) => match batching(root, spec, from_user)? {
+            (cap, why) if cap.supports_multi_agent() => (n, format!("--agents is {n}; {why}")),
+            (_, why) => (
+                1,
+                format!(
+                    "--agents {n} is 1 because {why}; {n} at once needs a backend measured to \
+                     batch continuously, such as llama.cpp started with --parallel {n}"
+                ),
+            ),
+        },
+        Agents::Auto => {
+            let (cap, why) = batching(root, spec, from_user)?;
+            let n = cap.auto_agents();
+            (n, format!("--agents auto is {n} because {why}"))
+        }
+    };
+    Ok((n, why))
+}
+
+/// The backend's batching capability, by the probe `doctor` uses, with why it
+/// is that. Reads the runtime and writes nothing; the probe's own timeout
+/// bounds it. A slot count that could not be read is `Unknown`, said so.
+fn batching(
+    root: &Path,
+    spec: &str,
+    from_user: bool,
+) -> Result<(trellis_model::BatchingCapability, String)> {
+    use trellis_model::BatchingCapability as B;
+    let parsed: trellis_model::ModelSpec = spec.parse()?;
+    let cfg = config::RepoConfig::load(root)?;
+    Ok(
+        match crate::doctor_cmd::probe_batching(&parsed, &cfg, from_user) {
+            Ok(
+                cap @ B::Continuous {
+                    measured_concurrency,
+                },
+            ) => (
+                cap,
+                format!("the runtime reports {measured_concurrency} slots"),
+            ),
+            Ok(cap @ B::SingleStream) => (cap, "the runtime reports a single slot".into()),
+            Ok(cap @ B::ContinuousUnmeasured) => (
+                cap,
+                "the backend batches continuously but does not report how much".into(),
+            ),
+            Ok(cap @ B::Unknown) => (
+                cap,
+                "the backend's batching capability is unknown (a scripted model has none)".into(),
+            ),
+            Err(e) => (
+                B::Unknown,
+                format!(
+                    "the runtime's slot count could not be read ({e}), so its capability is unknown"
+                ),
+            ),
+        },
+    )
+}
+
 /// What `run_body` hands a multi-agent run at its branch point: everything
 /// decided before the snapshot.
 pub(crate) struct Partitioned<'a> {

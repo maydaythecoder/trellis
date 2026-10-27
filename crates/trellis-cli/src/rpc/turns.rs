@@ -1,5 +1,5 @@
 //! The `turn` events of a run, kept for `get_messages`: a layer on the one
-//! `tracing` subscriber, beside `main.rs`'s stdout JSON layer.
+//! `tracing` subscriber, beside `startup.rs`'s stdout JSON layer.
 
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, LazyLock, Mutex};
