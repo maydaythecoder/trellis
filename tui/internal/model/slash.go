@@ -62,6 +62,8 @@ func (m *Model) local(line string) bool {
 		}
 	case "codebase":
 		m.ask("get_codebase", forCodebase, nil)
+	case "control":
+		m.setControl(args)
 	default:
 		m.push(view.RoleNote, "· `/"+view.Plain(name)+"` is not a command here. /help lists them.")
 	}
@@ -74,6 +76,7 @@ var helpLines = []string{
 	"  /graph           the last run's blast radius, and what it does not claim",
 	"  /radius <symbol> a symbol's blast radius, from trellis's index",
 	"  /codebase        which modules call which, and how much is unbound",
+	"  /control [mode]  approve (ask before each listed call) or auto: what prompts name",
 	"  /clear           empty the transcript",
 	"  /help            this",
 	helpLine("@<text> "+view.Keycap("TAB"), "repository paths starting with it; "+view.Keycap("TAB")+" again inserts the first"),
@@ -94,7 +97,7 @@ var helpLines = []string{
 	// What the screen's marks mean (#911).
 	helpLine("1:23*", "a time by this view's own clock, which stops while a question waits or the run is paused"),
 	helpLine(view.Dash, "a figure trellis did not report; never drawn as 0"),
-	helpLine("████░░░░ 3/40", "a figure against its ceiling, the turn against max_iterations"),
+	helpLine("████░░░░ 3/40", "a figure against its ceiling from run budget: the turns, wall clock, completion tokens or last prompt"),
 	helpLine("● 2 pending", "edits a run in flight has made in the worktree"),
 	helpLine("✎ 2", "actions that wrote to the tree"),
 	"",
@@ -110,6 +113,22 @@ var helpLines = []string{
 // the column the commands above use, and what it means or does.
 func helpLine(what, means string) string {
 	return "  " + view.Pad(what, 16) + " " + means
+}
+
+// setControl is /control (#952): with no word it says the mode the next
+// prompt names, and with approve or auto it sets it. It is a slash
+// command, so it is refused mid-run, and a run's mode never changes under
+// it; anything else is refused by name and changes nothing.
+func (m *Model) setControl(args []string) {
+	switch {
+	case len(args) == 0:
+	case len(args) == 1 && ControlMode(args[0]):
+		m.control = args[0]
+	default:
+		m.push(view.RoleNote, "· /control takes approve or auto, not `"+view.Plain(strings.Join(args, " "))+"`; the mode stays "+m.control+".")
+		return
+	}
+	m.push(view.RoleText, "· control "+m.control+": the next prompt names it.")
 }
 
 // radiusLines is /graph: the radius pane's three counts, in words.

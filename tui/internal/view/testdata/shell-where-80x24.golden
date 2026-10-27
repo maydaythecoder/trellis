@@ -1,0 +1,24 @@
+ Run ⟩ where                                         L2 / 4  [ESC] out  TRELLIS 
+ ● RUNNING  1:23*  █░░░░░░░ 3/40  [^P] pause  running edit → src/parser.py      
+ w ┌ where ────────────────────────────────────────────────────────────────────┐
+   │  phase    ran edit, turn 3                                                │
+ a │  call     edit → src/parser.py                                            │
+   │  model    ollama:qwen2.5-coder:32b · tier 2, native tool calls            │
+ e │  root     trellis-demo · control approve                                  │
+   │  runtime  ollama · qwen2.5-coder:32b                                      │
+ c │                                                                           │
+   │                                                                           │
+ r │                                                                           │
+   │                                                                           │
+   │                                                                           │
+   └───────────────────────────────────────────────────────────────────────────┘
+┌ budget  [^R] raise ──────────────────────────────────────────────────────────┐
+│   TURNS        █░░░░░░░░░░░░░░░ 3/40                                         │
+│   WALL CLOCK   1:23*/—                                                       │
+│   COMPLETION   —/— tokens                                                    │
+│   LAST PROMPT  24.1 kB/—                                                     │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ steer  [⏎] queue for the next turn ──────────────────────────────────────────┐
+│█                                                                             │
+└──────────────────────────────────────────────────────────────────────────────┘
+ [ESC] out  [^C] stop  ● 1 pending  model ollama:qw…  tier 2, native tool calls 

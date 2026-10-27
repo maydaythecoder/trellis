@@ -55,7 +55,20 @@ type Options struct {
 	// Playful is --register playful (#857): one Ascii face where the Now
 	// strip has no run to show. Serious, the default, draws none.
 	Playful bool
+	// Control is --control's value (#952), the control mode every prompt
+	// names: "approve" or "auto". Empty is approve, the desktop's default.
+	Control string
 }
+
+// Approve and Auto are the two control modes a prompt may name; rpc
+// refuses any other word (ADR 0025 section 5).
+const (
+	Approve = "approve"
+	Auto    = "auto"
+)
+
+// ControlMode reports whether c is a control mode a prompt may name.
+func ControlMode(c string) bool { return c == Approve || c == Auto }
 
 // Model is the TUI's whole state.
 type Model struct {
@@ -168,6 +181,8 @@ type Model struct {
 	planOrig []string
 	// playful is the register dial (Options).
 	playful bool
+	// control is the control mode the next prompt names (Options, /control).
+	control string
 	// filter and quiet choose the transcript rows drawn, and call is the
 	// turn's call ^O has open (log.go, #948).
 	filter view.LogFilter
@@ -203,7 +218,10 @@ type Model struct {
 // New is a model that, once its outbox is drained, has asked trellis for
 // its state, chosen the model and, with a task given, sent it.
 func New(o Options) *Model {
-	m := &Model{now: time.Now, theme: o.Theme, playful: o.Playful}
+	m := &Model{now: time.Now, theme: o.Theme, playful: o.Playful, control: Approve}
+	if ControlMode(o.Control) {
+		m.control = o.Control
+	}
 	m.emptyPanes()
 	m.refreshState()
 	if o.ModelSpec != "" {
@@ -472,7 +490,11 @@ func (m *Model) startRun(task string) {
 	m.Outcome = ""
 	// A new run is followed from its start, wherever the view was.
 	m.ScrollBack = 0
-	m.promptID = m.send("prompt", map[string]any{"task": task})
+	// Named on every prompt, as the desktop's are: a prompt that names
+	// none runs in the repository's mode, which trellis reports to no
+	// client, so Where it is could not say what the run was asked to do.
+	m.strip.Control = m.control
+	m.promptID = m.send("prompt", map[string]any{"task": task, "control": m.control})
 }
 
 func (m *Model) frame(f frames.Frame) {
