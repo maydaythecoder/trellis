@@ -37,4 +37,4 @@
 │queued · follow_up: then rename parse_expr                                                                            │
 │delivered · prompt: start over[2J from the parser                                                                     │
 └ [TAB] steer ─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
- [TAB] select  [⏎] in  [^C] stop                 ● 1 pending  model ollama:qwen2.5-coder:32b  tier 2, native tool calls 
+ [TAB] select  [⏎] in  [^F] filter  [^N] quiet  [^O] call  [^C] stop  ● 1 pending  model ol…  tier 2, native tool calls 

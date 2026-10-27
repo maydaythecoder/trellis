@@ -28,6 +28,11 @@ import (
 //   - RoleNote: what this view or trellis says about the run or the line:
 //     queued, delivered, finished, stopping, a WARN line;
 //   - RoleRefusal: an error or a refusal.
+//
+// Two flags say what the role does not, for the log's filters and quiet
+// mode (view/log.go, #948): Row.Wrote on a call that wrote to the tree,
+// and Row.Ask on `model asks you`; a turn's rows also carry its call and
+// observation in full for ^O (Row.Raw, log.go).
 
 // push adds one row of role r.
 func (m *Model) push(r view.Role, text string) {

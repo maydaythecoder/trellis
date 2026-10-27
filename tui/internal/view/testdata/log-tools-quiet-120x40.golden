@@ -1,0 +1,40 @@
+ Run                                                                                                    L1 / 4  TRELLIS 
+ ● RUNNING  1:23*  █░░░░░░░ 3/40  [^P] pause  ran edit, turn 3 → src/parser.py                     plan  summary so far 
+┌ transcript · tools · quiet · 8 hidden ───────────────────────────────┐┌ where ───────────────────────────────────────┐
+│─ turn 1 · model 6200 ms · 412 tok out · 12400 B prompt               ││  phase    ran edit, turn 3                   │
+│─ turn 2 · model 4800 ms · — tok out · — B prompt                     ││  runtime  ollama · qwen2.5-coder:32b         │
+│─ turn 3 · model 5100 ms · 208 tok out · 13100 B prompt               ││  control  —                                  │
+│· Edited src/parser.py (+1 −1)                                        ││  root     trellis-demo                       │
+│! bash refused: the command names a path outside the repository       │└──────────────────────────────────────────────┘
+│                                                                      │┌ actions ─────────────────────────────────────┐
+│                                                                      ││  blast_radius           1 ●─┐                │
+│                                                                      ││  read_file                ○─┤                │
+│                                                                      ││  edit         1 · 1 wrote ●─┤──◆ 3 actions   │
+│                                                                      ││  run_checks             1 ●─┘                │
+│                                                                      ││  ✎ 1                                         │
+│                                                                      ││  ✎ edit src/parser.py                        │
+│                                                                      ││  · run_checks                                │
+│                                                                      │└──────────────────────────────────────────────┘
+│                                                                      │┌ edits ───────────────────────────────────────┐
+│                                                                      ││~ src/index/resolve.rs                       —│
+│                                                                      ││                                              │
+│                                                                      │└──────────────────────────────────────────────┘
+│                                                                      │┌ checks ──────────────────────────────────────┐
+│                                                                      ││typecheck passed                              │
+│                                                                      ││                                              │
+│                                                                      ││                                              │
+│                                                                      ││                                              │
+│                                                                      │└──────────────────────────────────────────────┘
+│                                                                      │┌ radius ──────────────────────────────────────┐
+│                                                                      ││  resolved      47 ●─┐                        │
+│                                                                      ││  candidates     3 ◐─┤──◆ reach               │
+│                                                                      ││  unresolved     2 ○─┘                        │
+│                                                                      ││  a floor on reach, not a boundary            │
+└──────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────┘
+┌ budget  [^R] raise ──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│TURNS █░░░░░░░░░░░░░░░ 3/40  ·  PROMPT 24.1 kB  ·  TIME 1:23*                                                         │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ steer  [⏎] queue for the next turn ──────────────────────────────────────────────────────────────────────────────────┐
+│█                                                                                                                     │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ [TAB] select  [⏎] in  [^F] filter  [^N] quiet  [^O] call  [^C] stop  ● 1 pending  model ol…  tier 2, native tool calls 
