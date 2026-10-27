@@ -898,22 +898,19 @@ fn write_trail(root: &Path, t: TrailInput<'_>, out: &mut dyn Write) -> Option<St
         factual,
         judgment: Judgment::default(),
     };
-    match trellis_trail::write(root, &trail, &timestamp, &slug) {
-        Ok(p) => {
-            let rel = Trail::path(&timestamp, &slug);
-            if let Err(e) =
-                trellis_vcs::commit_paths(root, &[&rel], &format!("trellis: trail for {}", t.task))
-            {
-                let _ = writeln!(out, "trail written but not committed: {e}");
-            }
-            let _ = writeln!(out, "trail:    {}", p.display());
-            Some(trail.run_id)
+    let written = trellis_trail::write(root, &trail, &timestamp, &slug).inspect(|_| {
+        let rel = Trail::path(&timestamp, &slug);
+        if let Err(e) =
+            trellis_vcs::commit_paths(root, &[&rel], &format!("trellis: trail for {}", t.task))
+        {
+            let _ = writeln!(out, "trail written but not committed: {e}");
         }
-        Err(e) => {
-            let _ = writeln!(out, "could not write the trail: {e}");
-            None
-        }
-    }
+    });
+    let recorded = written.is_ok();
+    // anyhow's `{}` prints the io error's own message, so the line reads as
+    // it did when this site formatted the io error itself.
+    crate::run_cmd::report_trail(out, written.map_err(anyhow::Error::from), None);
+    recorded.then_some(trail.run_id)
 }
 
 /// #248: the reasons and records a process run gives, driven directly

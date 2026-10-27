@@ -1460,21 +1460,15 @@ fn run_body(
             // Written *after* the rollback, deliberately. Rollback cleans
             // untracked files, and a trail written before it would be one of
             // them — deleting the record of exactly the run worth recording.
-            match record_trail(
+            let written = record_trail(
                 root,
                 task,
                 &turns,
                 &transcript,
                 facts(trellis_trail::Approval::None),
                 &mut *out,
-            ) {
-                Ok(p) => {
-                    let _ = writeln!(out, "trail:    {} (survives the rollback)", p.display());
-                }
-                Err(e) => {
-                    let _ = writeln!(out, "could not write the trail: {e}");
-                }
-            }
+            );
+            report_trail(&mut *out, written, Some("survives the rollback"));
             match reason {
                 trellis_loop::NotConverged::AskedHuman { question, options } if restored => {
                     Ok(RunExit::Asked { question, options })
@@ -2042,18 +2036,8 @@ fn handle_interrupt(
         prior: None,
         repo: trellis_loop::RepoContext::default(),
     };
-    match record_trail(root, task, &turns, touched, facts, &mut *out) {
-        Ok(p) => {
-            let _ = writeln!(
-                out,
-                "trail:    {} (interrupted; no turns recorded)",
-                p.display()
-            );
-        }
-        Err(e) => {
-            let _ = writeln!(out, "could not write the trail: {e}");
-        }
-    }
+    let written = record_trail(root, task, &turns, touched, facts, &mut *out);
+    report_trail(&mut *out, written, Some("interrupted; no turns recorded"));
 
     // 130 is the shell convention for a process terminated by SIGINT, so a
     // script wrapping TRELLIS can tell a deliberate abort from a failed run.
@@ -2654,6 +2638,27 @@ pub(crate) fn record_trail(
         let _ = writeln!(out, "trail written but not committed: {e}");
     }
     Ok(path)
+}
+
+/// Prints where a written trail landed, with `note` in parentheses after the
+/// path, or why it could not be written. One place for both lines, so every
+/// ending of a run reports its trail in the same words.
+pub(crate) fn report_trail(
+    out: &mut dyn std::io::Write,
+    written: Result<std::path::PathBuf>,
+    note: Option<&str>,
+) {
+    match (written, note) {
+        (Ok(p), Some(note)) => {
+            let _ = writeln!(out, "trail:    {} ({note})", p.display());
+        }
+        (Ok(p), None) => {
+            let _ = writeln!(out, "trail:    {}", p.display());
+        }
+        (Err(e), _) => {
+            let _ = writeln!(out, "could not write the trail: {e}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3332,5 +3337,56 @@ mod audit_mode_tests {
         let counts = audit_modes(&dir, &["app/core.py".to_string()]);
         assert_eq!((counts.verified, counts.reviewed), (0, 0));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod report_trail_tests {
+    use super::report_trail;
+    use std::path::PathBuf;
+
+    fn printed(written: anyhow::Result<PathBuf>, note: Option<&str>) -> String {
+        let mut out = Vec::new();
+        report_trail(&mut out, written, note);
+        String::from_utf8(out).unwrap()
+    }
+
+    /// The six endings that report a trail once spelled these lines out
+    /// each; the expected text is theirs, byte for byte, so folding them into
+    /// one function cannot have changed what a user or a script reads.
+    #[test]
+    fn report_trail_prints_each_ending_s_line_as_the_sites_did() {
+        let p = || Ok(PathBuf::from(".trellis/trails/t.json"));
+        assert_eq!(printed(p(), None), "trail:    .trellis/trails/t.json\n");
+        assert_eq!(
+            printed(p(), Some("survives the rollback")),
+            "trail:    .trellis/trails/t.json (survives the rollback)\n"
+        );
+        assert_eq!(
+            printed(p(), Some("interrupted")),
+            "trail:    .trellis/trails/t.json (interrupted)\n"
+        );
+        assert_eq!(
+            printed(p(), Some("interrupted; no turns recorded")),
+            "trail:    .trellis/trails/t.json (interrupted; no turns recorded)\n"
+        );
+    }
+
+    /// A failed write is said, not swallowed, and only the outermost message
+    /// is printed, as `{e}` on the sites' own errors printed it.
+    #[test]
+    fn report_trail_says_a_failed_write_whatever_the_note() {
+        let failed = || {
+            Err(anyhow::Error::from(std::io::Error::other("disk full"))
+                .context("writing the trail"))
+        };
+        for note in [None, Some("survives the rollback")] {
+            assert_eq!(
+                printed(failed(), note),
+                "could not write the trail: writing the trail\n"
+            );
+        }
+        let io = Err(anyhow::Error::from(std::io::Error::other("disk full")));
+        assert_eq!(printed(io, None), "could not write the trail: disk full\n");
     }
 }
