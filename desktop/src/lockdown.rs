@@ -2596,8 +2596,9 @@ mod tests {
 
     /// The Atlas's modules: atlas.js, the one index.html loads, and the
     /// modules #955 split out of it along its sections.
-    const ATLAS_MODULES: [&str; 6] = [
+    const ATLAS_MODULES: [&str; 7] = [
         "atlas.js",
+        "atlas-ask.js",
         "atlas-view.js",
         "atlas-draw.js",
         "atlas-detail.js",
@@ -3222,12 +3223,15 @@ mod tests {
         let tabs = tab_roles(&page);
         assert!(tabs.is_empty(), "the page draws tabs: {tabs:?}");
         for (module, code) in ui_code() {
-            for bad in [r#"setAttribute("role", "tab"#, "A.tab", "aria-selected\", String(A.tab"] {
+            for bad in [r#"setAttribute("role", "tab"#, "A.tab"] {
                 assert!(!code.contains(bad), "{module} draws a tab: {bad}");
             }
         }
         let atlas = index_of(&page, "atlas");
-        assert_eq!(page[atlas].tag, "section", "the Atlas is not a level's section");
+        assert_eq!(
+            page[atlas].tag, "section",
+            "the Atlas is not a level's section"
+        );
         assert!(
             page.iter()
                 .any(|e| e.tag == "button" && e.attr("data-enter") == Some("atlas")),
@@ -3303,8 +3307,7 @@ mod tests {
         // It reaches the core only through rpc.js's send (#819), which
         // calls only rpc_send (model_gate_model_js_parses_no_html).
         assert!(
-            !js.contains("invoke(")
-                && js.contains(r#"import { onShown, send, start } from "./rpc.js";"#),
+            !js.contains("invoke(") && js.contains(r#"import { send } from "./rpc.js";"#),
             "atlas.js reaches the core some other way"
         );
         // Every question carries an Atlas id, so the core keeps its

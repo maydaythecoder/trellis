@@ -5,7 +5,7 @@
 // snapshot controls, the zoom path, and the modules a person pinned, kept
 // in this computer's storage only.
 
-import { progressText, status } from "./atlas.js";
+import { progressText, status } from "./atlas-ask.js";
 import { renderPanel, src, swatch } from "./atlas-detail.js";
 import { redraw } from "./atlas-draw.js";
 import { byId, CALLER, day, diff, fitT, focus, go, label, list, short, snap, toward } from "./atlas-view.js";
@@ -185,6 +185,13 @@ export function oldestBase(A) {
   const p = A.D.points;
   const oldest = A.D.points[0];
   return oldest !== A.si || p.length < 2 ? oldest ?? A.si : p[p.length - 1];
+}
+
+export function moveTo(A, si) {
+  A.si = si;
+  if (A.D && !A.baseChosen) A.base = oldestBase(A);
+  A.diffCache = null;
+  A.F = focus(A);
 }
 
 export function setLens(A, l) {
