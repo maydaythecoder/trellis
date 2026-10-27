@@ -181,6 +181,13 @@ export function drawWhere(doc, pane, w) {
   const call = [];
   if (isCount(v.model_ms)) call.push(`${v.model_ms} ms`);
   if (isCount(v.completion_tokens)) call.push(`${v.completion_tokens} tok out`);
+  // The compactions this run made, and the latest compacted request's
+  // size beside the budget it was held to: two figures, never a share
+  // (#954), each unreported until a compacted event has said it.
+  const context = [];
+  if (isCount(v.compactions)) context.push(`${v.compactions} compaction${v.compactions === 1 ? "" : "s"}`);
+  if (isCount(v.request_bytes)) context.push(`request ${v.request_bytes} B`);
+  if (isCount(v.budget_bytes)) context.push(`budget ${v.budget_bytes} B`);
   const r = v.runtime !== null && typeof v.runtime === "object" ? v.runtime : null;
   let runtime = unreported(doc, "no runtime has identified itself for this run");
   if (r !== null) {
@@ -199,6 +206,7 @@ export function drawWhere(doc, pane, w) {
       { label: "tool", value: tool },
       { label: "turn", value: turn },
       { label: "last call", value: call.length > 0 ? call.join(" · ") : unreported(doc, "no turn has reported a model call") },
+      { label: "context", value: context.length > 0 ? context.join(" · ") : unreported(doc, "no run has started") },
       { label: "model", value: fact(doc, v.model, "no run or get_state has named one") },
       { label: "tier", value: fact(doc, v.tier, "no run of this trellis rpc has decided a tier yet") },
       { label: "runtime", value: runtime },

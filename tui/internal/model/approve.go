@@ -30,6 +30,9 @@ type Approval struct {
 	// and the start of the last full page at the current size, the view's
 	// own limit (view.AskingLastFrom, #843).
 	Scroll int
+	// For names the prompt or follow-up whose run asks (#954), from the
+	// request's request_id, plain text.
+	For string
 	// Reviewing is set while the question is set aside for its file's diff
 	// at the code level, where y and n answer it in place (#853). The
 	// question stays the one on screen, waiting, and goes with it.
@@ -54,7 +57,7 @@ func (m *Model) approvalRequested(a frames.ApprovalFields) {
 	if a.Detail != nil {
 		d = *a.Detail
 	}
-	ap := Approval{ID: a.ID, Question: view.Plain(q), Diff: plainLines(strings.TrimRight(d, " \t\r\n"))}
+	ap := Approval{ID: a.ID, Question: view.Plain(q), Diff: plainLines(strings.TrimRight(d, " \t\r\n")), For: m.askedFor(a.RequestID)}
 	// The gate names an ask_human call `ask_human "<question>"`
 	// (trellis-loop gate.rs), and no custom tool may take a built-in's
 	// name, so the prefix is the call's. The question is the model's, in
@@ -72,6 +75,38 @@ func (m *Model) approvalRequested(a frames.ApprovalFields) {
 		return
 	}
 	m.approvals = append(m.approvals, ap)
+}
+
+// askedFor is what an approval belongs to (#954), in the desktop's words:
+// the prompt or follow-up its request_id names, with the task the run's
+// start carried when it is the run in flight's, and said to have no id
+// when it had none.
+func (m *Model) askedFor(requestID *string) string {
+	if requestID == nil {
+		return "a prompt or follow-up sent with no id"
+	}
+	id := *requestID
+	followUp := false
+	for _, q := range m.queue {
+		if q.item.Kind == kindFollowUp && q.id == id {
+			followUp = true
+		}
+	}
+	shown := view.Plain(id)
+	if r := m.runRequest; r != nil && r.id == id {
+		kind := "prompt"
+		if followUp {
+			kind = "follow-up"
+		}
+		if r.hasTask {
+			return "the " + kind + ": " + r.task
+		}
+		return "the " + kind + " sent as " + shown
+	}
+	if followUp {
+		return "the follow-up sent as " + shown
+	}
+	return "the prompt or follow-up sent as " + shown
 }
 
 // modalKey is a key while the modal is up. y and n answer it; the arrows

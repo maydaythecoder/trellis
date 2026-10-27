@@ -66,6 +66,12 @@ type Now struct {
 	// Root is the repository trellis serves, from get_state; "" until it
 	// has said.
 	Root string
+	// Compactions is how many compacted and compacted on request events
+	// this run has sent (#954), a count of events and not a figure trellis
+	// sent; RequestBytes and BudgetBytes are the latest compacted event's
+	// request size and budget, two figures never divided, nil until one.
+	Compactions               int
+	RequestBytes, BudgetBytes *uint64
 }
 
 // whereH is the Where it is pane's height: phase, last call, model and
@@ -308,8 +314,29 @@ func where(s State, w, h int) []string {
 		{Text: paired("model", orDash(s.Model), "tier", orDash(s.Tier), w-2)},
 		{Text: paired("root", root, "control", orDash(s.Now.Control), w-2)},
 		{Text: "  runtime  " + orDash(s.Now.Runtime)},
+		// Last, below the runtime, so the run column's pane keeps the rows
+		// it had (#952) and this one is read where the pane is opened.
+		{Text: "  context  " + contextText(s.Now)},
 	}
 	return paneBox(s, PanelWhere, "where", "", rows, w, h)
+}
+
+// contextText is Where it is's context row (#954), the desktop's words:
+// the compactions this run made, then the latest compacted request's bytes
+// beside the budget it was held to, each figure as trellis sent it and
+// left out until a compacted event has said it; never a share of the two.
+func contextText(n Now) string {
+	t := fmt.Sprintf("%d compactions", n.Compactions)
+	if n.Compactions == 1 {
+		t = "1 compaction"
+	}
+	if n.RequestBytes != nil {
+		t += fmt.Sprintf(" · request %d B", *n.RequestBytes)
+	}
+	if n.BudgetBytes != nil {
+		t += fmt.Sprintf(" · budget %d B", *n.BudgetBytes)
+	}
+	return t
 }
 
 // paired is one of Where it is's two-fact rows at w cells: the first fact
@@ -349,8 +376,13 @@ func baseName(path string) string {
 // askingRows is the rows drawn around the approval box: the Trail and the
 // Now strip above it and the status bar below, which stay on screen while
 // a question waits, so the person answering sees the run's state and how
-// to answer (#850, #851).
-const askingRows = 3
+// to answer (#850, #851). The call box (log.go) has the same around it;
+// the approval box has one more, approvalRows, the row naming the prompt
+// or follow-up the question belongs to (#954).
+const (
+	askingRows   = 3
+	approvalRows = askingRows + 1
+)
 
 // Asking is the screen while a question waits on the person: the Trail
 // and the Now strip, the approval box (Modal) over the stage, which covers
@@ -362,15 +394,33 @@ func Asking(s State, question, diff string, scroll, w, h int) string {
 	if !fits(w, h) {
 		return Modal(s.Theme, question, diff, scroll, w, h)
 	}
-	top := line(s.Theme, trail(s, w), w) + "\n" + line(s.Theme, nowStrip(s, w), w)
-	return top + "\n" + Modal(s.Theme, question, diff, scroll, w, h-askingRows) + "\n" + line(s.Theme, statusBar(s, w), w)
+	top := line(s.Theme, trail(s, w), w) + "\n" + line(s.Theme, nowStrip(s, w), w) + "\n" + line(s.Theme, askedFor(s), w)
+	return top + "\n" + Modal(s.Theme, question, diff, scroll, w, h-approvalRows) + "\n" + line(s.Theme, statusBar(s, w), w)
+}
+
+// askedFor is the row above the approval box naming the prompt or
+// follow-up whose run asks (#954), which line cuts to the screen: the
+// person's own words and served text, made plain again here, and Dash
+// when nothing named it.
+func askedFor(s State) []Span {
+	what := Dash
+	if a, ok := onScreen(s); ok && Plain(a.For) != "" {
+		what = Plain(a.For)
+	}
+	return []Span{{Text: " for " + what, Role: RoleOutput}}
 }
 
 // AskingLastFrom is ModalLastFrom for the box Asking draws at w by h: the
 // furthest line the model scrolls the question's diff to.
 func AskingLastFrom(diff string, w, h int) int {
+	return lastFromAround(diff, w, h, approvalRows)
+}
+
+// lastFromAround is ModalLastFrom for a box drawn with rows rows around it
+// at w by h, or alone over the screen below the minimum size.
+func lastFromAround(text string, w, h, rows int) int {
 	if !fits(w, h) {
-		return ModalLastFrom(diff, w, h)
+		return ModalLastFrom(text, w, h)
 	}
-	return ModalLastFrom(diff, w, h-askingRows)
+	return ModalLastFrom(text, w, h-rows)
 }

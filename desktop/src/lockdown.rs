@@ -2594,6 +2594,24 @@ mod tests {
             .join("\n")
     }
 
+    /// The Atlas's modules: atlas.js, the one index.html loads, and the
+    /// modules #955 split out of it along its sections.
+    const ATLAS_MODULES: [&str; 7] = [
+        "atlas.js",
+        "atlas-ask.js",
+        "atlas-view.js",
+        "atlas-draw.js",
+        "atlas-detail.js",
+        "atlas-toolbar.js",
+        "atlas-search.js",
+    ];
+
+    /// The Atlas's code, every module of it read as `code_of` reads one,
+    /// so a test of the Atlas holds wherever #955's split put a line.
+    fn atlas_code() -> String {
+        ATLAS_MODULES.map(code_of).join("\n")
+    }
+
     #[test]
     fn board_section_holds_what_queue_js_draws() {
         // The risk (#311): queue.js drawing into an id the page lacks, so
@@ -3095,7 +3113,7 @@ mod tests {
     }
 
     /// The ids atlas.js draws into or reads, every one inside #atlas.
-    const ATLAS_IDS: [&str; 32] = [
+    const ATLAS_IDS: [&str; 35] = [
         "at-where",
         "at-open-search",
         "at-status",
@@ -3118,12 +3136,15 @@ mod tests {
         "at-canvas",
         "at-legend",
         "at-minimap",
-        "at-tab-sel",
-        "at-tab-chg",
-        "at-tab-pin",
         "at-detail",
         "at-detail-title",
         "at-detail-meta",
+        "at-chg",
+        "at-chg-title",
+        "at-chg-meta",
+        "at-pin",
+        "at-pin-title",
+        "at-pin-meta",
         "at-search",
         "at-q",
         "at-qclose",
@@ -3138,15 +3159,10 @@ mod tests {
         // reach; or the section still saying it is not built.
         let page = page();
         let section = index_of(&page, "atlas");
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         for id in ATLAS_IDS {
-            // The three tabs are named through one template, `at-tab-${t}`,
-            // over their suffixes.
-            let tab = id
-                .strip_prefix("at-tab-")
-                .is_some_and(|t| js.contains("`at-tab-${t}`") && js.contains(&format!("\"{t}\"")));
             assert!(
-                js.contains(&format!("\"{id}\"")) || js.contains(&format!("#{id} ")) || tab,
+                js.contains(&format!("\"{id}\"")) || js.contains(&format!("#{id} ")),
                 "atlas.js draws no {id}"
             );
             assert!(
@@ -3185,6 +3201,72 @@ mod tests {
         );
     }
 
+    /// Each element of `page` that is drawn as a tab, a tab list or a tab
+    /// panel, by its id or its tag.
+    fn tab_roles(page: &[Element]) -> Vec<String> {
+        page.iter()
+            .filter(|e| matches!(e.attr("role"), Some("tab" | "tablist" | "tabpanel")))
+            .map(|e| e.attr("id").map_or_else(|| e.tag.clone(), str::to_string))
+            .collect()
+    }
+
+    #[test]
+    fn atlas_detail_has_no_tabs() {
+        // The risk (#955; DESIGN.md: "No tabs"): the Atlas's detail pane
+        // switching between Selection, Changes and Working set behind tabs,
+        // so two of the three are hidden at any time and a page drawn as one
+        // overview a person burrows into has a second way of moving inside
+        // a level. The three are Panels one under another in the Atlas's
+        // level, the one the Trail names once its overview panel is entered
+        // with ⏎ and that ESC leaves, and nothing in the page is a tab.
+        let page = page();
+        let tabs = tab_roles(&page);
+        assert!(tabs.is_empty(), "the page draws tabs: {tabs:?}");
+        for (module, code) in ui_code() {
+            for bad in [r#"setAttribute("role", "tab"#, "A.tab"] {
+                assert!(!code.contains(bad), "{module} draws a tab: {bad}");
+            }
+        }
+        let atlas = index_of(&page, "atlas");
+        assert_eq!(
+            page[atlas].tag, "section",
+            "the Atlas is not a level's section"
+        );
+        assert!(
+            page.iter()
+                .any(|e| e.tag == "button" && e.attr("data-enter") == Some("atlas")),
+            "no overview panel enters the Atlas"
+        );
+        let js = atlas_code();
+        let render = function_body(&js, "renderPanel");
+        for (body, title, served) in [
+            ("at-detail", "at-detail-title", "Atlas"),
+            ("at-chg", "at-chg-title", "Changes"),
+            ("at-pin", "at-pin-title", "Working set"),
+        ] {
+            let panel = page[index_of(&page, body)]
+                .parent
+                .expect("a detail body has a Panel");
+            assert!(within(&page, panel, atlas), "#{body} is outside #atlas");
+            assert_eq!(page[panel].attr("role"), Some("region"), "#{body}");
+            assert_eq!(page[panel].attr("aria-labelledby"), Some(title), "#{body}");
+            assert_eq!(page[index_of(&page, title)].text.trim(), served);
+            assert!(
+                render.contains(&format!("\"{body}\"")) && render.contains(&format!("\"{title}\"")),
+                "renderPanel does not draw #{body} every time"
+            );
+        }
+        // A planted tab is caught.
+        let html = ui_file("index.html");
+        let planted = html.replacen(
+            r#"<div id="at-chg" class="at-detail">"#,
+            r#"<div id="at-chg" class="at-detail" role="tabpanel">"#,
+            1,
+        );
+        assert_ne!(planted, html, "the Changes Panel's body moved");
+        assert_eq!(tab_roles(&page_of(&planted)), ["at-chg"]);
+    }
+
     #[test]
     fn atlas_js_draws_text_and_asks_only_for_reads() {
         // The risk (ADR 0007, S10; the owner's request of 2026-10-11): a
@@ -3195,7 +3277,7 @@ mod tests {
         // this holds the text; a node smoke script with a fake DOM and a
         // recording canvas ran atlas.js over views the core emitted for the
         // poetry data (see the commit).
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         for bad in [
             "innerHTML",
             "outerHTML",
@@ -3225,8 +3307,7 @@ mod tests {
         // It reaches the core only through rpc.js's send (#819), which
         // calls only rpc_send (model_gate_model_js_parses_no_html).
         assert!(
-            !js.contains("invoke(")
-                && js.contains(r#"import { onShown, send, start } from "./rpc.js";"#),
+            !js.contains("invoke(") && js.contains(r#"import { send } from "./rpc.js";"#),
             "atlas.js reaches the core some other way"
         );
         // Every question carries an Atlas id, so the core keeps its
@@ -3253,7 +3334,7 @@ mod tests {
         // The risk: a map drawn in colours of its own, which ignore the
         // system theme and the page's palette; or a map that stays light
         // when the system turns dark, since the desktop has no theme toggle.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         let palette = function_body(&js, "readPalette");
         for want in ["getComputedStyle(", "getPropertyValue(`--${t}`)"] {
             assert!(palette.contains(want), "readPalette lacks {want}");
@@ -3298,7 +3379,7 @@ mod tests {
         // The risk: an animated flight across the map for someone whose
         // system asks for reduced motion; or a stylesheet rule for the
         // Atlas that moves on its own.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         assert!(js.contains(r#"reduced: win.matchMedia("(prefers-reduced-motion: reduce)")"#));
         let go = function_body(&js, "go");
         let jump = go
@@ -3326,7 +3407,7 @@ mod tests {
         // because the working set threw; or, after another repository is
         // opened, the last one's map, selection and questions in flight
         // staying drawn and answerable as the new one's.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         for f in ["loadPins", "savePins"] {
             let body = function_body(&js, f);
             assert!(
@@ -3361,7 +3442,7 @@ mod tests {
         // section, pushed the whole Atlas below the fold at 1440x900.
         // Showing the Atlas folds it; the user can open it again, and every
         // other section leaves it to model.js, as before.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         let shown = js
             .split(r#"onShown(doc, "atlas", () => {"#)
             .nth(1)
@@ -3388,7 +3469,7 @@ mod tests {
         // scrolled to. A plain wheel scrolls the page, and zooms only once
         // the map has focus or with Ctrl or Meta held, which a trackpad's
         // pinch sends; a one-line hint says so when the wheel was let by.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         let zooms = function_body(&js, "wheelZooms");
         for want in [
             "A.doc.activeElement === A.canvas",
@@ -3423,7 +3504,7 @@ mod tests {
         // taken for being a class; and a "15 defs" line drawn where its
         // module's name did not fit, a count with nothing to say what it
         // counts.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         let symbols = function_body(&js, "drawSymbols");
         assert!(
             !symbols.contains(r#"s.holds ? "class ""#),
@@ -3448,7 +3529,7 @@ mod tests {
         // snapshot before the one shown, almost empty; and the history held
         // eight months, since get_history was asked for its default twelve
         // tags.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         assert!(js.contains("const HISTORY_ASKED = { commits: 20, tags: 200 };"));
         let lens = function_body(&js, "setLens");
         assert!(
@@ -3466,7 +3547,7 @@ mod tests {
         // started heard no child-started, so the root crumb read
         // "repository"; and the first search open took over a second while
         // it built its index.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         assert!(!js.contains(r#""repository""#), "a root with no name");
         let frame = js
             .split(r#"listen("rpc-frame""#)
@@ -3485,7 +3566,7 @@ mod tests {
         // three counts beside ambiguous and unresolved, where the resolved
         // sites belong. Each line says what it counts and where it comes
         // from, and nothing draws them as parts of a whole or a share.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         let head = function_body(&js, "overviewView");
         for want in [
             ".definitions",
@@ -3741,7 +3822,7 @@ mod tests {
         ("radius.js", &["figure", "stats"]),
         ("queue.js", &["figure", "panelMeta", "railRows", "stat"]),
         ("vault.js", &["panelMeta", "stats"]),
-        ("atlas.js", &["panelMeta", "stats", "unreported"]),
+        ("atlas-detail.js", &["panelMeta", "stats", "unreported"]),
         (
             "code.js",
             &["diff", "dsStatus", "lineCounts", "railRows", "wholeFile"],
@@ -5847,7 +5928,7 @@ mod tests {
             }
         }
         assert!(
-            code_of("atlas.js").contains("onEscape((ev) => {"),
+            atlas_code().contains("onEscape((ev) => {"),
             "the Atlas's ESC is not keys.js's"
         );
     }
@@ -6272,6 +6353,180 @@ mod tests {
         assert!(
             shadows > 0,
             "the scan found no box-shadow at all; it reads nothing"
+        );
+    }
+
+    /// Of `rules`' `margin`, `padding`, `gap` and `border-radius`
+    /// declarations (longhands included), how many were read, and each that
+    /// writes a length of its own and is not in `exceptions`, as
+    /// `selector { declaration }`. A spacing value may be `0`, `auto` or a
+    /// `var(--space-*)`; a radius `0` or a `var(--radius-*)`. Custom
+    /// properties are the token definitions and are not read. Selectors and
+    /// declarations are compared with their whitespace collapsed.
+    fn off_token_lengths(
+        rules: &[(String, String)],
+        exceptions: &[(&str, &str)],
+    ) -> (usize, Vec<String>) {
+        let mut read = 0;
+        let mut off = Vec::new();
+        for (selector, decls) in rules {
+            let selector = selector.split_whitespace().collect::<Vec<_>>().join(" ");
+            for d in decls.split(';').map(str::trim).filter(|d| !d.is_empty()) {
+                if d.starts_with("--") {
+                    continue;
+                }
+                let Some((prop, value)) = d.split_once(':') else {
+                    continue;
+                };
+                let prop = prop.trim().to_ascii_lowercase();
+                let space = ["margin", "padding", "gap", "row-gap", "column-gap"]
+                    .contains(&prop.as_str())
+                    || prop.starts_with("margin-")
+                    || prop.starts_with("padding-");
+                let radius = prop.starts_with("border") && prop.ends_with("-radius");
+                if !space && !radius {
+                    continue;
+                }
+                read += 1;
+                let token = if space {
+                    "var(--space-"
+                } else {
+                    "var(--radius-"
+                };
+                // `auto` is a keyword that centres or pushes a box, not a
+                // length, so it is no off-scale value.
+                let from_tokens = value.split_whitespace().all(|v| {
+                    v == "0" || (space && v == "auto") || (v.starts_with(token) && v.ends_with(')'))
+                });
+                let d = d.split_whitespace().collect::<Vec<_>>().join(" ");
+                if !from_tokens && !exceptions.contains(&(selector.as_str(), d.as_str())) {
+                    off.push(format!("{selector} {{ {d} }}"));
+                }
+            }
+        }
+        (read, off)
+    }
+
+    #[test]
+    fn page_css_space_and_radius_come_from_the_tokens() {
+        // The risk (#956): a margin, padding, gap or radius written as a
+        // literal length, which tokens.json does not hold, so the page's
+        // rhythm drifts from the design system's 4px grid one rule at a
+        // time. Each is a --space-* or --radius-* token, 0 or auto, except
+        // the off-scale values below, kept as they were so the page draws
+        // exactly as before (1px, 3px, 5px, 9px, 10px, 14px, 18px and 22px
+        // fall between steps, and .at-dot's 50% is a circle at any size).
+        // A 6px radius is --radius-node's value, but DESIGN.md 3.2 gives
+        // that token to graph nodes, and .alert, .messages and .at-seg are
+        // none, so theirs stays 6px rather than move when nodes do.
+        // Each exception names its rule, so a new literal is not waved
+        // through by an old one.
+        let exceptions = [
+            ("h4", "margin: 10px 0 var(--space-1)"),
+            (".alert", "border-radius: 6px"),
+            (".messages", "border-radius: 6px"),
+            (".at-seg", "border-radius: 6px"),
+            (".log-filters .cd-q-opt", "padding: 1px var(--space-2)"),
+            (".rows", "padding-left: 18px"),
+            (".rows li.empty", "margin-left: -18px"),
+            (".alert button, .approval button", "padding: 3px 10px"),
+            (
+                ".cb-bar button, .cb-crumbs button",
+                "padding: 1px var(--space-2)",
+            ),
+            (".qb-bar button", "padding: 1px var(--space-2)"),
+            (".at-top", "gap: var(--space-1) 14px"),
+            (".at-btn", r"padding: var(--space-0\.5) 9px"),
+            (".at kbd", "border-radius: 3px"),
+            (".at-toolbar", "gap: var(--space-2) 22px"),
+            (".at-toolbar", "margin-bottom: 10px"),
+            (".at-field", "gap: 3px"),
+            (".at-seg button", "padding: 3px 10px"),
+            (".at-crumbs button", "border-radius: 3px"),
+            (".at-hint", "padding: 3px 10px"),
+            (".at-mapfoot", "gap: 10px"),
+            (
+                ".at-mapfoot",
+                r"padding: var(--space-1\.5) 10px var(--space-0\.5)",
+            ),
+            (".at-keys", r"padding: 0 10px var(--space-1\.5)"),
+            (".at-legend", "gap: 3px"),
+            (".at-lg-keys", "gap: 3px var(--space-4)"),
+            (".at-sw", "margin-top: 3px"),
+            (".at-detail", "padding: 10px var(--space-3) 14px"),
+            (".at-detail > * + *", "margin-top: 10px"),
+            (".at-src", "margin-left: 5px"),
+            (".at-pres", "gap: 3px"),
+            (".at-pchip", "padding: 0 5px"),
+            (".at-pchip", "border-radius: 3px"),
+            (".at-rows", "gap: 1px"),
+            (".at-lnk", "padding: 1px 3px"),
+            (".at-lnk", "border-radius: 3px"),
+            (".at-bar", "border-radius: 1px"),
+            (".at-tag", "border-radius: 3px"),
+            (".at-dot", "margin: var(--space-1) 3px 0 var(--space-1)"),
+            (".at-dot", "border-radius: 50%"),
+            ("#at-q", "padding: 5px var(--space-2)"),
+            (".at-shint", "padding: var(--space-1) 10px var(--space-2)"),
+        ];
+
+        // The scan reads what it claims to: a literal in each property
+        // family, in a longhand and behind a token, is reported, and the
+        // exception list waves through only its own rule.
+        let planted: Vec<(String, String)> = [
+            (".a", "padding: 3px; margin-top: 8px; color: var(--ink)"),
+            (".b", "gap: var(--space-2) 10px; --space-x: 5px"),
+            (".c", "border-radius: 4px; border-top-left-radius: 2px"),
+            (".d", "margin: 0 auto; border-radius: var(--radius-sm)"),
+            (".e", "gap: var(--radius-sm)"),
+            (".at-sw", "margin-top: 3px"),
+            (".elsewhere", "margin-top: 3px"),
+        ]
+        .into_iter()
+        .map(|(s, d)| (s.to_string(), d.to_string()))
+        .collect();
+        let (read, off) = off_token_lengths(&planted, &exceptions);
+        assert_eq!(read, 10, "the scan skipped a declaration it should read");
+        assert_eq!(
+            off,
+            [
+                ".a { padding: 3px }",
+                ".a { margin-top: 8px }",
+                ".b { gap: var(--space-2) 10px }",
+                ".c { border-radius: 4px }",
+                ".c { border-top-left-radius: 2px }",
+                ".e { gap: var(--radius-sm) }",
+                ".elsewhere { margin-top: 3px }",
+            ],
+            "the scan misses a literal length it should report"
+        );
+
+        let rules = css_rules();
+        let (read, off) = off_token_lengths(&rules, &exceptions);
+        assert!(
+            read > 0,
+            "style.css sets no spacing at all: read the right file?"
+        );
+        assert!(
+            off.is_empty(),
+            "literal lengths outside the tokens:\n{}",
+            off.join("\n")
+        );
+        // An exception whose rule changed or went away is stale, and would
+        // wave the next literal there through.
+        let (_, unlisted) = off_token_lengths(&rules, &[]);
+        for (selector, d) in exceptions {
+            assert!(
+                unlisted.contains(&format!("{selector} {{ {d} }}")),
+                "the exception {selector} {{ {d} }} matches nothing in style.css"
+            );
+        }
+        // Panels are square: --radius-0, as ds.css's .cd-panel is.
+        assert!(
+            rules
+                .iter()
+                .any(|(s, d)| s.trim() == ".pane" && d.contains("border-radius: var(--radius-0)")),
+            ".pane, the page's Panel, does not use --radius-0"
         );
     }
 
