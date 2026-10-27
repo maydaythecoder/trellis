@@ -111,7 +111,7 @@ pub struct Dispatched {
     /// symbols, which only this side can do: the index and the files are
     /// here. Empty for every other result. Carried beside `result` rather
     /// than inside it, so what a `post_tool` hook receives is unchanged.
-    pub radius_sites: Vec<crate::agent::RadiusSite>,
+    pub radius_sites: Vec<crate::radius_listing::RadiusSite>,
     /// `Some` only when a person was asked about this call.
     pub human: Option<HumanDecision>,
     /// Whether this call may have changed the working tree. See
@@ -895,7 +895,7 @@ impl Orchestrator {
         // otherwise shift the bytes the line numbers are counted from.
         let radius_sites = match &result {
             ToolResult::Radius(report) => {
-                crate::agent::radius_sites(self.session.index(), &self.root, report)
+                crate::radius_listing::radius_sites(self.session.index(), &self.root, report)
             }
             _ => Vec::new(),
         };
