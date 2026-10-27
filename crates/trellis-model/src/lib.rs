@@ -18,6 +18,7 @@ mod grammar;
 mod hosted;
 mod image;
 pub mod pull;
+mod retry;
 mod runtime;
 mod secret;
 mod spec;
@@ -28,12 +29,15 @@ pub use catalog::{CATALOG, CatalogEntry, DEFAULT};
 #[cfg(feature = "grammar")]
 pub use grammar::{GrammarError, ToolGrammar};
 pub use hosted::{
-    Conversation, Exchange, HostedClient, MAX_ATTEMPTS, MAX_RETRY_WAIT, NativeCall, NativeTool,
-    OVERLOADED_WAITS, Protocol, Reply, Thinking, every_turn_replayed, is_context_overflow,
-    parse_reply, request_body, retry_delay, status_retry_delay, thinking_sent,
+    Conversation, Exchange, HostedClient, NativeCall, NativeTool, Protocol, Reply, Thinking,
+    every_turn_replayed, parse_reply, request_body, thinking_sent,
 };
 pub use image::{Image, ImageError, MAX_IMAGE_BYTES, redact_images};
 pub use pull::{PullError, Pulled};
+pub use retry::{
+    MAX_ATTEMPTS, MAX_RETRY_WAIT, OVERLOADED_WAITS, is_context_overflow, retry_delay,
+    status_retry_delay,
+};
 pub use runtime::{Completion, Dialect, RuntimeClient, RuntimeError};
 pub use secret::ApiKey;
 pub use spec::{ModelSpec, SpecError};
