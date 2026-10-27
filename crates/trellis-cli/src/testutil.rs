@@ -6,7 +6,7 @@
 //! during that same audit. Duplication is cheaper than the wrong abstraction
 //! right up until a copy drifts, and this one had.
 //!
-//! It unifies five of the seven. `tests/cli.rs` is a separate crate and
+//! It unifies five of the seven. `tests/cli/` is a separate crate and
 //! `trellis-vcs` another, so both keep their own; a helper that reached them
 //! would need a shared dev-dependency crate, which is more structure than two
 //! fixtures are worth.
