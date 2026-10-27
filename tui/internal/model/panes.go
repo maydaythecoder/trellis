@@ -241,6 +241,9 @@ func (m *Model) waiting() []view.Asked {
 func (m *Model) nowState() view.Now {
 	n := m.strip
 	n.Waiting = m.Modal != nil
+	if m.Modal != nil {
+		n.Question = m.Modal.Question
+	}
 	n.EngineClock = m.engineMs != nil
 	n.Paused, n.PauseAsked = m.paused, m.pauseAsked
 	return n
