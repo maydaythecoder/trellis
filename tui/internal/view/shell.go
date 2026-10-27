@@ -286,12 +286,15 @@ func stage(s State, fold bool, w, h int) []string {
 // rightColumn is the panes beside the transcript, h rows of w cells. Where
 // it is takes the top when the panes below keep room for their own rows.
 func rightColumn(s State, w, h int) []string {
-	whereRows := 0
-	if h-radiusH-whereH >= minPaneRows {
-		whereRows = whereH
+	whereRows := min(whereH, h-radiusH-minPaneRows)
+	if whereRows < whereMinH {
+		whereRows = 0
 	}
 	rest := h - radiusH - whereRows
-	actionsH := rest / 2
+	// Half, rounded up: at 40 rows the actions graph keeps a row for every
+	// tool, the write count and the latest action beside Where it is's
+	// five rows, and the checks pane its two (#952).
+	actionsH := (rest + 1) / 2
 	editsH := rest / 4
 	checksH := rest - actionsH - editsH
 	var out []string

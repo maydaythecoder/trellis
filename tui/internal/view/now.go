@@ -25,10 +25,22 @@ type Phase struct {
 	Tool, Target string
 }
 
+// Call is a turn's tool call as the turn event named it: the tool and
+// what it was pointed at, either "" when the event carried none.
+type Call struct {
+	Tool, Target string
+}
+
 // Now is what the Now strip and Where it is draw that the rest of State
 // does not hold.
 type Now struct {
 	Phase Phase
+	// Call is the last turn's call (#952), kept when the phase moves on to
+	// the next model call or the run ends; zero before this run's first.
+	Call Call
+	// Control is the control mode the run's prompt named, or before any
+	// prompt the one the next names (#952); "" when the TUI names none.
+	Control string
 	// Waiting is set while a question trellis asked waits on the person.
 	Waiting bool
 	// Question is that question as the approval box names it, served
@@ -56,9 +68,18 @@ type Now struct {
 	Root string
 }
 
-// whereH is the Where it is pane's height: phase, runtime, control and
-// root, and two borders.
-const whereH = 6
+// whereH is the Where it is pane's height: phase, last call, model and
+// tier, root and control, and runtime, and two borders. Two facts share a
+// row twice, model with tier as the status bar has them and the
+// repository with the mode the run works on it in: at 40 rows a sixth or
+// seventh row would take the actions graph's or the checks pane's own
+// rows (#952). whereMinH is its height without the runtime, the row it
+// gives up first, since only a colibri endpoint identifies itself: so the
+// pane is no rarer than its four rows before #952 made it five.
+const (
+	whereH    = 7
+	whereMinH = 6
+)
 
 // stateWord is the run's state as the strip names it: run_end's own words
 // for an ended run, never "done" or "failed" (DESIGN.md §2.1).
@@ -253,13 +274,24 @@ func turnUsed(s State) *uint64 {
 	return &n
 }
 
-// where is the Where it is pane: the run's phase, the runtime, the control
-// mode and the repository. trellis reports no control mode to a client
-// yet, so it is Dash, as anything trellis has not said is.
+// where is the Where it is pane: the run's phase, its last call, the
+// model and tier get_state named, the repository with the control mode,
+// and the runtime, the row a short pane cuts. The control mode is the one the TUI sent (#952), since
+// trellis reports none to a client; the rest is what trellis said, and
+// Dash where it has said nothing.
 func where(s State, w, h int) []string {
-	runtime := Plain(s.Now.Runtime)
-	if runtime == "" {
-		runtime = Dash
+	orDash := func(v string) string {
+		if v = Plain(v); v == "" {
+			return Dash
+		}
+		return v
+	}
+	call := Dash
+	if t := Plain(s.Now.Call.Tool); t != "" {
+		call = t
+		if g := Plain(s.Now.Call.Target); g != "" {
+			call += " → " + g
+		}
 	}
 	root := Dash
 	if r := Plain(s.Now.Root); r != "" {
@@ -272,11 +304,22 @@ func where(s State, w, h int) []string {
 	}
 	rows := []Row{
 		{Text: "  phase    " + phase},
-		{Text: "  runtime  " + runtime},
-		{Text: "  control  " + Dash, Role: RoleLabel},
-		{Text: "  root     " + root},
+		{Text: "  call     " + call},
+		{Text: paired("model", orDash(s.Model), "tier", orDash(s.Tier), w-2)},
+		{Text: paired("root", root, "control", orDash(s.Now.Control), w-2)},
+		{Text: "  runtime  " + orDash(s.Now.Runtime)},
 	}
 	return paneBox(s, PanelWhere, "where", "", rows, w, h)
+}
+
+// paired is one of Where it is's two-fact rows at w cells: the first fact
+// under its label, then the second after its own, the second whole and
+// the first cut, with "…", to the room it leaves, as the status bar cuts
+// the model before the tier. A cut tier label or mode could read as
+// another one; a cut model or path still reads as the start of itself.
+func paired(label, first, label2, second string, w int) string {
+	head, tail := "  "+Pad(label, 9), " · "+label2+" "+second
+	return head + Cut(first, max(w-Width(head)-Width(tail), 1)) + tail
 }
 
 // messages is the messages row: trellis's newest stderr line, human text
