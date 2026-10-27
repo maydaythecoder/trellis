@@ -1,0 +1,829 @@
+/*
+  The Atlas's stylesheet (#978): the map, its toolbar, the detail column and
+  search. index.html links it after trails.css.
+*/
+
+/* The Atlas (the owner's request of 2026-10-11): one canvas map beside its
+   detail column. atlas-draw.js draws the map from the core's layout and
+   reads the colours above at draw time; nothing here declares a transition
+   or an animation, and a flight across the map is atlas-view.js's, which
+   takes none under prefers-reduced-motion. */
+.at {
+  position: relative;
+}
+
+.at-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) 14px;
+}
+
+.at-top h2 {
+  margin: 0;
+}
+
+#at-where {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+#at-status {
+  margin: var(--space-1) 0 var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+.at-btn,
+.at-seg button,
+.at-crumbs button,
+.at-lnk,
+.at-detail th button {
+  font: inherit;
+  color: var(--signal);
+  cursor: pointer;
+}
+
+.at-btn {
+  padding: var(--space-0\.5) 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--ground);
+  white-space: nowrap;
+}
+
+.at-btn:disabled {
+  color: var(--ink-muted);
+  cursor: default;
+}
+
+.at kbd {
+  margin-left: var(--space-1\.5);
+  padding: 0 var(--space-1);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font: 11px ui-monospace, monospace;
+  color: var(--ink-muted);
+}
+
+.at-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2) 22px;
+  margin-bottom: 10px;
+}
+
+.at-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.at-seg {
+  display: inline-flex;
+  flex-wrap: wrap;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--panel);
+}
+
+.at-seg button {
+  padding: 3px 10px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+}
+
+.at-seg button:last-child {
+  border-right: 0;
+}
+
+.at-seg button[aria-pressed="true"] {
+  background: var(--panel-inset);
+  color: var(--signal);
+  font-weight: 600;
+}
+
+.at-scrub {
+  flex: 1 1 380px;
+  max-width: 620px;
+}
+
+.at-scrub input[type="range"] {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--signal);
+}
+
+.at-ticks {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-1);
+  font-size: 11px;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.at-ticks span[aria-current="true"] {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.at-readout {
+  font-size: 12px;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.at-readout b {
+  color: var(--ink);
+}
+
+.at select {
+  padding: var(--space-0\.5) var(--space-1);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--ground);
+  color: var(--ink);
+  font: inherit;
+}
+
+.at-work {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+  gap: var(--space-6);
+  height: max(520px, calc(100vh - 240px));
+}
+
+/* The map and the detail pane are the design system's Panels (#910):
+   ds.css draws their frame and head; here they only fill the work area. */
+.at-mapwrap,
+.at-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.at-mapwrap {
+  overflow: hidden;
+}
+
+/* The detail column holds three Panels one under another, the selection,
+   the changes and the working set, with no tabs between them (#955). Each
+   scrolls on its own, and the selection takes the most room. */
+.at-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
+}
+
+.at-side .at-panel {
+  flex: 1 1 0;
+}
+
+.at-side .at-panel-sel {
+  flex-grow: 2;
+}
+
+/* The map's head holds its controls, so it wraps, a toolbar's gap apart. */
+.at-mapbar {
+  flex-wrap: wrap;
+  gap: var(--space-1\.5) var(--space-2);
+}
+
+.at-crumbs {
+  display: flex;
+  flex: 1 1 200px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-0\.5) var(--space-1);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.at-crumbs li + li::before {
+  content: "/";
+  margin-right: var(--space-1);
+  color: var(--ink-muted);
+}
+
+.at-crumbs button {
+  padding: 0 var(--space-1);
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+}
+
+.at-crumbs li:last-child button {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.at-zoom {
+  display: inline-flex;
+  gap: var(--space-1);
+}
+
+.at-map {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--ground);
+}
+
+#at-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: grab;
+}
+
+#at-canvas.at-pointing {
+  cursor: pointer;
+}
+
+/* What the wheel does over a map without focus, said for a moment at the
+   map's middle, which stays in view while that wheel scrolls the page. */
+.at-hint {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+#at-canvas:focus-visible {
+  outline: 2px solid var(--signal-ring);
+  outline-offset: -3px;
+}
+
+.at-mapfoot {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  min-height: 70px;
+  padding: var(--space-1\.5) 10px var(--space-0\.5);
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.at-keys {
+  padding: 0 10px var(--space-1\.5);
+  font-size: 11px;
+}
+
+.at-minimap {
+  align-self: start;
+  width: 140px;
+  height: 100px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.at-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.at-lg-keys {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px var(--space-4);
+}
+
+.at-lg-row {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: var(--space-1\.5);
+  min-width: 0;
+}
+
+.at-lg-note {
+  color: var(--ink-muted);
+}
+
+.at-lg-head {
+  font-weight: 600;
+}
+
+.at-sw {
+  flex: 0 0 auto;
+  display: inline-block;
+  width: 14px;
+  height: 10px;
+  margin-top: 3px;
+  border: 1px solid var(--cell-line);
+  border-radius: var(--radius-xs);
+  background: var(--cell);
+}
+
+.at-sw.region {
+  background: var(--region);
+  border-color: var(--line);
+}
+
+.at-sw.region-test {
+  background: var(--region-test);
+  border-color: var(--line);
+}
+
+.at-sw.ghost {
+  background: transparent;
+  border: 1px dashed var(--ink-muted);
+}
+
+.at-sw.caller {
+  background: transparent;
+  border: 2px solid var(--caller);
+}
+
+.at-sw.callee {
+  background: transparent;
+  border: 2px solid var(--callee);
+}
+
+.at-sw.reach {
+  background: var(--reach);
+  border-color: var(--reach);
+}
+
+.at-sw.doubt,
+.at-sw.unres {
+  background: repeating-linear-gradient(135deg, var(--doubt) 0 1.5px, transparent 1.5px 4.5px);
+  border-color: var(--doubt);
+}
+
+.at-sw.amb {
+  background: var(--doubt);
+  border-color: var(--doubt);
+}
+
+.at-sw.added {
+  background: var(--diff-add);
+  border-color: var(--diff-add);
+}
+
+.at-sw.removed {
+  background: transparent;
+  border: 1.5px dashed var(--diff-del);
+}
+
+.at-sw.commit {
+  background: transparent;
+  border: 2px solid var(--signal);
+}
+
+.at-sw.sel {
+  background: transparent;
+  border: 2px solid var(--ink);
+}
+
+.at-sw.line {
+  height: 0;
+  margin-top: var(--space-2);
+  border: 0;
+  border-top: 2px solid var(--edge);
+  border-radius: 0;
+  background: transparent;
+}
+
+.at-sw.line.added {
+  border-top-color: var(--diff-add);
+}
+
+.at-sw.line.removed {
+  border-top: 2px dashed var(--diff-del);
+}
+
+.at-sw.c1 {
+  background: var(--churn-1);
+  border-color: var(--churn-1);
+}
+
+.at-sw.c2 {
+  background: var(--churn-2);
+  border-color: var(--churn-2);
+}
+
+.at-sw.c3 {
+  background: var(--churn-3);
+  border-color: var(--churn-3);
+}
+
+.at-sw.c4 {
+  background: var(--churn-4);
+  border-color: var(--churn-4);
+}
+
+.at-sw.c5 {
+  background: var(--churn-5);
+  border-color: var(--churn-5);
+}
+
+.at-ramp {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-0\.5);
+}
+
+.at-ramp > span {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-size: 11px;
+  color: var(--ink-muted);
+}
+
+.at-ramp .at-sw {
+  width: 30px;
+  height: 12px;
+  margin: 0;
+}
+
+.at-detail {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px var(--space-3) 14px;
+  overflow-wrap: anywhere;
+}
+
+.at-detail > * + * {
+  margin-top: 10px;
+}
+
+.at-detail h4 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1);
+  margin: var(--space-3) 0 var(--space-1);
+}
+
+.at-detail dl {
+  grid-template-columns: minmax(0, 1fr) max-content;
+}
+
+.at-detail dd {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.at-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.at-src {
+  margin-left: 5px;
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--ink-muted);
+  letter-spacing: 0.02em;
+}
+
+.at-note {
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+.at-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1\.5);
+}
+
+.at-pres {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.at-pchip {
+  padding: 0 5px;
+  border: 1px dashed var(--line);
+  border-radius: 3px;
+  font-size: 11px;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.at-pchip.on {
+  border-style: solid;
+  border-color: var(--signal);
+  color: var(--ink);
+}
+
+.at-pchip.cur {
+  box-shadow: inset 0 -2px 0 var(--ink);
+}
+
+.at-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.at-rows li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1\.5);
+  min-width: 0;
+}
+
+.at-lnk {
+  min-width: 0;
+  padding: 1px 3px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.at-lnk:hover {
+  text-decoration: underline;
+}
+
+.at-lnk[aria-current="true"] {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.at-commit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.at-commit .at-d {
+  font-size: 11px;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.at-n {
+  margin-left: auto;
+  padding-left: var(--space-1\.5);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.at-bar {
+  flex: 0 0 auto;
+  height: 6px;
+  border-radius: 1px;
+}
+
+.at-bar.caller {
+  background: var(--caller);
+}
+
+.at-bar.callee {
+  background: var(--callee);
+}
+
+.at-bar.doubt {
+  background: var(--doubt);
+}
+
+/* A bar's length is one of eight steps by the square root of its count
+   against the list's largest, so the page sets a class and never a style. */
+.at-bar.w1 {
+  width: 2px;
+}
+
+.at-bar.w2 {
+  width: 6px;
+}
+
+.at-bar.w3 {
+  width: 9px;
+}
+
+.at-bar.w4 {
+  width: 13px;
+}
+
+.at-bar.w5 {
+  width: 16px;
+}
+
+.at-bar.w6 {
+  width: 20px;
+}
+
+.at-bar.w7 {
+  width: 24px;
+}
+
+.at-bar.w8 {
+  width: 28px;
+}
+
+.at-tag {
+  flex: 0 0 auto;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-size: 10.5px;
+  color: var(--ink-muted);
+}
+
+.at-kind {
+  margin-right: var(--space-1);
+  font-size: 11px;
+  color: var(--ink-muted);
+}
+
+.at-tablewrap {
+  overflow-x: auto;
+}
+
+.at-syms {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.at-syms th,
+.at-syms td {
+  padding: var(--space-0\.5) var(--space-1);
+  border-bottom: 1px solid var(--line);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.at-syms th:first-child,
+.at-syms td:first-child {
+  text-align: left;
+}
+
+.at-detail th button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-muted);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.at-syms th[aria-sort="descending"] button::after {
+  content: " \2193";
+}
+
+.at-syms th[aria-sort="ascending"] button::after {
+  content: " \2191";
+}
+
+.at-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin: var(--space-1) 3px 0 var(--space-1);
+  border-radius: 50%;
+  background: var(--signal);
+}
+
+/* Search: a dialog over the map, not modal, opened with / or its button. */
+.at-search {
+  position: absolute;
+  z-index: 30;
+  top: 48px;
+  right: 8px;
+  left: 8px;
+  display: flex;
+  flex-direction: column;
+  max-width: 560px;
+  max-height: 70vh;
+  margin: 0 auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+}
+
+.at-sbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--line);
+}
+
+#at-q {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px var(--space-2);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--ground);
+  color: var(--ink);
+  font: inherit;
+}
+
+#at-q:focus-visible,
+.at select:focus-visible,
+.at input[type="range"]:focus-visible {
+  outline: 2px solid var(--signal-ring);
+  outline-offset: 2px;
+}
+
+.at-shint {
+  padding: var(--space-1) 10px var(--space-2);
+  font-size: 12px;
+}
+
+.at-qres {
+  margin: 0;
+  padding: var(--space-1);
+  overflow: auto;
+  list-style: none;
+}
+
+.at-qres li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-1) var(--space-1\.5);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.at-qres li[aria-selected="true"] {
+  background: var(--panel-inset);
+}
+
+.at-qres .at-k {
+  flex: 0 0 64px;
+  font-size: 11px;
+  color: var(--ink-muted);
+}
+
+.at-qres .at-x {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font: 12.5px/1.4 ui-monospace, monospace;
+}
+
+.at-qres .at-x b {
+  color: var(--signal);
+}
+
+.at-qres .at-m {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Below this width the detail column goes under the map, which keeps a height
+   of its own, so the map still fills the width at the window's minimum. */
+@media (max-width: 1100px) {
+  .at-work {
+    grid-template-columns: minmax(0, 1fr);
+    height: auto;
+  }
+
+  .at-map {
+    flex: none;
+    height: 440px;
+  }
+
+  .at-side .at-panel {
+    flex: none;
+    max-height: 560px;
+  }
+}
