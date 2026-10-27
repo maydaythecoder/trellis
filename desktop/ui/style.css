@@ -190,11 +190,14 @@
    --control-border is a form field's edge: --line is a divider, near 1.4:1
    on --panel and below WCAG's 3:1 floor for a control, so a field takes this
    (field_contrast_token_meets_three_to_one_in_both_themes measures it). The
-   rest are the Atlas's map, read by atlas.js at draw time: regions, cells
-   and their lines, each with a -test twin for test code; the caller and
-   callee overlays; reach and doubt; and one ordinal hue for churn. The brand
-   book has chart series but no ramps like these, so they keep the values the
-   Atlas was drawn with until it names some. */
+   rest are the Atlas's map, read by atlas-view.js at draw time: regions,
+   cells and their lines, each with a -test twin for test code; the caller
+   and callee overlays; reach and doubt; and one ordinal hue for churn. The
+   brand book has chart series but no ramps like these, so they keep the
+   values the Atlas was drawn with until it names some. A tint on the map is
+   a -soft twin, as the brand book's --signal-soft and --diff-add-soft are
+   (#955): caller and callee at 16% and reach at 30% over --cell, the
+   tints the Atlas computed before it read them here. */
 :root,
 [data-theme=dark] {
   --control-border: #7b7c74;
@@ -208,6 +211,9 @@
   --caller: #4f8fd6;
   --callee: #d0703a;
   --reach: #8a74e0;
+  --caller-soft: #2d3841;
+  --callee-soft: #423428;
+  --reach-soft: #453f5d;
   --doubt: #d2508a;
   --churn-1: #7a5a1c;
   --churn-2: #9b7322;
@@ -228,6 +234,9 @@
   --caller: #2463a6;
   --callee: #b5541c;
   --reach: #6b4fbb;
+  --caller-soft: #dce6f1;
+  --callee-soft: #f3e4db;
+  --reach-soft: #d3caeb;
   --doubt: #b8336a;
   --churn-1: #dfac4f;
   --churn-2: #c58a2a;
@@ -249,6 +258,9 @@
     --caller: #2463a6;
     --callee: #b5541c;
     --reach: #6b4fbb;
+    --caller-soft: #dce6f1;
+    --callee-soft: #f3e4db;
+    --reach-soft: #d3caeb;
     --doubt: #b8336a;
     --churn-1: #dfac4f;
     --churn-2: #c58a2a;
@@ -1574,11 +1586,11 @@ article.past-run section + section {
   margin-top: var(--space-6);
 }
 
-/* The Atlas (the owner's request of 2026-10-11): one canvas map beside one
-   detail pane, as the prototype drew it. atlas.js draws the map from the
-   core's layout and reads the colours above at draw time; nothing here
-   declares a transition or an animation, and a flight across the map is
-   atlas.js's, which takes none under prefers-reduced-motion. */
+/* The Atlas (the owner's request of 2026-10-11): one canvas map beside its
+   detail column. atlas-draw.js draws the map from the core's layout and
+   reads the colours above at draw time; nothing here declares a transition
+   or an animation, and a flight across the map is atlas-view.js's, which
+   takes none under prefers-reduced-motion. */
 .at {
   position: relative;
 }
@@ -1607,7 +1619,6 @@ article.past-run section + section {
 
 .at-btn,
 .at-seg button,
-.at-tabs button,
 .at-crumbs button,
 .at-lnk,
 .at-detail th button {
@@ -1744,6 +1755,25 @@ article.past-run section + section {
 
 .at-mapwrap {
   overflow: hidden;
+}
+
+/* The detail column holds three Panels one under another, the selection,
+   the changes and the working set, with no tabs between them (#955). Each
+   scrolls on its own, and the selection takes the most room. */
+.at-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
+}
+
+.at-side .at-panel {
+  flex: 1 1 0;
+}
+
+.at-side .at-panel-sel {
+  flex-grow: 2;
 }
 
 /* The map's head holds its controls, so it wraps, a toolbar's gap apart. */
@@ -2018,29 +2048,6 @@ article.past-run section + section {
   width: 30px;
   height: 12px;
   margin: 0;
-}
-
-.at-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--line);
-}
-
-.at-tabs button {
-  padding: 2px 8px;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--ink);
-}
-
-.at-tabs button[aria-selected="true"] {
-  border-color: var(--line);
-  background: var(--panel-inset);
-  color: var(--signal);
-  font-weight: 600;
 }
 
 .at-detail {
@@ -2385,7 +2392,7 @@ article.past-run section + section {
   font-variant-numeric: tabular-nums;
 }
 
-/* Below this width the detail pane goes under the map, which keeps a height
+/* Below this width the detail column goes under the map, which keeps a height
    of its own, so the map still fills the width at the window's minimum. */
 @media (max-width: 1100px) {
   .at-work {
@@ -2398,7 +2405,8 @@ article.past-run section + section {
     height: 440px;
   }
 
-  .at-panel {
+  .at-side .at-panel {
+    flex: none;
     max-height: 560px;
   }
 }
