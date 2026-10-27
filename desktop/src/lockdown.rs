@@ -6416,10 +6416,16 @@ mod tests {
         // the off-scale values below, kept as they were so the page draws
         // exactly as before (1px, 3px, 5px, 9px, 10px, 14px, 18px and 22px
         // fall between steps, and .at-dot's 50% is a circle at any size).
+        // A 6px radius is --radius-node's value, but DESIGN.md 3.2 gives
+        // that token to graph nodes, and .alert, .messages and .at-seg are
+        // none, so theirs stays 6px rather than move when nodes do.
         // Each exception names its rule, so a new literal is not waved
         // through by an old one.
         let exceptions = [
             ("h4", "margin: 10px 0 var(--space-1)"),
+            (".alert", "border-radius: 6px"),
+            (".messages", "border-radius: 6px"),
+            (".at-seg", "border-radius: 6px"),
             (".log-filters .cd-q-opt", "padding: 1px var(--space-2)"),
             (".rows", "padding-left: 18px"),
             (".rows li.empty", "margin-left: -18px"),
