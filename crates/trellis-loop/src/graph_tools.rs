@@ -9,11 +9,11 @@
 //! Rendered here rather than in the loop, and returned as
 //! `ToolResult::Output`: the line numbers need the files, and the files are
 //! on the orchestrator's side. The listing goes through the radius's own
-//! selector ([`crate::agent::render_listing`]), so the doubt sits in the
+//! selector ([`crate::radius_listing::render_listing`]), so the doubt sits in the
 //! header the selector never shortens and every call site is listed or
 //! counted within `RADIUS_OBSERVATION_BYTES`.
 
-use crate::agent::{ListedSite, MODULE_SCOPE, SiteLocator, render_listing, shown_line};
+use crate::radius_listing::{ListedSite, MODULE_SCOPE, SiteLocator, render_listing, shown_line};
 use crate::tools::ToolResult;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -319,9 +319,10 @@ Call sites bound to no definition (path:line enclosing-symbol reason):",
 
 #[cfg(test)]
 mod tests {
-    use crate::agent::{NotConverged, Outcome, RADIUS_OBSERVATION_BYTES, ToolCall, run};
+    use crate::agent::{NotConverged, Outcome, ToolCall, run};
     use crate::budget::Budget;
     use crate::orchestrator::{Handle, Orchestrator};
+    use crate::radius_listing::RADIUS_OBSERVATION_BYTES;
     use crate::registry::{ToolSelection, ToolSet};
     use crate::scripted::ScriptedModel;
     use crate::tools::ToolResult;

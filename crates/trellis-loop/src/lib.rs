@@ -24,6 +24,7 @@ mod orchestrator;
 mod os_sandbox;
 pub mod partition;
 mod path_rules;
+mod radius_listing;
 mod registry;
 mod scripted;
 mod skills;
@@ -38,10 +39,9 @@ pub use adapter::{
     CompactRequests, Compacted, HostedModel, LOCAL_CONTEXT_BYTES, RequestedCompaction, RuntimeModel,
 };
 pub use agent::{
-    Hold, HoldRefused, Model, NotConverged, Outcome, PauseAnswer, PriorContext, RadiusSite,
-    RepoContext, Seed, Steer, Steering, SteeringFates, SteeringLog, SteeringRx, Step, StepUsage,
-    ToolCall, Transcript, Turn, TurnAction, VaultContext, WithdrawRefused, run, run_seeded,
-    summarise, turn_action,
+    Hold, HoldRefused, Model, NotConverged, Outcome, PauseAnswer, PriorContext, RepoContext, Seed,
+    Steer, Steering, SteeringFates, SteeringLog, SteeringRx, Step, StepUsage, ToolCall, Transcript,
+    Turn, TurnAction, VaultContext, WithdrawRefused, run, run_seeded, summarise, turn_action,
 };
 pub use agent_clone::{AgentClone, AgentCloneError, CarriedBack, NEW_FILE_WALK_CAP, NotCarried};
 pub use budget::{
@@ -66,6 +66,7 @@ pub use orchestrator::{Dispatched, GateDenial, Handle, HumanDecision, Orchestrat
 pub use os_sandbox::{OsSandbox, OsSandboxKind};
 pub use partition::{FailurePolicy, Partition, WorkUnit, plan};
 pub use path_rules::names_trellis_dir;
+pub use radius_listing::RadiusSite;
 pub use registry::{
     BUILTIN_TOOLS, BashSettings, CustomTool, DEFAULT_CUSTOM_TIMEOUT_S, NotesSource, ToolCallError,
     ToolConfigError, ToolSelection, ToolSet, call_json, step_json,
