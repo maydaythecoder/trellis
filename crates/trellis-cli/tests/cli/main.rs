@@ -21,17 +21,18 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-/// A temporary directory unique to this process.
+#[path = "../common/mod.rs"]
+mod common;
+use common::Scratch;
+
+/// A temporary directory unique to this test, removed when it is dropped.
 ///
-/// The process id is not decoration. Five fixtures previously used fixed
-/// paths and deleted each other's repositories whenever two test processes
-/// ran at once, which `cargo mutants -j 4` does by design (C-001's sibling,
-/// fixed in `c526c83`).
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("trellis-cli-it-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+/// Unique, not a fixed path: five fixtures previously used fixed paths and
+/// deleted each other's repositories whenever two test processes ran at
+/// once, which `cargo mutants -j 4` does by design (C-001's sibling, fixed
+/// in `c526c83`).
+fn scratch(name: &str) -> Scratch {
+    common::scratch_dir(&format!("trellis-cli-it-{name}"))
 }
 
 /// `git <args>` in `root` through `trellis_vcs::command()`, as trellis runs
@@ -58,7 +59,7 @@ fn git(root: &Path, args: &[&str]) -> String {
 /// `core.greet`, so there is a real cross-file edge for `radius` to find, and
 /// `mystery()` takes an untyped parameter so there is a real unbound call for
 /// the coverage report to be honest about.
-fn repo(name: &str) -> PathBuf {
+fn repo(name: &str) -> Scratch {
     repo_with_doubt(name, CALLER_ONE_REASON, None)
 }
 
@@ -73,7 +74,7 @@ const CALLER_ONE_REASON: &str = concat!(
 
 /// An empty git repository with the identity and line endings every fixture
 /// here needs, so no fixture can drift from the others.
-fn empty_repo(name: &str) -> PathBuf {
+fn empty_repo(name: &str) -> Scratch {
     let d = scratch(name);
     git(&d, &["init", "-q"]);
     git(&d, &["config", "user.email", "t@example.invalid"]);
@@ -143,7 +144,7 @@ fn combined(o: &Output) -> String {
 /// fixture has to be able to sit on either side of both boundaries — hence
 /// the caller body being an argument rather than three near-identical
 /// fixtures differing by two lines.
-fn repo_with_doubt(name: &str, caller: &str, other: Option<&str>) -> PathBuf {
+fn repo_with_doubt(name: &str, caller: &str, other: Option<&str>) -> Scratch {
     let d = empty_repo(name);
 
     std::fs::create_dir_all(d.join("app")).unwrap();
@@ -169,7 +170,7 @@ fn repo_with_doubt(name: &str, caller: &str, other: Option<&str>) -> PathBuf {
 /// test that depends on the developer having mypy installed asserts
 /// something different on every machine. That mistake is already recorded
 /// against an earlier version of the check tests.
-fn repo_with_checks(name: &str, typecheck: &str, tests: &str) -> PathBuf {
+fn repo_with_checks(name: &str, typecheck: &str, tests: &str) -> Scratch {
     let d = empty_repo(name);
     std::fs::create_dir_all(d.join(".trellis")).unwrap();
     std::fs::write(
@@ -233,7 +234,7 @@ fn session_with_env(root: &Path, lines: &str, vars: &[(&str, &Path)]) -> Output 
 
 /// A repository with a two-note vault under `notes/`, committed, plus the
 /// stopping script. `config` is the `[context]` section's body.
-fn repo_with_vault(name: &str, config: &str) -> (PathBuf, String) {
+fn repo_with_vault(name: &str, config: &str) -> (Scratch, String) {
     let d = repo(name);
     let v = d.join("notes");
     std::fs::create_dir_all(&v).unwrap();
@@ -269,7 +270,7 @@ fn porcelain(d: &Path) -> String {
 /// `git --version` rather than mypy: the run has to reach its end for the
 /// post-run reporting to exist at all, and a fixture depending on the
 /// developer's toolchain would decide that per machine.
-fn repo_that_converges(name: &str, core: &str) -> PathBuf {
+fn repo_that_converges(name: &str, core: &str) -> Scratch {
     let d = empty_repo(name);
 
     std::fs::create_dir_all(d.join("app")).unwrap();
@@ -309,7 +310,7 @@ fn add_skill(root: &Path, dir: &str, name: &str, description: &str) {
 /// A repository whose `.gitignore` ignores `.venv/`, holding one ignored
 /// file already, with `bash` enabled and trusted in its own trust store.
 /// Returns the repository and a function running the binary against it.
-fn ignored_model_fixture(name: &str) -> (PathBuf, impl Fn(&[&str]) -> Output) {
+fn ignored_model_fixture(name: &str) -> (Scratch, impl Fn(&[&str]) -> Output) {
     ignored_model_fixture_with(name, "exit 0", "exit 0")
 }
 
@@ -319,7 +320,7 @@ fn ignored_model_fixture_with(
     name: &str,
     typecheck: &str,
     tests: &str,
-) -> (PathBuf, impl Fn(&[&str]) -> Output) {
+) -> (Scratch, impl Fn(&[&str]) -> Output) {
     let d = empty_repo(name);
     let home = scratch(&format!("{name}-home"));
     let (shell, flag) = if cfg!(windows) {
@@ -345,7 +346,7 @@ fn ignored_model_fixture_with(
     git(&d, &["commit", "-qm", "fixture"]);
     std::fs::create_dir_all(d.join(".venv")).unwrap();
     std::fs::write(d.join(".venv/old.py"), "x = 1\n").unwrap();
-    let root = d.clone();
+    let root = d.to_path_buf();
     let run = move |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_trellis"))
             .arg("--root")
@@ -450,18 +451,19 @@ fn under_pty_as(exe: &Path, name: &str, cwd: &Path, after: &str, input: &str) ->
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
     let s = std::fs::read_to_string(&shown).unwrap();
-    let _ = std::fs::remove_dir_all(&user);
     (status.success(), s)
 }
 
 /// A copy of the built `trellis` alone in a fresh directory: nothing is
-/// beside it, whatever was built beside the original.
+/// beside it, whatever was built beside the original. Returned with that
+/// directory, which goes when it is dropped.
 #[cfg(unix)]
-fn trellis_copy(name: &str) -> PathBuf {
-    let exe = scratch(name).join("trellis");
+fn trellis_copy(name: &str) -> (Scratch, PathBuf) {
+    let dir = scratch(name);
+    let exe = dir.join("trellis");
     std::fs::copy(env!("CARGO_BIN_EXE_trellis"), &exe).unwrap();
     wait_until_executable(&exe);
-    exe
+    (dir, exe)
 }
 
 /// `status --porcelain` with no optional lock, so the look itself writes

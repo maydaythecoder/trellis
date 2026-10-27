@@ -32,7 +32,7 @@ fn startup_pty_bare_trellis_outside_a_repository_asks_where_to_go() {
     // A trellis-tui beside the binary, since the screen's answer is handed
     // to it and without one the refusal comes first (#516).
     let d = scratch("pty-no-repo");
-    let exe = trellis_with_stub_tui("pty-no-repo-bin");
+    let (_bin, exe) = trellis_with_stub_tui("pty-no-repo-bin");
     let (ok, s) = under_pty_as(&exe, "pty-no-repo", &d, "", "q\n");
     assert!(ok, "quitting the start screen is not a failure: {s}");
     assert!(s.contains("is not inside a git repository"), "{s}");
@@ -50,7 +50,7 @@ fn startup_pty_bare_trellis_outside_a_repository_with_no_tui_refuses_before_aski
     // trellis-tui was looked for and `trellis session`, and no screen is
     // offered.
     let d = scratch("pty-no-repo-no-tui");
-    let exe = trellis_copy("pty-no-repo-no-tui-bin");
+    let (_bin, exe) = trellis_copy("pty-no-repo-no-tui-bin");
     let (ok, s) = under_pty_as(&exe, "pty-no-repo-no-tui", &d, "", "q\n");
     assert!(!ok, "{s}");
     assert!(
@@ -82,7 +82,8 @@ fn startup_pty_bare_trellis_with_stdout_redirected_in_a_repository_opens_the_ses
     // cannot draw, so the line session runs and its banner lands in the
     // file.
     let d = repo("pty-session");
-    let out = scratch("pty-session-out").join("stdout.txt");
+    let out_dir = scratch("pty-session-out");
+    let out = out_dir.join("stdout.txt");
     let (ok, s) = under_pty(
         "pty-session",
         &d,
@@ -105,10 +106,10 @@ fn startup_pty_bare_trellis_with_stdout_redirected_in_a_repository_opens_the_ses
 /// `stub_tui` writes), so the start screen has something to hand its answer
 /// to and is offered rather than refused (#516).
 #[cfg(unix)]
-fn trellis_with_stub_tui(name: &str) -> PathBuf {
-    let exe = trellis_copy(name);
-    stub_tui_ready(exe.parent().unwrap());
-    exe
+fn trellis_with_stub_tui(name: &str) -> (Scratch, PathBuf) {
+    let (dir, exe) = trellis_copy(name);
+    stub_tui_ready(&dir);
+    (dir, exe)
 }
 
 /// [`stub_tui`] in `dir`, run once so it is executable, with what that run
@@ -127,10 +128,10 @@ fn stub_tui_ready(dir: &Path) {
 /// reader never sees half of it). A copy, so no stub ever sits beside the
 /// build's own binary.
 #[cfg(unix)]
-fn trellis_with_stub_desktop(name: &str) -> PathBuf {
+fn trellis_with_stub_desktop(name: &str) -> (Scratch, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
-    let exe = trellis_copy(name);
-    let stub = exe.parent().unwrap().join("trellis-desktop");
+    let (dir, exe) = trellis_copy(name);
+    let stub = dir.join("trellis-desktop");
     std::fs::write(
         &stub,
         "#!/bin/sh\nd=$(dirname \"$0\")\n\
@@ -141,8 +142,8 @@ fn trellis_with_stub_desktop(name: &str) -> PathBuf {
     // The probe runs the stub, which records `--version` as its arguments;
     // removed so the test reads only what trellis passed.
     wait_until_executable(&stub);
-    let _ = std::fs::remove_file(exe.parent().unwrap().join("args.txt"));
-    exe
+    let _ = std::fs::remove_file(dir.join("args.txt"));
+    (dir, exe)
 }
 
 /// The stub's arguments, or `None` when it has not written them within
@@ -182,7 +183,7 @@ fn startup_pty_bare_opens_overview() {
         "[model]\nspec = \"llamacpp:http://127.0.0.1:1\"\n",
     )
     .unwrap();
-    let exe = trellis_with_stub_desktop("pty-bare-desktop-bin");
+    let (_bin, exe) = trellis_with_stub_desktop("pty-bare-desktop-bin");
     let (ok, s) = under_pty_as(&exe, "pty-bare-desktop", &d, "", "");
     assert!(ok, "{s}");
     assert!(s.contains("recent repositories:"), "{s}");
@@ -206,7 +207,7 @@ fn startup_pty_bare_outside_a_repository_opens_the_desktop_with_no_root() {
     // With a desktop to open, the start screen is skipped: the desktop
     // shows its own, and is given no root it did not find.
     let d = scratch("pty-bare-desktop-no-repo");
-    let exe = trellis_with_stub_desktop("pty-bare-desktop-no-repo-bin");
+    let (_bin, exe) = trellis_with_stub_desktop("pty-bare-desktop-no-repo-bin");
     let (ok, s) = under_pty_as(&exe, "pty-bare-desktop-no-repo", &d, "", "");
     assert!(ok, "{s}");
     assert!(s.contains("so only the recent list is shown"), "{s}");
@@ -228,7 +229,7 @@ fn startup_pty_bare_with_no_desktop_says_so_then_falls_back() {
     // a desktop built beside the original cannot open a window here; a
     // stub trellis-tui beside it, so the screen is offered (#516).
     let d = scratch("pty-bare-no-desktop");
-    let exe = trellis_with_stub_tui("pty-bare-no-desktop-bin");
+    let (_bin, exe) = trellis_with_stub_tui("pty-bare-no-desktop-bin");
     let (ok, s) = under_pty_as(&exe, "pty-bare-no-desktop", &d, "", "q\n");
     assert!(ok, "{s}");
     let line = s
@@ -250,7 +251,7 @@ fn launch_route_tui_flag_keeps_the_terminal() {
     // with no overview and no desktop started. A stub trellis-tui beside
     // the binary, so the screen is offered rather than refused (#516).
     let d = scratch("pty-tui-flag");
-    let exe = trellis_with_stub_desktop("pty-tui-flag-bin");
+    let (_bin, exe) = trellis_with_stub_desktop("pty-tui-flag-bin");
     stub_tui_ready(exe.parent().unwrap());
     let (ok, s) = under_pty_as(&exe, "pty-tui-flag", &d, " --tui", "q\n");
     assert!(ok, "{s}");

@@ -2434,8 +2434,21 @@ mod tests {
         }
     }
 
-    fn fixture(name: &str, config: &str) -> (PathBuf, String) {
-        let dir = crate::testutil::scratch(&format!("rpc-{name}"));
+    fn fixture(name: &str, config: &str) -> (crate::testutil::Scratch, String) {
+        fixture_in(
+            crate::testutil::scratch(&format!("rpc-{name}")),
+            name,
+            config,
+        )
+    }
+
+    /// [`fixture`] in `dir`, made by the caller first so a hook in `config`
+    /// can name a file in it.
+    fn fixture_in(
+        mut dir: crate::testutil::Scratch,
+        name: &str,
+        config: &str,
+    ) -> (crate::testutil::Scratch, String) {
         crate::testutil::git_init(&dir);
         std::fs::create_dir_all(dir.join(".trellis")).unwrap();
         std::fs::write(dir.join(".trellis/config.toml"), config).unwrap();
@@ -2451,7 +2464,9 @@ mod tests {
             ]}"#,
         )
         .unwrap();
-        (dir, format!("scripted:{}", path.display()))
+        let spec = format!("scripted:{}", path.display());
+        dir.hold(scripts);
+        (dir, spec)
     }
 
     fn of_type<'a>(rs: &'a [Value], t: &str) -> Vec<&'a Value> {
@@ -2643,12 +2658,6 @@ mod tests {
         );
     }
 
-    /// Where `fixture(name, ..)` puts its repository, known before it is
-    /// made so a hook in its configuration can name a file in it.
-    fn fixture_dir(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("trellis-rpc-{name}-{}", std::process::id()))
-    }
-
     #[test]
     fn after_run_interrupted_by_abort_runs_before_the_rollback_and_its_write_is_undone() {
         // The risk: an aborted run rolled back and wrote its trail, and a
@@ -2660,8 +2669,10 @@ mod tests {
         // whose bytes reach the worktree. Its stdin goes outside the
         // repository, where the rollback cannot touch it.
         let name = "after-run-abort";
-        let hooked = fixture_dir(name).join("hooked.py");
-        let payload = crate::testutil::scratch("rpc-after-run-abort-payload").join("payload.json");
+        let repo = crate::testutil::scratch(&format!("rpc-{name}"));
+        let hooked = repo.join("hooked.py");
+        let outside = crate::testutil::scratch("rpc-after-run-abort-payload");
+        let payload = outside.join("payload.json");
         let script = if cfg!(windows) {
             format!(
                 "more > {} & echo hooked> {}",
@@ -2675,7 +2686,8 @@ mod tests {
                 hooked.display()
             )
         };
-        let (dir, spec) = fixture(
+        let (dir, spec) = fixture_in(
+            repo,
             name,
             &format!(
                 "[control]\nmode = \"approve\"\n[hooks]\nafter_run = {}\n",

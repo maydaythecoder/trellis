@@ -312,7 +312,8 @@ fn run_approve_overrides_a_repository_in_auto_mode() {
     .unwrap();
     git(&d, &["add", "-A"]);
     git(&d, &["commit", "-qm", "auto mode"]);
-    let spec = script_that_stops(&scratch("approve-over-auto-script"));
+    let scripts = scratch("approve-over-auto-script");
+    let spec = script_that_stops(&scripts);
     let out = run(&d, &["run", "--approve", "--model", &spec, "t"]);
     assert!(!out.status.success(), "{}", combined(&out));
     assert!(
@@ -328,7 +329,8 @@ fn run_refuses_a_skill_it_cannot_find_rather_than_running_without_it() {
     // The risk (#248): `--skill` dropped on the way to the run, so the run
     // goes ahead without the instructions the person named.
     let d = repo("skill-missing");
-    let spec = script_that_stops(&scratch("skill-missing-script"));
+    let scripts = scratch("skill-missing-script");
+    let spec = script_that_stops(&scripts);
     let out = run(&d, &["run", "--skill", "nope", "--model", &spec, "t"]);
     assert!(!out.status.success(), "{}", combined(&out));
     assert!(combined(&out).contains("nope"), "{}", combined(&out));
@@ -366,7 +368,7 @@ fn why_reports_absence_rather_than_inventing_a_reason() {
 /// and `app.sub.execute`, the base is nameable, and a call on a `Base`-typed
 /// receiver resolves to `Candidates` over both (ADR 0012: a declared type is
 /// an upper bound, not an identity).
-fn repo_with_resolved_and_ambiguous_reach(name: &str) -> PathBuf {
+fn repo_with_resolved_and_ambiguous_reach(name: &str) -> Scratch {
     let d = empty_repo(name);
 
     std::fs::create_dir_all(d.join("app")).unwrap();
@@ -499,7 +501,7 @@ fn the_trail_sums_reach_across_queries_and_takes_the_widest_doubt() {
 /// check never converges, because only an executed check accepts a change —
 /// and that is fine here: the trail is written after the rollback and
 /// survives it, which is the property `why` depends on.
-fn repo_with_an_edit_script(name: &str) -> PathBuf {
+fn repo_with_an_edit_script(name: &str) -> Scratch {
     let d = empty_repo(name);
 
     std::fs::create_dir_all(d.join("app")).unwrap();

@@ -23,11 +23,11 @@ fn canary() -> &'static str {
 }
 const KEY_ENV: &str = "TRELLIS_TEST_PROVIDER_KEY";
 
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("trellis-hosted-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+mod common;
+use common::Scratch;
+
+fn scratch(name: &str) -> Scratch {
+    common::scratch_dir(&format!("trellis-hosted-{name}"))
 }
 
 fn git(root: &Path, args: &[&str]) {
@@ -52,7 +52,7 @@ fn user_dir(repo: &Path) -> PathBuf {
 
 /// A committed repository whose typecheck really runs and exits 0, and a
 /// user config with one provider pointing at `base`.
-fn repo(name: &str, protocol: &str, base: &str) -> PathBuf {
+fn repo(name: &str, protocol: &str, base: &str) -> Scratch {
     let d = scratch(name);
     git(&d, &["init", "-q"]);
     git(&d, &["config", "user.email", "t@example.invalid"]);
@@ -318,7 +318,7 @@ fn a_missing_key_refuses_before_the_snapshot_and_names_the_variable() {
 }
 
 /// A cloned repository's own config, committed, and an empty user config.
-fn hostile(name: &str, config: &str) -> PathBuf {
+fn hostile(name: &str, config: &str) -> Scratch {
     let d = repo(name, "openai", "http://127.0.0.1:1");
     std::fs::write(d.join(".trellis/config.toml"), config).unwrap();
     git(&d, &["add", "-A"]);

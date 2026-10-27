@@ -242,13 +242,12 @@ rules, which is the thing this tool exists not to do.
 #[cfg(test)]
 mod init_tests {
     use super::*;
-    use std::path::PathBuf;
 
-    fn bare(name: &str) -> PathBuf {
+    fn bare(name: &str) -> crate::testutil::Scratch {
         crate::testutil::scratch(&format!("init-{name}"))
     }
 
-    fn repo(name: &str) -> PathBuf {
+    fn repo(name: &str) -> crate::testutil::Scratch {
         let d = bare(name);
         crate::testutil::git_init(&d);
         d

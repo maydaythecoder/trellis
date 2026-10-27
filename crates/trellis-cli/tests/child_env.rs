@@ -53,11 +53,11 @@ fn keys() -> &'static [(&'static str, &'static str)] {
     })
 }
 
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("trellis-childenv-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+mod common;
+use common::Scratch;
+
+fn scratch(name: &str) -> Scratch {
+    common::scratch_dir(&format!("trellis-childenv-{name}"))
 }
 
 fn git(root: &Path, args: &[&str]) {
@@ -106,9 +106,9 @@ fn dump_line(dump: &Path) -> String {
 /// holding two providers whose `key_env`s are `TRELLIS_TEST_USER_KEY` and
 /// `TRELLIS_TEST_SECOND_USER_KEY`.
 struct Fixture {
-    repo: PathBuf,
-    home: PathBuf,
-    dumps: PathBuf,
+    repo: Scratch,
+    home: Scratch,
+    dumps: Scratch,
 }
 
 fn fixture(name: &str, config: &str, extra: &[(&str, String)]) -> Fixture {
@@ -380,7 +380,8 @@ fn bash_custom_tools_hooks_and_process_agents_get_the_agent_marker() {
         );
     }
 
-    let agent = scratch("marker-proc-out").join("agent.txt");
+    let agent_dir = scratch("marker-proc-out");
+    let agent = agent_dir.join("agent.txt");
     let f1 = fixture(
         "marker-proc",
         "[checks]\ntypecheck = [\"git\", \"--version\"]\ntests = [\"git\", \"--version\"]\n",

@@ -2202,7 +2202,7 @@ mod queue_set_tests {
         queue(root, cli.action)
     }
 
-    fn repo(name: &str) -> (PathBuf, Queue) {
+    fn repo(name: &str) -> (crate::testutil::Scratch, Queue) {
         let root = crate::testutil::scratch(name);
         crate::testutil::git_init(&root);
         let q = Queue::for_repo(&root).unwrap();
@@ -2554,7 +2554,7 @@ mod list_line_tests {
 mod runner_tests {
     use super::*;
 
-    fn with_routine(name: &str, text: &str) -> PathBuf {
+    fn with_routine(name: &str, text: &str) -> crate::testutil::Scratch {
         let root = crate::testutil::scratch(name);
         std::fs::create_dir_all(root.join(".trellis/routines")).unwrap();
         std::fs::write(root.join(".trellis/routines/nightly.toml"), text).unwrap();
@@ -2695,7 +2695,7 @@ mod task_worktree_tests {
         }
     }
 
-    fn repo(name: &str) -> (PathBuf, Queue) {
+    fn repo(name: &str) -> (crate::testutil::Scratch, Queue) {
         let root = scratch(name);
         git_init(&root);
         std::fs::write(root.join("a.py"), "x = 1\n").unwrap();

@@ -7,7 +7,7 @@ use super::*;
 /// `repo_with_vault`'s `root` and `child`, plus `lost`, whose parent does
 /// not exist, and `a` and `b`, each the other's parent: one note with a
 /// missing parent and two on a cycle, beside two with no issue.
-fn vault_with_issues(name: &str) -> PathBuf {
+fn vault_with_issues(name: &str) -> Scratch {
     let (d, _) = repo_with_vault(name, "vault = \"notes\"\n");
     let v = d.join("notes");
     for (file, title, parent) in [
