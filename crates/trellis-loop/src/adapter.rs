@@ -1389,9 +1389,11 @@ mod tests {
                 may_have_changed_tree: false,
                 changed: Vec::new(),
                 duration_ms: 0,
+                edit: None,
             }],
             final_notice: true,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: None,
             repo: crate::agent::RepoContext::default(),
         };
@@ -1432,9 +1434,11 @@ mod tests {
                 may_have_changed_tree: false,
                 changed: Vec::new(),
                 duration_ms: 0,
+                edit: None,
             }],
             final_notice: false,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: None,
             repo: crate::agent::RepoContext::default(),
         };
@@ -1669,6 +1673,7 @@ mod tests {
             turns: Vec::new(),
             final_notice: false,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: None,
             repo: crate::agent::RepoContext::default(),
         }
@@ -1744,6 +1749,7 @@ mod tests {
             may_have_changed_tree: false,
             changed: Vec::new(),
             duration_ms: 0,
+            edit: None,
         });
 
         // The first reply names a tool the run does not have, which is the
@@ -1852,6 +1858,7 @@ mod compaction_and_hosted_tests {
             may_have_changed_tree: false,
             changed: Vec::new(),
             duration_ms: 0,
+            edit: None,
         }
     }
 
@@ -1861,6 +1868,7 @@ mod compaction_and_hosted_tests {
             turns,
             final_notice: false,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: None,
             repo: RepoContext::default(),
         }
@@ -2936,6 +2944,7 @@ mod context_budget_tests {
             may_have_changed_tree: false,
             changed: Vec::new(),
             duration_ms: 0,
+            edit: None,
         }
     }
 
@@ -2976,6 +2985,7 @@ mod context_budget_tests {
             turns,
             final_notice: true,
             steering: Default::default(),
+            controls: Vec::new(),
             prior: Some(PriorContext {
                 source: ".trellis/runs/prior.json".into(),
                 lines: vec!["p".repeat(200); 4],

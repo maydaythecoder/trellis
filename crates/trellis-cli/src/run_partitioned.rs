@@ -621,6 +621,7 @@ pub(crate) fn run_partitioned(
         turns: std::mem::take(&mut trail.turns),
         final_notice: false,
         steering: trellis_loop::SteeringLog::default(),
+        controls: Vec::new(),
         prior: None,
         repo: trellis_loop::RepoContext::default(),
     };

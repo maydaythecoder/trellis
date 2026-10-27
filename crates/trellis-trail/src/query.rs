@@ -535,6 +535,7 @@ mod tests {
             label: None,
             inputs: Vec::new(),
             steering: Vec::new(),
+            controls: Vec::new(),
             suspected_recall_gaps: Vec::new(),
         };
         let digest = crate::Trail::compute_factual_sha256(&factual);

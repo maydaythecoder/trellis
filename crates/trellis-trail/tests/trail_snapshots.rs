@@ -18,8 +18,9 @@
 //! `check_outcomes` as inert data.
 
 use trellis_trail::{
-    Action, Approval, CheckOutcome, ContextFill, Factual, Input, Integrity, Judgment, ModeCounts,
-    Provenance, RadiusCounts, SCHEMA, Steer, SteerKind, SuspectedRecallGap, Trail, UntrustedTrail,
+    Action, Approval, CheckOutcome, ContextFill, Control, Factual, Input, Integrity, Judgment,
+    ModeCounts, Provenance, RadiusCounts, SCHEMA, Steer, SteerKind, SuspectedRecallGap, Trail,
+    UntrustedTrail,
 };
 
 /// Builds a trail around `factual` with fixed identity fields and the digest
@@ -62,7 +63,8 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
     // A run that did everything a trail can record: radius queries, an edit,
     // checks, context fill, the control dial, tokens, an agent profile,
     // user inputs, and the timings of #622: `ended_at` on the trail and
-    // `duration_ms` on every timed action and check outcome. The risk defended: a field of the factual section changing
+    // `duration_ms` on every timed action and check outcome, and the line
+    // counts of #811 on the applied edit. The risk defended: a field of the factual section changing
     // name, shape or presence, or the digest over it changing, without a
     // reviewed diff. Both are what later runs trust (S10, S11).
     let factual = Factual {
@@ -107,6 +109,8 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
                 changed: Vec::new(),
                 changed_count: 0,
                 duration_ms: Some(32),
+                lines_added: None,
+                lines_removed: None,
             },
             Action {
                 turn: 2,
@@ -119,6 +123,8 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
                 // A person's answer is not timed: the wait is excluded
                 // from the call it decided, and absent is not 0.
                 duration_ms: None,
+                lines_added: None,
+                lines_removed: None,
             },
             Action {
                 turn: 2,
@@ -129,6 +135,9 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
                 changed: Vec::new(),
                 changed_count: 0,
                 duration_ms: Some(4),
+                // The hunk the edit wrote (#811): only an applied edit has one.
+                lines_added: Some(3),
+                lines_removed: Some(1),
             },
             Action {
                 turn: 2,
@@ -139,6 +148,8 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
                 changed: Vec::new(),
                 changed_count: 0,
                 duration_ms: Some(910),
+                lines_added: None,
+                lines_removed: None,
             }
             .with_changed(&["src/pkg/installer_gen.py".into()]),
             Action {
@@ -150,6 +161,8 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
                 changed: Vec::new(),
                 changed_count: 0,
                 duration_ms: Some(14_250),
+                lines_added: None,
+                lines_removed: None,
             },
         ],
         control: Some("approve (edit)".into()),
@@ -176,6 +189,24 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
             SteerKind::Steer,
             "keep the old name as an alias",
         )],
+        // One of each, so the snapshot pins every shape a control takes.
+        controls: vec![
+            Control::Pause {
+                turn: 2,
+                paused_ms: 4_210,
+            },
+            Control::Raise {
+                turn: 2,
+                ceiling: "max_iterations".into(),
+                old: 3,
+                new: 5,
+            },
+            Control::Withdraw {
+                turn: 3,
+                kind: SteerKind::FollowUp,
+                len: 21,
+            },
+        ],
         label: Some("installer rename".into()),
         // Present for its shape, though the final outcomes above passed: a
         // real run records a gap only for a failing integrated check.
@@ -225,6 +256,7 @@ fn trail_snapshot_rolled_back_run_omits_absent_optional_fields() {
         agent: None,
         inputs: vec![],
         steering: vec![],
+        controls: vec![],
         label: None,
         suspected_recall_gaps: vec![],
     };
