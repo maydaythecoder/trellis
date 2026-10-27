@@ -851,7 +851,7 @@ mod tests {
         // The risk: an animated graph, which a user who asked for reduced
         // motion still sees moving; nothing in it needs to move.
         let (rules, moving) = motion_in_rules_naming("graph");
-        assert!(rules > 0, "style.css has no rule naming the graph");
+        assert!(rules > 0, "no page stylesheet has a rule naming the graph");
         assert!(moving.is_empty(), "graph rules that move: {moving:?}");
     }
 }
