@@ -73,7 +73,8 @@ The wireframe's regions, in the order a person reads them:
   sentence with the raw call and observation on demand, check rows with the
   command and `trellis-checks verdict`, notes (WARN/INFO lines), refusals,
   `model asks you` for `ask_human`. Turn dividers carry `model_ms`,
-  `completion_tokens`, `prompt_bytes`. Filters and a quiet mode.
+  `completion_tokens`, `prompt_bytes`. Filters and a quiet mode (in the
+  desktop, #949; in the TUI, #948, `^F`, `^N` and `^O` for the raw call).
 - **Compose**: three verbs stated on the button: `Steer` (next model call),
   `Queue` (after this run; `follow_up`), `Stop and send` (abort, then prompt).
   The queue lists each item with its state; take-back and cancel (rpc

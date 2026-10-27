@@ -74,7 +74,6 @@ func ModalLastFrom(diff string, width, height int) int {
 // paints a pane; the diff's lines are text here, and coloured by line
 // role at the code level, where c sets the question aside (#853).
 func Modal(th theme.Theme, question, diff string, scroll, width, height int) string {
-	boxW, boxH, inner := modalBox(width, height)
 
 	// edit and write_file change the tree; anything else the gate asks
 	// about (bash, ask_human, a custom tool) is a call.
@@ -82,7 +81,14 @@ func Modal(th theme.Theme, question, diff string, scroll, width, height int) str
 	if strings.HasPrefix(question, "edit ") || strings.HasPrefix(question, "write_file ") {
 		what = "change"
 	}
+	return modalWith(th, question+"?", keyRow(key{"y", "accept this " + what}, key{"n", "reject"}), diff, scroll, width, height)
+}
 
+// modalWith is the modal's box with title on its top border and bottom on
+// its bottom one, text between them from line scroll: the approval box's,
+// and ^O's call box (log.go, #948).
+func modalWith(th theme.Theme, title, bottom, diff string, scroll, width, height int) string {
+	boxW, boxH, inner := modalBox(width, height)
 	lines, bodyH, scrolls, lastFrom := modalPage(diff, width, height)
 	from := scroll
 	if from > lastFrom {
@@ -115,7 +121,7 @@ func Modal(th theme.Theme, question, diff string, scroll, width, height int) str
 		body = append(body, Row{Text: fmt.Sprintf("lines %d–%d of %d · %s", from+1, shown, len(lines), scrollKeys), Role: RoleLabel})
 	}
 
-	out := Box(th, question+"?", keyRow(key{"y", "accept this " + what}, key{"n", "reject"}), body, boxW, boxH)
+	out := Box(th, title, bottom, body, boxW, boxH)
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, strings.Join(out, "\n"))
 }
 

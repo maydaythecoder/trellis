@@ -60,7 +60,7 @@ func (m *Model) approvalRequested(a frames.ApprovalFields) {
 	// name, so the prefix is the call's. The question is the model's, in
 	// the log as well as the box, whether it is shown, queued or declined.
 	if asked, ok := strings.CutPrefix(q, "ask_human "); ok {
-		m.push(view.RoleYou, "? model asks you  "+view.Plain(asked))
+		m.pushRow(view.Row{Text: "? model asks you  " + view.Plain(asked), Role: view.RoleYou, Ask: true})
 	}
 	if m.Modal == nil {
 		m.showModal(&ap)
