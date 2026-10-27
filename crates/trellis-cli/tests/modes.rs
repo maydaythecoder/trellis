@@ -3465,6 +3465,84 @@ fn rpc_turn_tool_target_wrote_match_the_trail_actions() {
 }
 
 #[test]
+fn rpc_turn_line_counts_match_the_trail_edit_actions() {
+    // The risk (#811): the trail's line counts come from somewhere other
+    // than the `EditDiff` the turn event reported, so the summary level,
+    // which reads the trail, and the live view disagree about what an edit
+    // changed; or a refused edit or a created file is recorded with counts.
+    // Compared in order over the whole run; every trail action is a turn's
+    // (no approvals, gates, partitions, services or compaction).
+    let f = fixture("rpc-turn-lines");
+    commit_passing_checks(&f);
+    let config = f.root.join(".trellis/config.toml");
+    let mut cfg = std::fs::read_to_string(&config).unwrap();
+    cfg.push_str("[tools]\nenable = [\"write_file\"]\n");
+    std::fs::write(&config, cfg).unwrap();
+    git(&f.root, &["commit", "-qam", "write_file"]);
+    let script_dir = scratch("rpc-turn-lines-steps");
+    let script = script_dir.join("s.json");
+    std::fs::write(
+        &script,
+        r#"{"steps":[
+            {"tool":"edit","path":"a.py","old":"return 9","new":"return 2"},
+            {"tool":"edit","path":"a.py","old":"    return 1","new":"    x = 2\n    return x"},
+            {"tool":"write_file","path":"b.py","content":"X = 1\n"},
+            {"tool":"run_checks","paths":["a.py"],"kinds":["tests"]},
+            {"tool":"done","summary":"changed it"}
+        ]}"#,
+    )
+    .unwrap();
+    let spec = format!("scripted:{}", script.display());
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.choose(&spec);
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                                "model": spec}),
+    );
+    let records = rpc.finish();
+    let end = records.iter().find(|r| r["type"] == "run_end").unwrap();
+    assert_eq!(end["outcome"], "converged", "{end}\n{records:?}");
+
+    let pair = |o: &Value| (o["lines_added"].clone(), o["lines_removed"].clone());
+    let from_events: Vec<(Value, Value)> = records
+        .iter()
+        .filter(|r| r["fields"]["message"] == "turn")
+        .map(|r| pair(&r["fields"]))
+        .collect();
+    let trails = trails(&f);
+    assert_eq!(trails.len(), 1, "{trails:?}");
+    let actions = trails[0]["factual"]["actions"].as_array().unwrap();
+    let from_trail: Vec<(Value, Value)> = actions.iter().map(pair).collect();
+    assert_eq!(
+        from_events, from_trail,
+        "the turn events and the trail disagree about an edit's lines\n{records:?}"
+    );
+    // Each case named, so a run that reached none of them cannot pass by
+    // agreeing on nothing: the refused edit, the applied one (+2 -1), the
+    // created file and the check.
+    let none = (Value::Null, Value::Null);
+    let tools: Vec<&str> = actions
+        .iter()
+        .map(|a| a["tool"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        tools,
+        ["edit", "edit", "write_file", "run_checks"],
+        "{actions:?}"
+    );
+    assert_eq!(
+        from_trail,
+        [
+            none.clone(),
+            (Value::from(2), Value::from(1)),
+            none.clone(),
+            none
+        ],
+        "{actions:?}"
+    );
+}
+
+#[test]
 fn rpc_run_budget_carries_every_ceiling() {
     // The risk (#799): a client draws progress against a ceiling the engine
     // never sent, so it keeps a copy or a constant of its own; or a ceiling

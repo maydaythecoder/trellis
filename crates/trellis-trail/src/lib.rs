@@ -329,6 +329,22 @@ pub struct Action {
     /// when absent, so an old-shaped run keeps its bytes and its digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// For an `edit` that applied: how many lines its one hunk added, the
+    /// figure its rpc `turn` event carries, from the same `EditDiff`, so
+    /// the trail and the event cannot disagree (ADR 0007, amended #811).
+    ///
+    /// Absent on every other action, `write_file` included, and in a trail
+    /// written before the field: absent is not recorded, never 0. A
+    /// recorded 0 is written, since a pure deletion adding no lines is a
+    /// measurement, which is why the skip is `is_none` and not `is_zero`.
+    /// Read back, it is the trail's claim and nothing more (rule 10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines_added: Option<u64>,
+    /// How many lines the same hunk removed, under the same rules as
+    /// `lines_added`. The writer sets both or neither; a reader infers
+    /// neither from the other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines_removed: Option<u64>,
 }
 
 /// The most paths one action's `changed` lists. A command that rewrites a
@@ -673,6 +689,8 @@ mod tests {
                         changed: Vec::new(),
                         changed_count: 0,
                         duration_ms: Some(10),
+                        lines_added: None,
+                        lines_removed: None,
                     },
                     Action {
                         turn: 2,
@@ -683,6 +701,8 @@ mod tests {
                         changed: Vec::new(),
                         changed_count: 0,
                         duration_ms: Some(10),
+                        lines_added: Some(1),
+                        lines_removed: Some(1),
                     },
                     Action {
                         turn: 3,
@@ -693,6 +713,8 @@ mod tests {
                         changed: Vec::new(),
                         changed_count: 0,
                         duration_ms: Some(10),
+                        lines_added: None,
+                        lines_removed: None,
                     },
                 ],
                 control: None,

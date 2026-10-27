@@ -70,7 +70,9 @@ expression: "trail_json(\"rename Installer.run\", Some(\"2026-09-18T05:14:32Z\")
         "target": "src/pkg/installer.py",
         "outcome": "applied",
         "wrote": true,
-        "duration_ms": 4
+        "duration_ms": 4,
+        "lines_added": 3,
+        "lines_removed": 1
       },
       {
         "turn": 2,
@@ -138,7 +140,7 @@ expression: "trail_json(\"rename Installer.run\", Some(\"2026-09-18T05:14:32Z\")
       }
     ]
   },
-  "factual_sha256": "978bd9544934c861e7cf9dcaace684e762d39e618089b4fc1197129a5a79c85e",
+  "factual_sha256": "f8ae4adc47501eecd3e0488074b635dd581d7477f10ed4042d1ce25ce4d2c32c",
   "judgment": {
     "tech_debt_projection": "the alias will need removing",
     "rationale": "kept the old name as an alias"
