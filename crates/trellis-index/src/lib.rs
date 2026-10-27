@@ -6,6 +6,7 @@
 pub mod cache;
 mod coverage;
 mod delta;
+mod discover;
 mod graph;
 mod incremental;
 pub mod modules;
@@ -16,6 +17,7 @@ mod resolve;
 
 pub use coverage::Coverage;
 pub use delta::{ChangeKind, IndexedSources, SymbolChange, symbol_delta};
+pub use discover::{discover, discover_relative, read_sources};
 pub use graph::{
     CallSiteEntry, CalleeKind, Edge, FileEntry, Index, Reason, SymbolEntry, SymbolKind, Target,
 };
@@ -33,6 +35,5 @@ pub use radius::{
     CallerSite, DoubtSite, FileDoubt, RadiusReport, callers_of_files, doubt_in_files,
 };
 pub use resolve::{
-    absolute_module, build, build_cached, build_from_facts, build_from_sources, discover,
-    discover_relative, module_path_of, read_sources,
+    absolute_module, build, build_cached, build_from_facts, build_from_sources, module_path_of,
 };
