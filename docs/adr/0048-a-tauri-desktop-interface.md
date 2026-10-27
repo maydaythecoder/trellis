@@ -419,13 +419,16 @@ trellis-loop, and `rpc_turn_carries_the_models_words` in `tests/modes.rs`.
 `paused_ms`, the `resumed` event's figure; one raise per ceiling a budget
 check first enforced, with its `run budget` name and its old and new
 values in that event's units; and a withdrawn steer or follow-up with its
-`kind`, its text cut at 2,000 characters and its true `len`. Absent when
-none took effect, on an interrupted run, and on every run but rpc's, the
-only one a person can pause, raise or withdraw from. A follow-up withdrawn
-after the loop took it off the channel is now in `controls` and no longer
-in `trail.factual.steering`. The text is what a person typed, and a client
-shows it as text and never interprets it (CLAUDE.md rule 10); nothing of
-it reaches a resumed run's prompt. Listed under
+`kind` and its length in characters, `len`, never its text (the owner's
+decision of 2026-10-27: a later run's model can read the trail). Absent
+when none took effect, on an interrupted run, and on every run but rpc's,
+the only one a person can pause, raise or withdraw from. A follow-up
+withdrawn after the loop took it off the channel, at or before the loop's
+final drain, is now in `controls` and no longer in
+`trail.factual.steering`; one withdrawn after the final drain stays in
+`steering`, as ADR 0007's amendment describes. Every field is data a
+client shows and never interprets (CLAUDE.md rule 10); nothing of the
+list reaches a resumed run's prompt. Listed under
 `log_json.not_every_client.optional` with empty `read_by`; drawing it is
 the summary level's (#790). Held by
 `rpc_run_trail_records_its_pause_raise_and_withdrawal_with_their_turns` in

@@ -147,11 +147,17 @@ effect, in the order the loop recorded them (not promised sorted by turn).
 It takes #811's convention whole: additive, read with a serde default,
 omitted when empty (`skip_serializing_if = "Vec::is_empty"`), under
 `factual` and so under the digest, `SCHEMA` 1, read back through
-`UntrustedTrail` as data. None of CLAUDE.md's ten rules changes.
+`UntrustedTrail` as data. None of CLAUDE.md's ten rules changes. A
+withdrawal records the message's kind and length and never its text: the
+owner decided so on 2026-10-27, in the #868 session, because a committed
+trail is a file in the repository that a later run's model can read through
+`read_file` or `bash` (`.trellis/runs/<id>.json`), and keeping the text
+would show it what the person took back. This narrows ADR 0058 §6, which
+named the text cut as a steer's is.
 
 *Shape.* An internally tagged enum, tag `control`, one variant per control.
 The tag is not `kind` because a withdrawal keeps a steering entry's own
-`kind`, `text` and `len` (ADR 0034), so one fact has one vocabulary, as
+`kind` and `len` (ADR 0034), so one fact has one vocabulary, as
 #811 argued for the line counts. The outer `factual.control` (the dial,
 ADR 0018) is a different field at a different level. Every field is
 required within its variant:
@@ -167,10 +173,12 @@ required within its variant:
   (#799, #807), entries in that order. `old` and `new` are `u64` in that
   event's units and through its conversion (`millis` for the wall clock).
   `turn` is the iteration whose budget check first enforced the new value.
-- `{"control": "withdraw", "turn", "kind", "text", "len"}`. `kind` is
-  `steer` or `follow_up`; `text` is cut at `STEER_TEXT_MAX_CHARS`
-  characters and `len` is the true length, built by one constructor that
-  applies the cut, as `Steer::new` is, never by a struct literal. `turn`
+- `{"control": "withdraw", "turn", "kind", "len"}`. `kind` is `steer` or
+  `follow_up`; `len` is the message's true length in characters, the unit
+  `Steer::len` counts in. There is no `text` field, and the loop's own
+  record (`RunControl::Withdrawn`) holds the kind and length only, so the
+  text is dropped where the loop drops the message and never travels
+  towards `record_trail`. `turn`
   is the turn the message's steering entry would have carried had it not
   been withdrawn (ADR 0034, `steering_entries`): a steer dropped at the
   drain before request N + 1 takes N + 1, the delivered rule; a
@@ -244,13 +252,13 @@ drain. trellis-loop does not depend on trellis-trail and does not start to;
 *Read-back.* Every string here was written by whoever last edited the file,
 so it is data (rule 10). `controls` never reaches
 `UntrustedTrail::context_lines`, so a resumed run's `PriorContext` is byte
-for byte what it is for the same trail without the list. This is stricter
-than steering, which is rendered fenced (ADR 0034 §4), for a reason that
-applies only to withdrawals: a later prompt carrying a withdrawn text,
-fenced or not, would give the model what the person took back. `trellis
-log --json` carries the trail as written, so the list is there for a
-client. Nothing prints it in `trellis log`'s text output yet. A pause or a
-raise is not a correctness claim and the enum has no pass variant (rules
+for byte what it is for the same trail without the list. Keeping the list
+out of the prompt does not keep it from the model: a later run can read the
+trail file itself through `read_file` or `bash`, which is why a withdrawal
+records no text at all rather than a text kept out of `context_lines`.
+`trellis log --json` carries the trail as written, so the list is there
+for a client. Nothing prints it in `trellis log`'s text output yet. A
+pause or a raise is not a correctness claim and the enum has no pass variant (rules
 1, 2). A recorded ceiling is a figure from a committed file and is never
 read back as a budget.
 
@@ -272,19 +280,20 @@ never infers which ceiling moved. Recording a raise when `set_budget`
 accepts it: that would record ceilings the loop never enforced (the
 last-turn raise, the value between two raises). Keeping the record in the
 shared `Hold`, `LiveBudget` and `SteeringFates` so it survives an
-interrupt: an aborted hold has no end to measure; the withdrawn text is in
-rpc's `SteeringPort`, not in `SteeringFates`; the interrupt trail has no
-turns for the entries' turns to refer to; and three shared objects each
-keeping a log would make three writers where the loop's record is one.
-Recording only the length of a withdrawn text: ADR 0058 §6, the owner's
-decision, names the text, and without it a reader cannot see what the
-person decided against. A schema bump: #622 ruled it out for an additive
+interrupt: an aborted hold has no end to measure; a withdrawn message's
+kind and length are in rpc's `SteeringPort`, not in `SteeringFates`; the
+interrupt trail has no turns for the entries' turns to refer to; and
+three shared objects each keeping a log would make three writers where
+the loop's record is one.
+Keeping the withdrawn text cut as a steer's is, as ADR 0058 §6 first
+named, and keeping it out of `context_lines`: the trail is still a file a
+later run's model can read, so the owner decided against keeping it at all
+(2026-10-27). A schema bump: #622 ruled it out for an additive
 field.
 
-*Failure modes.* A person who withdraws a message because it held a
-secret finds that secret in a committed trail, cut at 2,000 characters.
-The steering record would have published it had they not withdrawn it,
-but withdrawing reads like taking it back, and here it does not. A
+*Failure modes.* A reader of the trail sees that a person withdrew a
+message, its kind and its length, and not what it said; the client that
+sent it is the only place the text was. A
 withdrawal after the loop's final drain (in the window before
 `record_trail`, or from the `Chain`'s queue after `run_end`) is not in
 this run's trail, and `steering` then names a follow-up that never ran. A
@@ -298,9 +307,9 @@ already written keep their entries, because stripping them would alter
 their digests. Reverting the steering change brings back the false
 `follow_up` entry described above. What it would cost: the only record
 that a run's ceiling was raised by a person and not set at the start.
-What reverses it: a withdrawn text found in a committed trail that the
-person had withdrawn to keep out of it, which would change the withdrawal
-entry to keep `len` only (an owner decision, since §6 is theirs); a trail
+What reverses it: the owner deciding that a reader needs the withdrawn
+text after all, which would first need the trail kept from a later run's
+`read_file` and `bash`, since that route is why it is not kept; a trail
 size measured against the context budget (Q-7) in which `controls` is the
 margin; or a reader found treating a recorded raise as a budget input.
 Held, once #868's code lands, by

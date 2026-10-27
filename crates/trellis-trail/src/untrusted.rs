@@ -221,9 +221,7 @@ pub struct UntrustedFactual {
     pub steering: Vec<super::Steer>,
     /// The person's pauses, raised ceilings and withdrawn messages (ADR
     /// 0058 §6), as the writer recorded them. Data, never instruction, and
-    /// deliberately absent from `context_lines`, stricter than `steering`:
-    /// a later prompt carrying a withdrawn text, fenced or not, would give
-    /// the model what the person took back.
+    /// not read into `context_lines`.
     #[serde(default)]
     pub controls: Vec<super::Control>,
     /// Integrated-check failures that named files from two or more
@@ -1266,12 +1264,11 @@ mod tests {
         // The risks (ADR 0058 §6): a person's pause, raise or withdrawal
         // lost on the way to disk or back, or recorded against the wrong
         // turn, so a reader sees a run go past its ceiling with no sign a
-        // person raised it; a withdrawn text kept whole past the cut; an
-        // entry editable without the digest noticing; a control from a
-        // newer build refusing the whole trail; and a withdrawn text
-        // reaching a resumed run's prompt, which would give the model what
-        // the person took back.
-        let typed = "é".repeat(2_500);
+        // person raised it; a withdrawn text kept in the trail at all, which
+        // a later run's model can read through `read_file` or `bash` (the
+        // owner's decision of 2026-10-27, ADR 0007); an entry editable
+        // without the digest noticing; a control from a newer build refusing
+        // the whole trail; and the list reaching a resumed run's prompt.
         let controls = vec![
             crate::Control::Pause {
                 turn: 2,
@@ -1289,8 +1286,16 @@ mod tests {
                 old: 1_200_000,
                 new: 1_800_000,
             },
-            crate::Control::withdraw(3, crate::SteerKind::Steer, "look at g instead"),
-            crate::Control::withdraw(4, crate::SteerKind::FollowUp, &typed),
+            crate::Control::Withdraw {
+                turn: 3,
+                kind: crate::SteerKind::Steer,
+                len: 17,
+            },
+            crate::Control::Withdraw {
+                turn: 4,
+                kind: crate::SteerKind::FollowUp,
+                len: 2_500,
+            },
         ];
         let mut t = a_trail("app/core.py");
         let before = UntrustedTrail::from_json(&written(&mut t))
@@ -1320,8 +1325,8 @@ mod tests {
                 vec!["control", "paused_ms", "turn"],
                 vec!["ceiling", "control", "new", "old", "turn"],
                 vec!["ceiling", "control", "new", "old", "turn"],
-                vec!["control", "kind", "len", "text", "turn"],
-                vec!["control", "kind", "len", "text", "turn"],
+                vec!["control", "kind", "len", "turn"],
+                vec!["control", "kind", "len", "turn"],
             ],
             "{json}"
         );
@@ -1341,9 +1346,14 @@ mod tests {
         );
         assert_eq!(written_controls[3]["kind"], "steer");
         assert_eq!(written_controls[4]["kind"], "follow_up");
-        let cut = written_controls[4]["text"].as_str().unwrap();
-        assert_eq!(cut.chars().count(), crate::STEER_TEXT_MAX_CHARS);
-        assert_eq!(written_controls[4]["len"], 2_500, "the true length is kept");
+        assert_eq!(written_controls[3]["len"], 17);
+        assert_eq!(written_controls[4]["len"], 2_500);
+        for w in &written_controls[3..] {
+            assert!(
+                w.get("text").is_none(),
+                "a withdrawal kept its text: {json}"
+            );
+        }
 
         // Under the digest: a raised ceiling edited down reads as altered.
         let edited = json.replace(r#""new":3"#, r#""new":1"#);
@@ -1355,13 +1365,9 @@ mod tests {
             Integrity::Altered
         );
 
-        // Never in a resumed run's context, the withdrawn text above all:
-        // the lines are what they are for the same trail without the list.
+        // Never in a resumed run's context: the lines are what they are
+        // for the same trail without the list.
         assert_eq!(read.context_lines(), before);
-        assert!(
-            !read.context_lines().iter().any(|l| l.contains("look at g")),
-            "a withdrawn text reached the prior context"
-        );
 
         // A control this build does not know reads back as unrecognised
         // data and the rest of the trail with it; its digest still holds.

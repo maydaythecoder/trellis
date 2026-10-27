@@ -602,14 +602,34 @@ pub enum RunControl {
         new: u64,
     },
     /// A message a person took back before it reached a request or a later
-    /// run. `before_request` is the step a steer dropped at the drain
-    /// before a request followed, as `Steer::after_step` counts it; `None`
-    /// for one that would have been handed back undelivered, whose turn is
-    /// the run's last.
+    /// run: whether it was a follow-up, and its length in characters.
+    /// Never its text, which the trail does not keep (the owner's decision
+    /// of 2026-10-27, ADR 0007's #868 amendment), so the text is dropped
+    /// here rather than carried towards the trail. `before_request` is the
+    /// step a steer dropped at the drain before a request followed, as
+    /// `Steer::after_step` counts it; `None` for one that would have been
+    /// handed back undelivered, whose turn is the run's last.
     Withdrawn {
-        message: Steering,
+        follow_up: bool,
+        len: u64,
         before_request: Option<usize>,
     },
+}
+
+impl RunControl {
+    /// The record of `message` withdrawn: its kind and length, and nothing
+    /// of its text.
+    fn withdrawn(message: &Steering, before_request: Option<usize>) -> Self {
+        let (follow_up, text) = match message {
+            Steering::Steer(t) => (false, t),
+            Steering::FollowUp(t) => (true, t),
+        };
+        RunControl::Withdrawn {
+            follow_up,
+            len: text.chars().count() as u64,
+            before_request,
+        }
+    }
 }
 
 /// A message on the steering channel.
@@ -676,10 +696,7 @@ impl SteeringLog {
                 Some(f) => match f.take(deliver, after_step) {
                     Some(n) => Some(n),
                     None => {
-                        controls.push(RunControl::Withdrawn {
-                            message: m,
-                            before_request: deliver.then_some(after_step),
-                        });
+                        controls.push(RunControl::withdrawn(&m, deliver.then_some(after_step)));
                         continue;
                     }
                 },
@@ -709,10 +726,7 @@ impl SteeringLog {
         let numbers = std::mem::take(&mut self.numbers);
         for (message, number) in taken.into_iter().zip(numbers) {
             if number.is_some_and(|n| f.is_withdrawn(n)) {
-                controls.push(RunControl::Withdrawn {
-                    message,
-                    before_request: None,
-                });
+                controls.push(RunControl::withdrawn(&message, None));
             } else {
                 self.undelivered.push(message);
                 self.numbers.push(number);
@@ -4647,11 +4661,13 @@ rank = \"non-negotiable\"
             t.controls,
             [
                 RunControl::Withdrawn {
-                    message: steer("STEER-WITHDRAWN"),
+                    follow_up: false,
+                    len: "STEER-WITHDRAWN".len() as u64,
                     before_request: Some(0),
                 },
                 RunControl::Withdrawn {
-                    message: Steering::FollowUp("FOLLOW-WITHDRAWN".into()),
+                    follow_up: true,
+                    len: "FOLLOW-WITHDRAWN".len() as u64,
                     before_request: None,
                 },
             ],
@@ -4724,7 +4740,8 @@ rank = \"non-negotiable\"
         assert_eq!(
             t.controls,
             [RunControl::Withdrawn {
-                message: Steering::FollowUp("FOLLOW-TAKEN-BACK".into()),
+                follow_up: true,
+                len: "FOLLOW-TAKEN-BACK".len() as u64,
                 before_request: None,
             }]
         );
