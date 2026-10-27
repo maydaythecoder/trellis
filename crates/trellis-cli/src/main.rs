@@ -1594,7 +1594,7 @@ mod startup_seam_tests {
     fn launch_route_tui_subcommand_keeps_the_terminal_interface() {
         // The risk: `trellis tui`, a subcommand, opening the desktop. The
         // `--tui` flag never reaches `launch_route` (`main` checks it first);
-        // `launch_route_tui_flag_*` in tests/cli.rs holds that end.
+        // `launch_route_tui_flag_*` in tests/cli/bare.rs holds that end.
         assert_eq!(
             launch_route(Route::Command, desktop(), true),
             Launch::Unchanged(Route::Command)
