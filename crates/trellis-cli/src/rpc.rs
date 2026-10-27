@@ -12,7 +12,7 @@
 //! this file writes `response` and `approval_request`, and hands the sink to
 //! `output::framed` in `RunExtras`, which writes each run's `run_start` and
 //! `run_end` around it. The run's events (`turn`, `model call`, `steer
-//! delivered`, …) are `tracing` events that `main.rs`'s stdout JSON layer
+//! delivered`, …) are `tracing` events that `startup.rs`'s stdout JSON layer
 //! writes, one per line; `TurnCapture`, a layer beside it (`rpc/turns.rs`), keeps
 //! the `turn` events for `get_messages`. The fields a client may rely on, in
 //! both layers and in the answers it names, are listed in

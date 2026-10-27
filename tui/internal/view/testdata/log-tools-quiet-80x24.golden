@@ -1,0 +1,24 @@
+ Run                                                            L1 / 4  TRELLIS 
+ ● RUNNING  1:23*  █░░░░░░░ 3/40  [^P] pause  running edit → src/parser.py      
+┌ transcript · tools · quiet · 8 hidden ───────────────────────────────────────┐
+│─ turn 1 · model 6200 ms · 412 tok out · 12400 B prompt                       │
+│─ turn 2 · model 4800 ms · — tok out · — B prompt                             │
+│─ turn 3 · model 5100 ms · 208 tok out · 13100 B prompt                       │
+│· Edited src/parser.py (+1 −1)                                                │
+│! bash refused: the command names a path outside the repository               │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ where · actions 3 · edits 1 · checks 1 · radius · plan · summary   [TAB] select
+┌ budget  [^R] raise ──────────────────────────────────────────────────────────┐
+│TURNS █░░░░░░░░░░░░░░░ 3/40  ·  PROMPT 24.1 kB  ·  TIME 1:23*                 │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ steer  [⏎] queue for the next turn ──────────────────────────────────────────┐
+│█                                                                             │
+└──────────────────────────────────────────────────────────────────────────────┘
+ [^C] stop  ● 1 pending  model ollama:qwen2.5-coder…  tier 2, native tool calls 

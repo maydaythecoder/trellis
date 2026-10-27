@@ -28,6 +28,10 @@ import (
 //   - a queued item keeps the first SentCap bytes of its message for a
 //     take-back to return (#857): rpc_send's line cap, which the desktop
 //     keeps too, and past which nothing this view sent could be.
+//   - a turn's call and observation, kept for ^O to open in full (#948),
+//     keep their first RawCap bytes each and say how many were cut: the
+//     child's line has no limit of its own here, and every row a turn
+//     wrote holds them until the transcript's cap takes it.
 //
 // TranscriptCap and StderrCap (model.go) and OfferedCap (complete.go) are
 // the limits that came before these.
@@ -40,7 +44,21 @@ const (
 	QueueCap      = 100
 	ClosingCap    = 16 * 1024
 	SentCap       = 64 * 1024
+	RawCap        = 16 * 1024
 )
+
+// capRaw is s cut to at most RawCap bytes, at a character's start, with
+// how much was cut said on a line of its own.
+func capRaw(s string) string {
+	if len(s) <= RawCap {
+		return s
+	}
+	end := RawCap
+	for end > 0 && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	return fmt.Sprintf("%s\n… [%d more bytes cut]", s[:end], len(s)-end)
+}
 
 // capSent is s cut to at most SentCap bytes, at a character's start.
 func capSent(s string) string {

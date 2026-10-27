@@ -1,5 +1,5 @@
  Run ⟩ edits                                         L2 / 4  [ESC] out  TRELLIS 
- ● RUNNING  1:23*  █░░░░░░░ 3/40  [^P] pause  ran edit, turn 3 → src/parser.py  
+ ● RUNNING  1:23*  █░░░░░░░ 3/40  [^P] pause  running edit → src/parser.py      
  w ┌ edits ────────────────────────────────────────────────────────────────────┐
  h │› src/parser.py                                    +3 −1  ● in the worktree│
    │  tests/test_parser.py                                 —  ● in the worktree│

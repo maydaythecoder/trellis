@@ -112,7 +112,8 @@ func trail(s State, w int) []Span {
 }
 
 // keycaps are the keys that act at the level shown, for the status bar:
-// TAB and ⏎ at the top level, ESC inside a pane, the cursor and ⏎ at the
+// TAB, ⏎ and the transcript's keys at the top level, ESC and the scroll
+// while ^O's call box is up, ESC inside a pane, the cursor and ⏎ at the
 // code level, the scroll at a diff, and ^C always. While a question is on
 // screen its keys are the ones that act: y and n, and c where it asks to
 // write a file, whose diff then answers it in place (#853).
@@ -125,6 +126,9 @@ func keycaps(s State) string {
 			return keyRow(key{"y", "accept"}, key{"n", "reject"}, key{"c", "review in code"}, stopKey(s))
 		}
 		return keyRow(key{"y", "accept"}, key{"n", "reject"}, stopKey(s))
+	}
+	if s.CallOpen {
+		return keyRow(key{"ESC", "close"}, key{"↑↓", "scroll"}, stopKey(s))
 	}
 	switch level(s) {
 	case 3:
@@ -140,7 +144,22 @@ func keycaps(s State) string {
 		}
 		return keyRow(key{"ESC", "out"}, stopKey(s))
 	}
-	return keyRow(key{"TAB", "select"}, key{"⏎", "in"}, stopKey(s))
+	return keyRow(append([]key{{"TAB", "select"}, {"⏎", "in"}}, append(logKeys(s), stopKey(s))...)...)
+}
+
+// logKeys are the transcript's own keys at the top level (#948): ^F the
+// next filter, ^N quiet mode on or off, and ^O while any row the filter
+// draws carries a turn's call (HasCall); ^O then opens the newest on the
+// page, or says to scroll to one. Which filter is on, and quiet, the transcript's
+// title says; a label that changed with them would make the row longer
+// in one state than the other, and at 120 columns the longer one did not
+// fit beside the worktree.
+func logKeys(s State) []key {
+	keys := []key{{"^F", "filter"}, {"^N", "quiet"}}
+	if HasCall(s) {
+		keys = append(keys, key{"^O", "call"})
+	}
+	return keys
 }
 
 // onlyHere is the key the status bar alone shows, kept when the row runs
