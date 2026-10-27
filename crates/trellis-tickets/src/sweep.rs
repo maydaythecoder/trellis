@@ -722,19 +722,12 @@ pub fn sweep_with(
 
 /// `secs` after the Unix epoch as `YYYY-MM-DDTHH:MM:SSZ`, the form
 /// `triaged_at` is written in. The calendar arithmetic is Howard Hinnant's
-/// `civil_from_days`, so no date crate is needed.
+/// `civil_from_days` in trellis-core, so no date crate is needed.
 pub fn utc_timestamp(secs: u64) -> String {
-    let days = secs / 86_400;
+    // `u64::MAX / 86_400` is about 2.1e14, so the day count fits an `i64`.
+    let days = (secs / 86_400) as i64;
     let rem = secs % 86_400;
-    let z = days + 719_468;
-    let era = z / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + u64::from(month <= 2);
+    let (year, month, day) = trellis_core::time::civil_from_days(days);
     format!(
         "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
         rem / 3_600,
