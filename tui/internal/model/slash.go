@@ -94,7 +94,7 @@ var helpLines = []string{
 	// What the screen's marks mean (#911).
 	helpLine("1:23*", "a time by this view's own clock, which stops while a question waits or the run is paused"),
 	helpLine(view.Dash, "a figure trellis did not report; never drawn as 0"),
-	helpLine("████░░░░ 3/40", "a figure against its ceiling, the turn against max_iterations"),
+	helpLine("████░░░░ 3/40", "a figure against its ceiling from run budget: the turns, wall clock, completion tokens or last prompt"),
 	helpLine("● 2 pending", "edits a run in flight has made in the worktree"),
 	helpLine("✎ 2", "actions that wrote to the tree"),
 	"",
