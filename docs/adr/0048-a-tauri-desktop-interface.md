@@ -280,7 +280,10 @@ It is repository text and model output, and a client shows it as text and
 never interprets it (CLAUDE.md rule 10). The four fields are absent on
 every other turn, bash's included, since nothing diffs what a command
 changed. `approval_request.detail` is unchanged, and the trail records no
-line counts here; that is its own ticket. The fields are under
+line counts here; that is its own ticket. (*Amended 2026-10-27 (#811):*
+it now does. An applied edit's trail action carries `lines_added` and
+`lines_removed`, taken from the same `EditDiff` as this event, and only
+those two; see ADR 0007's amendment of that date.) The fields are under
 `rpc.not_every_client` with empty `read_by`. Held by
 `edit_turn_carries_line_counts_and_a_unified_diff` in trellis-loop, and in
 `tests/modes.rs` by `rpc_stream_carries_every_field_the_desktop_reads` (auto
