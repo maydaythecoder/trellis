@@ -33,9 +33,9 @@
 //!   an issue whose labels change, and only on the lines that record what
 //!   was changed. Every other byte, line endings included, is kept.
 //! - **An issue that changed after it was read is not written.** It is read
-//!   again before its edit; `--body-file` replaces the whole body, so a
-//!   write over a newer body (a `sync-ready.py` run, a person's edit) would
-//!   silently undo it.
+//!   again before its edit; the REST `PATCH` replaces the whole body and the
+//!   whole label list, so a write over a newer one (a `sync-ready.py` run, a
+//!   person's edit) would silently undo it.
 
 use std::collections::BTreeMap;
 
@@ -45,22 +45,21 @@ use crate::parse::{TRIAGE_END, TRIAGE_START};
 use crate::report::{Line, Value, printable, report, ticket_from_gh_json};
 use crate::{State, TRIAGE_VERSION, Ticket};
 
-/// How many open issues `sweep` asks `gh` for. A list this long may have
-/// been cut short, and a sweep that silently missed issues would report
-/// "no drift" for ones it never read, so it is refused.
+/// The most open issues one sweep or index acts on. The list is read with
+/// `--paginate`, so `gh` no longer stops at a count it was given; the
+/// ceiling stays from when it did (`gh issue list --limit`), and a list
+/// this long is still refused rather than read (#957).
 pub const SWEEP_LIST_LIMIT: usize = 1000;
 
-/// The `gh` argv that lists every open issue with the fields the rules read.
+/// The `gh` argv that lists every open issue through REST. `--paginate`
+/// follows every page: without it the endpoint returns the first 30 and a
+/// sweep would report "no drift" for issues it never read. The list holds
+/// pull requests too; [`plan_sweep`] drops them.
 pub fn gh_list_args() -> Vec<String> {
     [
-        "issue",
-        "list",
-        "--state",
-        "open",
-        "--limit",
-        &SWEEP_LIST_LIMIT.to_string(),
-        "--json",
-        crate::GH_VIEW_FIELDS,
+        "api",
+        "--paginate",
+        "repos/{owner}/{repo}/issues?state=open&per_page=100",
     ]
     .into_iter()
     .map(str::to_string)
@@ -75,7 +74,7 @@ pub enum SweepError {
     #[error("the issue list is not the JSON sweep reads: {0}")]
     ListJson(#[source] serde_json::Error),
     #[error(
-        "the list holds {limit} issues, the most asked for, so it may have been cut short; nothing was swept"
+        "the list holds {limit} or more open issues, the most one sweep acts on; nothing was swept"
     )]
     Truncated { limit: usize },
     #[error("#{number} appears twice in the issue list")]
@@ -147,25 +146,29 @@ impl IssuePlan {
         !self.changes.is_empty() || self.new_body.is_some()
     }
 
-    /// The `gh issue edit` argv for this plan. The body, when there is one,
-    /// goes on stdin.
+    /// The `gh api` argv (a REST `PATCH`) that writes this plan. The body,
+    /// when there is one, goes on stdin (`-F body=@-`). REST sets the whole
+    /// label list, so every label the issue keeps is named, not only the
+    /// changes; an issue left with none gets `labels[]`, gh's empty array.
     pub fn gh_edit_args(&self) -> Vec<String> {
         let mut args = vec![
-            "issue".to_string(),
-            "edit".to_string(),
-            self.number.to_string(),
+            "api".to_string(),
+            "-X".to_string(),
+            "PATCH".to_string(),
+            format!("repos/{{owner}}/{{repo}}/issues/{}", self.number),
         ];
-        for l in self.added() {
-            args.push("--add-label".to_string());
-            args.push(l.to_string());
+        let labels = after(&self.read_labels, &self.changes);
+        if labels.is_empty() {
+            args.push("-f".to_string());
+            args.push("labels[]".to_string());
         }
-        for l in self.removed() {
-            args.push("--remove-label".to_string());
-            args.push(l.to_string());
+        for l in labels {
+            args.push("-f".to_string());
+            args.push(format!("labels[]={l}"));
         }
         if self.new_body.is_some() {
-            args.push("--body-file".to_string());
-            args.push("-".to_string());
+            args.push("-F".to_string());
+            args.push("body=@-".to_string());
         }
         args
     }

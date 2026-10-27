@@ -2,10 +2,15 @@
 //! `index`: both start from what `gh` prints for [`crate::gh_list_args`]
 //! and look up each `blocked_by` entry the list does not hold.
 //!
-//! What `gh` prints is untrusted input. A list that may have been cut
-//! short, names an issue twice, or holds an issue that is not open is
-//! refused as a whole: either command reporting on a partial or wrong list
-//! would read as a statement about every open issue.
+//! What `gh` prints is untrusted input. A list longer than the ceiling
+//! sweep acts on, one that names an issue twice, or one that holds an issue
+//! that is not open is refused as a whole: either command reporting on a
+//! partial or wrong list would read as a statement about every open issue.
+//!
+//! `gh api --help` says each `--paginate` page is a separate JSON array;
+//! the list is read as a sequence of arrays, so one merged array parses
+//! too. The REST issue list holds pull
+//! requests too; they are dropped here, before any check counts them.
 
 use std::collections::BTreeMap;
 
@@ -22,9 +27,23 @@ pub(crate) enum ListError {
     NotOpen { number: u64, state: String },
 }
 
-/// Every issue in `list_json`, in the order `gh` listed them.
+/// Every issue in `list_json`, in the order `gh` listed them, without the
+/// pull requests.
 pub(crate) fn open_issues(list_json: &str) -> Result<Vec<(u64, Ticket)>, ListError> {
-    let issues: Vec<GhIssue> = serde_json::from_str(list_json).map_err(ListError::Json)?;
+    let mut pages = serde_json::Deserializer::from_str(list_json).into_iter::<Vec<GhIssue>>();
+    // No page at all is an empty output, not an empty list (`gh` prints
+    // `[]` for that): parsed as one document, it fails as such.
+    let first = pages
+        .next()
+        .unwrap_or_else(|| serde_json::from_str::<Vec<GhIssue>>(list_json));
+    let mut issues: Vec<GhIssue> = Vec::new();
+    for page in std::iter::once(first).chain(pages) {
+        issues.extend(
+            page.map_err(ListError::Json)?
+                .into_iter()
+                .filter(|i| i.pull_request.is_none()),
+        );
+    }
     if issues.len() >= SWEEP_LIST_LIMIT {
         return Err(ListError::Truncated {
             limit: SWEEP_LIST_LIMIT,

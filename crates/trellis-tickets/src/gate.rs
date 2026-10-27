@@ -219,9 +219,8 @@ pub fn ready_gate(
 }
 
 /// `ready` for issue `number`, reading every issue through `fetch`, which
-/// returns what `gh issue view <n> --json` [`crate::GH_VIEW_FIELDS`]
-/// prints (the argv [`crate::gh_view_args`] builds, the same read `triage`
-/// makes).
+/// returns what `gh` prints for [`crate::gh_view_args`]`(n)` (the same
+/// read `triage` makes).
 ///
 /// `fetch` is called for `number`, then once for each distinct issue
 /// number G0 would look up in its `blocked_by`, and for nothing else. The

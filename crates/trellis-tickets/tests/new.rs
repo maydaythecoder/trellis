@@ -230,34 +230,37 @@ fn new_dry_run_prints_the_gh_create_argv_and_never_files() {
     assert_eq!(
         outcome.plan.gh_create_args(),
         [
-            "issue",
-            "create",
-            "--title",
-            TITLE,
-            "--body-file",
-            "-",
-            "--label",
-            "area:cli",
-            "--label",
-            "kind:feature",
-            "--label",
-            "risk:medium",
-            "--label",
-            "surface:cli",
-            "--label",
-            "effort:s",
-            "--label",
-            "origin:manual",
-            "--label",
-            "triage:auto",
+            "api",
+            "repos/{owner}/{repo}/issues",
+            "-f",
+            &format!("title={TITLE}"),
+            "-F",
+            "body=@-",
+            "-f",
+            "labels[]=area:cli",
+            "-f",
+            "labels[]=kind:feature",
+            "-f",
+            "labels[]=risk:medium",
+            "-f",
+            "labels[]=surface:cli",
+            "-f",
+            "labels[]=effort:s",
+            "-f",
+            "labels[]=origin:manual",
+            "-f",
+            "labels[]=triage:auto",
+            "--jq",
+            ".html_url",
         ]
     );
     let text = shown(&events);
     assert!(
         text.contains(
-            "gh issue create --title 'Add a steer counter to the status line' --body-file - \
-             --label area:cli --label kind:feature --label risk:medium --label surface:cli \
-             --label effort:s --label origin:manual --label triage:auto\n"
+            "gh api 'repos/{owner}/{repo}/issues' -f 'title=Add a steer counter to the status line' \
+             -F body=@- -f 'labels[]=area:cli' -f 'labels[]=kind:feature' -f 'labels[]=risk:medium' \
+             -f 'labels[]=surface:cli' -f 'labels[]=effort:s' -f 'labels[]=origin:manual' \
+             -f 'labels[]=triage:auto' --jq .html_url\n"
         ),
         "{text}"
     );

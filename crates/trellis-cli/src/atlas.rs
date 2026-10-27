@@ -7,7 +7,7 @@
 //! `.trellis/index.bin` (#654, the owner's decision of 2026-10-12); nothing
 //! else here writes to the repository.
 
-use crate::doctor_cmd::Edges;
+use crate::codebase_graph::Edges;
 use serde_json::{Value, json};
 use std::path::Path;
 use trellis_vcs::history::{self, HistoryError};
@@ -45,7 +45,7 @@ pub(crate) fn codebase(
         let sources = trellis_index::read_sources(root);
         let index = trellis_index::build_from_sources(&sources);
         let mut data =
-            crate::doctor_cmd::graph_json(&trellis_index::module_graph(&index), limit, edges);
+            crate::codebase_graph::graph_json(&trellis_index::module_graph(&index), limit, edges);
         match crate::index_cmd::save_index(root, &index) {
             Ok(bytes) => {
                 data["index_saved"] = json!(true);
@@ -73,7 +73,7 @@ pub(crate) fn codebase(
     let at = history::resolve(root, rev).map_err(|e| refusal("get_codebase", root, e))?;
     let copy = history::tree_copy(root, &at.commit, |p| p.ends_with(".py"))
         .map_err(|e| refusal("get_codebase", root, e))?;
-    let mut data = crate::doctor_cmd::codebase_json(copy.path(), limit, edges);
+    let mut data = crate::codebase_graph::codebase_json(copy.path(), limit, edges);
     data["ref"] = json!(rev);
     data["index_saved"] = json!(false);
     data["index_not_saved"] = json!(format!(
