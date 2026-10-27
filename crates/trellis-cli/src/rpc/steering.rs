@@ -12,7 +12,7 @@ use trellis_loop::Steering;
 /// drops the run's future, and the loop's [`trellis_loop::SteeringLog`]
 /// goes with it. So the server keeps every message it sent, in order, with
 /// the command id that sent it, and the run reports each request's
-/// delivered steers here as it makes it (through [`Watched`]). What was
+/// delivered steers here as it makes it (through [`crate::observed_model::Observed`]). What was
 /// sent and not delivered is then known however the run ended.
 ///
 /// Sending, recording and closing happen under one lock, so a message that
@@ -152,7 +152,7 @@ impl SteeringPort {
 
     /// Called as each model request is made, with the steers it carries.
     /// Answers each steer the first time a request carries it.
-    pub(super) fn observe(&self, delivered: &[trellis_loop::Steer]) {
+    pub(crate) fn observe(&self, delivered: &[trellis_loop::Steer]) {
         let mut st = self.state();
         let from = st.delivered;
         if delivered.len() <= from {

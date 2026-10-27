@@ -34,6 +34,7 @@ mod launch; // starting the desktop from `--dsk` (ADR 0050 §1, ADR 0048)
 mod liveness; // whether a pid is running on this machine
 mod log_cmd; // `log` and `why`
 mod models_cmd; // `model`: fetched weights
+mod observed_model; // the one wrapper every run drives its model through
 mod orchestrate; // `agents` and `routines` (ADR 0026)
 mod output; // where output goes, `plain` the terminal-safe printer, and the JSONL framing of `--json` and `rpc`
 mod overview; // `overview` (ADR 0050 §3)

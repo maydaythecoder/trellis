@@ -493,67 +493,6 @@ const SET_BUDGET_FIELDS: &str = "max_iterations, max_wall_clock_ms or max_comple
 /// What `prompt` and `classify` are refused with while a run is in flight.
 const ONE_AT_A_TIME: &str = "a run is in progress; one at a time (abort it, or wait)";
 
-/// A model whose requests are reported to a [`SteeringPort`].
-///
-/// The loop drains the steering channel immediately before each request,
-/// so the steers a request carries are the transcript's delivered ones at
-/// the moment it is made. Reading them here, rather than from the
-/// transcript the run returns, is what makes delivery known on an aborted
-/// run too. With no port it forwards and does nothing else.
-///
-/// It forwards every method but `prompt_tokens`, which only the trail reads,
-/// from the concrete driver after the run (#487).
-pub(crate) struct Watched<'a, M> {
-    model: &'a mut M,
-    port: Option<&'a SteeringPort>,
-}
-
-impl<'a, M> Watched<'a, M> {
-    pub(crate) fn new(model: &'a mut M, port: Option<&'a SteeringPort>) -> Self {
-        Self { model, port }
-    }
-}
-
-impl<M: trellis_loop::Model> trellis_loop::Model for Watched<'_, M> {
-    fn next_step(
-        &mut self,
-        t: &trellis_loop::Transcript,
-    ) -> impl std::future::Future<Output = Result<trellis_loop::Step, String>> + Send {
-        if let Some(p) = self.port {
-            p.observe(&t.steering.delivered);
-        }
-        self.model.next_step(t)
-    }
-
-    fn tokens_used(&self) -> Option<u64> {
-        self.model.tokens_used()
-    }
-
-    fn prompt_bytes(&self) -> Option<usize> {
-        self.model.prompt_bytes()
-    }
-
-    fn context_bytes(&self) -> Option<usize> {
-        self.model.context_bytes()
-    }
-
-    fn compactions(&self) -> &[trellis_loop::Compacted] {
-        self.model.compactions()
-    }
-
-    fn requested_compactions(&self) -> &[trellis_loop::RequestedCompaction] {
-        self.model.requested_compactions()
-    }
-
-    fn step_usage(&self) -> trellis_loop::StepUsage {
-        self.model.step_usage()
-    }
-
-    fn said(&self) -> Option<&str> {
-        self.model.said()
-    }
-}
-
 /// The run of a chain in progress. A follow-up replaces it when it starts.
 #[derive(Clone)]
 struct Current {
@@ -3189,39 +3128,6 @@ mod tests {
             c.server.take().unwrap()
         };
         server.join().unwrap().unwrap();
-    }
-
-    // ---- #248: survivors of the trellis-cli mutation run ----
-
-    #[test]
-    fn watched_passes_the_driver_s_figures_through() {
-        use trellis_loop::Model;
-        let mut inner = crate::testutil::figures();
-        let w = Watched::new(&mut inner, None);
-        assert_eq!(w.tokens_used(), Some(7));
-        assert_eq!(w.prompt_bytes(), Some(4321));
-        assert_eq!(w.context_bytes(), Some(9_000));
-        assert_eq!(w.compactions().len(), 1);
-        assert_eq!(w.compactions()[0].elided_bytes, 50);
-        assert_eq!(w.requested_compactions().len(), 1);
-        assert_eq!(w.requested_compactions()[0].elided_bytes, 60);
-    }
-
-    #[test]
-    fn watched_forwards_step_usage() {
-        // The risk (#256): every RPC run drives its model through
-        // `Watched`, so a default answer here would drop the step's figures
-        // from every `turn` event a client is sent.
-        use trellis_loop::Model;
-        let mut inner = crate::testutil::figures();
-        let w = Watched::new(&mut inner, None);
-        assert_eq!(
-            w.step_usage(),
-            trellis_loop::StepUsage {
-                completion_tokens: Some(13),
-                queue_wait_ms: Some(250),
-            }
-        );
     }
 
     #[test]
