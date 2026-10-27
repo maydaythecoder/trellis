@@ -2594,6 +2594,24 @@ mod tests {
             .join("\n")
     }
 
+    /// The Atlas's modules: atlas.js, the one index.html loads, and the
+    /// modules #955 split out of it along its sections.
+    const ATLAS_MODULES: [&str; 7] = [
+        "atlas.js",
+        "atlas-ask.js",
+        "atlas-view.js",
+        "atlas-draw.js",
+        "atlas-detail.js",
+        "atlas-toolbar.js",
+        "atlas-search.js",
+    ];
+
+    /// The Atlas's code, every module of it read as `code_of` reads one,
+    /// so a test of the Atlas holds wherever #955's split put a line.
+    fn atlas_code() -> String {
+        ATLAS_MODULES.map(code_of).join("\n")
+    }
+
     #[test]
     fn board_section_holds_what_queue_js_draws() {
         // The risk (#311): queue.js drawing into an id the page lacks, so
@@ -3095,7 +3113,7 @@ mod tests {
     }
 
     /// The ids atlas.js draws into or reads, every one inside #atlas.
-    const ATLAS_IDS: [&str; 32] = [
+    const ATLAS_IDS: [&str; 35] = [
         "at-where",
         "at-open-search",
         "at-status",
@@ -3118,12 +3136,15 @@ mod tests {
         "at-canvas",
         "at-legend",
         "at-minimap",
-        "at-tab-sel",
-        "at-tab-chg",
-        "at-tab-pin",
         "at-detail",
         "at-detail-title",
         "at-detail-meta",
+        "at-chg",
+        "at-chg-title",
+        "at-chg-meta",
+        "at-pin",
+        "at-pin-title",
+        "at-pin-meta",
         "at-search",
         "at-q",
         "at-qclose",
@@ -3138,15 +3159,10 @@ mod tests {
         // reach; or the section still saying it is not built.
         let page = page();
         let section = index_of(&page, "atlas");
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         for id in ATLAS_IDS {
-            // The three tabs are named through one template, `at-tab-${t}`,
-            // over their suffixes.
-            let tab = id
-                .strip_prefix("at-tab-")
-                .is_some_and(|t| js.contains("`at-tab-${t}`") && js.contains(&format!("\"{t}\"")));
             assert!(
-                js.contains(&format!("\"{id}\"")) || js.contains(&format!("#{id} ")) || tab,
+                js.contains(&format!("\"{id}\"")) || js.contains(&format!("#{id} ")),
                 "atlas.js draws no {id}"
             );
             assert!(
@@ -3185,6 +3201,72 @@ mod tests {
         );
     }
 
+    /// Each element of `page` that is drawn as a tab, a tab list or a tab
+    /// panel, by its id or its tag.
+    fn tab_roles(page: &[Element]) -> Vec<String> {
+        page.iter()
+            .filter(|e| matches!(e.attr("role"), Some("tab" | "tablist" | "tabpanel")))
+            .map(|e| e.attr("id").map_or_else(|| e.tag.clone(), str::to_string))
+            .collect()
+    }
+
+    #[test]
+    fn atlas_detail_has_no_tabs() {
+        // The risk (#955; DESIGN.md: "No tabs"): the Atlas's detail pane
+        // switching between Selection, Changes and Working set behind tabs,
+        // so two of the three are hidden at any time and a page drawn as one
+        // overview a person burrows into has a second way of moving inside
+        // a level. The three are Panels one under another in the Atlas's
+        // level, the one the Trail names once its overview panel is entered
+        // with ⏎ and that ESC leaves, and nothing in the page is a tab.
+        let page = page();
+        let tabs = tab_roles(&page);
+        assert!(tabs.is_empty(), "the page draws tabs: {tabs:?}");
+        for (module, code) in ui_code() {
+            for bad in [r#"setAttribute("role", "tab"#, "A.tab"] {
+                assert!(!code.contains(bad), "{module} draws a tab: {bad}");
+            }
+        }
+        let atlas = index_of(&page, "atlas");
+        assert_eq!(
+            page[atlas].tag, "section",
+            "the Atlas is not a level's section"
+        );
+        assert!(
+            page.iter()
+                .any(|e| e.tag == "button" && e.attr("data-enter") == Some("atlas")),
+            "no overview panel enters the Atlas"
+        );
+        let js = atlas_code();
+        let render = function_body(&js, "renderPanel");
+        for (body, title, served) in [
+            ("at-detail", "at-detail-title", "Atlas"),
+            ("at-chg", "at-chg-title", "Changes"),
+            ("at-pin", "at-pin-title", "Working set"),
+        ] {
+            let panel = page[index_of(&page, body)]
+                .parent
+                .expect("a detail body has a Panel");
+            assert!(within(&page, panel, atlas), "#{body} is outside #atlas");
+            assert_eq!(page[panel].attr("role"), Some("region"), "#{body}");
+            assert_eq!(page[panel].attr("aria-labelledby"), Some(title), "#{body}");
+            assert_eq!(page[index_of(&page, title)].text.trim(), served);
+            assert!(
+                render.contains(&format!("\"{body}\"")) && render.contains(&format!("\"{title}\"")),
+                "renderPanel does not draw #{body} every time"
+            );
+        }
+        // A planted tab is caught.
+        let html = ui_file("index.html");
+        let planted = html.replacen(
+            r#"<div id="at-chg" class="at-detail">"#,
+            r#"<div id="at-chg" class="at-detail" role="tabpanel">"#,
+            1,
+        );
+        assert_ne!(planted, html, "the Changes Panel's body moved");
+        assert_eq!(tab_roles(&page_of(&planted)), ["at-chg"]);
+    }
+
     #[test]
     fn atlas_js_draws_text_and_asks_only_for_reads() {
         // The risk (ADR 0007, S10; the owner's request of 2026-10-11): a
@@ -3195,7 +3277,7 @@ mod tests {
         // this holds the text; a node smoke script with a fake DOM and a
         // recording canvas ran atlas.js over views the core emitted for the
         // poetry data (see the commit).
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         for bad in [
             "innerHTML",
             "outerHTML",
@@ -3225,8 +3307,7 @@ mod tests {
         // It reaches the core only through rpc.js's send (#819), which
         // calls only rpc_send (model_gate_model_js_parses_no_html).
         assert!(
-            !js.contains("invoke(")
-                && js.contains(r#"import { onShown, send, start } from "./rpc.js";"#),
+            !js.contains("invoke(") && js.contains(r#"import { send } from "./rpc.js";"#),
             "atlas.js reaches the core some other way"
         );
         // Every question carries an Atlas id, so the core keeps its
@@ -3253,7 +3334,7 @@ mod tests {
         // The risk: a map drawn in colours of its own, which ignore the
         // system theme and the page's palette; or a map that stays light
         // when the system turns dark, since the desktop has no theme toggle.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         let palette = function_body(&js, "readPalette");
         for want in ["getComputedStyle(", "getPropertyValue(`--${t}`)"] {
             assert!(palette.contains(want), "readPalette lacks {want}");
@@ -3298,7 +3379,7 @@ mod tests {
         // The risk: an animated flight across the map for someone whose
         // system asks for reduced motion; or a stylesheet rule for the
         // Atlas that moves on its own.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         assert!(js.contains(r#"reduced: win.matchMedia("(prefers-reduced-motion: reduce)")"#));
         let go = function_body(&js, "go");
         let jump = go
@@ -3326,7 +3407,7 @@ mod tests {
         // because the working set threw; or, after another repository is
         // opened, the last one's map, selection and questions in flight
         // staying drawn and answerable as the new one's.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         for f in ["loadPins", "savePins"] {
             let body = function_body(&js, f);
             assert!(
@@ -3361,7 +3442,7 @@ mod tests {
         // section, pushed the whole Atlas below the fold at 1440x900.
         // Showing the Atlas folds it; the user can open it again, and every
         // other section leaves it to model.js, as before.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         let shown = js
             .split(r#"onShown(doc, "atlas", () => {"#)
             .nth(1)
@@ -3388,7 +3469,7 @@ mod tests {
         // scrolled to. A plain wheel scrolls the page, and zooms only once
         // the map has focus or with Ctrl or Meta held, which a trackpad's
         // pinch sends; a one-line hint says so when the wheel was let by.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         let zooms = function_body(&js, "wheelZooms");
         for want in [
             "A.doc.activeElement === A.canvas",
@@ -3423,7 +3504,7 @@ mod tests {
         // taken for being a class; and a "15 defs" line drawn where its
         // module's name did not fit, a count with nothing to say what it
         // counts.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         let symbols = function_body(&js, "drawSymbols");
         assert!(
             !symbols.contains(r#"s.holds ? "class ""#),
@@ -3448,7 +3529,7 @@ mod tests {
         // snapshot before the one shown, almost empty; and the history held
         // eight months, since get_history was asked for its default twelve
         // tags.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         assert!(js.contains("const HISTORY_ASKED = { commits: 20, tags: 200 };"));
         let lens = function_body(&js, "setLens");
         assert!(
@@ -3466,7 +3547,7 @@ mod tests {
         // started heard no child-started, so the root crumb read
         // "repository"; and the first search open took over a second while
         // it built its index.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         assert!(!js.contains(r#""repository""#), "a root with no name");
         let frame = js
             .split(r#"listen("rpc-frame""#)
@@ -3485,7 +3566,7 @@ mod tests {
         // three counts beside ambiguous and unresolved, where the resolved
         // sites belong. Each line says what it counts and where it comes
         // from, and nothing draws them as parts of a whole or a share.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         let head = function_body(&js, "overviewView");
         for want in [
             ".definitions",
@@ -3741,7 +3822,7 @@ mod tests {
         ("radius.js", &["figure", "stats"]),
         ("queue.js", &["figure", "panelMeta", "railRows", "stat"]),
         ("vault.js", &["panelMeta", "stats"]),
-        ("atlas.js", &["panelMeta", "stats", "unreported"]),
+        ("atlas-detail.js", &["panelMeta", "stats", "unreported"]),
         (
             "code.js",
             &["diff", "dsStatus", "lineCounts", "railRows", "wholeFile"],
@@ -5847,7 +5928,7 @@ mod tests {
             }
         }
         assert!(
-            code_of("atlas.js").contains("onEscape((ev) => {"),
+            atlas_code().contains("onEscape((ev) => {"),
             "the Atlas's ESC is not keys.js's"
         );
     }

@@ -448,14 +448,19 @@
             </div>
             <p id="at-keys" class="at-keys muted">Drag or the arrow keys pan; + and - zoom, and so does the wheel once the map is focused or with Ctrl held; 0 fits; a click selects; Escape clears; / searches. The detail pane lists what the map shows.</p>
           </div>
-          <div class="cd-panel at-panel" role="region" aria-labelledby="at-detail-title">
-            <div class="cd-panel-head"><h3 id="at-detail-title" class="cd-panel-title">Atlas</h3><span id="at-detail-meta" class="cd-panel-meta"></span></div>
-            <div class="at-tabs" role="tablist" aria-label="Detail views">
-              <button type="button" role="tab" id="at-tab-sel" aria-selected="true" aria-controls="at-detail">Selection</button>
-              <button type="button" role="tab" id="at-tab-chg" aria-selected="false" aria-controls="at-detail">Changes</button>
-              <button type="button" role="tab" id="at-tab-pin" aria-selected="false" aria-controls="at-detail">Working set</button>
+          <div class="at-side">
+            <div class="cd-panel at-panel at-panel-sel" role="region" aria-labelledby="at-detail-title">
+              <div class="cd-panel-head"><h3 id="at-detail-title" class="cd-panel-title">Atlas</h3><span id="at-detail-meta" class="cd-panel-meta"></span></div>
+              <div id="at-detail" class="at-detail" tabindex="-1"></div>
             </div>
-            <div id="at-detail" class="at-detail" role="tabpanel" aria-labelledby="at-tab-sel" tabindex="-1"></div>
+            <div class="cd-panel at-panel" role="region" aria-labelledby="at-chg-title">
+              <div class="cd-panel-head"><h3 id="at-chg-title" class="cd-panel-title">Changes</h3><span id="at-chg-meta" class="cd-panel-meta"></span></div>
+              <div id="at-chg" class="at-detail"></div>
+            </div>
+            <div class="cd-panel at-panel" role="region" aria-labelledby="at-pin-title">
+              <div class="cd-panel-head"><h3 id="at-pin-title" class="cd-panel-title">Working set</h3><span id="at-pin-meta" class="cd-panel-meta"></span></div>
+              <div id="at-pin" class="at-detail"></div>
+            </div>
           </div>
         </div>
         <div id="at-search" class="at-search" role="dialog" aria-label="Search modules and symbols" hidden>
