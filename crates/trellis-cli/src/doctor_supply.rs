@@ -361,7 +361,7 @@ fn package(p: Option<&serde_json::Value>) -> Option<(String, String)> {
 /// from the lockfile, the registry and the tool, so they are printed plain,
 /// as everything from outside the binary is.
 pub(crate) fn render(report: &Report) -> String {
-    use crate::log_cmd::plain;
+    use crate::plain;
     let ignored_note = |n: usize| {
         if n == 0 {
             String::new()

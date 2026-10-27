@@ -7,7 +7,7 @@ use crate::approval::{Human, answer_on_the_line};
 use crate::driver::{Driver, SeesDone};
 use crate::run_cmd::{
     CompiledNote, RepoInputs, RunExit, TrailFacts, on_run_stack, read_only_action, record_trail,
-    repo_context, run_governance, summarise,
+    repo_context, report_trail, run_governance, summarise,
 };
 use crate::{config, context_files, hosted, output, tooling};
 use anyhow::{Context, Result};
@@ -540,21 +540,15 @@ pub(crate) fn run_partitioned(
         let restored = is_restored_to(root, &base);
         let _ = writeln!(out, "Worktree restored: {restored}.");
         let plan_actions = std::mem::take(&mut trail.plan);
-        match record_trail(
+        let written = record_trail(
             root,
             task,
             &transcript,
             &trail.touched,
             facts(Vec::new(), Vec::new(), plan_actions),
             &mut *out,
-        ) {
-            Ok(p) => {
-                let _ = writeln!(out, "trail:    {} (interrupted)", p.display());
-            }
-            Err(e) => {
-                let _ = writeln!(out, "could not write the trail: {e}");
-            }
-        }
+        );
+        report_trail(&mut *out, written, Some("interrupted"));
         return Ok(RunExit::Interrupted { restored });
     };
     let integrated = match result {
@@ -574,21 +568,15 @@ pub(crate) fn run_partitioned(
             let restored = is_restored_to(root, &base);
             let _ = writeln!(out, "Worktree restored: {restored}.");
             let plan_actions = std::mem::take(&mut trail.plan);
-            match record_trail(
+            let written = record_trail(
                 root,
                 task,
                 &transcript,
                 &trail.touched,
                 facts(Vec::new(), Vec::new(), plan_actions),
                 &mut *out,
-            ) {
-                Ok(p) => {
-                    let _ = writeln!(out, "trail:    {} (survives the rollback)", p.display());
-                }
-                Err(e) => {
-                    let _ = writeln!(out, "could not write the trail: {e}");
-                }
-            }
+            );
+            report_trail(&mut *out, written, Some("survives the rollback"));
             return Ok(RunExit::NotConverged { restored });
         }
     };
@@ -695,21 +683,15 @@ pub(crate) fn run_partitioned(
             let _ = writeln!(out, "Rolled back to {base}. Worktree restored: {restored}.");
             // After the rollback, as in `run_body`: the rollback cleans
             // untracked files, and the trail is one until it is committed.
-            match record_trail(
+            let written = record_trail(
                 root,
                 task,
                 &transcript,
                 &trail.touched,
                 facts(gaps, integrated_checks, plan_actions),
                 &mut *out,
-            ) {
-                Ok(p) => {
-                    let _ = writeln!(out, "trail:    {} (survives the rollback)", p.display());
-                }
-                Err(e) => {
-                    let _ = writeln!(out, "could not write the trail: {e}");
-                }
-            }
+            );
+            report_trail(&mut *out, written, Some("survives the rollback"));
             Ok(RunExit::NotConverged { restored })
         }
     }
