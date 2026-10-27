@@ -18,16 +18,18 @@ func shellState() State {
 	s := populated()
 	s.Running = true
 	s.Model, s.Tier = "ollama:qwen2.5-coder:32b", "2, native tool calls"
+	call1 := &RawCall{Turn: 1, Call: `{"tool":"blast_radius","symbol":"parse_expr"}`, Observation: strp("resolved 12 · candidates 1")}
+	call2 := &RawCall{Turn: 2, Call: `{"tool":"run_checks","scope":"all"}`}
 	s.Transcript = []Row{
 		{Text: "you · task  fix the failing parser test, keeping the comment handling the tokenizer already has", Role: RoleYou, Bar: true},
 		{Text: TurnDivider(1, u(6200), u(412), u(12400)), Role: RoleLabel, Turn: 1},
-		{Text: "· Measured the blast radius of parse_expr", Role: RoleTool, Turn: 1},
-		{Text: "    resolved 12 · candidates 1", Role: RoleOutput, Turn: 1},
+		{Text: "· Measured the blast radius of parse_expr", Role: RoleTool, Turn: 1, Raw: call1},
+		{Text: "    resolved 12 · candidates 1", Role: RoleOutput, Turn: 1, Raw: call1},
 		{Text: "The parser drops the last token when the input ends in a comment."},
 		{Text: "you · steer · queued  leave tokens.py alone", Role: RoleYou, Bar: true},
 		{Text: TurnDivider(2, u(4800), nil, nil), Role: RoleLabel, Turn: 2},
-		{Text: "· Ran the checks: Tests on whole repository", Role: RoleTool, Turn: 2},
-		{Text: "✓ Tests passed · trellis-checks verdict", Role: RolePassed, Turn: 2},
+		{Text: "· Ran the checks: Tests on whole repository", Role: RoleTool, Turn: 2, Raw: call2},
+		{Text: "✓ Tests passed · trellis-checks verdict", Role: RolePassed, Turn: 2, Raw: call2},
 	}
 	s.Actions = []Action{{Tool: "blast_radius", Target: "parse_expr"}, {Tool: "edit", Target: "src/parser.py", Wrote: true}, {Tool: "run_checks"}}
 	s.Budget = Budget{Iteration: 3, MaxIterations: u(40), PromptBytes: u(24100), ElapsedSecs: u(83)}
@@ -70,7 +72,7 @@ func TestShellTrailFirstStatusLastAt120x40And80x24(t *testing.T) {
 				}
 			}
 			top, now, last := rows[0], rows[1], rows[h-1]
-			wantTrail, wantDepth, wantKeys := " Run ", "L1 / 4", "[TAB] select  [⏎] in  [^C] stop"
+			wantTrail, wantDepth, wantKeys := " Run ", "L1 / 4", "[TAB] select  [⏎] in  [^F] filter  [^N] quiet  [^O] call  [^C] stop"
 			if open != "" {
 				wantTrail, wantDepth, wantKeys = " Run ⟩ actions", "L2 / 4  [ESC] out", "[ESC] out  [^C] stop"
 			}

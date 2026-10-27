@@ -135,6 +135,11 @@ type State struct {
 	// Transcript is the transcript's rows, oldest first, each with the
 	// role its writer gave it (model/rows.go).
 	Transcript []Row
+	// Filter and Quiet choose which transcript rows are drawn, and
+	// CallOpen is set while ^O's call box is up (log.go, #948).
+	Filter     LogFilter
+	Quiet      bool
+	CallOpen   bool
 	ScrollBack int
 	Outcome    string
 	Running    bool
@@ -302,11 +307,12 @@ func transcriptW(s State, w, h int) int {
 
 // TranscriptRows is how many rows the transcript wraps to in the layout
 // drawn at w by h: the scroll back that shows its first row (Home, #660).
+// It counts only the rows the filter and quiet mode draw (#948).
 func TranscriptRows(s State, w, h int) int {
 	w, h = max(w, MinWidth), max(h, MinHeight)
 	inner := transcriptW(s, w, h) - 2
 	n := 0
-	for _, r := range s.Transcript {
+	for _, r := range shownRows(s) {
 		n += len(transcriptLines(r, inner))
 	}
 	return n
@@ -438,30 +444,18 @@ func notKept(n int, what string) []Row {
 // role from a row's words: the model's words could then pass for the
 // person's or for a verdict.
 func transcript(s State, w, h int) []string {
-	inner := w - 2
-	var rows []Row
-	for _, r := range s.Transcript {
-		rows = append(rows, rowsOf(r.Role, transcriptLines(r, inner)...)...)
-	}
-	// A pane too short for an inside shows no rows: h-2 below zero made
-	// start pass end and the slice panicked (#842).
-	innerH := max(h-2, 0)
-	// Scrolled back past the first row, the first page is shown: the view
-	// stops at the top rather than drawing an empty pane.
-	end := max(len(rows)-s.ScrollBack, min(innerH, len(rows)))
-	start := end - innerH
-	if start < 0 {
-		start = 0
-	}
-	title := "transcript"
+	// The rows the filter and quiet mode draw (log.go, #948), the page
+	// the scroll back shows of them.
+	rows, _ := pageRows(s, w, h)
+	title := logTitle(s)
 	if s.ScrollBack > 0 {
-		title = "transcript · scrolled back · ↓ to follow"
+		title += " · scrolled back · ↓ to follow"
 	}
 	bottom := ""
 	if s.Outcome != "" {
 		bottom = "last run: " + Plain(s.Outcome)
 	}
-	return Box(s.Theme, title, bottom, rows[start:end], w, h)
+	return Box(s.Theme, title, bottom, rows, w, h)
 }
 
 // checks draws a row per check trellis reported, in ok or down from its
