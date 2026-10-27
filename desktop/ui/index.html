@@ -682,10 +682,11 @@
         <div id="messages-log" class="log" tabindex="0" aria-label="trellis messages"></div>
       </details>
 
-      <dialog id="approval" class="approval" aria-labelledby="approval-title" aria-describedby="approval-question approval-keys">
+      <dialog id="approval" class="approval" aria-labelledby="approval-title" aria-describedby="approval-question approval-for approval-keys">
         <form method="dialog">
           <h2 id="approval-title">Approve this call?</h2>
           <p id="approval-question"></p>
+          <p id="approval-for" class="muted"></p>
           <pre id="approval-detail" class="approval-detail" tabindex="0" aria-label="What the call would do"></pre>
           <p id="approval-keys" class="muted">Escape, or closing this dialog, rejects the call. Review in Code, offered for an edit, answers nothing: the run waits while you approve or reject beside the file's diff. The details above take focus with Tab or Shift+Tab and scroll with the arrow keys.</p>
           <div class="approval-row">
