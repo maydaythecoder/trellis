@@ -588,7 +588,7 @@ h3,
 }
 
 h4 {
-  margin: 10px 0 4px;
+  margin: 10px 0 var(--space-1);
   font-size: 13px;
 }
 
@@ -597,7 +597,7 @@ h4:first-child {
 }
 
 .overview-grid .rows li + li {
-  margin-top: 6px;
+  margin-top: var(--space-1\.5);
 }
 
 /* A button in a pane is the design system's outline Button (.cd-btn): the
@@ -737,7 +737,7 @@ h4:first-child {
 dl {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 2px 12px;
+  gap: var(--space-0\.5) var(--space-3);
   margin: 0;
 }
 
@@ -808,7 +808,7 @@ code {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .composer select,
@@ -867,13 +867,13 @@ code {
 }
 
 .composer-list {
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 
 /* The verbs (#830) are the Queue card's mode options (ds.css's .cd-q-opt):
    the composer's own button look above is not theirs. */
 .composer .cd-q-opt {
-  padding: 2px var(--space-2);
+  padding: var(--space-0\.5) var(--space-2);
   box-shadow: var(--frame);
   color: var(--ink-secondary);
   font: 500 12px/16px var(--font-mono);
@@ -899,7 +899,7 @@ code {
 .chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1\.5);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -910,9 +910,9 @@ code {
 .alert {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-  margin: 0 0 12px;
-  padding: 8px 12px;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--down);
   border-radius: 6px;
   background: var(--panel);
@@ -932,7 +932,7 @@ code {
 .approval button {
   padding: 3px 10px;
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--ground);
   color: var(--ink);
   font: inherit;
@@ -941,8 +941,8 @@ code {
 
 /* trellis's stderr, collapsed until opened. */
 .messages {
-  margin-top: 16px;
-  padding: 8px 12px;
+  margin-top: var(--space-4);
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--panel);
@@ -954,16 +954,16 @@ code {
 }
 
 .messages .log {
-  margin-top: 6px;
+  margin-top: var(--space-1\.5);
 }
 
 /* The approval question: a native modal dialog. */
 .approval {
   width: 90%;
   max-width: 640px;
-  padding: 16px;
+  padding: var(--space-4);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--panel);
   color: var(--ink);
   overflow-wrap: anywhere;
@@ -982,10 +982,10 @@ code {
 .approval-detail {
   max-height: 320px;
   overflow: auto;
-  margin: 8px 0 12px;
-  padding: 8px;
+  margin: var(--space-2) 0 var(--space-3);
+  padding: var(--space-2);
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--ground);
   font: 12px/1.4 ui-monospace, monospace;
   white-space: pre-wrap;
@@ -994,7 +994,7 @@ code {
 .approval-row {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 #approval-approve {
@@ -1247,14 +1247,14 @@ code {
 .cb-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin: 8px 0;
+  gap: var(--space-3);
+  margin: var(--space-2) 0;
 }
 
 .cb-crumbs {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1\.5);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -1262,15 +1262,15 @@ code {
 
 .cb-crumbs li + li::before {
   content: "/";
-  margin-right: 6px;
+  margin-right: var(--space-1\.5);
   color: var(--ink-muted);
 }
 
 .cb-bar button,
 .cb-crumbs button {
-  padding: 1px 8px;
+  padding: 1px var(--space-2);
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--ground);
   color: var(--signal);
   font: inherit;
@@ -1361,10 +1361,10 @@ code {
 #cb-search {
   display: block;
   width: 100%;
-  margin: 4px 0 6px;
-  padding: 4px 6px;
+  margin: var(--space-1) 0 var(--space-1\.5);
+  padding: var(--space-1) var(--space-1\.5);
   border: 1px solid var(--control-border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--ground);
   color: var(--ink);
   font: inherit;
@@ -1377,17 +1377,17 @@ code {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
 }
 
 .rd-form input,
 .vt-form input {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 4px 6px;
+  padding: var(--space-1) var(--space-1\.5);
   border: 1px solid var(--control-border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--ground);
   color: var(--ink);
   font: 12px ui-monospace, monospace;
@@ -1414,7 +1414,7 @@ code {
 }
 
 h5 {
-  margin: 8px 0 2px;
+  margin: var(--space-2) 0 var(--space-0\.5);
   font-size: 12px;
   color: var(--ink-muted);
 }
@@ -1439,10 +1439,10 @@ h5 {
 #tr-filter {
   display: block;
   width: 100%;
-  margin: 4px 0 8px;
-  padding: 4px 6px;
+  margin: var(--space-1) 0 var(--space-2);
+  padding: var(--space-1) var(--space-1\.5);
   border: 1px solid var(--control-border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--ground);
   color: var(--ink);
   font: inherit;
@@ -1487,8 +1487,8 @@ h5 {
 }
 
 article.past-run section + section {
-  margin-top: 12px;
-  padding-top: 8px;
+  margin-top: var(--space-3);
+  padding-top: var(--space-2);
   border-top: 1px solid var(--line);
 }
 
@@ -1508,9 +1508,9 @@ article.past-run section + section {
 .vt-hits button {
   display: block;
   width: 100%;
-  padding: 4px 6px;
+  padding: var(--space-1) var(--space-1\.5);
   border: 1px solid transparent;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--ink);
   font: inherit;
@@ -1529,7 +1529,7 @@ article.past-run section + section {
 }
 
 .vt-note section + section {
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 
 .vt-note code,
@@ -1541,14 +1541,14 @@ article.past-run section + section {
 .qb-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin: 8px 0;
+  gap: var(--space-3);
+  margin: var(--space-2) 0;
 }
 
 .qb-bar button {
-  padding: 1px 8px;
+  padding: 1px var(--space-2);
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--ground);
   color: var(--signal);
   font: inherit;
@@ -1599,7 +1599,7 @@ article.past-run section + section {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 4px 14px;
+  gap: var(--space-1) 14px;
 }
 
 .at-top h2 {
@@ -1613,7 +1613,7 @@ article.past-run section + section {
 }
 
 #at-status {
-  margin: 4px 0 8px;
+  margin: var(--space-1) 0 var(--space-2);
   overflow-wrap: anywhere;
 }
 
@@ -1628,9 +1628,9 @@ article.past-run section + section {
 }
 
 .at-btn {
-  padding: 2px 9px;
+  padding: var(--space-0\.5) 9px;
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--ground);
   white-space: nowrap;
 }
@@ -1641,8 +1641,8 @@ article.past-run section + section {
 }
 
 .at kbd {
-  margin-left: 6px;
-  padding: 0 4px;
+  margin-left: var(--space-1\.5);
+  padding: 0 var(--space-1);
   border: 1px solid var(--line);
   border-radius: 3px;
   font: 11px ui-monospace, monospace;
@@ -1653,7 +1653,7 @@ article.past-run section + section {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: 8px 22px;
+  gap: var(--space-2) 22px;
   margin-bottom: 10px;
 }
 
@@ -1705,7 +1705,7 @@ article.past-run section + section {
 .at-ticks {
   display: flex;
   justify-content: space-between;
-  gap: 4px;
+  gap: var(--space-1);
   font-size: 11px;
   color: var(--ink-muted);
   font-variant-numeric: tabular-nums;
@@ -1728,9 +1728,9 @@ article.past-run section + section {
 }
 
 .at select {
-  padding: 2px 4px;
+  padding: var(--space-0\.5) var(--space-1);
   border: 1px solid var(--control-border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--ground);
   color: var(--ink);
   font: inherit;
@@ -1787,7 +1787,7 @@ article.past-run section + section {
   flex: 1 1 200px;
   flex-wrap: wrap;
   align-items: center;
-  gap: 2px 4px;
+  gap: var(--space-0\.5) var(--space-1);
   min-width: 0;
   margin: 0;
   padding: 0;
@@ -1796,12 +1796,12 @@ article.past-run section + section {
 
 .at-crumbs li + li::before {
   content: "/";
-  margin-right: 4px;
+  margin-right: var(--space-1);
   color: var(--ink-muted);
 }
 
 .at-crumbs button {
-  padding: 0 4px;
+  padding: 0 var(--space-1);
   border: 0;
   border-radius: 3px;
   background: transparent;
@@ -1814,7 +1814,7 @@ article.past-run section + section {
 
 .at-zoom {
   display: inline-flex;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .at-map {
@@ -1848,7 +1848,7 @@ article.past-run section + section {
   margin: 0;
   padding: 3px 10px;
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--panel);
   color: var(--ink);
   font-size: 12px;
@@ -1866,13 +1866,13 @@ article.past-run section + section {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   min-height: 70px;
-  padding: 6px 10px 2px;
+  padding: var(--space-1\.5) 10px var(--space-0\.5);
   border-top: 1px solid var(--line);
   font-size: 12px;
 }
 
 .at-keys {
-  padding: 0 10px 6px;
+  padding: 0 10px var(--space-1\.5);
   font-size: 11px;
 }
 
@@ -1881,7 +1881,7 @@ article.past-run section + section {
   width: 140px;
   height: 100px;
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--panel);
   cursor: crosshair;
   touch-action: none;
@@ -1898,13 +1898,13 @@ article.past-run section + section {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 3px 16px;
+  gap: 3px var(--space-4);
 }
 
 .at-lg-row {
   display: inline-flex;
   align-items: flex-start;
-  gap: 6px;
+  gap: var(--space-1\.5);
   min-width: 0;
 }
 
@@ -1923,7 +1923,7 @@ article.past-run section + section {
   height: 10px;
   margin-top: 3px;
   border: 1px solid var(--cell-line);
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   background: var(--cell);
 }
 
@@ -1990,7 +1990,7 @@ article.past-run section + section {
 
 .at-sw.line {
   height: 0;
-  margin-top: 8px;
+  margin-top: var(--space-2);
   border: 0;
   border-top: 2px solid var(--edge);
   border-radius: 0;
@@ -2033,7 +2033,7 @@ article.past-run section + section {
 .at-ramp {
   display: inline-flex;
   flex-wrap: wrap;
-  gap: 2px;
+  gap: var(--space-0\.5);
 }
 
 .at-ramp > span {
@@ -2054,7 +2054,7 @@ article.past-run section + section {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  padding: 10px 12px 14px;
+  padding: 10px var(--space-3) 14px;
   overflow-wrap: anywhere;
 }
 
@@ -2066,8 +2066,8 @@ article.past-run section + section {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 4px;
-  margin: 12px 0 4px;
+  gap: var(--space-1);
+  margin: var(--space-3) 0 var(--space-1);
 }
 
 .at-detail dl {
@@ -2101,7 +2101,7 @@ article.past-run section + section {
 .at-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1\.5);
 }
 
 .at-pres {
@@ -2141,7 +2141,7 @@ article.past-run section + section {
 .at-rows li {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1\.5);
   min-width: 0;
 }
 
@@ -2178,7 +2178,7 @@ article.past-run section + section {
 
 .at-n {
   margin-left: auto;
-  padding-left: 6px;
+  padding-left: var(--space-1\.5);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -2237,7 +2237,7 @@ article.past-run section + section {
 
 .at-tag {
   flex: 0 0 auto;
-  padding: 0 4px;
+  padding: 0 var(--space-1);
   border: 1px solid var(--line);
   border-radius: 3px;
   font-size: 10.5px;
@@ -2245,7 +2245,7 @@ article.past-run section + section {
 }
 
 .at-kind {
-  margin-right: 4px;
+  margin-right: var(--space-1);
   font-size: 11px;
   color: var(--ink-muted);
 }
@@ -2262,7 +2262,7 @@ article.past-run section + section {
 
 .at-syms th,
 .at-syms td {
-  padding: 2px 4px;
+  padding: var(--space-0\.5) var(--space-1);
   border-bottom: 1px solid var(--line);
   text-align: right;
   font-variant-numeric: tabular-nums;
@@ -2294,7 +2294,7 @@ article.past-run section + section {
   display: inline-block;
   width: 7px;
   height: 7px;
-  margin: 4px 3px 0 4px;
+  margin: var(--space-1) 3px 0 var(--space-1);
   border-radius: 50%;
   background: var(--signal);
 }
@@ -2312,24 +2312,24 @@ article.past-run section + section {
   max-height: 70vh;
   margin: 0 auto;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--panel);
 }
 
 .at-sbar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px;
+  gap: var(--space-2);
+  padding: var(--space-2);
   border-bottom: 1px solid var(--line);
 }
 
 #at-q {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 5px 8px;
+  padding: 5px var(--space-2);
   border: 1px solid var(--control-border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--ground);
   color: var(--ink);
   font: inherit;
@@ -2343,13 +2343,13 @@ article.past-run section + section {
 }
 
 .at-shint {
-  padding: 4px 10px 8px;
+  padding: var(--space-1) 10px var(--space-2);
   font-size: 12px;
 }
 
 .at-qres {
   margin: 0;
-  padding: 4px;
+  padding: var(--space-1);
   overflow: auto;
   list-style: none;
 }
@@ -2357,10 +2357,10 @@ article.past-run section + section {
 .at-qres li {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
-  padding: 4px 6px;
-  border-radius: 4px;
+  padding: var(--space-1) var(--space-1\.5);
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 
@@ -2424,7 +2424,7 @@ article.past-run section + section {
 .icon {
   width: 16px;
   height: 16px;
-  margin-right: 6px;
+  margin-right: var(--space-1\.5);
   vertical-align: -3px;
   flex: none;
 }

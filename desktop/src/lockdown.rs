@@ -6356,6 +6356,180 @@ mod tests {
         );
     }
 
+    /// Of `rules`' `margin`, `padding`, `gap` and `border-radius`
+    /// declarations (longhands included), how many were read, and each that
+    /// writes a length of its own and is not in `exceptions`, as
+    /// `selector { declaration }`. A spacing value may be `0`, `auto` or a
+    /// `var(--space-*)`; a radius `0` or a `var(--radius-*)`. Custom
+    /// properties are the token definitions and are not read. Selectors and
+    /// declarations are compared with their whitespace collapsed.
+    fn off_token_lengths(
+        rules: &[(String, String)],
+        exceptions: &[(&str, &str)],
+    ) -> (usize, Vec<String>) {
+        let mut read = 0;
+        let mut off = Vec::new();
+        for (selector, decls) in rules {
+            let selector = selector.split_whitespace().collect::<Vec<_>>().join(" ");
+            for d in decls.split(';').map(str::trim).filter(|d| !d.is_empty()) {
+                if d.starts_with("--") {
+                    continue;
+                }
+                let Some((prop, value)) = d.split_once(':') else {
+                    continue;
+                };
+                let prop = prop.trim().to_ascii_lowercase();
+                let space = ["margin", "padding", "gap", "row-gap", "column-gap"]
+                    .contains(&prop.as_str())
+                    || prop.starts_with("margin-")
+                    || prop.starts_with("padding-");
+                let radius = prop.starts_with("border") && prop.ends_with("-radius");
+                if !space && !radius {
+                    continue;
+                }
+                read += 1;
+                let token = if space {
+                    "var(--space-"
+                } else {
+                    "var(--radius-"
+                };
+                // `auto` is a keyword that centres or pushes a box, not a
+                // length, so it is no off-scale value.
+                let from_tokens = value.split_whitespace().all(|v| {
+                    v == "0" || (space && v == "auto") || (v.starts_with(token) && v.ends_with(')'))
+                });
+                let d = d.split_whitespace().collect::<Vec<_>>().join(" ");
+                if !from_tokens && !exceptions.contains(&(selector.as_str(), d.as_str())) {
+                    off.push(format!("{selector} {{ {d} }}"));
+                }
+            }
+        }
+        (read, off)
+    }
+
+    #[test]
+    fn page_css_space_and_radius_come_from_the_tokens() {
+        // The risk (#956): a margin, padding, gap or radius written as a
+        // literal length, which tokens.json does not hold, so the page's
+        // rhythm drifts from the design system's 4px grid one rule at a
+        // time. Each is a --space-* or --radius-* token, 0 or auto, except
+        // the off-scale values below, kept as they were so the page draws
+        // exactly as before (1px, 3px, 5px, 9px, 10px, 14px, 18px and 22px
+        // fall between steps, and .at-dot's 50% is a circle at any size).
+        // A 6px radius is --radius-node's value, but DESIGN.md 3.2 gives
+        // that token to graph nodes, and .alert, .messages and .at-seg are
+        // none, so theirs stays 6px rather than move when nodes do.
+        // Each exception names its rule, so a new literal is not waved
+        // through by an old one.
+        let exceptions = [
+            ("h4", "margin: 10px 0 var(--space-1)"),
+            (".alert", "border-radius: 6px"),
+            (".messages", "border-radius: 6px"),
+            (".at-seg", "border-radius: 6px"),
+            (".log-filters .cd-q-opt", "padding: 1px var(--space-2)"),
+            (".rows", "padding-left: 18px"),
+            (".rows li.empty", "margin-left: -18px"),
+            (".alert button, .approval button", "padding: 3px 10px"),
+            (
+                ".cb-bar button, .cb-crumbs button",
+                "padding: 1px var(--space-2)",
+            ),
+            (".qb-bar button", "padding: 1px var(--space-2)"),
+            (".at-top", "gap: var(--space-1) 14px"),
+            (".at-btn", r"padding: var(--space-0\.5) 9px"),
+            (".at kbd", "border-radius: 3px"),
+            (".at-toolbar", "gap: var(--space-2) 22px"),
+            (".at-toolbar", "margin-bottom: 10px"),
+            (".at-field", "gap: 3px"),
+            (".at-seg button", "padding: 3px 10px"),
+            (".at-crumbs button", "border-radius: 3px"),
+            (".at-hint", "padding: 3px 10px"),
+            (".at-mapfoot", "gap: 10px"),
+            (
+                ".at-mapfoot",
+                r"padding: var(--space-1\.5) 10px var(--space-0\.5)",
+            ),
+            (".at-keys", r"padding: 0 10px var(--space-1\.5)"),
+            (".at-legend", "gap: 3px"),
+            (".at-lg-keys", "gap: 3px var(--space-4)"),
+            (".at-sw", "margin-top: 3px"),
+            (".at-detail", "padding: 10px var(--space-3) 14px"),
+            (".at-detail > * + *", "margin-top: 10px"),
+            (".at-src", "margin-left: 5px"),
+            (".at-pres", "gap: 3px"),
+            (".at-pchip", "padding: 0 5px"),
+            (".at-pchip", "border-radius: 3px"),
+            (".at-rows", "gap: 1px"),
+            (".at-lnk", "padding: 1px 3px"),
+            (".at-lnk", "border-radius: 3px"),
+            (".at-bar", "border-radius: 1px"),
+            (".at-tag", "border-radius: 3px"),
+            (".at-dot", "margin: var(--space-1) 3px 0 var(--space-1)"),
+            (".at-dot", "border-radius: 50%"),
+            ("#at-q", "padding: 5px var(--space-2)"),
+            (".at-shint", "padding: var(--space-1) 10px var(--space-2)"),
+        ];
+
+        // The scan reads what it claims to: a literal in each property
+        // family, in a longhand and behind a token, is reported, and the
+        // exception list waves through only its own rule.
+        let planted: Vec<(String, String)> = [
+            (".a", "padding: 3px; margin-top: 8px; color: var(--ink)"),
+            (".b", "gap: var(--space-2) 10px; --space-x: 5px"),
+            (".c", "border-radius: 4px; border-top-left-radius: 2px"),
+            (".d", "margin: 0 auto; border-radius: var(--radius-sm)"),
+            (".e", "gap: var(--radius-sm)"),
+            (".at-sw", "margin-top: 3px"),
+            (".elsewhere", "margin-top: 3px"),
+        ]
+        .into_iter()
+        .map(|(s, d)| (s.to_string(), d.to_string()))
+        .collect();
+        let (read, off) = off_token_lengths(&planted, &exceptions);
+        assert_eq!(read, 10, "the scan skipped a declaration it should read");
+        assert_eq!(
+            off,
+            [
+                ".a { padding: 3px }",
+                ".a { margin-top: 8px }",
+                ".b { gap: var(--space-2) 10px }",
+                ".c { border-radius: 4px }",
+                ".c { border-top-left-radius: 2px }",
+                ".e { gap: var(--radius-sm) }",
+                ".elsewhere { margin-top: 3px }",
+            ],
+            "the scan misses a literal length it should report"
+        );
+
+        let rules = css_rules();
+        let (read, off) = off_token_lengths(&rules, &exceptions);
+        assert!(
+            read > 0,
+            "style.css sets no spacing at all: read the right file?"
+        );
+        assert!(
+            off.is_empty(),
+            "literal lengths outside the tokens:\n{}",
+            off.join("\n")
+        );
+        // An exception whose rule changed or went away is stale, and would
+        // wave the next literal there through.
+        let (_, unlisted) = off_token_lengths(&rules, &[]);
+        for (selector, d) in exceptions {
+            assert!(
+                unlisted.contains(&format!("{selector} {{ {d} }}")),
+                "the exception {selector} {{ {d} }} matches nothing in style.css"
+            );
+        }
+        // Panels are square: --radius-0, as ds.css's .cd-panel is.
+        assert!(
+            rules
+                .iter()
+                .any(|(s, d)| s.trim() == ".pane" && d.contains("border-radius: var(--radius-0)")),
+            ".pane, the page's Panel, does not use --radius-0"
+        );
+    }
+
     #[test]
     fn field_contrast_token_meets_three_to_one_in_both_themes() {
         // The risk (#647, UX-13): `--line` is a pane divider that measures
