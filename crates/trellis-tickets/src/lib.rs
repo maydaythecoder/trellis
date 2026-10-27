@@ -97,7 +97,7 @@ pub enum State {
     Closed,
 }
 
-/// One issue, as `gh issue view --json title,body,labels,state` gives it.
+/// One issue, as `gh api repos/{owner}/{repo}/issues/<n>` gives it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ticket {
     pub title: String,

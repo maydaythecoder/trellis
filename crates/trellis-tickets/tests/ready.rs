@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 
 use trellis_tickets::{
-    Abstention, GH_VIEW_FIELDS, IntakeError, ReadyReport, TriageError, gh_view_args, ready_with,
+    Abstention, IntakeError, ReadyReport, TriageError, gh_view_args, ready_with,
 };
 
 fn recorded(n: u64) -> Result<String, String> {
@@ -296,13 +296,10 @@ fn ready_prints_every_failure_at_once_g0_first() {
 }
 
 #[test]
-fn ready_only_reads_the_issue_and_its_blockers_through_gh_issue_view() {
+fn ready_only_reads_the_issue_and_its_blockers_through_one_rest_read() {
     // The command is read-only: the one argv is a view, the same `triage`
     // builds, asked for #77 and the two issues it names, and nothing else.
-    assert_eq!(
-        gh_view_args(77),
-        ["issue", "view", "77", "--json", GH_VIEW_FIELDS]
-    );
+    assert_eq!(gh_view_args(77), ["api", "repos/{owner}/{repo}/issues/77"]);
     let asked = RefCell::new(Vec::new());
     ready_with(77, |n| {
         asked.borrow_mut().push(n);
