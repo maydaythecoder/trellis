@@ -460,7 +460,7 @@ mod run_tests {
     use crate::config;
     use crate::testutil::sh;
     use crate::{RunControl, RunSeeding, cmd_run};
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::time::Duration;
     use trellis_loop::{TrustState, TrustStore};
 
@@ -471,9 +471,24 @@ mod run_tests {
         crate::testutil::trust_store()
     }
 
-    fn fixture(name: &str, config: &str, script: &str) -> (PathBuf, String) {
+    fn fixture(name: &str, config: &str, script: &str) -> (crate::testutil::Scratch, String) {
+        fixture_in(
+            crate::testutil::scratch(&format!("ext-{name}")),
+            name,
+            config,
+            script,
+        )
+    }
+
+    /// [`fixture`] in `dir`, made by the caller first so a hook in `config`
+    /// can name a file in it.
+    fn fixture_in(
+        mut dir: crate::testutil::Scratch,
+        name: &str,
+        config: &str,
+        script: &str,
+    ) -> (crate::testutil::Scratch, String) {
         let _ = store();
-        let dir = crate::testutil::scratch(&format!("ext-{name}"));
         crate::testutil::git_init(&dir);
         std::fs::create_dir_all(dir.join(".trellis")).unwrap();
         std::fs::write(dir.join(".trellis/config.toml"), config).unwrap();
@@ -482,7 +497,9 @@ mod run_tests {
         let scripts = crate::testutil::scratch(&format!("ext-{name}-script"));
         let path = scripts.join("script.json");
         std::fs::write(&path, script).unwrap();
-        (dir, format!("scripted:{}", path.display()))
+        let spec = format!("scripted:{}", path.display());
+        dir.hold(scripts);
+        (dir, spec)
     }
 
     fn run(dir: &Path, spec: &str) -> String {
@@ -537,7 +554,8 @@ mod run_tests {
         // Cloning a repository and running trellis in it must not execute
         // what the repository supplied. The marker is outside the
         // repository, so a rollback cannot be what removed it.
-        let marker = crate::testutil::scratch("ext-untrusted-marker").join("ran.txt");
+        let outside = crate::testutil::scratch("ext-untrusted-marker");
+        let marker = outside.join("ran.txt");
         let write_marker = sh(&format!("echo ran> {}", marker.display()));
         let config = format!("[hooks]\npre_tool = {write_marker}\nbefore_run = {write_marker}\n");
         let (dir, spec) = fixture("untrusted", &config, EDIT_THEN_STOP);
@@ -838,7 +856,8 @@ mod run_tests {
     fn bash_is_told_the_run_id_the_trail_is_written_under() {
         // A hook or a command correlating on TRELLIS_RUN_ID has to find the
         // trail by it.
-        let out = crate::testutil::scratch("ext-runid-out").join("id.txt");
+        let outside = crate::testutil::scratch("ext-runid-out");
+        let out = outside.join("id.txt");
         let cmd = if cfg!(windows) {
             format!("echo %TRELLIS_RUN_ID%> {}", out.display())
         } else {
@@ -898,24 +917,20 @@ mod run_tests {
         // throwaway clone (ADR 0032, "Hooks") and what it writes there is
         // dropped, so it names the repository's file by absolute path: the
         // writer the clone does not stop, and this guard does. The fixture's
-        // directory is `scratch`'s, known before it is made.
+        // directory is made first, so the hook can name it.
         let script = r#"{"steps":[
             {"tool":"edit","path":"a.py","old":"return 1","new":"return 2"},
             {"tool":"run_checks","paths":[],"kinds":["typecheck"]},
             {"tool":"done","summary":"checked"}
         ]}"#;
-        let late = std::env::temp_dir()
-            .join(format!(
-                "trellis-ext-after-run-writes-{}",
-                std::process::id()
-            ))
-            .join("late.py");
+        let repo = crate::testutil::scratch("ext-after-run-writes");
+        let late = repo.join("late.py");
         let config = format!(
             "[checks]\ntypecheck = {}\n[hooks]\nafter_run = {}\n",
             sh("exit 0"),
             sh(&format!("echo late> {}", late.display()))
         );
-        let (dir, spec) = fixture("after-run-writes", &config, script);
+        let (dir, spec) = fixture_in(repo, "after-run-writes", &config, script);
         assert_eq!(
             dir.join("late.py"),
             late,

@@ -5,11 +5,11 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("trellis-replay-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+mod common;
+use common::Scratch;
+
+fn scratch(name: &str) -> Scratch {
+    common::scratch_dir(&format!("trellis-replay-{name}"))
 }
 
 fn git(root: &Path, args: &[&str]) -> String {
@@ -42,7 +42,7 @@ fn converging(file: &str, value: &str) -> serde_json::Value {
 }
 
 struct Fixture {
-    root: PathBuf,
+    root: Scratch,
     user: PathBuf,
     spec: String,
     head: String,
@@ -65,8 +65,11 @@ fn fixture(name: &str, script: &serde_json::Value) -> Fixture {
     git(&root, &["add", "-A"]);
     git(&root, &["commit", "-qm", "fixture"]);
     let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
-    let user = scratch(&format!("{name}-user"));
-    let path = scratch(&format!("{name}-script")).join("s.json");
+    let user = root.with_extension("user");
+    std::fs::create_dir(&user).unwrap();
+    let scripts = root.with_extension("script");
+    std::fs::create_dir(&scripts).unwrap();
+    let path = scripts.join("s.json");
     std::fs::write(&path, script.to_string()).unwrap();
     Fixture {
         root,

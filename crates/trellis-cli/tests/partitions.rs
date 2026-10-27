@@ -12,11 +12,11 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("trellis-partitions-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+mod common;
+use common::Scratch;
+
+fn scratch(name: &str) -> Scratch {
+    common::scratch_dir(&format!("trellis-partitions-{name}"))
 }
 
 fn git(root: &Path, args: &[&str]) -> String {
@@ -33,7 +33,7 @@ fn git(root: &Path, args: &[&str]) -> String {
 /// calls, so each is its own partition; a user config directory; and a
 /// script outside the repository (inside, it would dirty the worktree).
 struct Fixture {
-    root: PathBuf,
+    root: Scratch,
     user: PathBuf,
     spec: String,
     head: String,
@@ -68,8 +68,11 @@ fn fixture_with(name: &str, config: Option<&str>, script_json: &str) -> Fixture 
     git(&root, &["add", "-A"]);
     git(&root, &["commit", "-qm", "fixture"]);
     let head = git(&root, &["rev-parse", "HEAD"]);
-    let user = scratch(&format!("{name}-user"));
-    let script = scratch(&format!("{name}-script")).join("s.json");
+    let user = root.with_extension("user");
+    std::fs::create_dir(&user).unwrap();
+    let scripts = root.with_extension("script");
+    std::fs::create_dir(&scripts).unwrap();
+    let script = scripts.join("s.json");
     std::fs::write(&script, script_json).unwrap();
     Fixture {
         root,

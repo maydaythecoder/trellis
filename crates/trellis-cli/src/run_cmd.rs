@@ -3145,7 +3145,7 @@ mod interrupt_tests {
         }
     }
 
-    fn temp_repo(name: &str) -> PathBuf {
+    fn temp_repo(name: &str) -> crate::testutil::Scratch {
         let dir = crate::testutil::scratch(&format!("cli-test-{name}"));
         crate::testutil::git_init(&dir);
         std::fs::write(dir.join("a.py"), "def f():\n    return 1\n").unwrap();

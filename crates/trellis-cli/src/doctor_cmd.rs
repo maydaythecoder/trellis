@@ -992,9 +992,8 @@ fn repo_lines(root: &Path, cfg: &config::RepoConfig) -> Vec<String> {
 #[cfg(test)]
 mod doctor_tests {
     use super::*;
-    use std::path::PathBuf;
 
-    fn repo(name: &str) -> PathBuf {
+    fn repo(name: &str) -> crate::testutil::Scratch {
         let dir = crate::testutil::scratch(&format!("doctor-{name}"));
         std::fs::create_dir_all(dir.join("app")).unwrap();
         crate::testutil::git_init(&dir);
@@ -1140,9 +1139,7 @@ mod doctor_tests {
         // Zero definitions reads as a repository with no code. The likelier
         // cause is a wrong --root or a tree `discover` skips, and the line
         // says so instead of leaving a user staring at 0.
-        let dir = std::env::temp_dir().join(format!("trellis-doctor-empty-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::testutil::scratch("doctor-empty");
         crate::testutil::git_ok(&dir, &["init", "-q"]);
         let cfg = config::RepoConfig::load(&dir).unwrap();
         let lines = repo_lines(&dir, &cfg).join(
@@ -1152,7 +1149,6 @@ mod doctor_tests {
 
         assert!(lines.contains("index:      EMPTY"), "{lines}");
         assert!(lines.contains("--root"), "{lines}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1211,13 +1207,12 @@ mod doctor_tests {
 mod report_tests {
     use super::*;
     use crate::run_cmd::{action_from, summarise};
-    use std::path::PathBuf;
 
-    fn bare(name: &str) -> PathBuf {
+    fn bare(name: &str) -> crate::testutil::Scratch {
         crate::testutil::scratch(&format!("init-{name}"))
     }
 
-    fn repo(name: &str) -> PathBuf {
+    fn repo(name: &str) -> crate::testutil::Scratch {
         let d = bare(name);
         crate::testutil::git_init(&d);
         d

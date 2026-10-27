@@ -591,6 +591,7 @@ fn failed(args: &[&str], stderr: &str) -> VcsError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::{Scratch, scratch};
     use std::collections::BTreeMap;
 
     fn sh(root: &Path, args: &[&str]) -> String {
@@ -600,10 +601,8 @@ mod tests {
     /// A repository whose first commit holds Python files, a README, an
     /// executable and (on Unix) a symlink, and whose second commit changes
     /// one of them, so a copy of the first differs from the worktree.
-    fn repo(name: &str) -> (PathBuf, String) {
-        let dir =
-            std::env::temp_dir().join(format!("trellis-vcs-history-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn repo(name: &str) -> (Scratch, String) {
+        let dir = scratch(&format!("history-{name}"));
         std::fs::create_dir_all(dir.join("pkg/sub")).unwrap();
         sh(&dir, &["init", "-q"]);
         sh(&dir, &["config", "user.email", "t@example.invalid"]);
@@ -770,9 +769,9 @@ mod tests {
             ]
         };
         let cases = [
-            ("missing", &dir, after_a("b.py", &missing)),
-            ("header", &dir, after_a("t.py", &tree)),
-            ("exit status", &broken, Vec::new()),
+            ("missing", &*dir, after_a("b.py", &missing)),
+            ("header", &*dir, after_a("t.py", &tree)),
+            ("exit status", broken.as_path(), Vec::new()),
         ];
         for (what, root, wanted) in cases {
             let d = fresh_dir().unwrap();
@@ -1030,10 +1029,7 @@ mod tests {
 
     #[test]
     fn head_of_a_repository_with_no_commit_is_none_not_an_error() {
-        let dir =
-            std::env::temp_dir().join(format!("trellis-vcs-history-unborn-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch("history-unborn");
         sh(&dir, &["init", "-q"]);
         assert_eq!(head(&dir).unwrap(), None);
         let _ = std::fs::remove_dir_all(&dir);

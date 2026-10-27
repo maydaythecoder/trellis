@@ -10,11 +10,11 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("trellis-queue-it-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+mod common;
+use common::Scratch;
+
+fn scratch(name: &str) -> Scratch {
+    common::scratch_dir(&format!("trellis-queue-it-{name}"))
 }
 
 fn git(root: &Path, args: &[&str]) -> String {
@@ -72,7 +72,7 @@ fn combined(o: &Output) -> String {
 /// A repository whose checks always pass (`git --version`), and two
 /// scripts: `converge.json` edits and converges, `stop.json` stops at once
 /// and so does not converge and is rolled back.
-fn fixture(name: &str) -> PathBuf {
+fn fixture(name: &str) -> Scratch {
     let d = scratch(name);
     git(&d, &["init", "-q"]);
     git(&d, &["config", "user.email", "t@example.invalid"]);
@@ -307,7 +307,7 @@ fn task_worktree_of_a_rolled_back_task_is_removed_and_its_branch_keeps_the_trail
 /// checks the refusal of ADR 0053 decision 2: exit 1, the reason printed,
 /// the task back in `pending/` byte for byte, nothing run, and nothing
 /// left in `claimed/`.
-fn refused_untouched(name: &str, setup: impl FnOnce(&Path, &str), why: &str) -> (PathBuf, String) {
+fn refused_untouched(name: &str, setup: impl FnOnce(&Path, &str), why: &str) -> (Scratch, String) {
     let d = fixture(name);
     add(&d, &["one"]);
     let id = ids(&d, "pending")[0].clone();
@@ -616,7 +616,8 @@ fn a_queued_focus_is_the_goal_ancestry_the_run_is_shown() {
 fn log_json_writes_the_per_turn_events_as_jsonl() {
     let d = fixture("log-json");
     // Outside the repository: a log inside it would dirty the worktree.
-    let log = scratch("log-json-out").join("events.jsonl");
+    let log_dir = scratch("log-json-out");
+    let log = log_dir.join("events.jsonl");
     add(&d, &["change the greeting"]);
     let o = trellis(
         &d,
@@ -1337,7 +1338,7 @@ fn work_sends_no_key_to_an_endpoint_the_repository_chose() {
 /// `fixture` with an `after_run` hook that records each run in `marker`, a
 /// file outside the repository (hooks run in a throwaway clone, ADR 0032),
 /// and a trust store of its own in `home`.
-fn hooked(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+fn hooked(name: &str) -> (Scratch, Scratch, PathBuf) {
     let d = fixture(name);
     let home = scratch(&format!("{name}-home"));
     let marker = home.join("marker.cfg");
