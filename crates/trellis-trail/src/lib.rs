@@ -239,10 +239,10 @@ impl Steer {
 /// records it.
 ///
 /// Tagged `control` rather than `kind`, because a withdrawal keeps a steering
-/// entry's own `kind`, `text` and `len`. None of it is a correctness claim,
-/// and there is no pass variant (ADR 0004). Read back, every field is data
-/// written by whoever last edited the file (ADR 0007): a recorded ceiling is
-/// never a budget, and a withdrawn text never reaches a prompt.
+/// entry's own `kind` and `len`. None of it is a correctness claim, and there
+/// is no pass variant (ADR 0004). Read back, every field is data written by
+/// whoever last edited the file (ADR 0007): a recorded ceiling is never a
+/// budget.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "control", rename_all = "snake_case")]
 pub enum Control {
@@ -262,35 +262,22 @@ pub enum Control {
         new: u64,
     },
     /// A message taken back before it reached the model or a later run.
-    /// `turn` is the one its steering entry would have carried. Built with
-    /// [`Control::withdraw`], never a struct literal, so the cut holds.
+    /// `turn` is the one its steering entry would have carried.
+    ///
+    /// No text, by the owner's decision of 2026-10-27 (ADR 0007's #868
+    /// amendment): a committed trail is a file a later run's model can read
+    /// through `read_file` or `bash`, and it would see what the person took
+    /// back.
     Withdraw {
         turn: u32,
         kind: SteerKind,
-        /// The text as typed, cut at [`STEER_TEXT_MAX_CHARS`] characters.
-        text: String,
-        /// The text's true length in characters.
+        /// The message's length in characters, as `Steer::len` counts it.
         len: u64,
     },
     /// A control written by a newer build. Kept so its trail still parses
     /// rather than being refused whole; nothing reads anything from it.
     #[serde(other)]
     Unrecognised,
-}
-
-impl Control {
-    /// The one way a writer builds a withdrawal, so no path stores more
-    /// text than [`Steer::new`] would: cut by characters, with the true
-    /// length kept.
-    pub fn withdraw(turn: u32, kind: SteerKind, text: &str) -> Self {
-        let s = Steer::new(turn, kind, text);
-        Control::Withdraw {
-            turn: s.turn,
-            kind: s.kind,
-            text: s.text,
-            len: s.len,
-        }
-    }
 }
 
 /// One file a run was given, as `Factual::inputs` records it.

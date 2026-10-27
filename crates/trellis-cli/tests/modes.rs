@@ -6099,7 +6099,11 @@ fn rpc_run_trail_records_its_pause_raise_and_withdrawal_with_their_turns() {
             openai_call("c2", "done", serde_json::json!({"summary": "changed it"})),
         ],
     );
-    let gone = "STEER-868 look at g instead";
+    // Built at run time, so the only way it reaches the trail is the run.
+    let gone = format!(
+        "STEER-868-WITHDRAWN-{} look at g instead",
+        std::process::id()
+    );
     rpc.send(serde_json::json!({"id": "s", "type": "steer", "message": gone}));
     rpc.send(serde_json::json!({"id": "s", "type": "withdraw"}));
     let w = withdrawn(&mut rpc, "s");
@@ -6134,7 +6138,7 @@ fn rpc_run_trail_records_its_pause_raise_and_withdrawal_with_their_turns() {
         serde_json::json!([
             {"control": "pause", "turn": 2, "paused_ms": resumed["fields"]["paused_ms"]},
             {"control": "raise", "turn": 2, "ceiling": "max_iterations", "old": 1, "new": 3},
-            {"control": "withdraw", "turn": 2, "kind": "steer", "text": gone,
+            {"control": "withdraw", "turn": 2, "kind": "steer",
              "len": gone.chars().count()},
         ]),
         "{}",
@@ -6145,6 +6149,18 @@ fn rpc_run_trail_records_its_pause_raise_and_withdrawal_with_their_turns() {
         "a withdrawn steer is a control, never a steering entry: {}",
         trails[0]
     );
+    // The owner's decision of 2026-10-27 (ADR 0007): a later run's model can
+    // read this file through `read_file` or `bash`, so the text a person
+    // took back is in none of its bytes, under any key.
+    for e in std::fs::read_dir(f.root.join(".trellis/runs")).unwrap() {
+        let p = e.unwrap().path();
+        let file = String::from_utf8_lossy(&std::fs::read(&p).unwrap()).into_owned();
+        assert!(
+            !file.contains("STEER-868-WITHDRAWN"),
+            "a withdrawn text is in {}: {file}",
+            p.display()
+        );
+    }
 
     // `log --json` carries the list, as the contract says it may.
     assert!(

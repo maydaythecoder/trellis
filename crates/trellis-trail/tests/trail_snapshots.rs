@@ -201,7 +201,11 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
                 old: 3,
                 new: 5,
             },
-            Control::withdraw(3, SteerKind::FollowUp, "then rename the tests"),
+            Control::Withdraw {
+                turn: 3,
+                kind: SteerKind::FollowUp,
+                len: 21,
+            },
         ],
         label: Some("installer rename".into()),
         // Present for its shape, though the final outcomes above passed: a

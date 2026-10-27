@@ -143,7 +143,6 @@ expression: "trail_json(\"rename Installer.run\", Some(\"2026-09-18T05:14:32Z\")
         "control": "withdraw",
         "turn": 3,
         "kind": "follow_up",
-        "text": "then rename the tests",
         "len": 21
       }
     ],
@@ -161,7 +160,7 @@ expression: "trail_json(\"rename Installer.run\", Some(\"2026-09-18T05:14:32Z\")
       }
     ]
   },
-  "factual_sha256": "4ed7bcf957c5a4e075d08ea116143991c3ac17535c6f7ca7fcbf599062654452",
+  "factual_sha256": "721ceea8068aea20b664f79f17ae8838a56eb1d421a5d3cb9742258720df7faa",
   "judgment": {
     "tech_debt_projection": "the alias will need removing",
     "rationale": "kept the old name as an alias"

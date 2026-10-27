@@ -2875,13 +2875,14 @@ pub(crate) fn steering_entries(
 ///
 /// A withdrawal takes the turn its steering entry would have carried, by
 /// `steering_entries`' rules: a steer dropped at the drain before request
-/// N + 1 takes N + 1, anything else the turn the run had reached. Every
-/// withdrawal goes through `Control::withdraw`, so the cut holds.
+/// N + 1 takes N + 1, anything else the turn the run had reached. A
+/// withdrawal is its kind and length only; the loop never hands this the
+/// text (ADR 0007's #868 amendment).
 pub(crate) fn control_entries(
     controls: &[trellis_loop::RunControl],
     reached: usize,
 ) -> Vec<trellis_trail::Control> {
-    use trellis_loop::{RunControl, Steering};
+    use trellis_loop::RunControl;
     use trellis_trail::{Control, SteerKind};
     controls
         .iter()
@@ -2902,18 +2903,21 @@ pub(crate) fn control_entries(
                 new: *new,
             },
             RunControl::Withdrawn {
-                message,
+                follow_up,
+                len,
                 before_request,
-            } => {
-                let turn = match before_request {
+            } => Control::Withdraw {
+                turn: match before_request {
                     Some(after_step) => *after_step as u32 + 1,
                     None => reached as u32,
-                };
-                match message {
-                    Steering::Steer(text) => Control::withdraw(turn, SteerKind::Steer, text),
-                    Steering::FollowUp(text) => Control::withdraw(turn, SteerKind::FollowUp, text),
-                }
-            }
+                },
+                kind: if *follow_up {
+                    SteerKind::FollowUp
+                } else {
+                    SteerKind::Steer
+                },
+                len: *len,
+            },
         })
         .collect()
 }
