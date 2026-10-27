@@ -4,35 +4,35 @@
  h │ how the run ended                                                                                                 │
  e │   outcome   ● converged                                                                                           │
  r │   exit      0                                                                                                     │
+   │                                                                                                                   │
+ a │ CHECKS BY KIND · trellis-checks' verdict and the turn's time                                                      │
+ c │   Typecheck                                                                                                       │
+ t │     turn 2  passed  120 ms                                                                                        │
+ i │     turn 6  passed  —  the turn's event carried no duration_ms                                                    │
+   │   Tests                                                                                                           │
+ e │     turn 3  failed  340 ms                                                                                        │
+ d │                                                                                                                   │
+ i │ VERIFIED AND REVIEWED · from the trail, two figures                                                               │
+ t │   Verified  —  trellis rpc sends no mode counts, and this view reads no trail; `trellis log` lists run            │
+   │                r-20261026-1                                                                                       │
+ c │   Reviewed  —  trellis rpc sends no mode counts, and this view reads no trail; `trellis log` lists run            │
+ h │                r-20261026-1                                                                                       │
  e │                                                                                                                   │
-   │ CHECKS BY KIND · trellis-checks' verdict and the turn's time                                                      │
- a │   Typecheck                                                                                                       │
- c │     turn 2  passed  120 ms                                                                                        │
- t │     turn 6  passed  —  the turn's event carried no duration_ms                                                    │
- i │   Tests                                                                                                           │
- o │     turn 3  failed  340 ms                                                                                        │
-   │                                                                                                                   │
- e │ VERIFIED AND REVIEWED · from the trail, two figures                                                               │
- d │   Verified  —  trellis rpc sends no mode counts, and this view reads no trail; `trellis log` lists run            │
- i │                r-20261026-1                                                                                       │
- t │   Reviewed  —  trellis rpc sends no mode counts, and this view reads no trail; `trellis log` lists run            │
- s │                r-20261026-1                                                                                       │
-   │                                                                                                                   │
  c │ RADIUS                                                                                                            │
- h │   resolved    47                                                                                                  │
- e │   candidates  3                                                                                                   │
- c │   unresolved  2                                                                                                   │
- k │   a floor on reach, not a boundary                                                                                │
-   │                                                                                                                   │
- r │ FILES                                                                                                             │
- a │   src/parser.py                                                                          +3 −1  ● left in the tree│
- d │   tests/test_parser.py                                                                       —  ● left in the tree│
+   │   resolved    47                                                                                                  │
+ r │   candidates  3                                                                                                   │
+ a │   unresolved  2                                                                                                   │
+ d │   a floor on reach, not a boundary                                                                                │
  i │                                                                                                                   │
- u │ BUDGET · used/ceiling                                                                                             │
-   │   TURNS        ██░░░░░░░░░░░░░░ 6/40                                                                              │
-   └ rows 1–29 of 40 · [↑][↓] [PGUP][PGDN] ────────────────────────────────────────────────────────────────────────────┘
+   │ FILES                                                                                                             │
+   │   src/parser.py                                                                          +3 −1  ● left in the tree│
+   │   tests/test_parser.py                                                                       —  ● left in the tree│
+   └ rows 1–26 of 40 · [↑][↓] [PGUP][PGDN] ────────────────────────────────────────────────────────────────────────────┘
 ┌ budget ──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│TURNS ██░░░░░░░░░░░░░░ 6/40  ·  PROMPT 24.1 kB  ·  TIME 1:23                                                          │
+│   TURNS        ██░░░░░░░░░░░░░░ 6/40                                                                                 │
+│   WALL CLOCK   ████░░░░░░░░░░░░ 1:23/5:21                                                                            │
+│   COMPLETION   █░░░░░░░░░░░░░░░ 540/54321 tokens                                                                     │
+│   LAST PROMPT  ███░░░░░░░░░░░░░ 24.1 kB/123.5 kB                                                                     │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌ task  [⏎] run  [ESC] clear  /help ───────────────────────────────────────────────────────────────────────────────────┐
 │█                                                                                                                     │

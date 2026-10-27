@@ -188,12 +188,13 @@ func TestCompleteListIsCapped(t *testing.T) {
 		m.Offered[OfferedCap] != "30 more path(s) not listed" {
 		t.Fatalf("offered %q", m.Offered)
 	}
-	// At 80x26 the whole capped list fits: at 80x24 the Now strip's row
-	// (#850) and the status bar's under the task box (#851) leave it two
-	// rows short, and the list then says what it cuts.
-	m.Update(tea.WindowSizeMsg{Width: 80, Height: 26})
+	// At 80x29 the whole capped list fits: at 80x24 the Now strip's row
+	// (#850), the status bar's under the task box (#851) and the budget
+	// box's three rows past its first (#951) leave it five rows short, and
+	// the list then says what it cuts.
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 29})
 	screen := m.View()
-	if len(strings.Split(screen, "\n")) != 26 || !strings.Contains(screen, last) ||
+	if len(strings.Split(screen, "\n")) != 29 || !strings.Contains(screen, last) ||
 		!strings.Contains(screen, "30 more path(s) not listed") || strings.Contains(screen, fmt.Sprintf("src/m%02d.py", OfferedCap+1)) {
 		t.Fatalf("%s", screen)
 	}

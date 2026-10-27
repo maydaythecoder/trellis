@@ -139,7 +139,7 @@ func TestNowClockIsLabelledAndSkipsApprovalWaits(t *testing.T) {
 	if s := stripOf(t, m); !strings.Contains(s, "0:15*") {
 		t.Fatalf("after the answer: %q", s)
 	}
-	if v := m.View(); !strings.Contains(v, "TIME 0:15*") {
+	if v := m.View(); !strings.Contains(v, "WALL CLOCK   0:15*/—") {
 		t.Fatalf("the budget line's figure is not the strip's:\n%s", v)
 	}
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
@@ -192,7 +192,7 @@ func TestUnreportedFigureIsADash(t *testing.T) {
 	m := running(t)
 	m.Update(windowSize(120, 40))
 	v := m.View()
-	for _, want := range []string{" ● RUNNING  0:00*  —/—", "TURNS —/—", "PROMPT —", "runtime  —", "control  —", "root     —"} {
+	for _, want := range []string{" ● RUNNING  0:00*  —/—", "TURNS        —/—", "WALL CLOCK   0:00*/—", "COMPLETION   —/— tokens", "LAST PROMPT  —/—", "runtime  —", "control  —", "root     —"} {
 		if !strings.Contains(v, want) {
 			t.Fatalf("%q is not on screen:\n%s", want, v)
 		}
@@ -257,7 +257,7 @@ func TestNowClockIsTheEnginesWhenReported(t *testing.T) {
 	shows("2 s after the answer", "2:11")
 	feed(m, turn(1, "edit a.py", map[string]any{"tool": "edit", "target": "a.py", "wrote": true, "elapsed_ms": 200_000}))
 	shows("at the turn, whose figure replaces the count", "3:20")
-	if v := m.View(); !strings.Contains(v, "TIME 3:20") || strings.Contains(v, "TIME 3:20*") {
+	if v := m.View(); !strings.Contains(v, "WALL CLOCK   3:20/—") || strings.Contains(v, "3:20*") {
 		t.Fatalf("the budget line's figure is not the strip's:\n%s", v)
 	}
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0, "elapsed_ms": 201_999}))

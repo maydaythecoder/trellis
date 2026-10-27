@@ -1,7 +1,6 @@
  Run                                                            L1 / 4  TRELLIS 
  ● RUNNING  1:23*  █░░░░░░░ 3/40  [^P] pause  running edit → src/parser.py      
 ┌ transcript ──────────────────────────────────────────────────────────────────┐
-│▎ you · task  fix the failing parser test, keeping the comment handling the   │
 │▎ tokenizer already has                                                       │
 │─ turn 1 · model 6200 ms · 412 tok out · 12400 B prompt                       │
 │· Measured the blast radius of parse_expr                                     │
@@ -11,12 +10,13 @@
 │─ turn 2 · model 4800 ms · — tok out · — B prompt                             │
 │· Ran the checks: Tests on whole repository                                   │
 │✓ Tests passed · trellis-checks verdict                                       │
-│                                                                              │
-│                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
  where · actions 3 · edits 1 · checks 1 · radius · plan · summary   [TAB] select
 ┌ budget  [^R] raise ──────────────────────────────────────────────────────────┐
-│TURNS █░░░░░░░░░░░░░░░ 3/40  ·  PROMPT 24.1 kB  ·  TIME 1:23*                 │
+│   TURNS        █░░░░░░░░░░░░░░░ 3/40                                         │
+│   WALL CLOCK   1:23*/—                                                       │
+│   COMPLETION   —/— tokens                                                    │
+│   LAST PROMPT  24.1 kB/—                                                     │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌ steer  [⏎] queue for the next turn ──────────────────────────────────────────┐
 │█                                                                             │
