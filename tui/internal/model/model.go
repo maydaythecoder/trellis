@@ -81,6 +81,13 @@ type Model struct {
 	steers []steer
 	// deliveries counts this run's steer delivered events.
 	deliveries int
+	// dividedTurn is the turn whose divider the transcript last drew, 0
+	// before this run's first (turns count from 1).
+	dividedTurn uint64
+	// echoAt is one past the index of the row echoing the line classify
+	// was asked about, 0 when there is none: it is relabelled a task once
+	// trellis says it is one (route.go). pushRow moves it as the cap trims.
+	echoAt int
 	// verb is what ⏎ does with a line while a run is in flight, queue the
 	// composer's list, and held the line a Stop and send holds (compose.go).
 	verb  view.Verb
@@ -504,36 +511,41 @@ func (m *Model) frame(f frames.Frame) {
 	}
 }
 
-// turn adds the turn's row: what was called, as ToolSentence words it, and,
-// when a check ran, what trellis said it returned. The verdict is shown,
-// never computed (ADR 0004), and it alone makes the row a passed or a
-// failed check.
+// turn adds the turn's rows: the divider its rows start under, once a
+// turn, then what was called, as ToolSentence words it, what the call
+// returned under it, and, when a check ran, a check row of its own. The
+// verdict is shown, never computed (ADR 0004), and it alone makes a check
+// row and its role; the call's own row stays a call whatever it says.
 func (m *Model) turn(t *frames.TurnFields) {
-	row := view.Row{Text: "· " + ToolSentence(t), Role: view.RoleTool, Turn: int(t.Turn)}
-	if t.Verdict != nil {
-		switch *t.Verdict {
-		case "Some(true)":
-			row.Text += "  ✓ " + checkWords(t, "passed")
-			row.Role = view.RolePassed
-		case "Some(false)":
-			row.Text += "  ✗ " + checkWords(t, "failed")
-			row.Role = view.RoleFailed
-		}
+	n := int(t.Turn)
+	// One turn can send two turn events (the audit's follows the last
+	// call's, under its number): its rows share one divider.
+	if m.dividedTurn != t.Turn {
+		m.dividedTurn = t.Turn
+		m.pushRow(view.Row{Text: view.TurnDivider(t.Turn, t.ModelMs, t.CompletionTokens, t.PromptBytes), Role: view.RoleLabel, Turn: n})
 	}
-	m.pushRow(row)
+	m.pushRow(view.Row{Text: "· " + ToolSentence(t), Role: view.RoleTool, Turn: n})
 	// The observation's first six lines under it, so a turn's result is
 	// in the transcript without one long observation filling the screen.
 	if t.Observation != nil {
-		n := 0
+		lines := 0
 		for _, l := range strings.Split(*t.Observation, "\n") {
-			if n == 6 {
+			if lines == 6 {
 				break
 			}
-			if strings.TrimSpace(l) == "" && n == 0 {
+			if strings.TrimSpace(l) == "" && lines == 0 {
 				continue
 			}
-			m.pushRow(view.Row{Text: "    " + view.Plain(l), Role: view.RoleOutput, Turn: row.Turn})
-			n++
+			m.pushRow(view.Row{Text: "    " + view.Plain(l), Role: view.RoleOutput, Turn: n})
+			lines++
+		}
+	}
+	if t.Verdict != nil {
+		switch *t.Verdict {
+		case "Some(true)":
+			m.pushRow(view.Row{Text: "✓ " + checkWords(t, "passed") + " · " + checkSource, Role: view.RolePassed, Turn: n})
+		case "Some(false)":
+			m.pushRow(view.Row{Text: "✗ " + checkWords(t, "failed") + " · " + checkSource, Role: view.RoleFailed, Turn: n})
 		}
 	}
 	m.panesTurn(t)
@@ -581,6 +593,10 @@ func ToolSentence(t *frames.TurnFields) string {
 		return strings.TrimSpace(view.Plain(tool) + " " + target)
 	}
 }
+
+// checkSource names who produced a check row's verdict, as the Transcript
+// card does: trellis-checks, never the model (ADR 0004).
+const checkSource = "trellis-checks verdict"
 
 // checkWords is a check row's words: the kind trellis-checks named, or
 // "check" when it named none, then the word for the verdict it sent.
