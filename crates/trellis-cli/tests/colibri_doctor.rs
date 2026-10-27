@@ -8,7 +8,7 @@
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
 
@@ -114,16 +114,16 @@ fn colibri() -> (String, Arc<Mutex<Vec<String>>>) {
     stub(MODELS_COLIBRI.into(), HEALTH_FULL.into())
 }
 
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("trellis-colibri-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+mod common;
+use common::Scratch;
+
+fn scratch(name: &str) -> Scratch {
+    common::scratch_dir(&format!("trellis-colibri-{name}"))
 }
 
 /// A git repository with one Python file, and `config` as its
 /// `.trellis/config.toml` when given.
-fn repo(name: &str, config: Option<&str>) -> PathBuf {
+fn repo(name: &str, config: Option<&str>) -> Scratch {
     let d = scratch(name);
     let out = trellis_vcs::command()
         .args(["init", "-q"])

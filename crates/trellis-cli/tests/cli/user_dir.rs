@@ -17,7 +17,7 @@ fn run_as(root: &Path, user: &Path, args: &[&str]) -> Output {
 
 /// A user directory with package `kit` installed by hand: one skill,
 /// `tidy`, and one template, `kitfix`.
-fn user_with_kit(name: &str) -> PathBuf {
+fn user_with_kit(name: &str) -> Scratch {
     let user = scratch(name);
     let packages = user.join("packages");
     std::fs::create_dir_all(packages.join("kit/skills/tidy")).unwrap();

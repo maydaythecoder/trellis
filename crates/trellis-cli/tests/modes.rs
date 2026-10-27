@@ -10,11 +10,11 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("trellis-modes-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+mod common;
+use common::Scratch;
+
+fn scratch(name: &str) -> Scratch {
+    common::scratch_dir(&format!("trellis-modes-{name}"))
 }
 
 fn git(root: &Path, args: &[&str]) {
@@ -29,7 +29,7 @@ fn git(root: &Path, args: &[&str]) {
 /// A committed repository, an empty user config directory, and a script
 /// outside the repository (inside, it would dirty the worktree).
 struct Fixture {
-    root: PathBuf,
+    root: Scratch,
     user: PathBuf,
     spec: String,
 }
@@ -43,8 +43,11 @@ fn fixture(name: &str) -> Fixture {
     std::fs::write(root.join("a.py"), "def f():\n    return 1\n").unwrap();
     git(&root, &["add", "-A"]);
     git(&root, &["commit", "-qm", "fixture"]);
-    let user = scratch(&format!("{name}-user"));
-    let script = scratch(&format!("{name}-script")).join("s.json");
+    let user = root.with_extension("user");
+    std::fs::create_dir(&user).unwrap();
+    let scripts = root.with_extension("script");
+    std::fs::create_dir(&scripts).unwrap();
+    let script = scripts.join("s.json");
     std::fs::write(
         &script,
         r#"{"steps":[
@@ -86,6 +89,65 @@ fn jsonl(o: &Output) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+/// The names under the system temp dir that start with `prefix`.
+fn temp_entries(prefix: &str) -> Vec<String> {
+    std::fs::read_dir(std::env::temp_dir())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(prefix))
+        .collect()
+}
+
+#[test]
+fn tests_leave_no_temp_dirs() {
+    // The risk: fixtures that made `trellis-*` directories under the system
+    // temp dir and never removed them. Each run left a few hundred, and
+    // about 84,000 of them filled a host's disk (#979). A sample of this
+    // file's fixtures, one with a real run in it, must leave nothing under
+    // their own prefix, which no other test uses, so tests running beside
+    // this one cannot make it pass or fail.
+    let tag = "leave-no-temp";
+    let gone = {
+        let f = fixture(&format!("{tag}-fixture"));
+        let o = run(&f, &["run", "change f", "--model", &f.spec, "--auto"]);
+        assert!(
+            f.root.join(".trellis/runs").is_dir(),
+            "the run wrote its trail into the fixture: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        let s = scratch(&format!("{tag}-scratch"));
+        std::fs::write(s.join("x"), "x").unwrap();
+        let held = [f.root.to_path_buf(), f.user.clone(), s.to_path_buf()];
+        for p in &held {
+            assert!(
+                p.is_dir(),
+                "{} exists while the fixture is held",
+                p.display()
+            );
+        }
+        held
+    };
+    for p in &gone {
+        assert!(!p.exists(), "{} outlived its fixture", p.display());
+    }
+
+    // A test that fails unwinds through its fixtures, and they go too.
+    // `resume_unwind` carries the path out without printing a panic.
+    let failed = std::panic::catch_unwind(|| {
+        let s = scratch(&format!("{tag}-failed"));
+        std::panic::resume_unwind(Box::new(s.to_path_buf()))
+    })
+    .expect_err("the closure unwinds");
+    let p = failed
+        .downcast::<PathBuf>()
+        .expect("the path it unwound with");
+    assert!(!p.exists(), "{} outlived a failing test", p.display());
+
+    let left = temp_entries(&format!("trellis-modes-{tag}"));
+    assert!(left.is_empty(), "left under the temp dir: {left:?}");
 }
 
 #[test]
@@ -379,7 +441,8 @@ fn rpc_run_whose_client_closes_every_pipe_still_rolls_back_and_writes_its_trail(
         "[control]\nmode = \"approve\"\n",
     )
     .unwrap();
-    let script = scratch("rpc-vanish-two-edits").join("s.json");
+    let script_dir = scratch("rpc-vanish-two-edits");
+    let script = script_dir.join("s.json");
     std::fs::write(
         &script,
         r#"{"steps":[
@@ -1031,7 +1094,8 @@ fn rpc_get_state_lists_what_is_not_yet_delivered() {
     // order lost across steers and follow-ups. The message text is the
     // person's, sent back as a string and never read as a record.
     let f = fixture("rpc-pending");
-    let script = scratch("rpc-pending-steps").join("s.json");
+    let script_dir = scratch("rpc-pending-steps");
+    let script = script_dir.join("s.json");
     // Two edits, so the first run asks twice and the steer's request is
     // made while the run is still held on a question.
     std::fs::write(
@@ -3261,7 +3325,8 @@ fn rpc_plan_event_keeps_the_contract_and_the_trail_records_the_call_as_an_action
     let steps: Vec<Value> = (1..=9)
         .map(|i| serde_json::json!({"text": format!("step {i}"), "state": "todo"}))
         .collect();
-    let script = scratch("rpc-plan-steps").join("s.json");
+    let script_dir = scratch("rpc-plan-steps");
+    let script = script_dir.join("s.json");
     std::fs::write(
         &script,
         serde_json::json!({"steps": [
@@ -3331,7 +3396,8 @@ fn rpc_turn_tool_target_wrote_match_the_trail_actions() {
     cfg.push_str("[tools]\nenable = [\"write_file\"]\n");
     std::fs::write(&config, cfg).unwrap();
     git(&f.root, &["commit", "-qam", "write_file"]);
-    let script = scratch("rpc-turn-action-steps").join("s.json");
+    let script_dir = scratch("rpc-turn-action-steps");
+    let script = script_dir.join("s.json");
     std::fs::write(
         &script,
         r#"{"steps":[
@@ -3713,7 +3779,8 @@ fn log_json_carries_every_trail_field_the_desktop_reads() {
     let c = contract();
     let f = fixture("log-json-contract");
     commit_passing_checks(&f);
-    let script = scratch("log-json-contract-checks").join("s.json");
+    let script_dir = scratch("log-json-contract-checks");
+    let script = script_dir.join("s.json");
     std::fs::write(
         &script,
         r#"{"steps":[
@@ -4908,7 +4975,8 @@ fn rpc_model_select_set_model_with_an_invalid_spec_is_refused() {
     // refused one saved to the user's config regardless.
     let f = fixture("rpc-model-invalid");
     let mut rpc = Rpc::start(trellis(&f));
-    let missing = scratch("rpc-model-invalid-gone").join("no-such-script.json");
+    let missing_dir = scratch("rpc-model-invalid-gone");
+    let missing = missing_dir.join("no-such-script.json");
     for (id, cmd) in [
         (
             "a",
@@ -5032,7 +5100,8 @@ fn rpc_model_select_set_model_save_writes_the_user_config_not_the_repository_s()
     // Saving again over the spec just saved replaces it (#564 review):
     // the line edit once added a second `spec` key, which TOML refuses, so
     // a user with a configured spec could never save another.
-    let other = scratch("rpc-model-save-script-2").join("t.json");
+    let other_dir = scratch("rpc-model-save-script-2");
+    let other = other_dir.join("t.json");
     std::fs::write(&other, r#"{"steps":[{"tool":"done","summary":"x"}]}"#).unwrap();
     let other = format!("scripted:{}", other.display());
     let mut rpc = Rpc::start(trellis(&f));
@@ -5796,7 +5865,8 @@ fn rpc_withdraw_removes_an_undelivered_follow_up() {
     // `abort` as if it were still queued. One whose run has started is
     // refused, since that run cannot be taken back by withdrawing it.
     let f = fixture("rpc-withdraw-follow-up");
-    let script = scratch("rpc-withdraw-follow-up-steps").join("s.json");
+    let script_dir = scratch("rpc-withdraw-follow-up-steps");
+    let script = script_dir.join("s.json");
     std::fs::write(
         &script,
         r#"{"steps":[

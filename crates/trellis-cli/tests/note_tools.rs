@@ -3,14 +3,14 @@
 //! The registry's own tests attach a vault by hand; these prove the binary
 //! does, so a tool the prompt advertises is a tool that works.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("trellis-notes-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+mod common;
+use common::Scratch;
+
+fn scratch(name: &str) -> Scratch {
+    common::scratch_dir(&format!("trellis-notes-{name}"))
 }
 
 fn git(root: &Path, args: &[&str]) {
@@ -26,8 +26,10 @@ fn git(root: &Path, args: &[&str]) {
     );
 }
 
-fn repo(name: &str, config: &str) -> PathBuf {
-    let d = scratch(name).join("repo");
+/// The repository is the scratch directory itself; the script and the user
+/// config go beside it, in its parent, which the guard removes too.
+fn repo(name: &str, config: &str) -> Scratch {
+    let d = scratch(name);
     std::fs::create_dir_all(d.join("vault")).unwrap();
     std::fs::create_dir_all(d.join(".trellis")).unwrap();
     std::fs::create_dir_all(d.join("app")).unwrap();

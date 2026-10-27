@@ -751,8 +751,8 @@ mod tests {
 
     /// A committed repository with a context file, a system file and a
     /// skill, and a script outside it (inside, it would dirty the tree).
-    fn run_fixture(name: &str) -> (PathBuf, String) {
-        let dir = crate::testutil::scratch(&format!("ctxfiles-{name}"));
+    fn run_fixture(name: &str) -> (crate::testutil::Scratch, String) {
+        let mut dir = crate::testutil::scratch(&format!("ctxfiles-{name}"));
         crate::testutil::git_init(&dir);
         std::fs::create_dir_all(dir.join(".trellis/skills/release")).unwrap();
         std::fs::write(
@@ -775,7 +775,9 @@ mod tests {
             r#"{"steps":[{"tool":"done","summary":"CLAUDE.md says it works"}]}"#,
         )
         .unwrap();
-        (dir, format!("scripted:{}", path.display()))
+        let spec = format!("scripted:{}", path.display());
+        dir.hold(scripts);
+        (dir, spec)
     }
 
     #[test]
