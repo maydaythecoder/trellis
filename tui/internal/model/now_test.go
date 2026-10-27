@@ -66,14 +66,13 @@ func TestNowStripShowsStateTurnAndActivity(t *testing.T) {
 	}
 }
 
-// #850: Where it is names the runtime as it identified itself, the
-// repository trellis serves, and the control mode as not reported, Dash
-// (#911), since trellis sends a client no control mode; before the runtime
-// says what it is, it too is Dash.
+// #850: Where it is names the runtime as it identified itself and the
+// repository trellis serves; before the runtime says what it is, it is
+// Dash (#911). The control mode is the one the prompt named (#952).
 func TestWhereItIsShowsTheRuntime(t *testing.T) {
 	m := running(t)
 	m.Update(windowSize(120, 40))
-	if v := m.View(); !strings.Contains(v, "runtime  —") || !strings.Contains(v, "control  —") || strings.Contains(v, "not reported") {
+	if v := m.View(); !strings.Contains(v, "runtime  —") || !strings.Contains(v, "· control approve") || strings.Contains(v, "not reported") {
 		t.Fatalf("before the runtime said what it is:\n%s", v)
 	}
 	feed(m, jsonLine(map[string]any{"level": "INFO", "fields": map[string]any{
@@ -87,7 +86,7 @@ func TestWhereItIsShowsTheRuntime(t *testing.T) {
 	}
 	respond(m, asked, "get_state", map[string]any{"model": "ollama:qwen2.5-coder:32b", "root": "/work/trellis-demo"})
 	v := m.View()
-	for _, want := range []string{"┌ where", "runtime  ollama · qwen2.5-coder:32b", "root     trellis-demo", "control  —"} {
+	for _, want := range []string{"┌ where", "runtime  ollama · qwen2.5-coder:32b", "root     trellis-demo", "· control approve"} {
 		if !strings.Contains(v, want) {
 			t.Fatalf("%q is not in Where it is:\n%s", want, v)
 		}
@@ -186,13 +185,13 @@ func TestNowStripDrawsTheTurnAsAMeter(t *testing.T) {
 // #911: a figure trellis did not report is —, never 0. Before the run's
 // budget and its first turn the strip and the budget row read —/— and draw
 // no Meter cells, which with no share to show would read as 0; the prompt
-// is —; and Where it is names no runtime, control or repository. /help
+// is —; and Where it is names no runtime, model, tier or repository. /help
 // says what — means, and what the clock's * means.
 func TestUnreportedFigureIsADash(t *testing.T) {
 	m := running(t)
 	m.Update(windowSize(120, 40))
 	v := m.View()
-	for _, want := range []string{" ● RUNNING  0:00*  —/—", "TURNS        —/—", "WALL CLOCK   0:00*/—", "COMPLETION   —/— tokens", "LAST PROMPT  —/—", "runtime  —", "control  —", "root     —"} {
+	for _, want := range []string{" ● RUNNING  0:00*  —/—", "TURNS        —/—", "WALL CLOCK   0:00*/—", "COMPLETION   —/— tokens", "LAST PROMPT  —/—", "runtime  —", "model    — · tier —", "root     —"} {
 		if !strings.Contains(v, want) {
 			t.Fatalf("%q is not on screen:\n%s", want, v)
 		}
