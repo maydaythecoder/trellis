@@ -30,10 +30,12 @@ type steer struct {
 }
 
 // newRun forgets the last run's steers: they were counted per run, and one
-// left over must not take this run's slot.
+// left over must not take this run's slot. Its turns count from 1 again,
+// so the divider it last drew goes too.
 func (m *Model) newRun() {
 	m.steers = nil
 	m.deliveries = 0
+	m.dividedTurn = 0
 }
 
 // steer sends a line typed mid-run as `steer {message}`. A /command is
@@ -52,9 +54,9 @@ func (m *Model) steer(text string) {
 		return
 	}
 	m.Input = ""
-	// The person's own words, so the row is theirs; whether it reached the
-	// model is said by the notes below.
-	m.push(view.RoleYou, "· queued: "+view.Plain(text))
+	// The person's own words, so the row is theirs and barred; whether it
+	// reached the model is said by the notes below.
+	m.pushYou("you · steer · queued  " + view.Plain(text))
 	id := m.send("steer", map[string]any{"message": text})
 	m.steers = append(m.steers, steer{text: text, id: id})
 }

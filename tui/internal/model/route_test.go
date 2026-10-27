@@ -28,7 +28,7 @@ func TestRouteAQuestionSendsNoPrompt(t *testing.T) {
 	if out := m.TakeOutbox(); len(out) != 0 || m.Running {
 		t.Fatalf("a question ran: %+v", out)
 	}
-	if got := strings.Join(texts(m), "|"); got != "> what does f do?|f returns 1.|It is called from g." {
+	if got := strings.Join(texts(m), "|"); got != "you  what does f do?|f returns 1.|It is called from g." {
 		t.Fatalf("transcript %q", got)
 	}
 }
@@ -42,7 +42,7 @@ func TestRouteATaskSendsOnePrompt(t *testing.T) {
 	if len(out) != 1 || out[0].Cmd["type"] != "prompt" || out[0].Cmd["task"] != "make f return 2" || !m.Running {
 		t.Fatalf("%+v running %v", out, m.Running)
 	}
-	if strings.Count(strings.Join(texts(m), "\n"), "> make f return 2") != 1 {
+	if strings.Count(strings.Join(texts(m), "\n"), "make f return 2") != 1 || texts(m)[0] != "you · task  make f return 2" || !m.Transcript[0].Bar {
 		t.Fatalf("echo %q", texts(m))
 	}
 }
