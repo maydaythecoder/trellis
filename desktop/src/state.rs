@@ -3074,10 +3074,9 @@ impl DesktopState {
             Some((run, task)) if run == id => {
                 let kind = if follow_up { "follow-up" } else { "prompt" };
                 match task {
-                    Some(t) => format!(
-                        "the {kind}: {}",
-                        cut(t.clone(), t.len(), QUEUED_TEXT_BYTES)
-                    ),
+                    Some(t) => {
+                        format!("the {kind}: {}", cut(t.clone(), t.len(), QUEUED_TEXT_BYTES))
+                    }
                     None => format!("the {kind} sent as {id}"),
                 }
             }
@@ -5303,9 +5302,10 @@ mod tests {
         let mut ks = Vec::new();
         keys(&w, &mut ks);
         assert!(
-            !ks.iter().any(|k| ["ratio", "percent", "fraction", "share", "total"]
-                .iter()
-                .any(|b| k.to_lowercase().contains(b))),
+            !ks.iter()
+                .any(|k| ["ratio", "percent", "fraction", "share", "total"]
+                    .iter()
+                    .any(|b| k.to_lowercase().contains(b))),
             "Where it is derives a figure: {ks:?}"
         );
 
@@ -5328,10 +5328,12 @@ mod tests {
         let mut s = DesktopState::default();
         feed(&mut s, &run_start("p"));
         let radius = |n: u64| {
-            turn(json!({"turn": 1, "call": "blast_radius f", "verdict": "None",
+            turn(
+                json!({"turn": 1, "call": "blast_radius f", "verdict": "None",
                         "check_kind": "", "observation": "", "tool": "blast_radius",
                         "target": "f", "wrote": false, "resolved": 40,
-                        "candidates": 2, "unresolved": 1, "summarised": n}))
+                        "candidates": 2, "unresolved": 1, "summarised": n}),
+            )
         };
         feed(&mut s, &radius(12));
         feed(&mut s, &radius(0));
@@ -5373,7 +5375,9 @@ mod tests {
         // A follow-up's own run: its start carries its id.
         feed(
             &mut s,
-            &state_with(json!([{"id": "u1", "type": "follow_up", "message": "then <b>rename</b> it"}])),
+            &state_with(
+                json!([{"id": "u1", "type": "follow_up", "message": "then <b>rename</b> it"}]),
+            ),
         );
         feed(
             &mut s,

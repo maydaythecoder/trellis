@@ -203,5 +203,5 @@ func CallView(s State, r RawCall, scroll, w, h int) string {
 
 // CallLastFrom is the furthest line the call box scrolls to at w by h.
 func CallLastFrom(r RawCall, w, h int) int {
-	return AskingLastFrom(callText(r), w, h)
+	return lastFromAround(callText(r), w, h, askingRows)
 }
