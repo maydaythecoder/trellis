@@ -2779,6 +2779,101 @@ fn commit_passing_checks(f: &Fixture) {
 }
 
 #[test]
+fn rpc_turn_carries_the_models_words() {
+    // The risks (#953, ADR 0048 §6): the words a model says beside its call
+    // are dropped before the turn event, so no client can show them; a
+    // reply with no words is sent as "", which reads as a model that said
+    // something empty; a reply as long as a file goes on one event line
+    // whole, or is cut without saying so; and a rename of `said` passes
+    // trellis's tests while the contract still promises it.
+    let c = contract();
+    let later_turn = &c["rpc"]["not_every_client"]["events"]["turn"];
+    assert_eq!(names(&later_turn["words_only"]), ["said"]);
+    let f = fixture("rpc-said");
+    let with_words = |id: &str, name: &str, args: Value, content: Value| {
+        serde_json::json!({"choices":[{"message":{"role":"assistant","content":content,
+            "tool_calls":[{"id":id,"type":"function","function":{"name":name,
+            "arguments":args.to_string()}}]}}],
+            "usage":{"completion_tokens":3}})
+        .to_string()
+    };
+    let long = vec!["word"; 3000].join(" ");
+    let (base, server) = provider_stub(vec![
+        with_words(
+            "c1",
+            "read_file",
+            serde_json::json!({"path": "a.py"}),
+            serde_json::json!("  I will read a.py before changing it.\n"),
+        ),
+        with_words(
+            "c2",
+            "blast_radius",
+            serde_json::json!({"symbol": "f"}),
+            Value::Null,
+        ),
+        with_words(
+            "c3",
+            "read_file",
+            serde_json::json!({"path": "a.py"}),
+            serde_json::json!(long),
+        ),
+        openai_call("c4", "done", serde_json::json!({"summary": "read it"})),
+    ]);
+    // A variable nobody sets: a loopback endpoint is then used with no key.
+    let key_env = "TRELLIS_TEST_RPC_SAID_KEY";
+    std::fs::write(
+        f.user.join("config.toml"),
+        format!(
+            "[[providers]]\nname = \"stub\"\nprotocol = \"openai\"\n\
+             base_url = \"{base}\"\nkey_env = \"{key_env}\"\n"
+        ),
+    )
+    .unwrap();
+    let mut cmd = trellis(&f);
+    cmd.env_remove(key_env);
+    let mut rpc = Rpc::start(cmd);
+    rpc.choose("provider:stub#m");
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "read f",
+                           "model": "provider:stub#m"}),
+    );
+    let records = rpc.finish();
+    assert_eq!(server.join().unwrap().len(), 4, "{records:?}");
+    let turns: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["fields"]["message"] == "turn")
+        .map(|r| &r["fields"])
+        .collect();
+    assert_eq!(turns.len(), 3, "{records:?}");
+
+    assert_eq!(
+        turns[0]["said"], "I will read a.py before changing it.",
+        "{:?}",
+        turns[0]
+    );
+    assert!(
+        turns[1].get("said").is_none(),
+        "a reply with no words carries no said, not \"\": {:?}",
+        turns[1]
+    );
+    let said = turns[2]["said"].as_str().expect("the long reply's words");
+    let cut = long.len() - 8192;
+    assert_eq!(
+        said,
+        format!(
+            "{}\n...({cut} more bytes cut at 8192 bytes)...",
+            &long[..8192]
+        )
+    );
+    // The words are on the event only: the trail's format is unchanged.
+    let written = trails(&f);
+    assert_eq!(written.len(), 1, "the run wrote its trail");
+    for trail in written {
+        assert!(!trail.to_string().contains("I will read a.py"), "{trail}");
+    }
+}
+
+#[test]
 fn rpc_stream_carries_every_field_the_desktop_reads() {
     // The risk: a field the desktop's run panes read is renamed or dropped
     // in trellis-loop or the framing. The TUI reads the same events in
