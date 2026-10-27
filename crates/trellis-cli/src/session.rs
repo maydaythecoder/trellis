@@ -321,7 +321,7 @@ impl Session {
             "/radius" => crate::index_cmd::radius_of(&self.index, rest),
             "/check" => {
                 let paths = rest.split_whitespace().map(PathBuf::from).collect();
-                crate::doctor_cmd::cmd_check(&self.root, paths)
+                crate::check_cmd::cmd_check(&self.root, paths)
             }
             "/doctor" => {
                 let spec = self.model.as_ref().map(ToString::to_string);
