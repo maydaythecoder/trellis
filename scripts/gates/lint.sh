@@ -5,6 +5,10 @@
 source "$(dirname "$0")/lib.sh"
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
+# The docs build with warnings as errors (#980): a doc link to an item that
+# moved or went private is a stale reference nothing else reads, and until
+# this line no gate built the docs, so they rotted unseen.
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 added=$(git diff -U0 "$GATE_BASE"...HEAD -- '*.rs' | grep -vE '^\+\+\+' | grep -E '^\+.*#!?\[allow\(' || true)
 if [ -n "$added" ]; then
   echo "FAIL: this change adds lint suppressions (against $GATE_BASE):"
@@ -36,4 +40,4 @@ if go_module_present; then
 else
   gomsg="; Go branch skipped: tui/ is absent"
 fi
-echo "OK: fmt, clippy -D warnings, no #[allow] added; $adr$gomsg"
+echo "OK: fmt, clippy -D warnings, cargo doc -D warnings, no #[allow] added; $adr$gomsg"

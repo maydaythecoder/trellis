@@ -216,7 +216,7 @@ impl Governance {
 
     /// The rule forbidding a write to `path` as spelt, if any.
     ///
-    /// The spelling is [`fold`]ed first: a rule written `vendor/` must hold
+    /// The spelling is `fold`ed first: a rule written `vendor/` must hold
     /// on Windows, where a model will happily emit `vendor\thing.py`, and
     /// for `.//vendor/x.py`, which is the same file; a rule that silently
     /// stops applying to a spelling is worse than no rule. What this cannot
