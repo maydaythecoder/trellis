@@ -235,7 +235,6 @@ pub(crate) fn layer(repo: RepoConfig, user: RepoConfig) -> RepoConfig {
                 (None, b) => b,
             },
         }),
-        agents: repo.agents.or(user.agents),
         index: either(repo.index, user.index, |r, u| IndexSection {
             backstop: r.backstop.or(u.backstop),
         }),
@@ -440,6 +439,14 @@ impl RepoConfig {
                 path.display()
             );
         }
+        // `[agents]` was parsed and never read (#958): a table that does
+        // nothing is a quiet way to believe a run was configured. It is no
+        // longer a section; a file that still carries it loads, and says so
+        // once, naming the flag that does set the count.
+        if let Some(notice) = agents_section_notice(&value, path) {
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| tracing::warn!("{notice}"));
+        }
         let parsed: Self = toml::from_str(text)
             .with_context(|| format!("{} is not valid TOML", path.display()))?;
         // Per file, before layering: 0 has no meaning a user would choose
@@ -455,6 +462,23 @@ impl RepoConfig {
         }
         Ok(parsed)
     }
+}
+
+/// The notice for a file that still has an `[agents]` table (#958), or
+/// `None`. `[agents]` set nothing: `trellis run --agents <n>` is how a
+/// run's agent count is chosen, explicit per run, and ADR 0008 divides the
+/// budget across them, so a default from a file would be the quieter way
+/// to multiply runs. The table is not an error, so an older checkout's
+/// config still loads.
+pub(crate) fn agents_section_notice(value: &toml::Value, path: &Path) -> Option<String> {
+    value.get("agents").map(|_| {
+        format!(
+            "{} has an [agents] table, which trellis does not read: it set nothing in \
+             any version. The agent count is `trellis run --agents <n>`, per run. \
+             Remove the table to stop this notice",
+            path.display()
+        )
+    })
 }
 
 /// Write `[model] spec = "<spec>"` into the user's config file at `file`
@@ -1328,16 +1352,35 @@ stale_claims = \"release\"
     }
 
     #[test]
-    fn a_user_s_agents_and_index_sections_survive_a_repository_without_them() {
+    fn a_user_s_index_section_survives_a_repository_without_it() {
+        let c = load("", "[index]\nbackstop = \"pyright\"\n");
+        assert!(c.pyright_backstop().unwrap());
+    }
+
+    #[test]
+    fn an_agents_table_still_loads_and_the_notice_names_the_flag() {
+        // The risk (#958): `[agents]` was parsed into a struct nothing read,
+        // so a user who set it believed their runs were configured. The
+        // table is gone from the config. A file that still has one is not
+        // refused (an older checkout's config has to load), and the one
+        // notice says what does set the count.
         let c = load(
-            "",
+            "[agents]\ncount = 2\n",
             "[agents]\nfailure_policy = \"stop\"\n[index]\nbackstop = \"pyright\"\n",
         );
-        assert_eq!(
-            c.agents.as_ref().and_then(|a| a.failure_policy.as_deref()),
-            Some("stop")
+        assert!(
+            c.pyright_backstop().unwrap(),
+            "the rest of the file is read"
         );
-        assert!(c.pyright_backstop().unwrap());
+        let value: toml::Value = toml::from_str("[agents]\ncount = 2\n").unwrap();
+        let notice = agents_section_notice(&value, Path::new("c.toml")).expect("a notice");
+        assert!(notice.contains("--agents"), "{notice}");
+        assert!(
+            notice.starts_with("c.toml has an [agents] table"),
+            "{notice}"
+        );
+        let none: toml::Value = toml::from_str("[index]\nbackstop = \"pyright\"\n").unwrap();
+        assert!(agents_section_notice(&none, Path::new("c.toml")).is_none());
     }
 
     #[test]
