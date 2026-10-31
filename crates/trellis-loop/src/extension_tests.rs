@@ -2404,6 +2404,63 @@ async fn edit_turn_carries_line_counts_and_a_unified_diff() {
     }
 }
 
+#[tokio::test]
+async fn edit_wrote_comes_from_the_typed_result() {
+    // The risk (#986): `wrote` was read by searching the observation for
+    // `applied: true`, and a refusal repeats the path the model gave. An
+    // edit of a missing file named `applied: true.py` recorded a write that
+    // never happened, on the turn event and in the trail's action. Both now
+    // take it from the typed result: a refusal is `Error`, and an `Edit`
+    // says `applied` itself.
+    let d = git_repo();
+    let tools = ToolSet::default();
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_tools(tools.clone())
+        .spawn();
+    let steps = serde_json::json!({"steps": [
+        {"tool": "edit", "path": "applied: true.py", "old": "a", "new": "b"},
+        {"tool": "edit", "path": "app/util.py",
+         "old": "    return 1", "new": "    return 2"},
+        {"tool": "done", "summary": "done"}
+    ]});
+    let mut m = script(&tools, &steps.to_string());
+    let events = crate::testutil::TurnEvents::default();
+    let guard = events.install();
+    let (_, t) = run("change it", &mut m, &orch, &budget()).await;
+    drop(guard);
+    let got = events.taken();
+    assert_eq!(got.len(), 2, "{got:?}");
+
+    // The refusal echoes the path, so the old text search would say `true`.
+    let obs = &t.turns[0].observation;
+    assert!(obs.contains("applied: true"), "{obs}");
+    assert!(!t.turns[0].wrote, "{:?}", t.turns[0]);
+    assert_eq!(
+        got[0].get("wrote").map(String::as_str),
+        Some("false"),
+        "{:?}",
+        got[0]
+    );
+    // The trail's action is built from the turn by this function
+    // (trellis-cli's `action_from`), so it cannot say otherwise.
+    let action = crate::agent::turn_action(&t.turns[0].call, t.turns[0].wrote);
+    assert_eq!((action.tool.as_str(), action.wrote), ("edit", false));
+    assert!(
+        !d.path().join("applied: true.py").exists(),
+        "a refused edit wrote nothing"
+    );
+
+    // And an edit that applied still says so, from `EditOutcome::applied`.
+    assert!(t.turns[1].wrote, "{:?}", t.turns[1]);
+    assert_eq!(
+        got[1].get("wrote").map(String::as_str),
+        Some("true"),
+        "{:?}",
+        got[1]
+    );
+    assert!(crate::agent::turn_action(&t.turns[1].call, t.turns[1].wrote).wrote);
+}
+
 // The plan tool (ADR 0058 §5): the model's checklist, drawn as its words.
 
 fn with_plan() -> ToolSet {
@@ -2515,7 +2572,7 @@ async fn plan_event_carries_the_steps_and_cuts_past_eight() {
     assert!(obs.contains("2 steps past the first 8 cut"), "{obs}");
     assert!(obs.contains("1 step text cut to 200 characters"), "{obs}");
     assert!(!obs.contains("step 9"), "{obs}");
-    let action = crate::agent::turn_action(&t.turns[0].call, obs);
+    let action = crate::agent::turn_action(&t.turns[0].call, t.turns[0].wrote);
     assert_eq!(action.tool, "plan");
     assert!(!action.wrote);
 
