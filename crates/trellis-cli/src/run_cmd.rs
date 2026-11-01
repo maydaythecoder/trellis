@@ -2718,7 +2718,9 @@ pub(crate) use trellis_loop::line_of;
 /// trail that kept it would be mostly type-checker output — and the question
 /// this log answers is "what did it do", not "what did the compiler say".
 ///
-/// `wrote` is the one bit that cannot be recovered from anywhere else.
+/// `wrote` is the one bit that cannot be recovered from anywhere else: it is
+/// the turn's own, read from the tool's typed result (#986), not from the
+/// summarised observation.
 /// `proposed` names the files a run ended up touching, not which action did
 /// the touching; a run whose every edit was refused has an empty `proposed`
 /// and a full list of actions, and those are different stories.
@@ -2729,7 +2731,7 @@ pub(crate) fn action_from(index: usize, t: &trellis_loop::Turn) -> trellis_trail
         tool,
         target,
         wrote,
-    } = trellis_loop::turn_action(&t.call, &t.observation);
+    } = trellis_loop::turn_action(&t.call, t.wrote);
     // The `EditDiff` the turn event reported (#811): set by the loop only
     // for an edit that applied, so every other action records neither.
     // `usize` to `u64` is lossless on every target Rust supports.
@@ -3400,6 +3402,7 @@ mod interrupt_tests {
             changed: Vec::new(),
             duration_ms: 0,
             edit: None,
+            wrote: false,
         };
         let transcript = |turns| trellis_loop::Transcript {
             task: "a wide radius".to_string(),
@@ -3633,6 +3636,7 @@ mod interrupt_tests {
             changed: Vec::new(),
             duration_ms: 0,
             edit: None,
+            wrote: false,
         };
         let t = trellis_loop::Transcript {
             task: "two reads".to_string(),

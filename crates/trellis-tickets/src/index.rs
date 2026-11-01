@@ -78,7 +78,7 @@ pub struct IndexEntry {
     pub flags: Line,
     pub ready: Line,
     pub triage: Line,
-    /// Always abstained: see [`agent_ok`].
+    /// Always abstained: see `agent_ok`.
     pub agent_ok: Line,
     /// Intake that could not be read, in the order it was met.
     pub notes: Vec<String>,

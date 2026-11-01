@@ -263,7 +263,7 @@ pub struct RoutineState {
     #[serde(default)]
     pub last_task: Option<String>,
     /// HEAD when a scheduled fire of a gated routine last enqueued a task.
-    /// Untrusted when read back: see [`is_object_id`].
+    /// Untrusted when read back: see `is_object_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_head: Option<String>,
 }
@@ -277,7 +277,7 @@ pub trait Repo {
     fn head(&self) -> Option<String>;
     /// The paths changed between commit `since` and commit `head`, or `None`
     /// when git cannot compare them (history rewritten, an object gone).
-    /// Called only with two [`is_object_id`]s.
+    /// Called only with two `is_object_id`s.
     fn changed(&self, since: &str, head: &str) -> Option<Vec<String>>;
 }
 
