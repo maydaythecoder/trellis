@@ -311,7 +311,7 @@ impl Report {
     }
 
     /// One JSON object, with DEL and the C1 range escaped as in
-    /// [`escape_json_controls`]: `triage --json` prints it to a terminal.
+    /// `escape_json_controls`: `triage --json` prints it to a terminal.
     pub fn json(&self) -> String {
         // A struct of strings, vectors and unit-tagged enums has no map with
         // non-string keys and no failing `Serialize`, so this cannot fail.

@@ -301,7 +301,7 @@ enum Command {
     ///
     /// `<git-url|path>@<ref>`: the ref is required and recorded with the
     /// commit it resolved to, in packages/packages.toml. Only
-    /// skills/<name>/ text files and prompts/<name>.md are copied; hooks,
+    /// `skills/<name>/` text files and `prompts/<name>.md` are copied; hooks,
     /// tools and anything else in the source are skipped and named. Runs
     /// read them after the repository's own skills and templates, which win
     /// a name.

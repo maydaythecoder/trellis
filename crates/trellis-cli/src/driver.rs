@@ -23,7 +23,7 @@ pub(crate) enum Driver {
 impl Driver {
     /// Builds the driver a parsed spec names.
     ///
-    /// Takes a [`ModelSpec`] rather than a string: the string form was parsed
+    /// Takes a [`ModelSpec`](trellis_model::ModelSpec) rather than a string: the string form was parsed
     /// here, in `cmd_doctor` and in the session, each deciding for itself what
     /// was valid. Construction is now the only thing this does.
     ///

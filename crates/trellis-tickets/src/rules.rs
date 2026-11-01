@@ -310,7 +310,7 @@ fn touches_persistence(f: &FileRef) -> bool {
 /// High triggers are checked on the files themselves, so a checks file
 /// makes the ticket high even when `area` abstained on another file.
 /// "Touches rollback, worktree teardown, or session persistence" is read
-/// from the owner's path table, [`PERSISTENCE_PATHS`]. `unsafe` cannot enter this workspace
+/// from the owner's path table, `PERSISTENCE_PATHS`. `unsafe` cannot enter this workspace
 /// without a `Cargo.toml` edit (`unsafe_code = "forbid"`), so a manifest in
 /// the files abstains instead. An on-disk format change is expected to carry
 /// `!breaking`.

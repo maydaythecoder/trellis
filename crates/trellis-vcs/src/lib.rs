@@ -259,7 +259,7 @@ fn run_git(root: &Path, args: &[&str]) -> Result<String, VcsError> {
 ///   `NUL` on Windows): a hook runs on any index write
 ///   (`post-index-change`), `git add` into a copied index included.
 ///
-/// Clean filters are neutralised separately ([`filters_off`]) and only
+/// Clean filters are neutralised separately (`filters_off`) and only
 /// where a digest is taken, since a filter is named per driver and a
 /// rollback's checkout needs the user's own (Git LFS's smudge).
 pub const OVERRIDES: [&str; 4] = ["-c", "core.fsmonitor=", "-c", NO_HOOKS];
@@ -295,7 +295,7 @@ pub const ENV: [(&str, &str); 1] = [("GIT_NO_LAZY_FETCH", "1")];
 /// `git` with [`OVERRIDES`] and [`ENV`], its environment scrubbed of keys.
 ///
 /// Every `git` the workspace starts outside tests comes from here,
-/// [`command_with_hooks`] or [`git_argv`] (review round 10: `grep` and
+/// `command_with_hooks` or [`git_argv`] (review round 10: `grep` and
 /// `find` started plain `git` and ran a planted `core.fsmonitor`).
 /// `every_git_spawn_goes_through_trellis_vcs` in `trellis-cli`'s
 /// `tests/hygiene.rs` fails on one that does not. For a tokio command,
@@ -1281,7 +1281,7 @@ impl Snapshot {
     /// Read by content, not stat, so it holds under a clock that steps
     /// back, which `git status` (and so [`is_restored`](Self::is_restored))
     /// does not. Hashing runs with the repository's filter drivers off
-    /// ([`filters_off`]): a driver is repository code, and trellis does not
+    /// (`filters_off`): a driver is repository code, and trellis does not
     /// run it. Built-in end-of-line conversion still applies, so a CRLF
     /// checkout hashes to the committed blob. A repository that depends on
     /// a filter driver (LFS, say) reads as differing: a false alarm, never

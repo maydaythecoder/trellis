@@ -1390,6 +1390,7 @@ mod tests {
                 changed: Vec::new(),
                 duration_ms: 0,
                 edit: None,
+                wrote: false,
             }],
             final_notice: true,
             steering: Default::default(),
@@ -1435,6 +1436,7 @@ mod tests {
                 changed: Vec::new(),
                 duration_ms: 0,
                 edit: None,
+                wrote: false,
             }],
             final_notice: false,
             steering: Default::default(),
@@ -1750,6 +1752,7 @@ mod tests {
             changed: Vec::new(),
             duration_ms: 0,
             edit: None,
+            wrote: false,
         });
 
         // The first reply names a tool the run does not have, which is the
@@ -1859,6 +1862,7 @@ mod compaction_and_hosted_tests {
             changed: Vec::new(),
             duration_ms: 0,
             edit: None,
+            wrote: false,
         }
     }
 
@@ -2945,6 +2949,7 @@ mod context_budget_tests {
             changed: Vec::new(),
             duration_ms: 0,
             edit: None,
+            wrote: false,
         }
     }
 
