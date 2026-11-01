@@ -3191,6 +3191,38 @@ mod tests {
         c.finish();
     }
 
+    /// The one connection a stub waits for, or a panic after `NO_REQUEST`.
+    /// Bounded because a stub whose request never comes (the client
+    /// refused its config, say) otherwise blocks `accept` for good, and the
+    /// test's `join` with it: under mutation that reads as a timeout, which
+    /// is neither caught nor missed (#248, 6b804cb `config.rs:1208:9`;
+    /// docs/bench/mutants-by-crate-ws/README.md met the same in
+    /// trellis-model).
+    fn accept_one(l: &std::net::TcpListener) -> std::net::TcpStream {
+        const NO_REQUEST: std::time::Duration = std::time::Duration::from_secs(30);
+        l.set_nonblocking(true).unwrap();
+        let deadline = std::time::Instant::now() + NO_REQUEST;
+        loop {
+            match l.accept() {
+                Ok((s, _)) => {
+                    s.set_nonblocking(false).unwrap();
+                    // A client that connects and then says nothing would
+                    // block the byte-at-a-time read the same way.
+                    s.set_read_timeout(Some(NO_REQUEST)).unwrap();
+                    return s;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "no request reached the stub within {NO_REQUEST:?}"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) => panic!("stub accept failed: {e}"),
+            }
+        }
+    }
+
     /// One connection on a loopback port, answered as Ollama's `/api/tags`
     /// answers with `body`: what `list_models` probes stands in for.
     fn ollama_stub(body: &'static str) -> (std::net::SocketAddr, std::thread::JoinHandle<()>) {
@@ -3198,7 +3230,7 @@ mod tests {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
         let h = std::thread::spawn(move || {
-            let (mut s, _) = l.accept().unwrap();
+            let mut s = accept_one(&l);
             let mut req = Vec::new();
             let mut b = [0u8; 1];
             while !req.ends_with(b"\r\n\r\n") && s.read(&mut b).unwrap() == 1 {
@@ -3288,7 +3320,7 @@ mod tests {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
         let h = std::thread::spawn(move || {
-            let (mut s, _) = l.accept().unwrap();
+            let mut s = accept_one(&l);
             let mut req = Vec::new();
             let mut b = [0u8; 1];
             while !req.ends_with(b"\r\n\r\n") && s.read(&mut b).unwrap() == 1 {

@@ -1,0 +1,12 @@
+crates/trellis-cli/src/main.rs:546:39: replace && with || in main
+crates/trellis-cli/src/main.rs:679:41: replace && with || in main
+crates/trellis-cli/src/main.rs:679:44: delete ! in main
+crates/trellis-cli/src/main.rs:705:30: replace || with && in main
+crates/trellis-cli/src/main.rs:711:30: replace || with && in main
+crates/trellis-cli/src/main.rs:1055:44: replace || with && in terminal_ui
+crates/trellis-cli/src/main.rs:1055:12: delete ! in terminal_ui
+crates/trellis-cli/src/main.rs:1055:47: delete ! in terminal_ui
+crates/trellis-cli/src/atlas.rs:92:60: replace match guard !stderr.trim().is_empty() with true in git_message
+crates/trellis-cli/src/atlas.rs:92:60: replace match guard !stderr.trim().is_empty() with false in git_message
+crates/trellis-cli/src/atlas.rs:92:60: delete ! in git_message
+crates/trellis-cli/src/atlas.rs:323:44: replace < with <= in history
