@@ -1176,11 +1176,30 @@ mod doctor_tests {
         // false for a pytest whose `--help` offers `--cov`, so `doctor`
         // reports no coverage plugin to a user who has one, and every run
         // reads as `0 verified` for a missing tool that is there.
-        use std::os::unix::fs::PermissionsExt;
+        //
+        // A child `sh` writes the script, not this process: a file this
+        // process has just written is "text file busy" to its own exec
+        // while another test's child, forked meanwhile, still holds the
+        // write descriptor. `help_mentions_cov` swallows that error, which
+        // is the likeliest reading of this test failing in the baseline of
+        // run 41308698092 and passing in CI on the same commit.
         let dir = crate::testutil::scratch("doctor-pytest-cov");
         let pytest = dir.join("pytest");
-        std::fs::write(&pytest, "#!/bin/sh\necho 'usage: pytest [--cov=PATH]'\n").unwrap();
-        std::fs::set_permissions(&pytest, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let wrote = std::process::Command::new("sh")
+            .args([
+                "-c",
+                r#"printf '%s
+' "$1" > "$2" && chmod 755 "$2""#,
+                "sh",
+            ])
+            .arg(
+                "#!/bin/sh
+echo 'usage: pytest [--cov=PATH]'",
+            )
+            .arg(&pytest)
+            .status()
+            .expect("sh on PATH");
+        assert!(wrote.success(), "{wrote}");
         let tests = vec![pytest.to_string_lossy().into_owned()];
         assert!(is_pytest(&tests), "{tests:?}");
         assert!(coverage_available(&tests), "{tests:?}");
