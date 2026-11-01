@@ -1,0 +1,37 @@
+crates/trellis-cli/src/launch.rs:383:5: replace hand_off -> anyhow::Error with Default::default()
+crates/trellis-cli/src/liveness.rs:43:9: replace <impl Liveness for SystemLiveness>::probe -> Probe with Default::default()
+crates/trellis-cli/src/liveness.rs:57:5: replace probe_proc -> Probe with Default::default()
+crates/trellis-cli/src/liveness.rs:66:5: replace parse_proc_stat -> Probe with Default::default()
+crates/trellis-cli/src/liveness.rs:85:5: replace probe_windows -> Probe with Default::default()
+crates/trellis-cli/src/liveness.rs:101:5: replace parse_tagged -> Probe with Default::default()
+crates/trellis-cli/src/liveness.rs:117:5: replace probe_ps -> Probe with Default::default()
+crates/trellis-cli/src/models_cmd.rs:42:5: replace resolve -> Result<&'static trellis_model::CatalogEntry> with Ok(Box::leak(Box::new(Default::default())))
+crates/trellis-cli/src/orchestrate.rs:48:5: replace load_profiles -> Result<BTreeMap<String, Profile>> with Ok(BTreeMap::from_iter([(String::new(), Default::default())]))
+crates/trellis-cli/src/orchestrate.rs:48:5: replace load_profiles -> Result<BTreeMap<String, Profile>> with Ok(BTreeMap::from_iter([("xyzzy".into(), Default::default())]))
+crates/trellis-cli/src/orchestrate.rs:66:13: replace && with || in load_profiles
+crates/trellis-cli/src/orchestrate.rs:65:13: replace && with || in load_profiles
+crates/trellis-cli/src/orchestrate.rs:79:13: replace && with || in load_profiles
+crates/trellis-cli/src/orchestrate.rs:95:5: replace load_routines -> Result<BTreeMap<String, routine::Routine>> with Ok(BTreeMap::from_iter([(String::new(), Default::default())]))
+crates/trellis-cli/src/orchestrate.rs:95:5: replace load_routines -> Result<BTreeMap<String, routine::Routine>> with Ok(BTreeMap::from_iter([("xyzzy".into(), Default::default())]))
+crates/trellis-cli/src/orchestrate.rs:98:13: replace && with || in load_routines
+crates/trellis-cli/src/orchestrate.rs:113:5: replace spend_records -> Vec<SpendRecord> with vec![Default::default()]
+crates/trellis-cli/src/output.rs:40:5: replace human -> Box<dyn Write +Send> with Box::new(Default::default())
+crates/trellis-cli/src/output.rs:73:5: replace stdout_sink -> Sink with Default::default()
+crates/trellis-cli/src/output.rs:193:5: replace framed -> Result<RunExit> with Ok(Default::default())
+crates/trellis-cli/src/overview.rs:379:5: replace bounded -> Ran with Default::default()
+crates/trellis-cli/src/overview.rs:429:5: replace drain -> mpsc::Receiver<Vec<u8>> with Receiver::new()
+crates/trellis-cli/src/overview.rs:429:5: replace drain -> mpsc::Receiver<Vec<u8>> with Receiver::from_iter([vec![]])
+crates/trellis-cli/src/overview.rs:429:5: replace drain -> mpsc::Receiver<Vec<u8>> with Receiver::new(vec![])
+crates/trellis-cli/src/overview.rs:429:5: replace drain -> mpsc::Receiver<Vec<u8>> with Receiver::from(vec![])
+crates/trellis-cli/src/overview.rs:429:5: replace drain -> mpsc::Receiver<Vec<u8>> with Receiver::from_iter([vec![0]])
+crates/trellis-cli/src/overview.rs:429:5: replace drain -> mpsc::Receiver<Vec<u8>> with Receiver::new(vec![0])
+crates/trellis-cli/src/overview.rs:429:5: replace drain -> mpsc::Receiver<Vec<u8>> with Receiver::from(vec![0])
+crates/trellis-cli/src/overview.rs:429:5: replace drain -> mpsc::Receiver<Vec<u8>> with Receiver::from_iter([vec![1]])
+crates/trellis-cli/src/overview.rs:429:5: replace drain -> mpsc::Receiver<Vec<u8>> with Receiver::new(vec![1])
+crates/trellis-cli/src/overview.rs:429:5: replace drain -> mpsc::Receiver<Vec<u8>> with Receiver::from(vec![1])
+crates/trellis-cli/src/process_agent.rs:93:9: replace Judge::load -> Result<Judge, String> with Ok(Default::default())
+crates/trellis-cli/src/process_agent.rs:108:13: replace && with || in Judge::load
+crates/trellis-cli/src/process_agent.rs:140:9: replace Judge::governance -> (Vec<String>, Option<trellis_checks::Verdict>) with (vec![], Some(Default::default()))
+crates/trellis-cli/src/process_agent.rs:140:9: replace Judge::governance -> (Vec<String>, Option<trellis_checks::Verdict>) with (vec![String::new()], Some(Default::default()))
+crates/trellis-cli/src/process_agent.rs:140:9: replace Judge::governance -> (Vec<String>, Option<trellis_checks::Verdict>) with (vec!["xyzzy".into()], Some(Default::default()))
+crates/trellis-cli/src/process_agent.rs:193:5: replace run -> RunEnd with Default::default()
