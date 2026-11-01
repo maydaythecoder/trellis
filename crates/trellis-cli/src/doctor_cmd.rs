@@ -1167,6 +1167,25 @@ mod doctor_tests {
         assert!(!help_mentions_cov(&runner("no plugin here")));
     }
 
+    /// Not on Windows: the stand-in pytest is a shell script, and a program
+    /// named `pytest` there has to be an executable.
+    #[cfg(unix)]
+    #[test]
+    fn coverage_is_available_when_a_pytest_on_disk_offers_cov() {
+        // #248 (6b804cb, shard 1). The risk: `coverage_available` answering
+        // false for a pytest whose `--help` offers `--cov`, so `doctor`
+        // reports no coverage plugin to a user who has one, and every run
+        // reads as `0 verified` for a missing tool that is there.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::testutil::scratch("doctor-pytest-cov");
+        let pytest = dir.join("pytest");
+        std::fs::write(&pytest, "#!/bin/sh\necho 'usage: pytest [--cov=PATH]'\n").unwrap();
+        std::fs::set_permissions(&pytest, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tests = vec![pytest.to_string_lossy().into_owned()];
+        assert!(is_pytest(&tests), "{tests:?}");
+        assert!(coverage_available(&tests), "{tests:?}");
+    }
+
     #[test]
     fn doctor_coverage_probe_asks_only_pytest() {
         // #572. The risk: appending `--help` to a program that is not pytest,
