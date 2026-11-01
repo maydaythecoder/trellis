@@ -175,6 +175,39 @@ fn run_json_puts_only_jsonl_on_stdout_bracketed_by_start_and_end() {
 }
 
 #[test]
+fn run_without_json_puts_no_event_line_on_stdout() {
+    // The stdout event layer is installed for `--json` and not for
+    // `overview` (startup.rs, `output::json() && !is_overview`). The
+    // mutant that joins the two with `||` installs it for every command
+    // that is not `overview`, so a plain `trellis run` would print the
+    // loop's `turn` events as JSON between its human lines, which a
+    // person reading the terminal and a script reading stdout would both
+    // misread. The risk is read at the output: no line of a human run's
+    // stdout may be a tracing event in `--log-json`'s shape.
+    let f = fixture("run-no-json");
+    let o = run(&f, &["run", "change f", "--model", &f.spec]);
+    assert_eq!(
+        o.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let out = String::from_utf8_lossy(&o.stdout);
+    let events: Vec<&str> = out
+        .lines()
+        .filter(|l| serde_json::from_str::<Value>(l).is_ok_and(|v| v.get("fields").is_some()))
+        .collect();
+    assert!(
+        events.is_empty(),
+        "tracing events on stdout: {events:?}\n{out}"
+    );
+    // And the run did reach the loop, where the `turn` event is emitted,
+    // so an empty list above means it was kept off stdout, not never raised.
+    // Without `--json` the human text is stdout's, as it always was.
+    assert!(out.contains("snapshot at"), "{out}");
+}
+
+#[test]
 fn work_json_puts_only_jsonl_on_stdout_and_brackets_the_invocation() {
     // `work` prints through `work.rs` and `trellis-queue`, which other work
     // owns; this is what catches one of their lines reaching stdout.

@@ -124,6 +124,19 @@ fn overview_with_stub(
     gh: Gh,
     args: &[&str],
 ) -> (Output, Option<Scratch>) {
+    overview_with_stub_env(name, cwd, user, gh, args, &[])
+}
+
+/// [`overview_with_stub`], with `env` set on trellis, for a test about what
+/// of trellis's environment reaches the `gh` it starts.
+fn overview_with_stub_env(
+    name: &str,
+    cwd: &Path,
+    user: &Path,
+    gh: Gh,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> (Output, Option<Scratch>) {
     let mut dirs = path_without_gh();
     let tools = tools_beside_gh(name);
     if let Some(tools) = &tools {
@@ -143,6 +156,7 @@ fn overview_with_stub(
         .env_remove("RUST_LOG")
         .env("TRELLIS_CONFIG_DIR", user)
         .env("PATH", std::env::join_paths(dirs).unwrap())
+        .envs(env.iter().copied())
         .output()
         .expect("the binary is built before its tests");
     (out, stub)
@@ -258,6 +272,59 @@ fn overview_treats_a_root_without_git_as_no_root_and_reads_nothing_under_it() {
         combined(&o)
     );
     let _ = std::fs::remove_dir_all(&tree);
+    let _ = std::fs::remove_dir_all(&user);
+}
+
+/// A `gh` that writes the environment it was started with to `env.txt` in
+/// its own directory and prints nothing, so the board reads as unreachable
+/// and the test reads only what reached the child.
+const GH_ENV: Gh = Gh::Stub {
+    windows: "@echo off\r\nset > \"{dir}\\env.txt\"\r\n",
+    unix: "#!/bin/sh\nenv > '{dir}/env.txt'\n",
+};
+
+#[test]
+fn overview_in_a_repository_loads_the_config_and_its_key_env_never_reaches_gh() {
+    // ADR 0024 §3 at the overview: `main` reads the effective configuration
+    // before any command runs so each provider's `key_env` is removed from
+    // every child, and skips that read only for an overview whose root has
+    // no `.git` (`is_overview && !root.join(".git").exists()`). The two
+    // mutants of that line, `||` and the dropped `!`, both skip the read in
+    // a real repository, and the key named by the user's own file then
+    // reaches the `gh` the board runs. The risk is the key leaving the
+    // process, so the test reads the child's environment, not the output.
+    let d = repo("overview-key-env");
+    let user = scratch("overview-key-env-user");
+    std::fs::write(
+        user.join("config.toml"),
+        "[[providers]]\nname = \"user\"\nprotocol = \"openai\"\n\
+         base_url = \"https://user.invalid\"\nkey_env = \"TRELLIS_TEST_OVERVIEW_KEY\"\n",
+    )
+    .unwrap();
+    let (o, stub) = overview_with_stub_env(
+        "overview-key-env",
+        &d,
+        &user,
+        GH_ENV,
+        &["--json", "overview"],
+        &[("TRELLIS_TEST_OVERVIEW_KEY", "secret-for-the-test")],
+    );
+    assert!(o.status.success(), "{}", combined(&o));
+    let env = std::fs::read_to_string(stub.as_ref().unwrap().join("env.txt"))
+        .expect("the board ran gh, which wrote its environment");
+    assert!(
+        !env.contains("TRELLIS_TEST_OVERVIEW_KEY"),
+        "the user's key_env reached gh: the config was not read before the board ran\n{env}"
+    );
+    // The dump is the child's environment, not an empty file: a variable
+    // this test set is in it. Compared without case, since Windows keeps
+    // the name's existing spelling and `set` prints it that way.
+    assert!(
+        env.lines()
+            .any(|l| l.to_ascii_uppercase().starts_with("TRELLIS_CONFIG_DIR=")),
+        "{env}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&user);
 }
 
