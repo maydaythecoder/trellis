@@ -316,8 +316,14 @@ fn overview_in_a_repository_loads_the_config_and_its_key_env_never_reaches_gh() 
         !env.contains("TRELLIS_TEST_OVERVIEW_KEY"),
         "the user's key_env reached gh: the config was not read before the board ran\n{env}"
     );
-    // The dump is the child's environment, not an empty file.
-    assert!(env.contains("PATH="), "{env}");
+    // The dump is the child's environment, not an empty file: a variable
+    // this test set is in it. Compared without case, since Windows keeps
+    // the name's existing spelling and `set` prints it that way.
+    assert!(
+        env.lines()
+            .any(|l| l.to_ascii_uppercase().starts_with("TRELLIS_CONFIG_DIR=")),
+        "{env}"
+    );
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&user);
 }

@@ -261,8 +261,11 @@ fn launch_dsk_and_web_hand_the_desktop_a_root_only_when_one_was_found() {
     let found = repo("dsk-web-root-found");
     let plain = scratch("dsk-web-root-plain");
     let outside = scratch("dsk-web-root-outside");
+    let user = scratch("dsk-web-root-user");
     let args_file = exe.parent().unwrap().join("args.txt");
-    let wait = std::time::Duration::from_secs(5);
+    // The stub runs detached and the suite may be under load (cargo mutants
+    // runs test binaries side by side), the same 20 s the pty tests allow.
+    let wait = std::time::Duration::from_secs(20);
     for flag in ["--dsk", "--web"] {
         // (name, where it runs, extra arguments, the --root the desktop gets)
         let cases: [(&str, &Path, Vec<String>, Option<&Path>); 3] = [
@@ -283,6 +286,9 @@ fn launch_dsk_and_web_hand_the_desktop_a_root_only_when_one_was_found() {
                 .current_dir(cwd)
                 .env("NO_COLOR", "1")
                 .env_remove("RUST_LOG")
+                // The user's own file is read on this path too; a scratch
+                // one, so the suite runner's config cannot change the answer.
+                .env("TRELLIS_CONFIG_DIR", &user)
                 .env("DISPLAY", ":0")
                 .output()
                 .unwrap();
@@ -310,7 +316,7 @@ fn launch_dsk_and_web_hand_the_desktop_a_root_only_when_one_was_found() {
             }
         }
     }
-    for d in [&found, &plain, &outside] {
+    for d in [&found, &plain, &outside, &user] {
         let _ = std::fs::remove_dir_all(d);
     }
     let _ = std::fs::remove_dir_all(exe.parent().unwrap());
