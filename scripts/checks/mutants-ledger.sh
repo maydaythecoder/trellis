@@ -8,14 +8,16 @@
 #
 # A shard directory holds `COMMIT`, `missed.txt` and `timeout.txt` as
 # `trellis-cli` sharded runs write them (ADR 0060 §5). Each line of missed.txt
-# and timeout.txt must appear, after the last ` | `, on one line of the ledger's
-# 6b804cb block (the `<details>` whose summary names that commit), and that
-# line must start with a disposition: killed, equivalent, unexercisable,
+# and timeout.txt must appear, after the last ` | crates/`, on one line of the
+# ledger's 6b804cb block (the `<details>` whose summary names that commit), and
+# that line must start with a disposition: killed, equivalent, unexercisable,
 # windows-only, unix-only or not applicable. A kill is only as good as the
 # test it names, so "killed … by <path::to::test>" also needs `fn <test>`
 # under crates/. Mutant lines are compared as fixed strings: they contain
 # `&&`, `||`, `<`, `->` and `|`, and a pattern match on them would be wrong in
-# ways a reader cannot see.
+# ways a reader cannot see. The separator is ` | crates/`, not ` | `, because
+# a mutant of a bitwise `|` (`replace | with & in …`) carries ` | ` itself and
+# the last one is inside it (#1003).
 #
 # `--all <dir>` checks `<dir>/shard-<k>-of-10` for k in 0..9 and fails unless
 # all ten are present and pass, so a dropped shard cannot read as a clean run.
@@ -39,8 +41,10 @@ if [ "${1:-}" = "--self-test" ]; then
   trap 'rm -rf "$tmp"' EXIT
   fail=0
   # Mutant lines as cargo-mutants prints them, with the characters that would
-  # break a pattern match. `c` is the one the fixed-string case is about.
+  # break a pattern match. `c` is the one the fixed-string case is about;
+  # `i` carries the ledger's own separator inside the mutant text.
   a='crates/x/src/lib.rs:10:5: replace kills_it -> bool with true'
+  i='crates/x/src/lib.rs:95:3: replace | with & in or_flags'
   b='crates/x/src/lib.rs:20:9: replace == with != in other'
   c='crates/x/src/lib.rs:30:12: replace a && b || c -> Option<&str> with None'
   d='crates/x/src/lib.rs:40:1: delete ! in slow_one'
@@ -78,13 +82,14 @@ if [ "${1:-}" = "--self-test" ]; then
       echo "equivalent (#248): display text only | $b"
       echo "killed (#248) by x::tests::kills_it: no backticks, trailing colon | $c"
       echo "unexercisable (#248): nightly only | $d"
+      echo "equivalent (#248): the flags share no bit | $i"
       echo "survived (#248): not a disposition | $f"
       echo "killed (#248) by \`x::tests::no_such_test\`: the fn is not under crates/ | $g"
       echo "killed (#248) by the workspace suite: names no test | $h"
       echo '</details>'
     } > CORRECTNESS_LEDGER.md
     git add crates/x/src/lib.rs CORRECTNESS_LEDGER.md || exit 2
-    shard good "$a" "$b" "$c" "$d"
+    shard good "$a" "$b" "$c" "$i" "$d"
     shard absent "$e" ''
     shard baddisp "$f" ''
     shard nofn "$g" ''
@@ -110,7 +115,7 @@ if [ "${1:-}" = "--self-test" ]; then
     got=$(run "$@")
     [ "$got" = "$want" ] || { echo "FAIL: mutants-ledger.sh $* exited $got, want $want"; fail=1; }
   }
-  expect 0 good                 # killed with its fn present, fixed-string `&&`/`||`/`->` line, timeout line
+  expect 0 good                 # killed with its fn present, fixed-string `&&`/`||`/`->` line, a ` | ` inside the mutant, timeout line
   expect 1 absent               # a missed line nowhere in the ledger
   expect 1 baddisp              # present, but the line starts with an unknown word
   expect 1 nofn                 # killed by a test whose fn is not under crates/
@@ -140,7 +145,8 @@ root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "FAIL: not in a git 
 ledger="$root/CORRECTNESS_LEDGER.md"
 
 # Read the block once into mutant -> ledger line. The mutant text is whatever
-# follows the last ` | `; the reason before it may itself contain ` | `.
+# follows the last ` | crates/`; the reason before it may itself contain ` | `,
+# and so may the mutant text.
 declare -A by_mutant=()
 block_found=0
 load_block() {
@@ -153,8 +159,11 @@ load_block() {
   while IFS= read -r line || [ -n "$line" ]; do
     line=${line%$'\r'}
     [ "$line" = '</details>' ] && break
+    # The mutant text begins at the last ` | crates/`: every cargo-mutants
+    # line names its file under crates/, and ` | ` alone would cut a mutant
+    # of a bitwise `|` in half.
     case $line in
-      *' | '*) key=${line##* | } ;;
+      *' | crates/'*) key="crates/${line##* | crates/}" ;;
       *) continue ;;
     esac
     [ -n "$key" ] || continue
