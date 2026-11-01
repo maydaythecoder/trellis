@@ -1,0 +1,10 @@
+crates/trellis-cli/src/process_agent.rs:715:9: replace Running::spawn -> std::io::Result<Running> with Ok(Default::default())
+crates/trellis-cli/src/process_agent.rs:737:9: replace Running::take_stdin -> Option<std::fs::File> with None
+crates/trellis-cli/src/process_agent.rs:737:9: replace Running::take_stdin -> Option<std::fs::File> with Some(Default::default())
+crates/trellis-cli/src/process_agent.rs:743:9: replace Running::try_wait -> std::io::Result<Option<std::process::ExitStatus>> with Ok(None)
+crates/trellis-cli/src/process_agent.rs:743:9: replace Running::try_wait -> std::io::Result<Option<std::process::ExitStatus>> with Ok(Some(Default::default()))
+crates/trellis-cli/src/process_agent.rs:749:9: replace Running::end with ()
+crates/trellis-cli/src/process_agent.rs:759:9: replace Running::finish with ()
+crates/trellis-cli/src/rpc.rs:1209:16: delete ! in Server::free_after_run_end
+crates/trellis-cli/src/rpc.rs:1221:48: replace && with || in Server::classify_pending
+crates/trellis-cli/src/rpc.rs:2046:5: replace cleanup_delay with ()

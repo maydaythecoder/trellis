@@ -1,0 +1,224 @@
+crates/trellis-cli/src/config.rs:1219:36: replace == with != in RepoConfig::provider
+crates/trellis-cli/src/context_files.rs:46:5: replace skill_policy -> Option<trellis_loop::SkillPolicy> with None
+crates/trellis-cli/src/context_files.rs:46:5: replace skill_policy -> Option<trellis_loop::SkillPolicy> with Some(Default::default())
+crates/trellis-cli/src/context_files.rs:72:5: replace user_skills_note -> Option<String> with None
+crates/trellis-cli/src/context_files.rs:72:5: replace user_skills_note -> Option<String> with Some(String::new())
+crates/trellis-cli/src/context_files.rs:72:5: replace user_skills_note -> Option<String> with Some("xyzzy".into())
+crates/trellis-cli/src/context_files.rs:87:52: replace == with != in user_skills_note
+crates/trellis-cli/src/context_files.rs:97:26: replace && with || in user_skills_note
+crates/trellis-cli/src/context_files.rs:104:18: replace > with == in user_skills_note
+crates/trellis-cli/src/context_files.rs:104:18: replace > with < in user_skills_note
+crates/trellis-cli/src/context_files.rs:104:18: replace > with >= in user_skills_note
+crates/trellis-cli/src/context_files.rs:108:8: delete ! in user_skills_note
+crates/trellis-cli/src/context_files.rs:111:16: delete ! in user_skills_note
+crates/trellis-cli/src/context_files.rs:120:21: replace || with && in user_skills_note
+crates/trellis-cli/src/context_files.rs:175:5: replace present_entry -> bool with true
+crates/trellis-cli/src/context_files.rs:175:5: replace present_entry -> bool with false
+crates/trellis-cli/src/context_files.rs:176:9: replace || with && in present_entry
+crates/trellis-cli/src/context_files.rs:178:23: delete ! in present_entry
+crates/trellis-cli/src/context_files.rs:190:5: replace read_repo_text -> Result<Option<String>> with Ok(None)
+crates/trellis-cli/src/context_files.rs:190:5: replace read_repo_text -> Result<Option<String>> with Ok(Some(String::new()))
+crates/trellis-cli/src/context_files.rs:190:5: replace read_repo_text -> Result<Option<String>> with Ok(Some("xyzzy".into()))
+crates/trellis-cli/src/context_files.rs:195:8: delete ! in read_repo_text
+crates/trellis-cli/src/context_files.rs:213:5: replace in_dir -> Vec<Candidate> with vec![]
+crates/trellis-cli/src/context_files.rs:244:5: replace present -> Vec<(String, String)> with vec![]
+crates/trellis-cli/src/context_files.rs:244:5: replace present -> Vec<(String, String)> with vec![(String::new(), String::new())]
+crates/trellis-cli/src/context_files.rs:244:5: replace present -> Vec<(String, String)> with vec![(String::new(), "xyzzy".into())]
+crates/trellis-cli/src/context_files.rs:244:5: replace present -> Vec<(String, String)> with vec![("xyzzy".into(), String::new())]
+crates/trellis-cli/src/context_files.rs:244:5: replace present -> Vec<(String, String)> with vec![("xyzzy".into(), "xyzzy".into())]
+crates/trellis-cli/src/context_files.rs:277:5: replace read -> Result<String> with Ok(String::new())
+crates/trellis-cli/src/context_files.rs:277:5: replace read -> Result<String> with Ok("xyzzy".into())
+crates/trellis-cli/src/context_files.rs:290:5: replace context_files -> Result<()> with Ok(())
+crates/trellis-cli/src/context_files.rs:320:68: replace == with != in context_files
+crates/trellis-cli/src/context_files.rs:326:30: replace > with == in context_files
+crates/trellis-cli/src/context_files.rs:326:30: replace > with < in context_files
+crates/trellis-cli/src/context_files.rs:326:30: replace > with >= in context_files
+crates/trellis-cli/src/context_files.rs:326:17: replace + with - in context_files
+crates/trellis-cli/src/context_files.rs:326:17: replace + with * in context_files
+crates/trellis-cli/src/context_files.rs:334:14: replace += with -= in context_files
+crates/trellis-cli/src/context_files.rs:334:14: replace += with *= in context_files
+crates/trellis-cli/src/context_files.rs:342:27: replace || with && in context_files
+crates/trellis-cli/src/context_files.rs:342:8: delete ! in context_files
+crates/trellis-cli/src/context_files.rs:342:30: delete ! in context_files
+crates/trellis-cli/src/context_files.rs:361:5: replace system_file -> Result<Option<String>> with Ok(None)
+crates/trellis-cli/src/context_files.rs:361:5: replace system_file -> Result<Option<String>> with Ok(Some(String::new()))
+crates/trellis-cli/src/context_files.rs:361:5: replace system_file -> Result<Option<String>> with Ok(Some("xyzzy".into()))
+crates/trellis-cli/src/context_files.rs:364:8: delete ! in system_file
+crates/trellis-cli/src/context_files.rs:379:19: replace > with == in system_file
+crates/trellis-cli/src/context_files.rs:379:19: replace > with < in system_file
+crates/trellis-cli/src/context_files.rs:379:19: replace > with >= in system_file
+crates/trellis-cli/src/context_files.rs:401:5: replace load -> Result<Loaded> with Ok(Default::default())
+crates/trellis-cli/src/context_files.rs:406:40: replace + with - in load
+crates/trellis-cli/src/context_files.rs:406:40: replace + with * in load
+crates/trellis-cli/src/context_files.rs:407:16: replace > with == in load
+crates/trellis-cli/src/context_files.rs:407:16: replace > with < in load
+crates/trellis-cli/src/context_files.rs:407:16: replace > with >= in load
+crates/trellis-cli/src/context_files.rs:433:59: replace == with != in load
+crates/trellis-cli/src/doctor_cmd.rs:21:5: replace schema_report -> (bool, String) with (true, String::new())
+crates/trellis-cli/src/doctor_cmd.rs:21:5: replace schema_report -> (bool, String) with (true, "xyzzy".into())
+crates/trellis-cli/src/doctor_cmd.rs:21:5: replace schema_report -> (bool, String) with (false, String::new())
+crates/trellis-cli/src/doctor_cmd.rs:21:5: replace schema_report -> (bool, String) with (false, "xyzzy".into())
+crates/trellis-cli/src/doctor_cmd.rs:45:5: replace runtime_tier_label -> &'static str with ""
+crates/trellis-cli/src/doctor_cmd.rs:45:5: replace runtime_tier_label -> &'static str with "xyzzy"
+crates/trellis-cli/src/doctor_cmd.rs:58:5: replace codebase_graph -> trellis_index::ModuleGraph with Default::default()
+crates/trellis-cli/src/doctor_cmd.rs:84:5: replace codebase_json -> serde_json::Value with Default::default()
+crates/trellis-cli/src/doctor_cmd.rs:94:5: replace graph_json -> serde_json::Value with Default::default()
+crates/trellis-cli/src/doctor_cmd.rs:138:5: replace truncate_module -> String with String::new()
+crates/trellis-cli/src/doctor_cmd.rs:138:5: replace truncate_module -> String with "xyzzy".into()
+crates/trellis-cli/src/doctor_cmd.rs:139:10: replace <= with > in truncate_module
+crates/trellis-cli/src/doctor_cmd.rs:144:33: replace - with + in truncate_module
+crates/trellis-cli/src/doctor_cmd.rs:144:33: replace - with / in truncate_module
+crates/trellis-cli/src/doctor_cmd.rs:175:5: replace say_waiting with ()
+crates/trellis-cli/src/doctor_cmd.rs:205:20: replace match guard n > 1 with true in probe_batching
+crates/trellis-cli/src/doctor_cmd.rs:205:20: replace match guard n > 1 with false in probe_batching
+crates/trellis-cli/src/doctor_cmd.rs:205:22: replace > with == in probe_batching
+crates/trellis-cli/src/doctor_cmd.rs:205:22: replace > with < in probe_batching
+crates/trellis-cli/src/doctor_cmd.rs:205:22: replace > with >= in probe_batching
+crates/trellis-cli/src/doctor_cmd.rs:233:9: delete match arm Identity::Identified{..} in read_colibri
+crates/trellis-cli/src/doctor_cmd.rs:269:20: replace match guard n > 1 with true in colibri_batching
+crates/trellis-cli/src/doctor_cmd.rs:269:20: replace match guard n > 1 with false in colibri_batching
+crates/trellis-cli/src/doctor_cmd.rs:269:22: replace > with == in colibri_batching
+crates/trellis-cli/src/doctor_cmd.rs:269:22: replace > with < in colibri_batching
+crates/trellis-cli/src/doctor_cmd.rs:269:22: replace > with >= in colibri_batching
+crates/trellis-cli/src/doctor_cmd.rs:283:5: replace colibri_runtime -> String with String::new()
+crates/trellis-cli/src/doctor_cmd.rs:283:5: replace colibri_runtime -> String with "xyzzy".into()
+crates/trellis-cli/src/doctor_cmd.rs:283:26: replace == with != in colibri_runtime
+crates/trellis-cli/src/doctor_cmd.rs:301:5: replace colibri_context_line -> String with String::new()
+crates/trellis-cli/src/doctor_cmd.rs:301:5: replace colibri_context_line -> String with "xyzzy".into()
+crates/trellis-cli/src/doctor_cmd.rs:301:28: replace == with != in colibri_context_line
+crates/trellis-cli/src/doctor_cmd.rs:359:5: replace colibri_health_lines -> Vec<String> with vec![]
+crates/trellis-cli/src/doctor_cmd.rs:359:5: replace colibri_health_lines -> Vec<String> with vec![String::new()]
+crates/trellis-cli/src/doctor_cmd.rs:359:5: replace colibri_health_lines -> Vec<String> with vec!["xyzzy".into()]
+crates/trellis-cli/src/doctor_cmd.rs:404:5: replace ollama_placement_lines -> Option<Vec<String>> with None
+crates/trellis-cli/src/doctor_cmd.rs:404:5: replace ollama_placement_lines -> Option<Vec<String>> with Some(vec![])
+crates/trellis-cli/src/doctor_cmd.rs:404:5: replace ollama_placement_lines -> Option<Vec<String>> with Some(vec![String::new()])
+crates/trellis-cli/src/doctor_cmd.rs:404:5: replace ollama_placement_lines -> Option<Vec<String>> with Some(vec!["xyzzy".into()])
+crates/trellis-cli/src/doctor_cmd.rs:426:64: replace == with != in ollama_placement_lines
+crates/trellis-cli/src/doctor_cmd.rs:455:43: replace >= with < in ollama_placement_lines
+crates/trellis-cli/src/doctor_cmd.rs:457:37: replace == with != in ollama_placement_lines
+crates/trellis-cli/src/doctor_cmd.rs:482:5: replace colibri_tier_report -> (String, Option<String>) with (String::new(), None)
+crates/trellis-cli/src/doctor_cmd.rs:482:5: replace colibri_tier_report -> (String, Option<String>) with (String::new(), Some(String::new()))
+crates/trellis-cli/src/doctor_cmd.rs:482:5: replace colibri_tier_report -> (String, Option<String>) with (String::new(), Some("xyzzy".into()))
+crates/trellis-cli/src/doctor_cmd.rs:482:5: replace colibri_tier_report -> (String, Option<String>) with ("xyzzy".into(), None)
+crates/trellis-cli/src/doctor_cmd.rs:482:5: replace colibri_tier_report -> (String, Option<String>) with ("xyzzy".into(), Some(String::new()))
+crates/trellis-cli/src/doctor_cmd.rs:482:5: replace colibri_tier_report -> (String, Option<String>) with ("xyzzy".into(), Some("xyzzy".into()))
+crates/trellis-cli/src/doctor_cmd.rs:537:5: replace unprobed_tier_line -> String with String::new()
+crates/trellis-cli/src/doctor_cmd.rs:537:5: replace unprobed_tier_line -> String with "xyzzy".into()
+crates/trellis-cli/src/doctor_cmd.rs:538:9: delete match arm RuntimeError::Connect{base, ..} in unprobed_tier_line
+crates/trellis-cli/src/doctor_cmd.rs:549:5: replace colibri_vllm_note -> String with String::new()
+crates/trellis-cli/src/doctor_cmd.rs:549:5: replace colibri_vllm_note -> String with "xyzzy".into()
+crates/trellis-cli/src/doctor_cmd.rs:564:5: replace batching_note -> Option<&'static str> with None
+crates/trellis-cli/src/doctor_cmd.rs:564:5: replace batching_note -> Option<&'static str> with Some("")
+crates/trellis-cli/src/doctor_cmd.rs:564:5: replace batching_note -> Option<&'static str> with Some("xyzzy")
+crates/trellis-cli/src/doctor_cmd.rs:581:5: replace cmd_doctor -> Result<()> with Ok(())
+crates/trellis-cli/src/doctor_cmd.rs:643:72: replace > with == in cmd_doctor
+crates/trellis-cli/src/doctor_cmd.rs:643:72: replace > with < in cmd_doctor
+crates/trellis-cli/src/doctor_cmd.rs:739:29: replace == with != in cmd_doctor
+crates/trellis-cli/src/doctor_cmd.rs:790:25: replace == with != in cmd_doctor
+crates/trellis-cli/src/doctor_cmd.rs:853:8: delete ! in cmd_doctor
+crates/trellis-cli/src/doctor_cmd.rs:899:5: replace cmd_init -> Result<()> with Ok(())
+crates/trellis-cli/src/doctor_cmd.rs:899:8: delete ! in cmd_init
+crates/trellis-cli/src/doctor_cmd.rs:963:22: replace += with -= in cmd_init
+crates/trellis-cli/src/doctor_cmd.rs:963:22: replace += with *= in cmd_init
+crates/trellis-cli/src/doctor_cmd.rs:973:22: replace += with -= in cmd_init
+crates/trellis-cli/src/doctor_cmd.rs:973:22: replace += with *= in cmd_init
+crates/trellis-cli/src/doctor_cmd.rs:982:18: replace match guard p.is_empty() with true in cmd_init
+crates/trellis-cli/src/doctor_cmd.rs:982:18: replace match guard p.is_empty() with false in cmd_init
+crates/trellis-cli/src/doctor_cmd.rs:995:17: replace > with == in cmd_init
+crates/trellis-cli/src/doctor_cmd.rs:995:17: replace > with < in cmd_init
+crates/trellis-cli/src/doctor_cmd.rs:995:17: replace > with >= in cmd_init
+crates/trellis-cli/src/doctor_cmd.rs:1127:5: replace version_of -> Option<String> with None
+crates/trellis-cli/src/doctor_cmd.rs:1127:5: replace version_of -> Option<String> with Some(String::new())
+crates/trellis-cli/src/doctor_cmd.rs:1127:5: replace version_of -> Option<String> with Some("xyzzy".into())
+crates/trellis-cli/src/doctor_cmd.rs:1134:8: delete ! in version_of
+crates/trellis-cli/src/doctor_cmd.rs:1143:6: delete ! in version_of
+crates/trellis-cli/src/doctor_cmd.rs:1158:5: replace coverage_available -> bool with true
+crates/trellis-cli/src/doctor_cmd.rs:1158:22: replace && with || in coverage_available
+crates/trellis-cli/src/doctor_cmd.rs:1165:5: replace is_pytest -> bool with true
+crates/trellis-cli/src/doctor_cmd.rs:1165:5: replace is_pytest -> bool with false
+crates/trellis-cli/src/doctor_cmd.rs:1174:9: delete match arm "pytest" | "py.test" | "pytest-3" in is_pytest
+crates/trellis-cli/src/doctor_cmd.rs:1175:9: delete match arm "python" | "python3" | "py" in is_pytest
+crates/trellis-cli/src/doctor_cmd.rs:1176:74: replace && with || in is_pytest
+crates/trellis-cli/src/doctor_cmd.rs:1176:80: replace != with == in is_pytest
+crates/trellis-cli/src/doctor_cmd.rs:1177:52: replace && with || in is_pytest
+crates/trellis-cli/src/doctor_cmd.rs:1177:43: replace == with != in is_pytest
+crates/trellis-cli/src/doctor_cmd.rs:1177:85: replace == with != in is_pytest
+crates/trellis-cli/src/doctor_cmd.rs:1185:5: replace help_mentions_cov -> bool with true
+crates/trellis-cli/src/doctor_cmd.rs:1185:5: replace help_mentions_cov -> bool with false
+crates/trellis-cli/src/doctor_cmd.rs:1206:5: replace repo_lines -> Vec<String> with vec![]
+crates/trellis-cli/src/doctor_cmd.rs:1206:5: replace repo_lines -> Vec<String> with vec![String::new()]
+crates/trellis-cli/src/doctor_cmd.rs:1206:5: replace repo_lines -> Vec<String> with vec!["xyzzy".into()]
+crates/trellis-cli/src/doctor_cmd.rs:1244:18: replace match guard p.is_empty() with true in repo_lines
+crates/trellis-cli/src/doctor_cmd.rs:1244:18: replace match guard p.is_empty() with false in repo_lines
+crates/trellis-cli/src/doctor_cmd.rs:1269:36: replace + with - in repo_lines
+crates/trellis-cli/src/doctor_cmd.rs:1269:36: replace + with * in repo_lines
+crates/trellis-cli/src/doctor_cmd.rs:1270:14: replace == with != in repo_lines
+crates/trellis-cli/src/doctor_cmd.rs:1297:18: replace match guard c.mode == config::ControlMode::Approve with true in repo_lines
+crates/trellis-cli/src/doctor_cmd.rs:1297:18: replace match guard c.mode == config::ControlMode::Approve with false in repo_lines
+crates/trellis-cli/src/doctor_cmd.rs:1297:25: replace == with != in repo_lines
+crates/trellis-cli/src/doctor_cmd.rs:1324:5: replace cmd_check -> Result<()> with Ok(())
+crates/trellis-cli/src/doctor_cmd.rs:1353:12: delete ! in cmd_check
+crates/trellis-cli/src/doctor_cmd.rs:1365:16: delete ! in cmd_check
+crates/trellis-cli/src/doctor_cmd.rs:1368:16: delete ! in cmd_check
+crates/trellis-cli/src/doctor_cmd.rs:1374:8: delete ! in cmd_check
+crates/trellis-cli/src/doctor_extra.rs:16:5: replace input_report_lines -> Vec<String> with vec![]
+crates/trellis-cli/src/doctor_extra.rs:16:5: replace input_report_lines -> Vec<String> with vec![String::new()]
+crates/trellis-cli/src/doctor_extra.rs:16:5: replace input_report_lines -> Vec<String> with vec!["xyzzy".into()]
+crates/trellis-cli/src/doctor_extra.rs:33:5: replace user_config_line -> String with String::new()
+crates/trellis-cli/src/doctor_extra.rs:33:5: replace user_config_line -> String with "xyzzy".into()
+crates/trellis-cli/src/doctor_extra.rs:37:20: replace match guard f.is_file() with true in user_config_line
+crates/trellis-cli/src/doctor_extra.rs:37:20: replace match guard f.is_file() with false in user_config_line
+crates/trellis-cli/src/doctor_extra.rs:49:5: replace context_line -> String with String::new()
+crates/trellis-cli/src/doctor_extra.rs:49:5: replace context_line -> String with "xyzzy".into()
+crates/trellis-cli/src/doctor_extra.rs:72:5: replace user_skills_line -> String with String::new()
+crates/trellis-cli/src/doctor_extra.rs:72:5: replace user_skills_line -> String with "xyzzy".into()
+crates/trellis-cli/src/doctor_extra.rs:102:5: replace trust_line -> String with String::new()
+crates/trellis-cli/src/doctor_extra.rs:102:5: replace trust_line -> String with "xyzzy".into()
+crates/trellis-cli/src/doctor_extra.rs:111:5: replace trust_line_with -> String with String::new()
+crates/trellis-cli/src/doctor_extra.rs:111:5: replace trust_line_with -> String with "xyzzy".into()
+crates/trellis-cli/src/doctor_extra.rs:118:14: replace > with == in trust_line_with
+crates/trellis-cli/src/doctor_extra.rs:118:14: replace > with < in trust_line_with
+crates/trellis-cli/src/doctor_extra.rs:118:14: replace > with >= in trust_line_with
+crates/trellis-cli/src/doctor_extra.rs:121:8: delete ! in trust_line_with
+crates/trellis-cli/src/doctor_extra.rs:132:17: replace > with == in trust_line_with
+crates/trellis-cli/src/doctor_extra.rs:132:17: replace > with < in trust_line_with
+crates/trellis-cli/src/doctor_extra.rs:132:17: replace > with >= in trust_line_with
+crates/trellis-cli/src/doctor_extra.rs:146:8: delete ! in trust_line_with
+crates/trellis-cli/src/doctor_extra.rs:175:5: replace agents_line -> String with String::new()
+crates/trellis-cli/src/doctor_extra.rs:175:5: replace agents_line -> String with "xyzzy".into()
+crates/trellis-cli/src/doctor_extra.rs:195:5: replace services_line -> String with String::new()
+crates/trellis-cli/src/doctor_extra.rs:195:5: replace services_line -> String with "xyzzy".into()
+crates/trellis-cli/src/doctor_extra.rs:208:13: replace && with || in services_line
+crates/trellis-cli/src/doctor_extra.rs:205:13: replace && with || in services_line
+crates/trellis-cli/src/doctor_extra.rs:204:9: delete ! in services_line
+crates/trellis-cli/src/doctor_extra.rs:207:65: replace || with && in services_line
+crates/trellis-cli/src/doctor_extra.rs:207:52: replace || with && in services_line
+crates/trellis-cli/src/doctor_extra.rs:207:57: replace == with != in services_line
+crates/trellis-cli/src/doctor_extra.rs:207:70: replace == with != in services_line
+crates/trellis-cli/src/doctor_extra.rs:222:8: delete ! in services_line
+crates/trellis-cli/src/doctor_extra.rs:235:8: delete ! in services_line
+crates/trellis-cli/src/doctor_extra.rs:249:8: delete ! in services_line
+crates/trellis-cli/src/doctor_extra.rs:266:5: replace tz_line -> String with String::new()
+crates/trellis-cli/src/doctor_extra.rs:266:5: replace tz_line -> String with "xyzzy".into()
+crates/trellis-cli/src/doctor_extra.rs:273:5: replace vault_line -> String with String::new()
+crates/trellis-cli/src/doctor_extra.rs:273:5: replace vault_line -> String with "xyzzy".into()
+crates/trellis-cli/src/doctor_supply.rs:72:5: replace line -> Option<String> with None
+crates/trellis-cli/src/doctor_supply.rs:72:5: replace line -> Option<String> with Some(String::new())
+crates/trellis-cli/src/doctor_supply.rs:72:5: replace line -> Option<String> with Some("xyzzy".into())
+crates/trellis-cli/src/doctor_supply.rs:73:8: delete ! in line
+crates/trellis-cli/src/doctor_supply.rs:122:24: delete ! in policy
+crates/trellis-cli/src/doctor_supply.rs:143:5: replace on_path -> Option<PathBuf> with None
+crates/trellis-cli/src/doctor_supply.rs:143:5: replace on_path -> Option<PathBuf> with Some(Default::default())
+crates/trellis-cli/src/doctor_supply.rs:148:5: replace on_path_in -> Option<PathBuf> with None
+crates/trellis-cli/src/doctor_supply.rs:148:5: replace on_path_in -> Option<PathBuf> with Some(Default::default())
+crates/trellis-cli/src/doctor_supply.rs:167:5: replace deny_ignores -> Vec<String> with vec![]
+crates/trellis-cli/src/doctor_supply.rs:167:5: replace deny_ignores -> Vec<String> with vec![String::new()]
+crates/trellis-cli/src/doctor_supply.rs:167:5: replace deny_ignores -> Vec<String> with vec!["xyzzy".into()]
+crates/trellis-cli/src/doctor_supply.rs:180:21: delete match arm toml::Value::String(s) in deny_ignores
+crates/trellis-cli/src/doctor_supply.rs:181:21: delete match arm toml::Value::Table(t) in deny_ignores
+crates/trellis-cli/src/doctor_supply.rs:218:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in output_within
+crates/trellis-cli/src/doctor_supply.rs:218:28: replace == with != in output_within
+crates/trellis-cli/src/doctor_supply.rs:227:35: replace + with - in output_within
+crates/trellis-cli/src/doctor_supply.rs:232:25: replace match guard Instant::now() >= deadline with true in output_within
+crates/trellis-cli/src/doctor_supply.rs:232:25: replace match guard Instant::now() >= deadline with false in output_within
+crates/trellis-cli/src/doctor_supply.rs:232:40: replace >= with < in output_within

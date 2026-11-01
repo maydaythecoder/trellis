@@ -1,0 +1,2 @@
+crates/trellis-cli/src/output.rs:78:5: replace frame with ()
+crates/trellis-cli/src/output.rs:289:9: replace Abort::observed -> bool with false
