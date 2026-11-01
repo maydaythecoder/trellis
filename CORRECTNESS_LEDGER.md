@@ -1471,6 +1471,39 @@ killed (#248) by doctor_extra::tests::a_live_service_runs_while_its_task_is_clai
 
 </details>
 
+<details>
+<summary>trellis-cli at 6b804cb, workspace suite on Linux (#248)</summary>
+
+ADR 0060: `mutants.yml` (`cargo mutants -p trellis-cli --test-workspace true
+--timeout 300 -j 1`, cargo-mutants 27.1.0) on `ubuntu-latest` at `6b804cb`,
+ten shards. Shard 0 (run 40208964899, 2026-10-25): `252 mutants tested in
+4h: 12 missed, 217 caught, 22 unviable, 1 timeouts`; its four outcome files
+are under `docs/bench/mutants-by-crate-ws/trellis-cli/shard-0-of-10/`
+unchanged. Every missed or timed-out line gets a disposition here with the
+evidence ADR 0060 §4 asks for, and `scripts/checks/mutants-ledger.sh
+<shard-dir>` holds that each one has. A kill below was shown by hand at
+the batch's base, `7f18af43`: the mutant applied, the named test run
+with `cargo test -p trellis-cli` and seen to fail, the source restored. Line
+numbers are `6b804cb`'s; `main.rs:546` and `main.rs:1055` have since moved
+to `startup.rs` (#933), `main.rs:679`, `705` and `711` to `main.rs:532`,
+`558` and `564`, with the same text. The eight lines below are shard 0's
+first batch (#994); its other five (`main.rs:546`, `679` x2, `705`, `711`)
+are open on #994 and not yet dispositioned.
+
+```
+unexercisable (#248): needs exactly one of stdin and stdout to be a terminal; every test here runs both as pipes, where `&&` and `||` agree, and a terminal needs a pty (the shape of main.rs:527:43 at 989b2a2) | crates/trellis-cli/src/main.rs:1055:44: replace || with && in terminal_ui
+unexercisable (#248): needs stdout to be a terminal: every test here runs it as a pipe, where `!stdout` is true and the two agree, and a terminal needs a pty | crates/trellis-cli/src/main.rs:1055:12: delete ! in terminal_ui
+unexercisable (#248): needs stdin to be a terminal: every test here runs it as a pipe, where `!stdin` is true and the two agree, and a terminal needs a pty | crates/trellis-cli/src/main.rs:1055:47: delete ! in terminal_ui
+killed (#248) by atlas::tests::rpc_atlas_head_error_is_git_s_stderr_trimmed_or_the_error_itself_when_git_said_nothing | crates/trellis-cli/src/atlas.rs:92:60: replace match guard !stderr.trim().is_empty() with true in git_message
+killed (#248) by atlas::tests::rpc_atlas_head_error_is_git_s_stderr_trimmed_or_the_error_itself_when_git_said_nothing | crates/trellis-cli/src/atlas.rs:92:60: replace match guard !stderr.trim().is_empty() with false in git_message
+killed (#248) by atlas::tests::rpc_atlas_head_error_is_git_s_stderr_trimmed_or_the_error_itself_when_git_said_nothing | crates/trellis-cli/src/atlas.rs:92:60: delete ! in git_message
+killed (#248) by rpc_atlas::rpc_atlas_get_history_counts_a_commit_exactly_a_window_old_inside_that_window: in crates/trellis-cli/tests/cli | crates/trellis-cli/src/atlas.rs:323:44: replace < with <= in history
+killed (#248) by config::provider_tests::model_timeout_s_unset_is_the_300_s_every_request_had_before: the test already failed on a zero default; what timed out was the suite, because rpc.rs's ollama and colibri stubs blocked on `accept` for a request the refused config never sent, so `cargo test` never ended. Both stubs now give up after 30 s (`rpc::tests::accept_one`); with the mutant applied by hand, `cargo test -p trellis-cli --bin trellis` (the unit-test binary that holds both the config tests and the stubs) ended in 313 s on a 2-core, 7 GB host with that test among the failures, which is not the runner's figure. Whether the suite ends inside cargo-mutants' 300 s limit on the runner is pending a `mutants.yml` dispatch at this branch (`os=linux file=crates/trellis-cli/src/config.rs`) | crates/trellis-cli/src/config.rs:1208:9: replace RepoConfig::model_timeout -> Duration with Default::default()
+```
+
+</details>
+
+
 
 ## Tier 7 — Property and fuzz
 

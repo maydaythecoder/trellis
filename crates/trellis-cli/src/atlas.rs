@@ -425,6 +425,26 @@ mod tests {
     }
 
     #[test]
+    fn rpc_atlas_head_error_is_git_s_stderr_trimmed_or_the_error_itself_when_git_said_nothing() {
+        // The risk (#248, 6b804cb shard 0): `head_error` carrying git's
+        // whole failure line, command and all, when git explained itself;
+        // or an empty string when git said nothing, which the Atlas would
+        // show as a blank where a reason belongs.
+        let said = trellis_vcs::VcsError::GitFailed {
+            command: "rev-parse HEAD".into(),
+            stderr: "  fatal: not a git repository\n".into(),
+        };
+        assert_eq!(git_message(&said), "fatal: not a git repository");
+        let silent = trellis_vcs::VcsError::GitFailed {
+            command: "rev-parse HEAD".into(),
+            stderr: " \n".into(),
+        };
+        let fallback = silent.to_string().trim().to_string();
+        assert!(fallback.contains("rev-parse HEAD"), "{fallback}");
+        assert_eq!(git_message(&silent), fallback);
+    }
+
+    #[test]
     fn rpc_atlas_lines_are_counted_from_one_and_a_newline_ends_its_own_line() {
         // The risk: an off-by-one that puts every definition a line late,
         // or a CRLF file counted twice per line.
