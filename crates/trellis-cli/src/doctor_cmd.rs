@@ -1167,7 +1167,7 @@ mod doctor_tests {
         assert!(!help_mentions_cov(&runner("no plugin here")));
     }
 
-    /// Not on Windows: the stand-in pytest is a symlink, and a program
+    /// Not on Windows: the stand-in pytest is a shell script, and a program
     /// named `pytest` there has to be an executable.
     #[cfg(unix)]
     #[test]
@@ -1177,26 +1177,30 @@ mod doctor_tests {
         // reports no coverage plugin to a user who has one, and every run
         // reads as `0 verified` for a missing tool that is there.
         //
-        // The pytest is a symlink to `echo`, given `--cov=PATH` as its own
-        // argument, so `pytest --cov=PATH --help` prints a help text that
-        // offers `--cov`. Not a script written here: a file this process has
-        // just written can be "text file busy" to its own exec when another
-        // test's child, forked meanwhile, still holds the write descriptor
-        // (seen once in run 41308698092).
-        let echo = std::env::var_os("PATH")
-            .and_then(|p| {
-                std::env::split_paths(&p)
-                    .map(|d| d.join("echo"))
-                    .find(|e| e.is_file())
-            })
-            .expect("echo on PATH");
+        // A child `sh` writes the script, not this process: a file this
+        // process has just written is "text file busy" to its own exec
+        // while another test's child, forked meanwhile, still holds the
+        // write descriptor. `help_mentions_cov` swallows that error, which
+        // is the likeliest reading of this test failing in the baseline of
+        // run 41308698092 and passing in CI on the same commit.
         let dir = crate::testutil::scratch("doctor-pytest-cov");
         let pytest = dir.join("pytest");
-        std::os::unix::fs::symlink(&echo, &pytest).unwrap();
-        let tests = vec![
-            pytest.to_string_lossy().into_owned(),
-            "--cov=PATH".to_string(),
-        ];
+        let wrote = std::process::Command::new("sh")
+            .args([
+                "-c",
+                r#"printf '%s
+' "$1" > "$2" && chmod 755 "$2""#,
+                "sh",
+            ])
+            .arg(
+                "#!/bin/sh
+echo 'usage: pytest [--cov=PATH]'",
+            )
+            .arg(&pytest)
+            .status()
+            .expect("sh on PATH");
+        assert!(wrote.success(), "{wrote}");
+        let tests = vec![pytest.to_string_lossy().into_owned()];
         assert!(is_pytest(&tests), "{tests:?}");
         assert!(coverage_available(&tests), "{tests:?}");
     }
