@@ -244,6 +244,37 @@ fn startup_pty_bare_with_no_desktop_says_so_then_falls_back() {
 }
 
 #[cfg(unix)]
+#[cfg_attr(not(target_os = "linux"), ignore = "only Linux asks for a display")]
+#[test]
+fn startup_pty_bare_with_no_display_says_so_and_starts_no_desktop() {
+    // The risk (#248): `launch::display` is the one place that reads
+    // DISPLAY and WAYLAND_DISPLAY, and read as always true it starts the
+    // desktop on a headless Linux box, where the window fails out of sight
+    // and the terminal is left with nothing. With neither variable set,
+    // bare `trellis` says so in one line and the desktop beside it, a stub
+    // that records its arguments, is never run; a stub trellis-tui beside
+    // it too, so the fallback offers the start screen and `q` leaves.
+    let d = scratch("pty-bare-no-display");
+    let (_bin, exe) = trellis_with_stub_desktop("pty-bare-no-display-bin");
+    stub_tui_ready(exe.parent().unwrap());
+    let (ok, s) = under_pty_with_display(&exe, "pty-bare-no-display", &d, "", "q\n", false);
+    assert!(ok, "{s}");
+    assert!(
+        s.contains("no display to open the desktop on: neither DISPLAY nor WAYLAND_DISPLAY is set"),
+        "{s}"
+    );
+    assert!(!s.contains("the desktop is not installed"), "{s}");
+    assert!(s.contains("or q to quit"), "{s}");
+    assert_eq!(
+        stub_args(&exe, std::time::Duration::from_secs(3)),
+        None,
+        "the desktop was started with no display: {s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(exe.parent().unwrap());
+}
+
+#[cfg(unix)]
 #[test]
 fn launch_dsk_and_web_hand_the_desktop_a_root_only_when_one_was_found() {
     // ADR 0050 §1 and §5: `--dsk` and `--web` pass `--root` to the desktop

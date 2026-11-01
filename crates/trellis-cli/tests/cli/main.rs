@@ -410,20 +410,41 @@ fn get_codebase_in(d: &Path, extra: serde_json::Value) -> serde_json::Value {
 /// running the suite (#561).
 #[cfg(unix)]
 fn under_pty_as(exe: &Path, name: &str, cwd: &Path, after: &str, input: &str) -> (bool, String) {
+    under_pty_with_display(exe, name, cwd, after, input, true)
+}
+
+/// [`under_pty_as`], with `DISPLAY` set to `:0` or, when `display` is
+/// false, both it and `WAYLAND_DISPLAY` unset: a headless Linux box, where
+/// bare `trellis` must say so rather than start the desktop (#248).
+#[cfg(unix)]
+fn under_pty_with_display(
+    exe: &Path,
+    name: &str,
+    cwd: &Path,
+    after: &str,
+    input: &str,
+    display: bool,
+) -> (bool, String) {
     use std::io::Write as _;
     use std::process::Stdio;
     let user = scratch(&format!("{name}-user"));
     let shown = user.join("terminal.txt");
     let cmd = format!("'{}'{after}", exe.display());
-    let mut child = Command::new("script")
+    let mut script = Command::new("script");
+    script
         .args(["-qfec", &cmd, "/dev/null"])
         .current_dir(cwd)
         .env("NO_COLOR", "1")
-        .env("DISPLAY", ":0")
         // Plain line input: no editor escape sequences to read around.
         .env("TERM", "dumb")
         .env("SHELL", "/bin/sh")
-        .env("TRELLIS_CONFIG_DIR", &user)
+        .env("TRELLIS_CONFIG_DIR", &user);
+    if display {
+        script.env("DISPLAY", ":0");
+    } else {
+        script.env_remove("DISPLAY").env_remove("WAYLAND_DISPLAY");
+    }
+    let mut child = script
         .stdin(Stdio::piped())
         .stdout(std::fs::File::create(&shown).unwrap())
         .stderr(Stdio::null())

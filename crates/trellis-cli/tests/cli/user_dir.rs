@@ -103,6 +103,56 @@ fn install_list_prints_what_the_manifest_records() {
 }
 
 #[test]
+fn install_dry_run_flag_alone_decides_whether_the_package_is_installed() {
+    // The risk, from the `dry_run` match guard in `install::run` (#248): a
+    // guard read as always true makes `trellis install <spec>` describe the
+    // package and install nothing, and one read as always false makes
+    // `--dry-run` install what it only promised to describe. Both commands
+    // exit 0 and print a listing, so only the user directory afterwards
+    // tells them apart.
+    let src = empty_repo("install-dry-run-src");
+    std::fs::create_dir_all(src.join("skills/tidy")).unwrap();
+    std::fs::write(
+        src.join("skills/tidy/SKILL.md"),
+        "---\nname: tidy\ndescription: Tidy a module.\n---\n# tidy\n",
+    )
+    .unwrap();
+    git(&src, &["add", "-A"]);
+    git(&src, &["commit", "-qm", "package"]);
+    git(&src, &["tag", "v1"]);
+    let spec = format!("{}@v1", src.display());
+    let d = scratch("install-dry-run");
+    let user = scratch("install-dry-run-cfg");
+    // The package takes the source directory's name.
+    let installed = user.join("packages").join(src.file_name().unwrap());
+
+    let out = run_as(&d, &user, &["install", &spec, "--dry-run"]);
+    assert!(out.status.success(), "{}", combined(&out));
+    assert!(stdout(&out).starts_with("dry run: "), "{}", combined(&out));
+    assert!(
+        !user.join("packages").exists(),
+        "a dry run installed the package: {}",
+        combined(&out)
+    );
+
+    let out = run_as(&d, &user, &["install", &spec]);
+    assert!(out.status.success(), "{}", combined(&out));
+    assert!(!stdout(&out).starts_with("dry run: "), "{}", combined(&out));
+    assert!(
+        installed
+            .join("skills")
+            .join("tidy")
+            .join("SKILL.md")
+            .is_file(),
+        "the install wrote nothing: {}",
+        combined(&out)
+    );
+    let _ = std::fs::remove_dir_all(&src);
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&user);
+}
+
+#[test]
 fn no_model_message_is_the_same_from_run_and_from_bare_trellis_on_a_pipe() {
     // #376, ADR 0050 section 2: two commands that refuse for the same reason
     // used to say it two ways, and neither mentioned the picker. The risk is
