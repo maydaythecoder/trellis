@@ -168,7 +168,7 @@ pub(crate) fn prepare(root: &Path, cfg: &RepoConfig, run_id: &str, model: &str) 
     prepare_as(root, root, cfg, run_id, model)
 }
 
-/// [`prepare`], with trust looked up under `key` and fingerprinted at
+/// `prepare` (the test-only form), with trust looked up under `key` and fingerprinted at
 /// `root` (ADR 0053 decision 3; see [`require_trusted_as`]).
 pub(crate) fn prepare_as(
     root: &Path,
