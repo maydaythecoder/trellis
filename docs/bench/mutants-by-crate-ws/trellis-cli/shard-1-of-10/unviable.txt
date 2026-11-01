@@ -1,0 +1,19 @@
+crates/trellis-cli/src/config.rs:1218:9: replace RepoConfig::provider -> Result<&ProviderSection> with Ok(Box::leak(Box::new(Default::default())))
+crates/trellis-cli/src/context_files.rs:146:5: replace input -> trellis_trail::Input with Default::default()
+crates/trellis-cli/src/context_files.rs:213:5: replace in_dir -> Vec<Candidate> with vec![Default::default()]
+crates/trellis-cli/src/doctor_cmd.rs:183:5: replace probe_batching -> Result<trellis_model::BatchingCapability> with Ok(Default::default())
+crates/trellis-cli/src/doctor_cmd.rs:230:5: replace read_colibri -> Result<ColibriSeen, RuntimeError> with Ok(Default::default())
+crates/trellis-cli/src/doctor_cmd.rs:247:5: replace hosted_batching -> Result<trellis_model::BatchingCapability, String> with Ok(Default::default())
+crates/trellis-cli/src/doctor_cmd.rs:267:5: replace colibri_batching -> trellis_model::BatchingCapability with Default::default()
+crates/trellis-cli/src/doctor_cmd.rs:792:17: replace && with || in cmd_doctor
+crates/trellis-cli/src/doctor_cmd.rs:791:17: replace && with || in cmd_doctor
+crates/trellis-cli/src/doctor_cmd.rs:806:13: replace && with || in cmd_doctor
+crates/trellis-cli/src/doctor_cmd.rs:847:9: replace && with || in cmd_doctor
+crates/trellis-cli/src/doctor_cmd.rs:855:9: replace && with || in cmd_doctor
+crates/trellis-cli/src/doctor_cmd.rs:854:9: replace && with || in cmd_doctor
+crates/trellis-cli/src/doctor_supply.rs:83:5: replace run -> Report with Default::default()
+crates/trellis-cli/src/doctor_supply.rs:120:5: replace policy -> Report with Default::default()
+crates/trellis-cli/src/doctor_supply.rs:206:5: replace output_within -> Result<Captured, String> with Ok(Default::default())
+crates/trellis-cli/src/doctor_supply.rs:227:35: replace + with * in output_within
+crates/trellis-cli/src/doctor_supply.rs:259:5: replace drain -> std::sync::mpsc::Receiver<String> with Receiver::new()
+crates/trellis-cli/src/doctor_supply.rs:259:5: replace drain -> std::sync::mpsc::Receiver<String> with Receiver::from_iter([String::new()])
