@@ -880,6 +880,71 @@ mod tests {
     }
 
     #[test]
+    fn set_model_spec_treats_only_a_missing_file_as_empty() {
+        // The risk (#248): a file that exists and cannot be read (here a
+        // directory, which `read_to_string` refuses with something other
+        // than NotFound) taken for an absent one, so the edit went on to
+        // write a `.toml.tmp` beside it and failed only at the rename,
+        // with an error about replacing rather than reading.
+        let d = tempfile::tempdir().unwrap();
+        let dir_not_file = d.path().join("config.toml");
+        std::fs::create_dir(&dir_not_file).unwrap();
+        let e = set_model_spec(&dir_not_file, "scripted:x.json").unwrap_err();
+        let said = format!("{e:#}");
+        assert!(said.starts_with("reading "), "{said}");
+        assert!(
+            !d.path().join("config.toml.tmp").exists(),
+            "nothing is written beside a file that could not be read"
+        );
+    }
+
+    #[test]
+    fn replace_value_measures_the_indent_before_the_string_by_subtraction() {
+        // The risk (#248): the leading whitespace after `=` counted as
+        // `len / trimmed_len`, which is 1 for one space and the two
+        // agree, so a line with no space or two spaces found the string
+        // one byte off and the edit refused a file it could read.
+        assert_eq!(
+            replace_value("spec=\"old\"", "\"new\"").as_deref(),
+            Some("spec=\"new\"")
+        );
+        assert_eq!(
+            replace_value("spec =  \"old\"  # was", "\"new\"").as_deref(),
+            Some("spec =  \"new\"  # was")
+        );
+        assert_eq!(
+            replace_value("spec =\t'old'\n", "\"new\"").as_deref(),
+            Some("spec =\t\"new\"\n")
+        );
+    }
+
+    #[test]
+    fn one_line_string_len_reads_both_quote_styles_and_stops_at_a_newline_or_escape() {
+        // The risk (#248): the length of the string a `spec =` line holds,
+        // which decides where the replacement ends. Each case holds one
+        // branch of the function to its reading of TOML: a triple quote of
+        // either kind is multi-line; a literal string ends at its first
+        // quote and never spans a line; a basic string skips an escaped
+        // quote and never spans a line either.
+        let len = one_line_string_len;
+        assert_eq!(len("\"\"\"a\"\"\""), None, "a multi-line basic string");
+        assert_eq!(len("'''a'''"), None, "a multi-line literal string");
+        assert_eq!(len("'a' # c"), Some(3), "a literal string is read");
+        assert_eq!(len("'ab'"), Some(4));
+        assert_eq!(len("'abc' x"), Some(5));
+        assert_eq!(len("'a\nb'"), None, "a literal string does not span a line");
+        assert_eq!(len("\"a\nb\""), None, "a basic string does not span a line");
+        assert_eq!(
+            len("\"a\\\"b\""),
+            Some(6),
+            "an escaped quote does not end it"
+        );
+        assert_eq!(len("\"a\\\\\"b"), Some(5), "an escaped backslash does");
+        assert_eq!(len("\"open"), None);
+        assert_eq!(len("1"), None);
+    }
+
+    #[test]
     fn a_custom_tool_s_schema_property_named_token_is_not_a_key() {
         // The risk: `[[tools.custom]]` with a schema property `token` (a
         // tool that takes a pagination token) was refused as a file holding
