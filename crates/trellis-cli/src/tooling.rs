@@ -1368,6 +1368,38 @@ mod run_tests {
     }
 
     #[test]
+    fn a_configured_shell_is_kept_and_only_an_empty_one_falls_back_to_the_default() {
+        // The risk (#248): the filter that drops `shell = []` inverted, so
+        // the shell a trusted repository named was replaced by the default
+        // and an empty one was handed to bash as a zero-word argv. The
+        // shell is never run here; the test reads what `prepare` built.
+        let shell_of = |name: &str, shell: &str| {
+            let (dir, _) = fixture(
+                name,
+                &format!("[tools]\nbash = true\nshell = {shell}\n"),
+                EDIT_THEN_STOP,
+            );
+            trust(&dir);
+            let cfg = config::RepoConfig::load(&dir).unwrap();
+            let t = super::prepare(&dir, &cfg, "r", "m").unwrap();
+            t.tools
+                .bash()
+                .expect("bash was requested and trusted")
+                .shell
+                .clone()
+        };
+        assert_eq!(
+            shell_of("shell-named", "['zsh', '-lc']"),
+            vec!["zsh".to_string(), "-lc".to_string()]
+        );
+        assert_eq!(
+            shell_of("shell-empty", "[]"),
+            trellis_loop::default_shell(),
+            "an empty shell is the default, not an empty argv"
+        );
+    }
+
+    #[test]
     fn a_profile_may_keep_a_declared_custom_tool_by_name_and_not_a_typo() {
         // The risk: a profile's `tools` list refused the custom tool the
         // repository declares, so a profile could not keep it.
