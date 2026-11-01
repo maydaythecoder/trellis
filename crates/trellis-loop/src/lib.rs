@@ -42,7 +42,7 @@ pub use agent::{
     Hold, HoldRefused, Model, NotConverged, Outcome, PauseAnswer, PriorContext, RepoContext,
     RunControl, Seed, Steer, Steering, SteeringFates, SteeringLog, SteeringRx, Step, StepUsage,
     ToolCall, Transcript, Turn, TurnAction, VaultContext, WithdrawRefused, run, run_seeded,
-    summarise, turn_action,
+    summarise, turn_action, wrote_by,
 };
 pub use agent_clone::{AgentClone, AgentCloneError, CarriedBack, NEW_FILE_WALK_CAP, NotCarried};
 pub use budget::{
