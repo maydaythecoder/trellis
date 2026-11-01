@@ -1,0 +1,19 @@
+crates/trellis-cli/src/image_input.rs:141:53: replace + with * in read_one
+crates/trellis-cli/src/install.rs:172:44: replace match guard dry_run with true in run
+crates/trellis-cli/src/install.rs:172:44: replace match guard dry_run with false in run
+crates/trellis-cli/src/install.rs:434:35: replace || with && in upgrade_package
+crates/trellis-cli/src/install.rs:434:79: replace || with && in upgrade_package
+crates/trellis-cli/src/install.rs:976:41: replace || with && in resolve_ref
+crates/trellis-cli/src/launch.rs:80:5: replace display -> bool with true
+crates/trellis-cli/src/launch.rs:80:5: delete ! in display
+crates/trellis-cli/src/launch.rs:134:45: replace | with & in desktop_command
+crates/trellis-cli/src/launch.rs:134:45: replace | with ^ in desktop_command
+crates/trellis-cli/src/launch.rs:198:5: replace printable -> String with String::new()
+crates/trellis-cli/src/launch.rs:198:5: replace printable -> String with "xyzzy".into()
+crates/trellis-cli/src/launch.rs:199:42: replace || with && in printable
+crates/trellis-cli/src/launch.rs:208:5: replace opener -> (&'static str, &'static[&'static str]) with ("", Vec::leak(Vec::new()))
+crates/trellis-cli/src/launch.rs:208:5: replace opener -> (&'static str, &'static[&'static str]) with ("", Vec::leak(vec![""]))
+crates/trellis-cli/src/launch.rs:208:5: replace opener -> (&'static str, &'static[&'static str]) with ("", Vec::leak(vec!["xyzzy"]))
+crates/trellis-cli/src/launch.rs:208:5: replace opener -> (&'static str, &'static[&'static str]) with ("xyzzy", Vec::leak(Vec::new()))
+crates/trellis-cli/src/launch.rs:208:5: replace opener -> (&'static str, &'static[&'static str]) with ("xyzzy", Vec::leak(vec![""]))
+crates/trellis-cli/src/launch.rs:208:5: replace opener -> (&'static str, &'static[&'static str]) with ("xyzzy", Vec::leak(vec!["xyzzy"]))
