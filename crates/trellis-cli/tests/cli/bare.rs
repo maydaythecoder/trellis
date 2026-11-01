@@ -245,6 +245,79 @@ fn startup_pty_bare_with_no_desktop_says_so_then_falls_back() {
 
 #[cfg(unix)]
 #[test]
+fn launch_dsk_and_web_hand_the_desktop_a_root_only_when_one_was_found() {
+    // ADR 0050 §1 and §5: `--dsk` and `--web` pass `--root` to the desktop
+    // when the root was named (`--root`) or found (a `.git` at or above the
+    // working directory), and not when trellis fell back to the working
+    // directory outside any repository (`explicit || root.join(".git")
+    // .exists()`, once for each flag). The `&&` mutant of either line drops
+    // `--root` for a found repository and for a named plain tree, so the
+    // desktop opens on its overview instead of the tree the person is in.
+    // Read from the stub desktop's recorded arguments, under pipes, with
+    // the display the Linux check asks for; the stub writes its arguments
+    // and exits, which for `--web` is "exited before printing its URL", so
+    // only the arguments are asserted.
+    let (_bin, exe) = trellis_with_stub_desktop("dsk-web-root-bin");
+    let found = repo("dsk-web-root-found");
+    let plain = scratch("dsk-web-root-plain");
+    let outside = scratch("dsk-web-root-outside");
+    let args_file = exe.parent().unwrap().join("args.txt");
+    let wait = std::time::Duration::from_secs(5);
+    for flag in ["--dsk", "--web"] {
+        // (name, where it runs, extra arguments, the --root the desktop gets)
+        let cases: [(&str, &Path, Vec<String>, Option<&Path>); 3] = [
+            ("found", &found, vec![], Some(&found)),
+            (
+                "named",
+                &plain,
+                vec!["--root".into(), plain.display().to_string()],
+                Some(&plain),
+            ),
+            ("outside", &outside, vec![], None),
+        ];
+        for (name, cwd, extra, want) in cases {
+            let _ = std::fs::remove_file(&args_file);
+            let out = Command::new(&exe)
+                .args(&extra)
+                .arg(flag)
+                .current_dir(cwd)
+                .env("NO_COLOR", "1")
+                .env_remove("RUST_LOG")
+                .env("DISPLAY", ":0")
+                .output()
+                .unwrap();
+            let err = String::from_utf8_lossy(&out.stderr);
+            let args = stub_args(&exe, wait)
+                .unwrap_or_else(|| panic!("{flag} {name}: the stub desktop never ran: {err}"));
+            let root = args
+                .iter()
+                .position(|a| a == "--root")
+                .map(|i| args[i + 1].clone());
+            match want {
+                Some(w) => {
+                    let got =
+                        root.unwrap_or_else(|| panic!("{flag} {name}: no --root in {args:?}"));
+                    assert!(
+                        same_file(&got, w),
+                        "{flag} {name}: --root {got} is not {}",
+                        w.display()
+                    );
+                }
+                None => assert!(
+                    root.is_none(),
+                    "{flag} {name}: --root passed outside a repository: {args:?}"
+                ),
+            }
+        }
+    }
+    for d in [&found, &plain, &outside] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+    let _ = std::fs::remove_dir_all(exe.parent().unwrap());
+}
+
+#[cfg(unix)]
+#[test]
 fn launch_route_tui_flag_keeps_the_terminal() {
     // The risk: `--tui`, the way back to the terminal interface, opening
     // the desktop anyway. Outside a repository it is today's start screen,

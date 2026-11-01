@@ -1486,9 +1486,9 @@ the batch's base, `7f18af43`: the mutant applied, the named test run
 with `cargo test -p trellis-cli` and seen to fail, the source restored. Line
 numbers are `6b804cb`'s; `main.rs:546` and `main.rs:1055` have since moved
 to `startup.rs` (#933), `main.rs:679`, `705` and `711` to `main.rs:532`,
-`558` and `564`, with the same text. The eight lines below are shard 0's
-first batch (#994); its other five (`main.rs:546`, `679` x2, `705`, `711`)
-are open on #994 and not yet dispositioned.
+`558` and `564`, with the same text. The first eight lines below are shard
+0's first batch (#994, PR #999); the last five are its second, each shown by
+hand at `66dadf28` the same way.
 
 ```
 unexercisable (#248): needs exactly one of stdin and stdout to be a terminal; every test here runs both as pipes, where `&&` and `||` agree, and a terminal needs a pty (the shape of main.rs:527:43 at 989b2a2) | crates/trellis-cli/src/main.rs:1055:44: replace || with && in terminal_ui
@@ -1499,6 +1499,11 @@ killed (#248) by atlas::tests::rpc_atlas_head_error_is_git_s_stderr_trimmed_or_t
 killed (#248) by atlas::tests::rpc_atlas_head_error_is_git_s_stderr_trimmed_or_the_error_itself_when_git_said_nothing | crates/trellis-cli/src/atlas.rs:92:60: delete ! in git_message
 killed (#248) by rpc_atlas::rpc_atlas_get_history_counts_a_commit_exactly_a_window_old_inside_that_window: in crates/trellis-cli/tests/cli | crates/trellis-cli/src/atlas.rs:323:44: replace < with <= in history
 killed (#248) by config::provider_tests::model_timeout_s_unset_is_the_300_s_every_request_had_before: the test already failed on a zero default; what timed out was the suite, because rpc.rs's ollama and colibri stubs blocked on `accept` for a request the refused config never sent, so `cargo test` never ended. Both stubs now give up after 30 s (`rpc::tests::accept_one`); with the mutant applied by hand, `cargo test -p trellis-cli --bin trellis` (the unit-test binary that holds both the config tests and the stubs) ended in 313 s on a 2-core, 7 GB host with that test among the failures, which is not the runner's figure. Whether the suite ends inside cargo-mutants' 300 s limit on the runner is pending a `mutants.yml` dispatch at this branch (`os=linux file=crates/trellis-cli/src/config.rs`) | crates/trellis-cli/src/config.rs:1208:9: replace RepoConfig::model_timeout -> Duration with Default::default()
+killed (#248) by modes::run_without_json_puts_no_event_line_on_stdout: in crates/trellis-cli/tests; the line is startup.rs's `output::json() && !is_overview` at HEAD, and with `||` a plain `trellis run` printed its `turn` events as JSON on stdout | crates/trellis-cli/src/main.rs:546:39: replace && with || in main
+killed (#248) by overview::overview_in_a_repository_loads_the_config_and_its_key_env_never_reaches_gh: in crates/trellis-cli/tests/cli; the line is main.rs:532 at HEAD, and with `||` the config was not read in a repository, so the user's `key_env` reached the `gh` the board runs | crates/trellis-cli/src/main.rs:679:41: replace && with || in main
+killed (#248) by overview::overview_in_a_repository_loads_the_config_and_its_key_env_never_reaches_gh: in crates/trellis-cli/tests/cli; without the `!` the config was skipped exactly where there is a `.git`, the same leak | crates/trellis-cli/src/main.rs:679:44: delete ! in main
+killed (#248) by bare::launch_dsk_and_web_hand_the_desktop_a_root_only_when_one_was_found: in crates/trellis-cli/tests/cli (Unix, a shell stub desktop); the line is main.rs:558 at HEAD, and with `&&` `--dsk` in a repository started the desktop with no `--root` | crates/trellis-cli/src/main.rs:705:30: replace || with && in main
+killed (#248) by bare::launch_dsk_and_web_hand_the_desktop_a_root_only_when_one_was_found: in crates/trellis-cli/tests/cli (Unix, a shell stub desktop); the line is main.rs:564 at HEAD, the same for `--web` | crates/trellis-cli/src/main.rs:711:30: replace || with && in main
 ```
 
 </details>
