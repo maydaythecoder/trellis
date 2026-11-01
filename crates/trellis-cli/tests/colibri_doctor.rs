@@ -243,6 +243,82 @@ fn colibri_doctor_reports_one_kv_slot_as_single_stream() {
     assert!(line(&s, "batching:").contains("single-stream"), "{s}");
     // Not llama.cpp's advice: colibri has no --parallel.
     assert!(!s.contains("--parallel"), "{s}");
+    // #248 (6b804cb, shard 1). The risk: the note that explains a slot
+    // count above one appearing under a single slot, where there is no
+    // batching figure for it to qualify.
+    assert!(!s.contains("colibri's configured KV slot count"), "{s}");
+}
+
+#[test]
+fn colibri_doctor_card_lines_carry_the_capabilities_and_modalities_colibri_listed() {
+    // #248 (6b804cb, shard 1). The risk: the card lines missing, empty or
+    // made up, so what the run's preflight will refuse on (#626) is not
+    // what doctor shows. Both lists are colibri's own words, passed through.
+    let models = r#"{"object":"list","data":[{"id":"glm-5.2","object":"model","created":1758800000,"owned_by":"colibri","capabilities":["chat","tools"],"input_modalities":["text","image"]}]}"#;
+    let (base, _) = stub(models.into(), HEALTH_FULL.into());
+    let d = repo("card", None);
+    let s = ok(&doctor(&d, &["--model", &chat(&base, "glm-5.2")], None));
+    let cards: Vec<&str> = s.lines().filter(|l| l.starts_with("card:")).collect();
+    assert_eq!(cards.len(), 2, "{s}");
+    assert!(
+        cards[0].contains("capabilities chat, tools")
+            && cards[0].contains("a run can chat with it")
+            && cards[0].contains("as reported by colibri"),
+        "{}",
+        cards[0]
+    );
+    assert!(
+        cards[1].contains("input modalities text, image")
+            && cards[1].contains("--image is accepted")
+            && cards[1].contains("as reported by colibri"),
+        "{}",
+        cards[1]
+    );
+}
+
+#[test]
+fn colibri_doctor_puts_colibri_s_lines_right_after_the_batching_line() {
+    // #248 (6b804cb, shard 1). The risk: colibri's lines spliced before
+    // the model's batching line instead of after it, so the report reads
+    // colibri's health before the line that says what model answered.
+    let (base, _) = colibri();
+    let d = repo("order", None);
+    let s = ok(&doctor(&d, &["--model", &chat(&base, "glm-5.2")], None));
+    let lines: Vec<&str> = s.lines().collect();
+    let at = |prefix: &str| {
+        lines
+            .iter()
+            .position(|l| l.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no `{prefix}` line in:\n{s}"))
+    };
+    assert_eq!(at("version:"), at("batching:") + 1, "{s}");
+}
+
+#[test]
+fn colibri_doctor_says_models_was_read_on_this_machine_and_not_for_https() {
+    // #248 (6b804cb, shard 1). The risk: the note inverted, telling the
+    // person a loopback endpoint was not asked and an https one was read,
+    // when it is the loopback base alone that is read (ADR 0047 decision 3).
+    let (base, _) = colibri();
+    let d = repo("read-note", None);
+    let local = ok(&doctor(&d, &["--model", &chat(&base, "glm-5.2")], None));
+    assert!(
+        local.contains("was read to ask whether it is colibri"),
+        "{local}"
+    );
+    assert!(!local.contains("No request was sent"), "{local}");
+
+    // Never connected to: an https endpoint is only read by a run.
+    let remote = ok(&doctor(
+        &d,
+        &["--model", "openai-chat:https://api.example.test/v1#m"],
+        None,
+    ));
+    assert!(remote.contains("No request was sent"), "{remote}");
+    assert!(
+        !remote.contains("was read to ask whether it is colibri"),
+        "{remote}"
+    );
 }
 
 #[test]
