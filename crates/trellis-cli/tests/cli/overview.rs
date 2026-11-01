@@ -277,10 +277,13 @@ fn overview_treats_a_root_without_git_as_no_root_and_reads_nothing_under_it() {
 
 /// A `gh` that writes the environment it was started with to `env.txt` in
 /// its own directory and prints nothing, so the board reads as unreachable
-/// and the test reads only what reached the child.
+/// and the test reads only what reached the child. `/usr/bin/env` by path:
+/// on a runner where `gh` shares `/usr/bin`, that directory is off the
+/// PATH the stub runs with (`path_without_gh`), as the `/bin/cat` in
+/// `GH_OK` is for the same reason.
 const GH_ENV: Gh = Gh::Stub {
     windows: "@echo off\r\nset > \"{dir}\\env.txt\"\r\n",
-    unix: "#!/bin/sh\nenv > '{dir}/env.txt'\n",
+    unix: "#!/bin/sh\n/usr/bin/env > '{dir}/env.txt'\n",
 };
 
 #[test]
