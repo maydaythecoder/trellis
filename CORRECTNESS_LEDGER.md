@@ -1487,8 +1487,17 @@ with `cargo test -p trellis-cli` and seen to fail, the source restored. Line
 numbers are `6b804cb`'s; `main.rs:546` and `main.rs:1055` have since moved
 to `startup.rs` (#933), `main.rs:679`, `705` and `711` to `main.rs:532`,
 `558` and `564`, with the same text. The first eight lines below are shard
-0's first batch (#994, PR #999); the last five are its second, each shown by
+0's first batch (#994, PR #999); the next five are its second, each shown by
 hand at `66dadf28` the same way.
+
+Shard 1 (run 41263099225, 2026-11-01): `252 mutants tested: 9 missed, 224
+caught, 19 unviable, 0 timeouts` (the four files under `shard-1-of-10/`,
+`wc -l`). Its nine lines follow the shard 0 lines, each shown by hand at
+`f1e2f763` (#1002): the mutant applied at HEAD's line, the named test run
+with `cargo test -p trellis-cli` and seen to fail, the source restored.
+`doctor_cmd.rs:322`, `617`, `643`, `844` and `1158` are `doctor_cmd.rs:224`,
+`520`, `546`, `747` and `827` at HEAD (#932 moved init and check out of the
+file), with the same text; `doctor_supply.rs:218` has not moved.
 
 ```
 unexercisable (#248): needs exactly one of stdin and stdout to be a terminal; every test here runs both as pipes, where `&&` and `||` agree, and a terminal needs a pty (the shape of main.rs:527:43 at 989b2a2) | crates/trellis-cli/src/main.rs:1055:44: replace || with && in terminal_ui
@@ -1504,6 +1513,15 @@ killed (#248) by overview::overview_in_a_repository_loads_the_config_and_its_key
 killed (#248) by overview::overview_in_a_repository_loads_the_config_and_its_key_env_never_reaches_gh: in crates/trellis-cli/tests/cli; without the `!` the config was skipped exactly where there is a `.git`, the same leak | crates/trellis-cli/src/main.rs:679:44: delete ! in main
 killed (#248) by bare::launch_dsk_and_web_hand_the_desktop_a_root_only_when_one_was_found: in crates/trellis-cli/tests/cli; the line is main.rs:558 at HEAD, and with `&&` `--dsk` in a repository started the desktop with no `--root`. The test is `cfg(unix)` (its stub desktop is a shell script), and §4's `file=` dispatch for a one-OS test was not run for main.rs: 103 of shard 0's 252 mutants are main.rs's, so about 1,000 over the ten shards, which at ADR 0060's 53 s each (shard 0's 3h42m over 252) is about 15 h, past one job's 345-minute step limit; the kill was shown by hand on Linux, the OS the 6b804cb run is on, where the test compiles and runs | crates/trellis-cli/src/main.rs:705:30: replace || with && in main
 killed (#248) by bare::launch_dsk_and_web_hand_the_desktop_a_root_only_when_one_was_found: in crates/trellis-cli/tests/cli; the line is main.rs:564 at HEAD, the same for `--web`, shown by hand on Linux as the line above says | crates/trellis-cli/src/main.rs:711:30: replace || with && in main
+killed (#248) by colibri_doctor::colibri_doctor_card_lines_carry_the_capabilities_and_modalities_colibri_listed: in crates/trellis-cli/tests; with no card lines the test finds none of the two `card:` lines it asks for | crates/trellis-cli/src/doctor_cmd.rs:322:5: replace colibri_card_lines -> Vec<String> with vec![]
+killed (#248) by colibri_doctor::colibri_doctor_card_lines_carry_the_capabilities_and_modalities_colibri_listed: in crates/trellis-cli/tests; an empty line in place of the two `card:` lines | crates/trellis-cli/src/doctor_cmd.rs:322:5: replace colibri_card_lines -> Vec<String> with vec![String::new()]
+killed (#248) by colibri_doctor::colibri_doctor_card_lines_carry_the_capabilities_and_modalities_colibri_listed: in crates/trellis-cli/tests; `xyzzy` in place of the two `card:` lines | crates/trellis-cli/src/doctor_cmd.rs:322:5: replace colibri_card_lines -> Vec<String> with vec!["xyzzy".into()]
+killed (#248) by colibri_doctor::colibri_doctor_says_models_was_read_on_this_machine_and_not_for_https: in crates/trellis-cli/tests; without the `!` a loopback colibri was told "No request was sent" and an https endpoint that its `/v1/models` was read | crates/trellis-cli/src/doctor_cmd.rs:617:24: delete ! in cmd_doctor
+killed (#248) by colibri_doctor::colibri_doctor_reports_one_kv_slot_as_single_stream: in crates/trellis-cli/tests; with `>=` the "configured KV slot count" note appeared under one slot, where there is no batching figure for it to qualify | crates/trellis-cli/src/doctor_cmd.rs:643:72: replace > with >= in cmd_doctor
+killed (#248) by colibri_doctor::colibri_doctor_puts_colibri_s_lines_right_after_the_batching_line: in crates/trellis-cli/tests; with `-` colibri's lines were spliced before the `batching:` line, and the test asks for `version:` on the line after it | crates/trellis-cli/src/doctor_cmd.rs:844:36: replace + with - in cmd_doctor
+killed (#248) by colibri_doctor::colibri_doctor_puts_colibri_s_lines_right_after_the_batching_line: in crates/trellis-cli/tests; with `*` (the index itself) they were spliced before it too | crates/trellis-cli/src/doctor_cmd.rs:844:36: replace + with * in cmd_doctor
+killed (#248) by doctor_cmd::doctor_tests::coverage_is_available_when_a_pytest_on_disk_offers_cov: a pytest on disk whose `--help` prints `--cov` is reported available. The test is `cfg(unix)` (its pytest is a shell script, and a program named `pytest` on Windows must be an executable), and §4's `file=` dispatch for a one-OS test was not run for doctor_cmd.rs: the kill was shown by hand on Linux, the OS the 6b804cb run is on, where the test compiles and runs | crates/trellis-cli/src/doctor_cmd.rs:1158:5: replace coverage_available -> bool with false
+killed (#248) by doctor_supply::tests::a_program_that_exists_but_cannot_start_is_not_called_absent: with the guard always true a directory, which spawn refuses with `PermissionDenied`, was reported "is not on PATH" | crates/trellis-cli/src/doctor_supply.rs:218:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in output_within
 ```
 
 </details>
