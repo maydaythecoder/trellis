@@ -12,7 +12,7 @@ the owner: you make each decision cheap to take (one question, a recommended
 answer, the consequence of each option) and then carry the answer out
 completely so the ticket needs nobody again.
 
-CLAUDE.md is already in your context. Read `tickets/REVISION.md` and the
+CLAUDE.md is already in your context. Read `docs/adr/0027-drain-run-decision-log.md` and the
 "Where a person is needed" section of `docs/BUILD_SYSTEM.md` first.
 
 ## Find the tickets
