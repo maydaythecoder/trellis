@@ -1167,7 +1167,7 @@ mod doctor_tests {
         assert!(!help_mentions_cov(&runner("no plugin here")));
     }
 
-    /// Not on Windows: the stand-in pytest is a shell script, and a program
+    /// Not on Windows: the stand-in pytest is a symlink, and a program
     /// named `pytest` there has to be an executable.
     #[cfg(unix)]
     #[test]
@@ -1176,12 +1176,27 @@ mod doctor_tests {
         // false for a pytest whose `--help` offers `--cov`, so `doctor`
         // reports no coverage plugin to a user who has one, and every run
         // reads as `0 verified` for a missing tool that is there.
-        use std::os::unix::fs::PermissionsExt;
+        //
+        // The pytest is a symlink to `echo`, given `--cov=PATH` as its own
+        // argument, so `pytest --cov=PATH --help` prints a help text that
+        // offers `--cov`. Not a script written here: a file this process has
+        // just written can be "text file busy" to its own exec when another
+        // test's child, forked meanwhile, still holds the write descriptor
+        // (seen once in run 41308698092).
+        let echo = std::env::var_os("PATH")
+            .and_then(|p| {
+                std::env::split_paths(&p)
+                    .map(|d| d.join("echo"))
+                    .find(|e| e.is_file())
+            })
+            .expect("echo on PATH");
         let dir = crate::testutil::scratch("doctor-pytest-cov");
         let pytest = dir.join("pytest");
-        std::fs::write(&pytest, "#!/bin/sh\necho 'usage: pytest [--cov=PATH]'\n").unwrap();
-        std::fs::set_permissions(&pytest, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let tests = vec![pytest.to_string_lossy().into_owned()];
+        std::os::unix::fs::symlink(&echo, &pytest).unwrap();
+        let tests = vec![
+            pytest.to_string_lossy().into_owned(),
+            "--cov=PATH".to_string(),
+        ];
         assert!(is_pytest(&tests), "{tests:?}");
         assert!(coverage_available(&tests), "{tests:?}");
     }
