@@ -1,0 +1,22 @@
+crates/trellis-cli/src/main.rs:667:9: replace && with || in main
+crates/trellis-cli/src/main.rs:666:9: replace && with || in main
+crates/trellis-cli/src/main.rs:665:9: replace && with || in main
+crates/trellis-cli/src/main.rs:664:9: replace && with || in main
+crates/trellis-cli/src/main.rs:680:27: replace && with || in main
+crates/trellis-cli/src/main.rs:800:17: replace && with || in main
+crates/trellis-cli/src/main.rs:989:5: replace bare_route -> Route with Default::default()
+crates/trellis-cli/src/main.rs:1018:5: replace launch_route -> Launch with Default::default()
+crates/trellis-cli/src/main.rs:1091:17: replace && with || in bare_desktop
+crates/trellis-cli/src/main.rs:1090:17: replace && with || in bare_desktop
+crates/trellis-cli/src/main.rs:1089:17: replace && with || in bare_desktop
+crates/trellis-cli/src/main.rs:1121:5: replace parse_agents -> Result<Agents> with Ok(Default::default())
+crates/trellis-cli/src/main.rs:1180:5: replace batching -> Result<(trellis_model::BatchingCapability, String)> with Ok((Default::default(), String::new()))
+crates/trellis-cli/src/main.rs:1180:5: replace batching -> Result<(trellis_model::BatchingCapability, String)> with Ok((Default::default(), "xyzzy".into()))
+crates/trellis-cli/src/ask.rs:230:5: replace classify -> Result<Intent> with Ok(Default::default())
+crates/trellis-cli/src/ask.rs:350:5: replace interpret -> Intent with Default::default()
+crates/trellis-cli/src/atlas.rs:140:5: replace edges -> Result<Edges, String> with Ok(Default::default())
+crates/trellis-cli/src/atlas.rs:191:9: replace && with || in symbols_json
+crates/trellis-cli/src/atlas.rs:213:25: replace && with || in symbols_json
+crates/trellis-cli/src/config.rs:313:9: replace RepoConfig::control -> Result<Control> with Ok(Default::default())
+crates/trellis-cli/src/config.rs:375:9: replace RepoConfig::vault -> Result<Option<VaultSetting>> with Ok(Some(Default::default()))
+crates/trellis-cli/src/config.rs:1140:9: replace RepoConfig::custom_tools -> &[trellis_loop::CustomTool] with Vec::leak(vec![Default::default()])

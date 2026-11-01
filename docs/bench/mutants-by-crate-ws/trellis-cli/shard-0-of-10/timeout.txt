@@ -1,0 +1,1 @@
+crates/trellis-cli/src/config.rs:1208:9: replace RepoConfig::model_timeout -> Duration with Default::default()

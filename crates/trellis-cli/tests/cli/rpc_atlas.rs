@@ -794,6 +794,36 @@ fn rpc_atlas_get_history_measures_churn_back_from_head_and_lists_commits_and_tag
 }
 
 #[test]
+fn rpc_atlas_get_history_counts_a_commit_exactly_a_window_old_inside_that_window() {
+    // The risk (#248, 6b804cb shard 0): the window edge. A commit made
+    // exactly 30 days before HEAD is 30 days old, so it is in the 30-day
+    // window; a `<=` at the boundary would drop it to the 90-day one, and
+    // the Atlas would say a file nobody touched this month.
+    let d = empty_repo("rpc-atlas-history-edge");
+    std::fs::write(d.join("edge.py"), "E = 0\n").unwrap();
+    git(&d, &["add", "-A"]);
+    git_dated(&d, "2025-01-21T00:00:00+00:00", &["commit", "-qm", "edge"]);
+    std::fs::write(d.join("head.py"), "H = 0\n").unwrap();
+    git(&d, &["add", "-A"]);
+    git_dated(&d, "2025-02-20T00:00:00+00:00", &["commit", "-qm", "head"]);
+    let records = rpc_records(
+        &d,
+        None,
+        &[serde_json::json!({"id": "e", "type": "get_history"})],
+    );
+    let data = &rpc_answer(&records, "e")["data"];
+    let edge = data["churn"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["path"] == "edge.py")
+        .unwrap_or_else(|| panic!("no edge.py row in {data}"));
+    assert_eq!(edge["d30"], 1, "{edge}");
+    assert_eq!(edge["d90"], 1, "{edge}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn rpc_atlas_get_history_of_no_commit_is_empty_and_bad_counts_and_no_git_are_refused() {
     // The risks: a repository with no commit answered with an error the
     // Atlas shows as a failure, when the truth is "no history yet"; a
