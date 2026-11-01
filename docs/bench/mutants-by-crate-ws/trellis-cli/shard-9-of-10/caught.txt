@@ -1,0 +1,200 @@
+crates/trellis-cli/src/user_config.rs:663:5: replace set_colibri_provider -> Result<bool> with Ok(false)
+crates/trellis-cli/src/user_config.rs:678:26: replace == with != in set_colibri_provider
+crates/trellis-cli/src/user_config.rs:680:23: replace == with != in set_colibri_provider
+crates/trellis-cli/src/user_config.rs:719:26: replace == with != in set_colibri_provider
+crates/trellis-cli/src/user_config.rs:720:8: delete ! in set_colibri_provider
+crates/trellis-cli/src/user_config.rs:721:20: replace == with != in set_colibri_provider
+crates/trellis-cli/src/user_config.rs:721:46: replace == with != in set_colibri_provider
+crates/trellis-cli/src/user_config.rs:721:71: replace == with != in set_colibri_provider
+crates/trellis-cli/src/user_config.rs:729:32: replace != with == in set_colibri_provider
+crates/trellis-cli/src/vault_cmd.rs:94:5: replace run -> Result<()> with Ok(())
+crates/trellis-cli/src/vault_cmd.rs:134:5: replace vault_dir -> Result<PathBuf> with Ok(Default::default())
+crates/trellis-cli/src/vault_cmd.rs:149:5: replace today -> String with String::new()
+crates/trellis-cli/src/vault_cmd.rs:149:5: replace today -> String with "xyzzy".into()
+crates/trellis-cli/src/vault_cmd.rs:155:5: replace local_day -> Option<String> with None
+crates/trellis-cli/src/vault_cmd.rs:155:5: replace local_day -> Option<String> with Some(String::new())
+crates/trellis-cli/src/vault_cmd.rs:155:5: replace local_day -> Option<String> with Some("xyzzy".into())
+crates/trellis-cli/src/vault_cmd.rs:161:5: replace file_days -> FileDays with Default::default()
+crates/trellis-cli/src/vault_cmd.rs:174:5: replace print_outcome -> Result<()> with Ok(())
+crates/trellis-cli/src/vault_cmd.rs:197:5: replace check -> Result<()> with Ok(())
+crates/trellis-cli/src/vault_cmd.rs:200:8: delete ! in check
+crates/trellis-cli/src/vault_cmd.rs:219:16: delete ! in check
+crates/trellis-cli/src/vault_cmd.rs:238:5: replace check_json -> Result<serde_json::Value> with Ok(Default::default())
+crates/trellis-cli/src/vault_cmd.rs:261:5: replace search -> Result<()> with Ok(())
+crates/trellis-cli/src/vault_cmd.rs:284:5: replace search_json -> Result<serde_json::Value> with Ok(Default::default())
+crates/trellis-cli/src/vault_cmd.rs:297:5: replace search_lines -> Result<Vec<String>> with Ok(vec![])
+crates/trellis-cli/src/vault_cmd.rs:297:5: replace search_lines -> Result<Vec<String>> with Ok(vec![String::new()])
+crates/trellis-cli/src/vault_cmd.rs:297:5: replace search_lines -> Result<Vec<String>> with Ok(vec!["xyzzy".into()])
+crates/trellis-cli/src/vault_cmd.rs:299:8: delete ! in search_lines
+crates/trellis-cli/src/vault_cmd.rs:304:15: delete ! in search_lines
+crates/trellis-cli/src/vault_cmd.rs:384:5: replace graph_json -> Result<serde_json::Value> with Ok(Default::default())
+crates/trellis-cli/src/vault_cmd.rs:404:5: replace graph -> Result<()> with Ok(())
+crates/trellis-cli/src/vault_cmd.rs:449:8: delete ! in graph
+crates/trellis-cli/src/vault_cmd.rs:456:5: replace mentions -> bool with true
+crates/trellis-cli/src/vault_cmd.rs:456:5: replace mentions -> bool with false
+crates/trellis-cli/src/vault_cmd.rs:457:85: replace == with != in mentions
+crates/trellis-cli/src/vault_cmd.rs:459:36: replace == with != in mentions
+crates/trellis-cli/src/vault_cmd.rs:469:9: replace VaultArgs::is_init -> bool with true
+crates/trellis-cli/src/vault_cmd.rs:469:9: replace VaultArgs::is_init -> bool with false
+crates/trellis-cli/src/vault_cmd.rs:486:8: delete ! in compile_for_run
+crates/trellis-cli/src/vault_cmd.rs:509:5: replace dates_cmd -> Result<()> with Ok(())
+crates/trellis-cli/src/vault_cmd.rs:514:31: replace match guard !seed with true in dates_cmd
+crates/trellis-cli/src/vault_cmd.rs:514:31: replace match guard !seed with false in dates_cmd
+crates/trellis-cli/src/vault_cmd.rs:514:31: delete ! in dates_cmd
+crates/trellis-cli/src/vault_cmd.rs:566:5: replace coverage_row -> String with String::new()
+crates/trellis-cli/src/vault_cmd.rs:566:5: replace coverage_row -> String with "xyzzy".into()
+crates/trellis-cli/src/vault_cmd.rs:566:8: delete ! in coverage_row
+crates/trellis-cli/src/work.rs:213:5: replace parse_priority -> Priority with Default::default()
+crates/trellis-cli/src/work.rs:219:5: replace reconcile -> Result<()> with Ok(())
+crates/trellis-cli/src/work.rs:236:5: replace run_marker -> Option<(&'static str, String)> with None
+crates/trellis-cli/src/work.rs:236:5: replace run_marker -> Option<(&'static str, String)> with Some(("", String::new()))
+crates/trellis-cli/src/work.rs:236:5: replace run_marker -> Option<(&'static str, String)> with Some(("", "xyzzy".into()))
+crates/trellis-cli/src/work.rs:236:5: replace run_marker -> Option<(&'static str, String)> with Some(("xyzzy", String::new()))
+crates/trellis-cli/src/work.rs:236:5: replace run_marker -> Option<(&'static str, String)> with Some(("xyzzy", "xyzzy".into()))
+crates/trellis-cli/src/work.rs:242:5: replace queue -> Result<()> with Ok(())
+crates/trellis-cli/src/work.rs:258:39: replace && with || in queue
+crates/trellis-cli/src/work.rs:287:36: replace && with || in queue
+crates/trellis-cli/src/work.rs:340:29: replace && with || in queue
+crates/trellis-cli/src/work.rs:339:29: replace && with || in queue
+crates/trellis-cli/src/work.rs:338:29: replace && with || in queue
+crates/trellis-cli/src/work.rs:350:25: replace && with || in queue
+crates/trellis-cli/src/work.rs:349:25: replace && with || in queue
+crates/trellis-cli/src/work.rs:346:25: replace && with || in queue
+crates/trellis-cli/src/work.rs:345:25: replace && with || in queue
+crates/trellis-cli/src/work.rs:344:71: replace == with != in queue
+crates/trellis-cli/src/work.rs:348:67: replace == with != in queue
+crates/trellis-cli/src/work.rs:349:83: replace == with != in queue
+crates/trellis-cli/src/work.rs:368:16: delete ! in queue
+crates/trellis-cli/src/work.rs:403:20: delete ! in queue
+crates/trellis-cli/src/work.rs:408:33: replace && with || in queue
+crates/trellis-cli/src/work.rs:408:43: replace != with == in queue
+crates/trellis-cli/src/work.rs:411:33: replace && with || in queue
+crates/trellis-cli/src/work.rs:411:54: replace != with == in queue
+crates/trellis-cli/src/work.rs:414:29: replace && with || in queue
+crates/trellis-cli/src/work.rs:414:50: replace != with == in queue
+crates/trellis-cli/src/work.rs:418:17: delete match arm (Some(Status::Blocked), None) in queue
+crates/trellis-cli/src/work.rs:422:17: delete match arm (Some(Status::Blocked), Some("blockers")) in queue
+crates/trellis-cli/src/work.rs:423:17: delete match arm (Some(Status::Blocked), Some("children")) in queue
+crates/trellis-cli/src/work.rs:424:17: delete match arm (Some(Status::Blocked), Some("until")) in queue
+crates/trellis-cli/src/work.rs:434:17: delete match arm (Some(Status::Blocked), Some(_)) in queue
+crates/trellis-cli/src/work.rs:437:37: delete ! in queue
+crates/trellis-cli/src/work.rs:444:22: replace == with != in queue
+crates/trellis-cli/src/work.rs:447:20: delete ! in queue
+crates/trellis-cli/src/work.rs:459:24: delete ! in queue
+crates/trellis-cli/src/work.rs:465:43: replace != with == in queue
+crates/trellis-cli/src/work.rs:485:24: delete ! in queue
+crates/trellis-cli/src/work.rs:491:45: replace != with == in queue
+crates/trellis-cli/src/work.rs:505:52: replace match guard t.blockers.is_empty() with true in queue
+crates/trellis-cli/src/work.rs:505:52: replace match guard t.blockers.is_empty() with false in queue
+crates/trellis-cli/src/work.rs:512:52: replace match guard children == 0 with true in queue
+crates/trellis-cli/src/work.rs:512:52: replace match guard children == 0 with false in queue
+crates/trellis-cli/src/work.rs:512:61: replace == with != in queue
+crates/trellis-cli/src/work.rs:525:52: replace && with || in queue
+crates/trellis-cli/src/work.rs:525:34: replace == with != in queue
+crates/trellis-cli/src/work.rs:525:57: replace != with == in queue
+crates/trellis-cli/src/work.rs:535:21: replace && with || in queue
+crates/trellis-cli/src/work.rs:534:21: replace && with || in queue
+crates/trellis-cli/src/work.rs:533:21: replace && with || in queue
+crates/trellis-cli/src/work.rs:532:29: replace == with != in queue
+crates/trellis-cli/src/work.rs:533:24: delete ! in queue
+crates/trellis-cli/src/work.rs:534:39: replace == with != in queue
+crates/trellis-cli/src/work.rs:535:24: delete ! in queue
+crates/trellis-cli/src/work.rs:568:35: replace == with != in queue
+crates/trellis-cli/src/work.rs:595:16: delete ! in queue
+crates/trellis-cli/src/work.rs:624:16: delete ! in queue
+crates/trellis-cli/src/work.rs:662:16: delete ! in queue
+crates/trellis-cli/src/work.rs:754:34: replace > with == in queue
+crates/trellis-cli/src/work.rs:754:34: replace > with < in queue
+crates/trellis-cli/src/work.rs:754:34: replace > with >= in queue
+crates/trellis-cli/src/work.rs:835:5: replace cancel_task -> std::result::Result<Option<State>, QueueError> with Ok(None)
+crates/trellis-cli/src/work.rs:837:26: replace && with || in cancel_task
+crates/trellis-cli/src/work.rs:837:31: replace != with == in cancel_task
+crates/trellis-cli/src/work.rs:872:5: replace check_focus -> Result<()> with Ok(())
+crates/trellis-cli/src/work.rs:891:5: replace queue_json -> std::result::Result<serde_json::Value, QueueError> with Ok(Default::default())
+crates/trellis-cli/src/work.rs:902:44: replace == with != in queue_json
+crates/trellis-cli/src/work.rs:927:5: replace list_line -> String with String::new()
+crates/trellis-cli/src/work.rs:927:5: replace list_line -> String with "xyzzy".into()
+crates/trellis-cli/src/work.rs:968:19: replace > with == in list_line
+crates/trellis-cli/src/work.rs:968:19: replace > with < in list_line
+crates/trellis-cli/src/work.rs:968:19: replace > with >= in list_line
+crates/trellis-cli/src/work.rs:984:8: delete ! in list_line
+crates/trellis-cli/src/work.rs:990:8: delete ! in list_line
+crates/trellis-cli/src/work.rs:996:8: delete ! in list_line
+crates/trellis-cli/src/work.rs:999:16: replace == with != in list_line
+crates/trellis-cli/src/work.rs:1008:5: replace ago -> String with String::new()
+crates/trellis-cli/src/work.rs:1008:5: replace ago -> String with "xyzzy".into()
+crates/trellis-cli/src/work.rs:1010:9: delete match arm 0..60 in ago
+crates/trellis-cli/src/work.rs:1011:9: delete match arm 60..3600 in ago
+crates/trellis-cli/src/work.rs:1012:9: delete match arm 3600..86_400 in ago
+crates/trellis-cli/src/work.rs:1019:5: replace work -> Result<i32> with Ok(0)
+crates/trellis-cli/src/work.rs:1019:5: replace work -> Result<i32> with Ok(1)
+crates/trellis-cli/src/work.rs:1019:5: replace work -> Result<i32> with Ok(-1)
+crates/trellis-cli/src/work.rs:1036:21: replace == with != in work
+crates/trellis-cli/src/work.rs:1114:5: replace listen_for_ctrl_c with ()
+crates/trellis-cli/src/work.rs:1139:9: replace <impl routine::Repo for RoutineRepo<'_>>::head -> Option<String> with None
+crates/trellis-cli/src/work.rs:1139:9: replace <impl routine::Repo for RoutineRepo<'_>>::head -> Option<String> with Some(String::new())
+crates/trellis-cli/src/work.rs:1139:9: replace <impl routine::Repo for RoutineRepo<'_>>::head -> Option<String> with Some("xyzzy".into())
+crates/trellis-cli/src/work.rs:1191:9: replace CliRunner<'_>::once with ()
+crates/trellis-cli/src/work.rs:1199:9: replace CliRunner<'_>::text -> Result<String> with Ok(String::new())
+crates/trellis-cli/src/work.rs:1199:9: replace CliRunner<'_>::text -> Result<String> with Ok("xyzzy".into())
+crates/trellis-cli/src/work.rs:1223:9: replace CliRunner<'_>::approve_mode -> bool with true
+crates/trellis-cli/src/work.rs:1223:9: replace CliRunner<'_>::approve_mode -> bool with false
+crates/trellis-cli/src/work.rs:1223:65: replace == with != in CliRunner<'_>::approve_mode
+crates/trellis-cli/src/work.rs:1229:9: replace CliRunner<'_>::run_root -> PathBuf with Default::default()
+crates/trellis-cli/src/work.rs:1245:5: replace ignore_task_worktrees -> std::result::Result<(), String> with Ok(())
+crates/trellis-cli/src/work.rs:1259:13: delete match arm Some(0) in ignore_task_worktrees
+crates/trellis-cli/src/work.rs:1260:13: delete match arm Some(1) in ignore_task_worktrees
+crates/trellis-cli/src/work.rs:1299:5: replace last_run_asked -> bool with true
+crates/trellis-cli/src/work.rs:1299:5: replace last_run_asked -> bool with false
+crates/trellis-cli/src/work.rs:1325:18: replace match guard p.is_empty() with true in task_worktree
+crates/trellis-cli/src/work.rs:1325:18: replace match guard p.is_empty() with false in task_worktree
+crates/trellis-cli/src/work.rs:1354:5: replace instructions -> Result<Option<String>> with Ok(None)
+crates/trellis-cli/src/work.rs:1354:5: replace instructions -> Result<Option<String>> with Ok(Some(String::new()))
+crates/trellis-cli/src/work.rs:1354:5: replace instructions -> Result<Option<String>> with Ok(Some("xyzzy".into()))
+crates/trellis-cli/src/work.rs:1375:5: replace run_ids -> BTreeSet<String> with BTreeSet::new()
+crates/trellis-cli/src/work.rs:1375:5: replace run_ids -> BTreeSet<String> with BTreeSet::from_iter([String::new()])
+crates/trellis-cli/src/work.rs:1375:5: replace run_ids -> BTreeSet<String> with BTreeSet::from_iter(["xyzzy".into()])
+crates/trellis-cli/src/work.rs:1400:5: replace resumed_line -> String with String::new()
+crates/trellis-cli/src/work.rs:1400:5: replace resumed_line -> String with "xyzzy".into()
+crates/trellis-cli/src/work.rs:1404:5: replace has_terminal -> bool with true
+crates/trellis-cli/src/work.rs:1409:9: replace <impl Runner for CliRunner<'_>>::blocker -> Option<String> with None
+crates/trellis-cli/src/work.rs:1409:9: replace <impl Runner for CliRunner<'_>>::blocker -> Option<String> with Some(String::new())
+crates/trellis-cli/src/work.rs:1409:9: replace <impl Runner for CliRunner<'_>>::blocker -> Option<String> with Some("xyzzy".into())
+crates/trellis-cli/src/work.rs:1410:22: replace match guard p.is_empty() with true in <impl Runner for CliRunner<'_>>::blocker
+crates/trellis-cli/src/work.rs:1410:22: replace match guard p.is_empty() with false in <impl Runner for CliRunner<'_>>::blocker
+crates/trellis-cli/src/work.rs:1422:9: replace <impl Runner for CliRunner<'_>>::tick with ()
+crates/trellis-cli/src/work.rs:1445:33: replace > with == in <impl Runner for CliRunner<'_>>::tick
+crates/trellis-cli/src/work.rs:1445:33: replace > with < in <impl Runner for CliRunner<'_>>::tick
+crates/trellis-cli/src/work.rs:1445:33: replace > with >= in <impl Runner for CliRunner<'_>>::tick
+crates/trellis-cli/src/work.rs:1490:9: replace <impl Runner for CliRunner<'_>>::gate -> Option<String> with None
+crates/trellis-cli/src/work.rs:1490:9: replace <impl Runner for CliRunner<'_>>::gate -> Option<String> with Some(String::new())
+crates/trellis-cli/src/work.rs:1490:9: replace <impl Runner for CliRunner<'_>>::gate -> Option<String> with Some("xyzzy".into())
+crates/trellis-cli/src/work.rs:1491:42: replace && with || in <impl Runner for CliRunner<'_>>::gate
+crates/trellis-cli/src/work.rs:1505:34: replace && with || in <impl Runner for CliRunner<'_>>::gate
+crates/trellis-cli/src/work.rs:1505:37: delete ! in <impl Runner for CliRunner<'_>>::gate
+crates/trellis-cli/src/work.rs:1513:27: replace || with && in <impl Runner for CliRunner<'_>>::gate
+crates/trellis-cli/src/work.rs:1513:30: delete ! in <impl Runner for CliRunner<'_>>::gate
+crates/trellis-cli/src/work.rs:1519:78: replace && with || in <impl Runner for CliRunner<'_>>::gate
+crates/trellis-cli/src/work.rs:1519:54: replace && with || in <impl Runner for CliRunner<'_>>::gate
+crates/trellis-cli/src/work.rs:1519:28: replace && with || in <impl Runner for CliRunner<'_>>::gate
+crates/trellis-cli/src/work.rs:1519:12: delete ! in <impl Runner for CliRunner<'_>>::gate
+crates/trellis-cli/src/work.rs:1528:9: replace <impl Runner for CliRunner<'_>>::next_due -> Option<Duration> with None
+crates/trellis-cli/src/work.rs:1528:9: replace <impl Runner for CliRunner<'_>>::next_due -> Option<Duration> with Some(Default::default())
+crates/trellis-cli/src/work.rs:1529:79: replace - with + in <impl Runner for CliRunner<'_>>::next_due
+crates/trellis-cli/src/work.rs:1529:79: replace - with / in <impl Runner for CliRunner<'_>>::next_due
+crates/trellis-cli/src/work.rs:1533:9: replace <impl Runner for CliRunner<'_>>::starting with ()
+crates/trellis-cli/src/work.rs:1541:9: replace <impl Runner for CliRunner<'_>>::prepare -> std::result::Result<Option<trellis_queue::Workspace>, String> with Ok(None)
+crates/trellis-cli/src/work.rs:1596:9: replace <impl Runner for CliRunner<'_>>::liveness -> Option<&dyn trellis_queue::Liveness> with None
+crates/trellis-cli/src/work.rs:1603:9: replace <impl Runner for CliRunner<'_>>::profiles -> Option<&BTreeMap<String, Profile>> with None
+crates/trellis-cli/src/work.rs:1603:9: replace <impl Runner for CliRunner<'_>>::profiles -> Option<&BTreeMap<String, Profile>> with Some(Box::leak(Box::new(BTreeMap::new())))
+crates/trellis-cli/src/work.rs:1631:58: delete ! in <impl Runner for CliRunner<'_>>::run
+crates/trellis-cli/src/work.rs:1701:13: replace && with || in <impl Runner for CliRunner<'_>>::run
+crates/trellis-cli/src/work.rs:1700:13: replace && with || in <impl Runner for CliRunner<'_>>::run
+crates/trellis-cli/src/work.rs:1779:9: replace <impl Runner for CliRunner<'_>>::stop_requested -> bool with true
+crates/trellis-cli/src/work.rs:1779:9: replace <impl Runner for CliRunner<'_>>::stop_requested -> bool with false
+crates/trellis-cli/src/work.rs:1783:9: replace <impl Runner for CliRunner<'_>>::idle -> bool with true
+crates/trellis-cli/src/work.rs:1783:9: replace <impl Runner for CliRunner<'_>>::idle -> bool with false
+crates/trellis-cli/src/work.rs:1783:36: replace + with - in <impl Runner for CliRunner<'_>>::idle
+crates/trellis-cli/src/work.rs:1784:30: replace < with == in <impl Runner for CliRunner<'_>>::idle
+crates/trellis-cli/src/work.rs:1784:30: replace < with > in <impl Runner for CliRunner<'_>>::idle
+crates/trellis-cli/src/work.rs:1792:9: delete ! in <impl Runner for CliRunner<'_>>::idle

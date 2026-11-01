@@ -1,0 +1,25 @@
+crates/trellis-cli/src/user_config.rs:665:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in set_colibri_provider
+crates/trellis-cli/src/user_config.rs:665:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in set_colibri_provider
+crates/trellis-cli/src/user_config.rs:665:28: replace == with != in set_colibri_provider
+crates/trellis-cli/src/user_config.rs:703:24: replace && with || in set_colibri_provider
+crates/trellis-cli/src/user_config.rs:703:8: delete ! in set_colibri_provider
+crates/trellis-cli/src/user_config.rs:703:27: delete ! in set_colibri_provider
+crates/trellis-cli/src/user_config.rs:721:58: replace && with || in set_colibri_provider
+crates/trellis-cli/src/user_config.rs:721:32: replace && with || in set_colibri_provider
+crates/trellis-cli/src/user_config.rs:751:5: replace all_but_providers -> Option<toml::Table> with None
+crates/trellis-cli/src/user_config.rs:751:5: replace all_but_providers -> Option<toml::Table> with Some(Default::default())
+crates/trellis-cli/src/user_config.rs:757:5: replace all_but_model_spec -> Option<toml::Table> with None
+crates/trellis-cli/src/user_config.rs:757:5: replace all_but_model_spec -> Option<toml::Table> with Some(Default::default())
+crates/trellis-cli/src/vault_cmd.rs:182:5: replace sync_dates -> Result<()> with Ok(())
+crates/trellis-cli/src/work.rs:771:26: replace > with == in queue
+crates/trellis-cli/src/work.rs:771:26: replace > with < in queue
+crates/trellis-cli/src/work.rs:771:26: replace > with >= in queue
+crates/trellis-cli/src/work.rs:854:19: replace match guard moved with true in cancel_task
+crates/trellis-cli/src/work.rs:854:19: replace match guard moved with false in cancel_task
+crates/trellis-cli/src/work.rs:1151:9: replace <impl routine::Repo for RoutineRepo<'_>>::changed -> Option<Vec<String>> with None
+crates/trellis-cli/src/work.rs:1151:9: replace <impl routine::Repo for RoutineRepo<'_>>::changed -> Option<Vec<String>> with Some(vec![])
+crates/trellis-cli/src/work.rs:1151:9: replace <impl routine::Repo for RoutineRepo<'_>>::changed -> Option<Vec<String>> with Some(vec![String::new()])
+crates/trellis-cli/src/work.rs:1151:9: replace <impl routine::Repo for RoutineRepo<'_>>::changed -> Option<Vec<String>> with Some(vec!["xyzzy".into()])
+crates/trellis-cli/src/work.rs:1300:45: replace == with != in last_run_asked
+crates/trellis-cli/src/work.rs:1404:5: replace has_terminal -> bool with false
+crates/trellis-cli/src/work.rs:1784:30: replace < with <= in <impl Runner for CliRunner<'_>>::idle

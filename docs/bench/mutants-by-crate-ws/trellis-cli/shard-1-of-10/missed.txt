@@ -1,0 +1,9 @@
+crates/trellis-cli/src/doctor_cmd.rs:322:5: replace colibri_card_lines -> Vec<String> with vec![]
+crates/trellis-cli/src/doctor_cmd.rs:322:5: replace colibri_card_lines -> Vec<String> with vec![String::new()]
+crates/trellis-cli/src/doctor_cmd.rs:322:5: replace colibri_card_lines -> Vec<String> with vec!["xyzzy".into()]
+crates/trellis-cli/src/doctor_cmd.rs:617:24: delete ! in cmd_doctor
+crates/trellis-cli/src/doctor_cmd.rs:643:72: replace > with >= in cmd_doctor
+crates/trellis-cli/src/doctor_cmd.rs:844:36: replace + with - in cmd_doctor
+crates/trellis-cli/src/doctor_cmd.rs:844:36: replace + with * in cmd_doctor
+crates/trellis-cli/src/doctor_cmd.rs:1158:5: replace coverage_available -> bool with false
+crates/trellis-cli/src/doctor_supply.rs:218:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in output_within
