@@ -1495,8 +1495,8 @@ caught, 19 unviable, 0 timeouts` (the four files under `shard-1-of-10/`,
 `wc -l`). Its nine lines follow the shard 0 lines, each shown by hand at
 `f1e2f763` (#1002): the mutant applied at HEAD's line, the named test run
 with `cargo test -p trellis-cli` and seen to fail, the source restored.
-`doctor_cmd.rs:322`, `617`, `643`, `844` and `1158` are `doctor_cmd.rs:224`,
-`520`, `546`, `747` and `827` at HEAD (#932 moved init and check out of the
+`doctor_cmd.rs:322`, `617`, `643`, `844` and `1158` are `doctor_cmd.rs:225`,
+`520`, `546`, `747` and `828` at HEAD (#932 moved init and check out of the
 file), with the same text; `doctor_supply.rs:218` has not moved.
 
 ```

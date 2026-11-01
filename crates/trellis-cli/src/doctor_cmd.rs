@@ -1167,8 +1167,8 @@ mod doctor_tests {
         assert!(!help_mentions_cov(&runner("no plugin here")));
     }
 
-    /// Linux only: the stand-in pytest is a shell script, and on Windows a
-    /// program named `pytest` has to be an executable.
+    /// Not on Windows: the stand-in pytest is a shell script, and a program
+    /// named `pytest` there has to be an executable.
     #[cfg(unix)]
     #[test]
     fn coverage_is_available_when_a_pytest_on_disk_offers_cov() {
