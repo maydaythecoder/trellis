@@ -115,7 +115,7 @@ pub struct Dispatched {
     /// `Some` only when a person was asked about this call.
     pub human: Option<HumanDecision>,
     /// Whether this call may have changed the working tree. See
-    /// [`may_change_tree`] for the tool's part; a `pre_tool` or `post_tool`
+    /// `may_change_tree` for the tool's part; a `pre_tool` or `post_tool`
     /// hook that changed the worktree (or whose effect could not be
     /// compared) also sets it, because a hook runs around every call — the
     /// passing check included — and would otherwise leave bytes behind that

@@ -129,7 +129,7 @@ pub enum ToolCall {
     },
     /// The model's plan, a short checklist (ADR 0058 §5). Carried as the
     /// model sent it, so a recorded run reads back as the same call; what
-    /// is kept is [`crate::tools::keep_plan`]'s. Nothing is written and no
+    /// is kept is `crate::tools::keep_plan`'s. Nothing is written and no
     /// verdict comes of it: the result is `Output`. Opt-in.
     Plan {
         steps: Vec<crate::tools::PlanStep>,
@@ -203,7 +203,7 @@ pub struct Turn {
     /// around the call that changed the worktree. A pass earlier than such a
     /// turn describes a tree that no longer exists, so
     /// [`Transcript::last_check_passed`] stops at it. Decided by the
-    /// orchestrator ([`crate::orchestrator::may_change_tree`]), which is
+    /// orchestrator (`crate::orchestrator::may_change_tree`), which is
     /// conservative: anything not known to be read-only counts.
     pub may_have_changed_tree: bool,
     /// The repository paths a `bash` or custom-tool call changed, as the
