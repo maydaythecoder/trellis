@@ -222,6 +222,13 @@ pub struct Turn {
     /// reported (#802); `None` on every other turn. Carried so the trail
     /// takes its line counts from the same value as the event (#811).
     pub edit: Option<EditDiff>,
+    /// Whether an `edit` applied or a `write_file` created its file, read
+    /// from the typed result ([`wrote_by`]) and never from the observation
+    /// text (#986): a refusal repeats the path the model gave, so an edit of
+    /// a missing file named `applied: true.py` used to record a write that
+    /// never happened. `false` for every other tool; what `bash` changed is
+    /// in `changed`.
+    pub wrote: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1041,9 +1048,10 @@ pub struct TurnAction {
 /// trellis-trail because the loop emits the event and neither of those is
 /// a dependency it may take.
 ///
-/// `observation` is the turn's whole observation, not the event's tail: a
-/// created file is read from its first line.
-pub fn turn_action(call: &ToolCall, observation: &str) -> TurnAction {
+/// `wrote` is the turn's [`Turn::wrote`], from [`wrote_by`]. It is not
+/// read from the observation here (#986): the observation is text rendered
+/// for the model, and a refusal repeats whatever path the model sent.
+pub fn turn_action(call: &ToolCall, wrote: bool) -> TurnAction {
     let (tool, target) = match call {
         ToolCall::BlastRadius { symbol } => ("blast_radius", symbol.clone()),
         ToolCall::ReadFile { path } => ("read_file", path.clone()),
@@ -1092,19 +1100,28 @@ pub fn turn_action(call: &ToolCall, observation: &str) -> TurnAction {
     TurnAction {
         tool: tool.to_string(),
         target,
-        // Only an applied edit or a created file changes the tree through
-        // the orchestrator. A refused one is an action that happened and
-        // wrote nothing, which is exactly what this distinguishes. What bash
-        // or a custom tool changed is recorded in the trail's `changed`
-        // instead, from what the orchestrator carried back (ADR 0023 §7),
-        // and `wrote` keeps the meaning older trails gave it.
-        wrote: match call {
-            ToolCall::Edit { .. } => observation.contains("applied: true"),
-            ToolCall::WriteFile { path, .. } => {
-                observation.starts_with(&format!("created {path} "))
-            }
-            _ => false,
-        },
+        wrote,
+    }
+}
+
+/// Whether a call wrote through the orchestrator, from its typed result.
+///
+/// Only an applied edit or a created file changes the tree through the
+/// orchestrator. A refused one is an action that happened and wrote
+/// nothing, which is exactly what this distinguishes. What bash or a custom
+/// tool changed is recorded in the trail's `changed` instead, from what the
+/// orchestrator carried back (ADR 0023 §7), and `wrote` keeps the meaning
+/// older trails gave it.
+///
+/// Read from the result's type, not from the text rendered for the model
+/// (#986): an edit's `applied` is [`crate::tools::EditOutcome::applied`],
+/// and a `write_file` that created its file answers `Output`, every refusal
+/// `Error`. Nothing here depends on what the path was called.
+pub fn wrote_by(call: &ToolCall, result: &ToolResult) -> bool {
+    match (call, result) {
+        (ToolCall::Edit { .. }, ToolResult::Edit(e)) => e.applied,
+        (ToolCall::WriteFile { .. }, ToolResult::Output(_)) => true,
+        _ => false,
     }
 }
 
@@ -1508,7 +1525,7 @@ pub async fn run_seeded<M: Model>(
                             paths: Vec::new(),
                             kinds: vec![CheckKind::Governance],
                         };
-                        let action = turn_action(&audit_call, &detail.stdout);
+                        let action = turn_action(&audit_call, false);
                         tracing::info!(
                             turn = iterations,
                             call = %turn_event_label(&audit_call),
@@ -1541,6 +1558,7 @@ pub async fn run_seeded<M: Model>(
                             changed: Vec::new(),
                             duration_ms: audit_ms,
                             edit: None,
+                            wrote: false,
                         });
                         if !v.passed() {
                             // Asked only now, after the outcome is settled:
@@ -1682,7 +1700,8 @@ pub async fn run_seeded<M: Model>(
                 // What the trail will record for this turn, from the same
                 // function and the whole observation (#800), so a client
                 // need not parse `call` or search `observation` for it.
-                let action = turn_action(&call, &observation);
+                let wrote = wrote_by(&call, &result);
+                let action = turn_action(&call, wrote);
                 // What an applied edit changed (#802), from the write itself.
                 // Absent on every other turn, bash's included: what a command
                 // changed is carried back, not diffed here.
@@ -1756,6 +1775,7 @@ pub async fn run_seeded<M: Model>(
                     changed,
                     duration_ms,
                     edit: edit.cloned(),
+                    wrote,
                 });
 
                 // After the turn is recorded, so the trail shows the call
@@ -3276,6 +3296,7 @@ rank = \"non-negotiable\"
                     changed: Vec::new(),
                     duration_ms: 0,
                     edit: None,
+                    wrote: false,
                 },
                 Turn {
                     call: ToolCall::ReadFile { path: "b".into() },
@@ -3290,6 +3311,7 @@ rank = \"non-negotiable\"
                     changed: Vec::new(),
                     duration_ms: 0,
                     edit: None,
+                    wrote: false,
                 },
             ],
             final_notice: false,

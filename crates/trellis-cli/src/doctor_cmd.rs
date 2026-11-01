@@ -1233,6 +1233,7 @@ mod report_tests {
             changed: Vec::new(),
             duration_ms: 0,
             edit: None,
+            wrote: false,
         }
     }
 
@@ -1330,16 +1331,21 @@ mod report_tests {
         assert_eq!(refused.turn, 1, "turns are 1-based, as a run prints them");
         assert!(!refused.wrote, "a refused edit wrote nothing");
 
+        // The turn's own `wrote`, from the typed result (#986), is what
+        // the action reads; the observation is only summarised.
         let applied = action_from(
             1,
-            &turn(
-                ToolCall::Edit {
-                    path: "app/calc.py".into(),
-                    old: "a".into(),
-                    new: "b".into(),
-                },
-                "edited app/calc.py (applied: true, bytes 59..87)",
-            ),
+            &trellis_loop::Turn {
+                wrote: true,
+                ..turn(
+                    ToolCall::Edit {
+                        path: "app/calc.py".into(),
+                        old: "a".into(),
+                        new: "b".into(),
+                    },
+                    "edited app/calc.py (applied: true, bytes 59..87)",
+                )
+            },
         );
         assert!(applied.wrote, "an applied edit did");
         assert_eq!(applied.target, "app/calc.py");
@@ -1348,8 +1354,8 @@ mod report_tests {
     #[test]
     fn reading_a_file_never_counts_as_a_write() {
         use trellis_loop::ToolCall;
-        // The `applied: true` test is a substring match, so a read whose
-        // content happened to contain that phrase must still not count.
+        // `wrote` was once a substring match on the observation (#986), so
+        // a read whose content holds that phrase must still not count.
         let a = action_from(
             0,
             &turn(
