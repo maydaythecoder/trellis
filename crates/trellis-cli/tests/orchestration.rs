@@ -2297,9 +2297,9 @@ fn an_approve_mode_agent_is_not_held_back_when_work_has_a_terminal() {
     // "none" whatever stdin and stdout are, so an approve-mode agent was
     // never run even by a person at a terminal. `work --once` runs under
     // util-linux `script`, which gives it a pty for both; the claim then
-    // reaches the scripted run, whose first edit asks a person the pty's
-    // closed input cannot answer, and however that run ends the task has
-    // left pending/ and the "no terminal" line was never printed.
+    // reaches the scripted run, whose first edit asks a person at that pty,
+    // is answered `n`, and however that run ends the task has left
+    // pending/ and the "no terminal" line was never printed.
     use std::io::Write as _;
     use std::process::Stdio;
     let d = fixture(
@@ -2334,8 +2334,9 @@ fn an_approve_mode_agent_is_not_held_back_when_work_has_a_terminal() {
         .stderr(Stdio::null())
         .spawn()
         .expect("util-linux `script` must be on PATH for the pty tests");
-    // Nothing to say: every question the run asks is answered by end of input.
-    child.stdin.take().unwrap().write_all(b"").unwrap();
+    // One line, `n`: the edit the run asks about is declined, and nothing is
+    // left for `script` to turn into an end of input the question might miss.
+    child.stdin.take().unwrap().write_all(b"n\n").unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while child.try_wait().unwrap().is_none() {
         if std::time::Instant::now() > deadline {

@@ -2912,6 +2912,11 @@ mod task_worktree_tests {
         assert!(!last_run_asked(&t), "a person's note is not a question");
         t.note(Actor::Model, "which one?");
         assert!(last_run_asked(&t), "the model's note is");
+        t.notes_seen = Some(2);
+        assert!(
+            last_run_asked(&t),
+            "the question is the only note after the marker"
+        );
         t.notes_seen = Some(3);
         assert!(
             !last_run_asked(&t),
