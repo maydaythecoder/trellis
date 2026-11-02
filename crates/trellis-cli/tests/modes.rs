@@ -716,6 +716,12 @@ fn provider_stub_with_headers(
         while let Some(r) = replies.peek() {
             let Ok((mut s, _)) = l.accept() else { break };
             let (raw, body) = read_request(&mut s);
+            // A runtime driver opens one connection and sends nothing on it
+            // to see that something listens (`reachable`), before its first
+            // request; a reply spent on it would shift every later one.
+            if raw.is_empty() {
+                continue;
+            }
             if is_models_get(&raw) {
                 s.write_all(models_404().as_bytes()).ok();
                 continue;
@@ -4746,6 +4752,87 @@ fn rpc_get_state_tier_after_a_hosted_run_is_tier_1_from_the_protocol() {
     assert_eq!(after["tier"], "1, native tool calls", "{after}");
     rpc.finish();
     assert_eq!(server.join().unwrap().len(), 1);
+}
+
+/// A llama.cpp reply whose text is `content`, with the token counts the
+/// adapter reads.
+fn llamacpp_reply(content: &str) -> String {
+    serde_json::json!({"content": content, "tokens_predicted": 3,
+        "tokens_evaluated": 10, "timings": {"prompt_n": 1}})
+    .to_string()
+}
+
+#[test]
+fn rpc_get_state_tier_after_a_probed_runtime_run_is_the_probe_s_tier() {
+    // The risk (#1005): the tier a run reports for a local runtime decided
+    // by the `unconstrained` flag's arm of the match rather than by the
+    // probe, so a runtime that honoured the schema was reported as tier 4.
+    // The stub answers the probe with the key the schema asks for, which
+    // is the measurement of tier 2; the status bar must then say 2.
+    let f = fixture("rpc-tier-runtime-probed");
+    let (base, server) = provider_stub(vec![
+        llamacpp_reply(r#"{"trellis_probe_ok":true}"#),
+        llamacpp_reply(r#"{"tool":"done","summary":"nothing to do"}"#),
+    ]);
+    let spec = format!("llamacpp:{base}");
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.choose(&spec);
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                                "model": spec}),
+    );
+    rpc.next(|v| v["type"] == "run_end" && v["id"] == "p");
+    rpc.wait_idle();
+    let after = state(&mut rpc, "s");
+    assert_eq!(after["tier"], "2", "{after}");
+    rpc.finish();
+    let got = server.join().unwrap();
+    assert_eq!(got.len(), 2, "the probe and one model request: {got:?}");
+    assert!(
+        got[0].contains("trellis_probe_ok"),
+        "the first request is the schema probe: {}",
+        got[0]
+    );
+}
+
+#[test]
+fn rpc_get_state_tier_after_an_unconstrained_runtime_run_is_tier_4_by_the_config() {
+    // The risk (#1005): `[model] unconstrained` skips the probe, and the
+    // only place that records its tier is the flag's arm of the match; if
+    // that arm is never taken, `get_state` answers no tier after a run that
+    // decided one. The stub is sent no probe, so a probe request would
+    // spend the one reply and fail the run.
+    let f = fixture("rpc-tier-runtime-unconstrained");
+    std::fs::create_dir_all(f.root.join(".trellis")).unwrap();
+    std::fs::write(
+        f.root.join(".trellis/config.toml"),
+        "[model]\nunconstrained = true\n",
+    )
+    .unwrap();
+    git(&f.root, &["add", "-A"]);
+    git(&f.root, &["commit", "-qm", "unconstrained"]);
+    let (base, server) = provider_stub(vec![llamacpp_reply(
+        r#"{"tool":"done","summary":"nothing to do"}"#,
+    )]);
+    let spec = format!("llamacpp:{base}");
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.choose(&spec);
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                                "model": spec}),
+    );
+    rpc.next(|v| v["type"] == "run_end" && v["id"] == "p");
+    rpc.wait_idle();
+    let after = state(&mut rpc, "s");
+    assert_eq!(after["tier"], "4, no schema", "{after}");
+    rpc.finish();
+    let got = server.join().unwrap();
+    assert_eq!(got.len(), 1, "one model request and no probe: {got:?}");
+    assert!(
+        !got[0].contains("trellis_probe_ok"),
+        "no schema probe was sent: {}",
+        got[0]
+    );
 }
 
 /// A loopback stub that answers as colibri serving `glm-5.2` whose template
