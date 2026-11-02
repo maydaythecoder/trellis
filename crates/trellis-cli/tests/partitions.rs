@@ -724,10 +724,13 @@ fn induced_collision_fails_the_integrated_check_rolls_back_and_records_a_gap() {
     assert!(out.contains("NOT CONVERGED"), "{out}");
     // What the failed integrated check wrote is shown under it, indented;
     // a passing check's output is not (#248).
+    // The Windows typecheck is a `cmd` echo, which leaves a space before
+    // its `&`, so the lines are matched up to `error` and not past it.
     assert!(
-        out.contains("integrated Typecheck: FAILED\n  a.py:1: error\n  b.py:1: error"),
+        out.contains("integrated Typecheck: FAILED\n  a.py:1: error"),
         "{out}"
     );
+    assert!(out.contains("\n  b.py:1: error"), "{out}");
     assert!(!out.contains("\n  git version"), "{out}");
     // Every file as HEAD has it; the only new commit is the trail's.
     assert_eq!(git(&f.root, &["rev-parse", "HEAD~1"]), f.head, "{out}");
@@ -832,6 +835,9 @@ fn one_agent_at_a_time_in_approve_mode_is_not_refused_for_the_width() {
         !err.contains("agents asking at once"),
         "refused for a width of one:\n{err}"
     );
+    // The width check was reached and passed: the next refusal, for the
+    // terminal approve mode needs and a test has not, is the one given.
+    assert!(err.contains("interactive terminal"), "{err}");
 }
 
 #[test]
