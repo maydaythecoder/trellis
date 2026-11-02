@@ -3736,6 +3736,102 @@ mod interrupt_tests {
         assert!(a[3].2.contains("elided 30 B"), "{a:?}");
     }
 
+    /// A one-turn transcript whose turn carries `prompt_bytes`, or none.
+    fn one_turn(prompt_bytes: Option<usize>) -> trellis_loop::Transcript {
+        trellis_loop::Transcript {
+            task: "one read".to_string(),
+            turns: vec![trellis_loop::Turn {
+                call: trellis_loop::ToolCall::ReadFile {
+                    path: "a.py".into(),
+                },
+                observation: String::new(),
+                verdict_passed: None,
+                check_kind: None,
+                prompt_bytes,
+                radius_counts: None,
+                radius_summarised: None,
+                human: None,
+                may_have_changed_tree: false,
+                changed: Vec::new(),
+                duration_ms: 0,
+                edit: None,
+                wrote: false,
+            }],
+            final_notice: false,
+            steering: trellis_loop::SteeringLog::default(),
+            controls: Vec::new(),
+            prior: None,
+            repo: trellis_loop::RepoContext::default(),
+        }
+    }
+
+    fn trail_back(
+        dir: &Path,
+        t: &trellis_loop::Transcript,
+        facts: TrailFacts<'_>,
+    ) -> trellis_trail::UntrustedTrail {
+        let path = record_trail(dir, &t.task, t, &[], facts, &mut std::io::sink()).unwrap();
+        let raw = std::fs::read_to_string(path).unwrap();
+        trellis_trail::UntrustedTrail::from_json(&raw).unwrap()
+    }
+
+    #[test]
+    fn a_plan_action_sits_before_its_turn_and_one_past_the_last_turn_goes_last_once() {
+        // #248. The risk: the filter for plan actions past the last turn
+        // reading `>=` (the last turn's partition opening written twice) or
+        // `==` (a partition that ran no turn, after the last, dropped). The
+        // trail is where a reader learns which partition did not run (#466).
+        let dir = temp_repo("plan-placement");
+        let snap = trellis_vcs::snapshot(&dir).unwrap();
+        let mut facts = facts_for(&snap);
+        facts.plan = vec![
+            read_only_action(1, "partition".into(), "0 (a)".into(), "converged".into()),
+            read_only_action(2, "partition".into(), "1 (b)".into(), "did not run".into()),
+        ];
+        let back = trail_back(&dir, &one_turn(None), facts);
+        let _ = std::fs::remove_dir_all(&dir);
+        let shape: Vec<(u32, &str, &str)> = back
+            .factual
+            .actions
+            .iter()
+            .map(|a| (a.turn, a.tool.as_str(), a.target.as_str()))
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                (1, "partition", "0 (a)"),
+                (1, "read_file", "a.py"),
+                (2, "partition", "1 (b)"),
+            ],
+            "{shape:?}"
+        );
+    }
+
+    #[test]
+    fn context_fill_is_recorded_only_from_turns_that_measured_a_prompt() {
+        // #248. The risk: the fill recorded from no measurement (a scripted
+        // run, whose turns carry no prompt) as a zero nobody measured, or
+        // dropped for a run that did measure one. The timed-out mutant of
+        // this line indexes an empty list, which must fail here at once.
+        let dir = temp_repo("context-fill");
+        let snap = trellis_vcs::snapshot(&dir).unwrap();
+        let back = trail_back(&dir, &one_turn(None), facts_for(&snap));
+        assert_eq!(
+            back.factual.context, None,
+            "a scripted run measures nothing"
+        );
+        let back = trail_back(&dir, &one_turn(Some(1200)), facts_for(&snap));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            back.factual.context,
+            Some(trellis_trail::ContextFill {
+                first_prompt_bytes: 1200,
+                peak_prompt_bytes: 1200,
+                turns_measured: 1,
+            })
+        );
+    }
+
     #[test]
     fn an_unknown_run_id_lists_ten_runs_and_counts_only_the_ones_left_out() {
         // The risk (#248): "... 0 older" under a list that is complete, or
