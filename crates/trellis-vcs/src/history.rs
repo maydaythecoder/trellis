@@ -711,7 +711,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_copy_directory_is_entered_by_its_owner_only() {
-        // The risk (security finding F2, AUDIT-2026-10-11): a commit's
+        // The risk (security finding F2, AUDIT-2026-10-11 at 5f6de094): a commit's
         // source written under the shared temporary directory where another
         // user on the machine can list and read it. ADR 0025 §5 states
         // `0700`; nothing held it.
