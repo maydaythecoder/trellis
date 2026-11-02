@@ -486,8 +486,11 @@ without bound is killed there, where before it took the runner down ahead of
 mutants of `trellis-cli` at `6b804cb`, `first_run.rs:316:40: replace == with
 != in pick` and `start_screen.rs:261:5: replace answer -> Result<Option<String>>
 with Ok(Some(String::new()))`, which ended shards 2 and 7 three times each
-(#995). That the cap turns such a mutant into a caught one is pending the
-`file=crates/trellis-cli/src/start_screen.rs` dispatch #1026 names.
+(#995). Measured by the `file=crates/trellis-cli/src/start_screen.rs`
+dispatch at d32420a, run 41450435602: the `answer` mutant's test binary ended
+with `signal: 9, SIGKILL` after 65 s of its test phase and cargo-mutants
+recorded `CaughtMutant`; the step ran to its summary (54 tested, 43 caught, 9
+missed, 2 timeouts) and the artifact uploaded.
 
 GitHub dispatches a workflow by name only when the file is on the default
 branch (`main`), so the hosted `runs-on` takes effect once the change is
