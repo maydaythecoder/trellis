@@ -866,3 +866,82 @@ impl PartitionedTrail {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::{git_commit_all, git_init, git_stdout, scratch};
+
+    fn run(tokens: Option<u64>, prompt_tokens: Option<u64>, touched: &[&str]) -> PartitionRun {
+        PartitionRun {
+            transcript: trellis_loop::Transcript {
+                task: "t".to_string(),
+                turns: Vec::new(),
+                final_notice: false,
+                steering: trellis_loop::SteeringLog::default(),
+                controls: Vec::new(),
+                prior: None,
+                repo: trellis_loop::RepoContext::default(),
+            },
+            touched: touched.iter().map(|t| t.to_string()).collect(),
+            gates: Vec::new(),
+            tokens,
+            prompt_tokens,
+            compactions: Vec::new(),
+            requested: Vec::new(),
+            steps: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn partitioned_trail_sums_tokens_from_the_first_partition_and_lists_a_path_once() {
+        // #248. The risk: the first partition's figure dropped (a sum that
+        // starts at the accumulator's None), or a path two partitions both
+        // wrote listed twice, so the trail's `touched` is not the set of
+        // paths the run proposed.
+        let mut trail = PartitionedTrail::default();
+        trail.partition(
+            PartitionId(0),
+            &["a".to_string()],
+            "converged",
+            Some(run(Some(10), Some(4), &["a.py", "shared.py"])),
+        );
+        assert_eq!((trail.tokens, trail.prompt_tokens), (Some(10), Some(4)));
+        trail.partition(
+            PartitionId(1),
+            &["b".to_string()],
+            "converged",
+            Some(run(Some(5), Some(1), &["shared.py", "b.py"])),
+        );
+        assert_eq!((trail.tokens, trail.prompt_tokens), (Some(15), Some(5)));
+        assert_eq!(trail.touched, ["a.py", "shared.py", "b.py"]);
+        // A later partition with no figure makes the sum unknown rather
+        // than a number nobody measured.
+        trail.partition(PartitionId(2), &["c".to_string()], "did not run", None);
+        assert_eq!((trail.tokens, trail.prompt_tokens), (None, None));
+    }
+
+    #[test]
+    fn is_restored_to_needs_head_at_the_base_and_nothing_pending() {
+        // #248. The risk: a root with a moved HEAD, or with uncommitted
+        // changes, reported as restored, so a run's rollback is reported
+        // complete when the worktree is not where the run found it.
+        let t = scratch("partitioned-restored");
+        git_init(&t);
+        std::fs::write(t.join("a.py"), "x = 1\n").unwrap();
+        git_commit_all(&t, "base");
+        let base = git_stdout(&t, &["rev-parse", "HEAD"]).trim().to_string();
+        assert!(is_restored_to(&t, &base));
+
+        std::fs::write(t.join("a.py"), "x = 2\n").unwrap();
+        assert!(
+            !is_restored_to(&t, &base),
+            "a pending change is not restored"
+        );
+
+        git_commit_all(&t, "moved");
+        assert!(!is_restored_to(&t, &base), "a moved HEAD is not restored");
+        assert!(!is_restored_to(&t.join("no-such-dir"), &base));
+        let _ = std::fs::remove_dir_all(&t);
+    }
+}
