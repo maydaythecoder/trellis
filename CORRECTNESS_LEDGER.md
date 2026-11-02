@@ -1557,14 +1557,16 @@ that line when it uploads.
 
 Shard 6 (run 41263108261, 2026-11-01): `252 mutants tested: 28 missed,
 175 caught, 48 unviable, 1 timeouts` (the four files under `shard-6-of-10/`,
-`wc -l`). Its 29 lines follow shard 9's. This first batch (#1005)
-dispositions 27 of them; the two `unconstrained` match guards of
-`run_cmd.rs:1027:31` wait on a second batch, which needs an rpc run against
-a runtime stub to read the tier back. Each kill was shown by hand on base
-`31e76751`, at the batch's test commits: the mutant applied, the named
-test run with `cargo test -p trellis-cli` and seen to fail, the source
-restored. `run_cmd.rs` was split since 6b804cb (#927): `2251`, `2537`,
-`2685`, `2840`, `2841` and `2862` are `run_partitioned.rs:264`, `555`,
+`wc -l`). Its 29 lines follow shard 9's. The first batch (#1005)
+dispositioned 27 of them, each kill shown by hand on base `31e76751`, at
+the batch's test commits: the mutant applied, the named test run with
+`cargo test -p trellis-cli` and seen to fail, the source restored. The
+second batch (#1005) dispositioned the two `unconstrained` match guards of
+`run_cmd.rs:1027:31` the same way on base `f53ffe1c`, with the rpc run
+against a loopback llama.cpp stub that the first batch lacked: `get_state`
+is the only reader of the tier a run records. `run_cmd.rs` was split
+since 6b804cb (#927): `2251`, `2537`, `2685`, `2840`, `2841` and `2862`
+are `run_partitioned.rs:264`, `555`,
 `692`, `841`, `842` and `863` at HEAD; `688`, `763`, `1027`, `1414`,
 `1501`, `1835`, `1905`, `3294`, `3305`, `3666` and `3763` are
 `run_cmd.rs:708`, `798`, `1116`, `1531`, `1618`, `1930`, `2000`, `2623`,
@@ -1691,8 +1693,8 @@ killed (#248) by services::tests::reap_gives_up_at_the_bound_instead_of_waiting_
 killed (#248) by services::tests::reap_waits_through_a_not_yet_exited_poll_and_stops_on_an_error: `now < until` is true on the first poll, so it returned false before the second poll's exit; `cfg(unix)`, shown on Linux, dispatch run 41392184505 | crates/trellis-cli/src/services.rs:355:51: replace >= with < in reap
 killed (#248) by partitions::one_agent_at_a_time_in_approve_mode_is_not_refused_for_the_width: in crates/trellis-cli/tests/partitions.rs; with `>=` a scripted model with targets, whose partitions run one at a time, was refused in approve mode as agents asking at once | crates/trellis-cli/src/run_cmd.rs:688:26: replace > with >= in run_body
 killed (#248) by partitions::agents_above_one_with_trusted_repository_code_is_refused_before_the_snapshot: in crates/trellis-cli/tests/partitions.rs; without the `!` the refusal named `bash` and not the custom tool the trust also covers, and the test now asks for `custom tools (lister)` | crates/trellis-cli/src/run_cmd.rs:763:12: delete ! in run_body
-not examined (#248): waits on the second batch of #1005. The tier a run records is read back only through rpc's `get_state`, and showing this guard needs an rpc run against a runtime stub (a llama.cpp or ollama server on loopback) with and without `[model] unconstrained`, which the batch did not build | crates/trellis-cli/src/run_cmd.rs:1027:31: replace match guard unconstrained with true in run_body
-not examined (#248): as the line above | crates/trellis-cli/src/run_cmd.rs:1027:31: replace match guard unconstrained with false in run_body
+killed (#248) by modes::rpc_get_state_tier_after_a_probed_runtime_run_is_the_probe_s_tier: in crates/trellis-cli/tests/modes.rs; an rpc `prompt` against a loopback llama.cpp stub that answers the schema probe with the key the schema asks for, so the probe records tier `2`; with the guard always true the flag's arm then overwrote it, and `get_state` answered `4, no schema` for a runtime that honoured the schema | crates/trellis-cli/src/run_cmd.rs:1027:31: replace match guard unconstrained with true in run_body
+killed (#248) by modes::rpc_get_state_tier_after_an_unconstrained_runtime_run_is_tier_4_by_the_config: in crates/trellis-cli/tests/modes.rs; the same stub under a repository whose `.trellis/config.toml` sets `[model] unconstrained = true`, which skips the probe, so the flag's arm is the only place the tier is recorded; with the guard always false nothing recorded it, and `get_state` answered `null` after a run that had decided tier 4 | crates/trellis-cli/src/run_cmd.rs:1027:31: replace match guard unconstrained with false in run_body
 killed (#248) by interrupt::hooks_without_after_run_are_not_announced_as_running_on_an_interrupt: in crates/trellis-cli/tests/interrupt.rs; with the guard always true a Ctrl-C under a repository with only a `pre_tool` hook printed `hook:     after_run (reason: interrupted); Ctrl-C again stops it`. The test is `cfg(unix)` (the interrupt is `kill -INT`), so the kill was shown by hand on Linux, the OS the 6b804cb run is on; the 989b2a2 line called this unexercisable for want of a Windows signal | crates/trellis-cli/src/run_cmd.rs:1414:32: replace match guard h.config().after_run.is_some() with true in run_body
 unexercisable (#248): the arm is reached only when the two fingerprints (tree ids) differ, and two tree ids differ only when some entry differs, which `git diff-tree -r --name-only` names; so `tree_diff` of two differing trees is never empty with the real git, which every run test here uses, and a stand-in git would be a Linux-only script on PATH whose kill §4 shows only by a `file=crates/trellis-cli/src/run_cmd.rs` dispatch (hundreds of mutants, past one job), not taken for this line. The 989b2a2 line called it equivalent on the same ground | crates/trellis-cli/src/run_cmd.rs:1501:38: replace match guard !paths.is_empty() with true in run_body
 unexercisable (#248): needs a run that asked a person and whose rollback then left a difference: the suite's writers each have their ignored-file and clone writes undone by the rollback (`tooling::run_tests`), and a `reset --hard` or `clean` that fails after the snapshot was found has no deterministic trigger; the 989b2a2 line said the same, and `run_cmd::approval_tests::a_queued_run_that_asks_ends_as_asked_with_the_question` holds the `false` side | crates/trellis-cli/src/run_cmd.rs:1835:81: replace match guard restored with true in run_body
