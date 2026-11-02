@@ -1532,9 +1532,11 @@ libtest has no deadline that would turn that into a failure.
 
 Shard 9 (run 41263113314, 2026-11-01): `247 mutants tested: 25 missed, 200
 caught, 22 unviable, 0 timeouts` (the four files under `shard-9-of-10/`,
-`wc -l`). Its 25 lines follow shard 8's, each kill shown by hand at
-`0c7766e0` (#1007): the mutant applied, the named test run with `cargo test
--p trellis-cli` and seen to fail, the source restored. `user_config.rs:665`,
+`wc -l`). Its 25 lines follow shard 8's, each kill shown by hand at the
+batch's test commit `0c7766e0` on base `1398498e` (#1007), and again at
+`994bbb0a` for `last_run_asked` and `has_terminal`, whose tests the review
+added to: the mutant applied, the named test run with `cargo test -p
+trellis-cli` and seen to fail, the source restored. `user_config.rs:665`,
 `703`, `721`, `751` and `757` are `689`, `727`, `745`, `775` and `781` at
 HEAD; `work.rs:771`, `854`, `1151`, `1300`, `1404` and `1784` are `811`,
 `893`, `1190`, `1339`, `1443` and `1823`; `vault_cmd.rs:182` has not moved;
@@ -1542,7 +1544,16 @@ each reads the same text. Two of its mutants have a 989b2a2 line on the
 same function and mutation, `has_terminal -> false` (unexercisable there,
 for want of a pty) and `idle`'s `<` with `<=` (equivalent there); neither
 was a kill, so neither is refuted. The first now has one: the pty tests
-under `script` arrived with #248's shard 0 batch, after 989b2a2.
+under `script` arrived with #248's shard 0 batch, after 989b2a2. The three
+`>` mutants in `queue` match 989b2a2's three kills at `work.rs:616:34` by
+function and mutation, but that is a different comparison, `claimed_skipped
+> 0`, which is `754:34` at 6b804cb and in this shard's `caught.txt`; the
+missed `771:26` is the runtime-state loop's `count > 0`, so no kill is
+refuted. The `has_terminal` kill is by a `cfg(unix)` test, and §4's
+`file=crates/trellis-cli/src/work.rs os=linux` dispatch at this branch is
+run 41370486101 (182 work.rs mutants over the ten shards, one job), still
+running when this batch merged; its `caught.txt` is to be read against
+that line when it uploads.
 
 ```
 unexercisable (#248): needs exactly one of stdin and stdout to be a terminal; every test here runs both as pipes, where `&&` and `||` agree, and a terminal needs a pty (the shape of main.rs:527:43 at 989b2a2) | crates/trellis-cli/src/main.rs:1055:44: replace || with && in terminal_ui
@@ -1625,13 +1636,13 @@ killed (#248) by orchestration::export_names_this_checkout_s_runtime_state_only_
 killed (#248) by orchestration::export_names_this_checkout_s_runtime_state_only_when_there_is_some: in crates/trellis-cli/tests; `count` is a usize, so with `<` nothing was ever named, and the activity log line was not | crates/trellis-cli/src/work.rs:771:26: replace > with < in queue
 killed (#248) by orchestration::export_names_this_checkout_s_runtime_state_only_when_there_is_some: in crates/trellis-cli/tests; with `>=` the `0 …` lines were printed for a checkout with no runtime state | crates/trellis-cli/src/work.rs:771:26: replace > with >= in queue
 killed (#248) by queue::queue_cancel_of_a_task_that_does_not_exist_is_refused_and_logs_nothing: in crates/trellis-cli/tests; with the guard always true every edit error took the quiet path meant for a child that left pending/ while `--children` ran, so `queue cancel` of an id not in the queue exited 0 and said nothing | crates/trellis-cli/src/work.rs:854:19: replace match guard moved with true in cancel_task
-unexercisable (#248): `moved` is set only when a descendant `queue cancel --children` found pending in the index has left pending/ by the time its edit runs, a `work` tick claiming or finishing it between the two reads; the command has no hook to hold it between them, and every other path through `cancel_task` has `moved` false, where the two agree | crates/trellis-cli/src/work.rs:854:19: replace match guard moved with false in cancel_task
+unexercisable (#248): `moved` is set only when a descendant `queue cancel --children` found pending in the index has left pending/ by the time its edit runs, a `work` tick having finished it between the two reads (a claim alone is refused by `Queue::edit` before the closure runs, and sets nothing); the command has no hook to hold it between them, and every other path through `cancel_task` has `moved` false, where the two agree | crates/trellis-cli/src/work.rs:854:19: replace match guard moved with false in cancel_task
 killed (#248) by work::task_worktree_tests::routine_repo_changed_lists_the_paths_between_two_commits: against a repository with two commits, None where git names `b.py` | crates/trellis-cli/src/work.rs:1151:9: replace <impl routine::Repo for RoutineRepo<'_>>::changed -> Option<Vec<String>> with None
 killed (#248) by work::task_worktree_tests::routine_repo_changed_lists_the_paths_between_two_commits: no path where git names `b.py` | crates/trellis-cli/src/work.rs:1151:9: replace <impl routine::Repo for RoutineRepo<'_>>::changed -> Option<Vec<String>> with Some(vec![])
 killed (#248) by work::task_worktree_tests::routine_repo_changed_lists_the_paths_between_two_commits: an empty path where git names `b.py`, and one where two equal commits differ in nothing | crates/trellis-cli/src/work.rs:1151:9: replace <impl routine::Repo for RoutineRepo<'_>>::changed -> Option<Vec<String>> with Some(vec![String::new()])
 killed (#248) by work::task_worktree_tests::routine_repo_changed_lists_the_paths_between_two_commits: `xyzzy` where git names `b.py` | crates/trellis-cli/src/work.rs:1151:9: replace <impl routine::Repo for RoutineRepo<'_>>::changed -> Option<Vec<String>> with Some(vec!["xyzzy".into()])
 killed (#248) by work::task_worktree_tests::last_run_asked_is_a_model_note_at_or_after_notes_seen_and_nothing_else: with `!=` a person's note after the claim marker read as the model's question, and a task whose only note after the marker is the model's did not | crates/trellis-cli/src/work.rs:1300:45: replace == with != in last_run_asked
-killed (#248) by orchestration::an_approve_mode_agent_is_not_held_back_when_work_has_a_terminal: in crates/trellis-cli/tests; `work --once` under util-linux `script`, so stdin and stdout are a pty, and with `has_terminal` always false the approve-mode agent was told `work` has no terminal to ask on and its task stayed in pending/, where the real check lets the run start and ask `edit app/core.py (+1 -1)? [y/N]` at that terminal. The test is `cfg(unix)` (`script` is util-linux's); §4's `file=work.rs` dispatch at this branch is pending, and the kill was shown by hand on Linux, the OS the 6b804cb run is on. Unexercisable at 989b2a2 for want of a pty; the pty tests arrived with shard 0's batch | crates/trellis-cli/src/work.rs:1404:5: replace has_terminal -> bool with false
+killed (#248) by orchestration::an_approve_mode_agent_is_not_held_back_when_work_has_a_terminal: in crates/trellis-cli/tests; `work --once` under util-linux `script`, so stdin and stdout are a pty, and with `has_terminal` always false the approve-mode agent was told `work` has no terminal to ask on and its task stayed in pending/, where the real check lets the run start and ask `edit app/core.py (+1 -1)? [y/N]` at that terminal, answered `n`. The test is `cfg(unix)` (`script` is util-linux's); §4's dispatch is run 41370486101 (`file=crates/trellis-cli/src/work.rs os=linux` at this branch, started before the merge; the paragraph above says how it is read), and the kill was shown by hand on Linux, the OS the 6b804cb run is on. Unexercisable at 989b2a2 for want of a pty; the pty tests arrived with shard 0's batch | crates/trellis-cli/src/work.rs:1404:5: replace has_terminal -> bool with false
 equivalent (#248): at `now == until` the mutant runs one more pass that sleeps `min(100ms, 0)` and checks the flag again; the wait, the flag and the answer are the same, as the 989b2a2 line for the same comparison says | crates/trellis-cli/src/work.rs:1784:30: replace < with <= in <impl Runner for CliRunner<'_>>::idle
 ```
 
