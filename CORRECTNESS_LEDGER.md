@@ -1595,11 +1595,12 @@ on the runner is not known from its log.
 
 Shard 5 (run 41263106442, 2026-11-01): 207 of 252 mutants tested before
 the step's 345-minute limit, by `wc -l` of the four files under
-`shard-5-of-10/`: 162 caught, 10 missed, 11 timed out, 24 unviable. The 45 it never
-reached are 33 in `run_cmd.rs` and 12 in `rpc.rs`; the `file=run_cmd.rs`
-dispatch (run 41290111656, under `file-run_cmd/`, #1029) finished the 33,
-and the 7 of them that are missed are this shard's (that README's `comm`),
-with the 10 missed and 11 timed-out lines of its own files: 28 lines in all. The 12 `rpc.rs`
+`shard-5-of-10/`: 162 caught, 10 missed, 11 timed out, 24 unviable. The 45
+it never reached are 33 in `run_cmd.rs` and 12 in `rpc.rs`; the
+`file=run_cmd.rs` dispatch (run 41290111656, under `file-run_cmd/`, #1029)
+finished the 33, and the 7 of them that are missed are this shard's
+(`file-run_cmd/README.md`'s `comm`), with the 10 missed and 11 timed-out
+lines of its own files: 28 lines in all. The 12 `rpc.rs`
 mutants have no outcome in any run (#248, 2026-11-01). This first batch
 (#1031) dispositions the 7 `file-run_cmd/` lines, each kill shown by hand
 on base `bd269fcc`: the mutant applied, the named test run with `cargo test
