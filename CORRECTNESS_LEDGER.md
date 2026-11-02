@@ -1593,6 +1593,42 @@ The timed-out `3666:20` fails `context_fill_is_recorded_only_from_turns_that_mea
 in 0.3 s (an index into an empty list panics at once); what ran past 300 s
 on the runner is not known from its log.
 
+Shard 5 (run 41263106442, 2026-11-01): 207 of 252 mutants tested before
+the step's 345-minute limit, by `wc -l` of the four files under
+`shard-5-of-10/`: 162 caught, 10 missed, 11 timed out, 24 unviable. The 45
+it never reached are 33 in `run_cmd.rs` and 12 in `rpc.rs`; the
+`file=run_cmd.rs` dispatch (run 41290111656, under `file-run_cmd/`, #1029)
+finished the 33, and the 7 of them that are missed are this shard's
+(`file-run_cmd/README.md`'s `comm`), with the 10 missed and 11 timed-out
+lines of its own files: 28 lines in all. The 12 `rpc.rs`
+mutants have no outcome in any run (#248, 2026-11-01). This first batch
+(#1031) dispositions the 7 `file-run_cmd/` lines, each kill shown by hand
+on base `bd269fcc`: the mutant applied, the named test run with `cargo test
+-p trellis-cli --test prompt_tokens` and seen to fail, the source restored.
+`Driver::tokens` and `Driver::prompt_tokens` are `run_cmd.rs:244` and `253`
+at 6b804cb and `driver.rs:137` and `151` at HEAD (#929 moved `Driver` out
+of `run_cmd.rs`); `prompt_tokens` reads the same text, and `tokens` differs
+in its `Runtime` arm, `Some(tokens_used(m))` having become `tokens_used(m)`
+when #799 made `tokens_used` return `Option<u64>`; `Human::terminal` is
+`run_cmd.rs:355` there and `approval.rs:31` here. Why the six survived at
+6b804cb: `run_body` there repeated each match inline (`run_cmd.rs:1534` and
+`1545`) and read `Driver::tokens` and `Driver::prompt_tokens` only in the
+partitioned run (`2483`–`2484`), whose tests assert neither trail field;
+`34264ecc` (#799, 2026-10-26) replaced the inline matches with the two
+calls, so at HEAD (`run_cmd.rs:617` and `620`) the single-run trail tests
+reach them. None of the seven has a 989b2a2 line that said "killed"
+(989b2a2's `Human::terminal` line was unexercisable), so no kill is
+refuted. The 21 lines of `shard-5-of-10/` itself (3 missed and 11 timed
+out in `rpc.rs`, 7 missed in `process_agent.rs`) are the second batch: the
+7 `process_agent.rs` lines (715–759) are the `#[cfg(windows)]` `impl
+Running`, which the Linux run does not compile, and §4's
+`file=crates/trellis-cli/src/process_agent.rs os=windows` dispatch at this
+branch, run 41521832453 at `bd269fcc`, gave no verdict: its unmutated
+baseline ran past cargo-mutants' 300 s test limit on the hosted Windows
+runner (`TIMEOUT Unmutated baseline in 103s build + 300s test`), as the
+services.rs `os=windows` run did, so those seven lines will stand on their
+reasons alone.
+
 ```
 unexercisable (#248): needs exactly one of stdin and stdout to be a terminal; every test here runs both as pipes, where `&&` and `||` agree, and a terminal needs a pty (the shape of main.rs:527:43 at 989b2a2) | crates/trellis-cli/src/main.rs:1055:44: replace || with && in terminal_ui
 unexercisable (#248): needs stdout to be a terminal: every test here runs it as a pipe, where `!stdout` is true and the two agree, and a terminal needs a pty | crates/trellis-cli/src/main.rs:1055:12: delete ! in terminal_ui
@@ -1696,7 +1732,7 @@ killed (#248) by partitions::agents_above_one_with_trusted_repository_code_is_re
 killed (#248) by modes::rpc_get_state_tier_after_a_probed_runtime_run_is_the_probe_s_tier: in crates/trellis-cli/tests/modes.rs; an rpc `prompt` against a loopback llama.cpp stub that answers the schema probe with the key the schema asks for, so the probe records tier `2`; with the guard always true the flag's arm then overwrote it, and `get_state` answered `4, no schema` for a runtime that honoured the schema | crates/trellis-cli/src/run_cmd.rs:1027:31: replace match guard unconstrained with true in run_body
 killed (#248) by modes::rpc_get_state_tier_after_an_unconstrained_runtime_run_is_tier_4_by_the_config: in crates/trellis-cli/tests/modes.rs; the same stub under a repository whose `.trellis/config.toml` sets `[model] unconstrained = true`, which skips the probe, so the flag's arm is the only place the tier is recorded; with the guard always false nothing recorded it, and `get_state` answered `null` after a run that had decided tier 4 | crates/trellis-cli/src/run_cmd.rs:1027:31: replace match guard unconstrained with false in run_body
 killed (#248) by interrupt::hooks_without_after_run_are_not_announced_as_running_on_an_interrupt: in crates/trellis-cli/tests/interrupt.rs; with the guard always true a Ctrl-C under a repository with only a `pre_tool` hook printed `hook:     after_run (reason: interrupted); Ctrl-C again stops it`. The test is `cfg(unix)` (the interrupt is `kill -INT`), so the kill was shown by hand on Linux, the OS the 6b804cb run is on; the 989b2a2 line called this unexercisable for want of a Windows signal | crates/trellis-cli/src/run_cmd.rs:1414:32: replace match guard h.config().after_run.is_some() with true in run_body
-unexercisable (#248): the arm is reached only when the two fingerprints (tree ids) differ, and two tree ids differ only when some entry differs, which `git diff-tree -r --name-only` names; so `tree_diff` of two differing trees is never empty with the real git, which every run test here uses, and a stand-in git would be a Linux-only script on PATH whose kill §4 shows only by a `file=crates/trellis-cli/src/run_cmd.rs` dispatch (hundreds of mutants, past one job), not taken for this line. The 989b2a2 line called it equivalent on the same ground | crates/trellis-cli/src/run_cmd.rs:1501:38: replace match guard !paths.is_empty() with true in run_body
+unexercisable (#248): the arm is reached only when the two fingerprints (tree ids) differ, and two tree ids differ only when some entry differs, which `git diff-tree -r --name-only` names; so `tree_diff` of two differing trees is never empty with the real git, which every run test here uses, and a stand-in git would be a Linux-only script on PATH whose kill §4 shows only by a `file=crates/trellis-cli/src/run_cmd.rs` dispatch, which run 41290111656 later made (235 `run_cmd.rs` mutants in one 3h52m job, under `file-run_cmd/`) with no such script on PATH, so it does not reach this arm either. The 989b2a2 line called it equivalent on the same ground | crates/trellis-cli/src/run_cmd.rs:1501:38: replace match guard !paths.is_empty() with true in run_body
 unexercisable (#248): needs a run that asked a person and whose rollback then left a difference: the suite's writers each have their ignored-file and clone writes undone by the rollback (`tooling::run_tests`), and a `reset --hard` or `clean` that fails after the snapshot was found has no deterministic trigger; the 989b2a2 line said the same, and `run_cmd::approval_tests::a_queued_run_that_asks_ends_as_asked_with_the_question` holds the `false` side | crates/trellis-cli/src/run_cmd.rs:1835:81: replace match guard restored with true in run_body
 killed (#248) by run_reporting::a_run_with_only_valid_skills_says_how_many_were_listed: in crates/trellis-cli/tests/cli; `&&` binds tighter than the `||` chain, so a repository whose skills are all valid printed no `repo:` line, and the test asks for `skills: 1 listed`; 989b2a2's `||` kills were in `run_body`, before this block moved to `repo_context` | crates/trellis-cli/src/run_cmd.rs:1905:9: replace || with && in repo_context
 killed (#248) by run_partitioned::tests::is_restored_to_needs_head_at_the_base_and_nothing_pending: a root with an uncommitted change, one whose HEAD moved, and a path that is no repository were each reported restored | crates/trellis-cli/src/run_cmd.rs:2251:5: replace is_restored_to -> bool with true
@@ -1711,6 +1747,13 @@ killed (#248) by run_cmd::interrupt_tests::a_written_file_the_reset_left_behind_
 killed (#248) by run_cmd::interrupt_tests::context_fill_is_recorded_only_from_turns_that_measured_a_prompt: without the `!` a transcript with no measured prompt indexed an empty list and panicked, and the test fails in 0.3 s; what ran past the runner's 300 s is not in its log | crates/trellis-cli/src/run_cmd.rs:3666:20: delete ! in record_trail
 killed (#248) by run_cmd::interrupt_tests::a_plan_action_sits_before_its_turn_and_one_past_the_last_turn_goes_last_once: with `==` the partition that ran no turn, after the last, was dropped from the trail; 989b2a2's kill on this mutation was the compaction filter, `3750:41` here, in `caught.txt` | crates/trellis-cli/src/run_cmd.rs:3763:41: replace > with == in record_trail
 killed (#248) by run_cmd::interrupt_tests::a_plan_action_sits_before_its_turn_and_one_past_the_last_turn_goes_last_once: with `>=` the last turn's partition opening was written twice, before its turn and again at the end | crates/trellis-cli/src/run_cmd.rs:3763:41: replace > with >= in record_trail
+killed (#248) by prompt_tokens::openai_prompt_tokens_are_summed_into_the_trail: in crates/trellis-cli/tests; with `None` the trail of a hosted run whose stub reported 6 completion tokens had no `tokens` field, where the test asks for 6 | crates/trellis-cli/src/run_cmd.rs:244:9: replace Driver::tokens -> Option<u64> with None
+killed (#248) by prompt_tokens::openai_prompt_tokens_are_summed_into_the_trail: `tokens` read 0 for the 6 the stub reported | crates/trellis-cli/src/run_cmd.rs:244:9: replace Driver::tokens -> Option<u64> with Some(0)
+killed (#248) by prompt_tokens::openai_prompt_tokens_are_summed_into_the_trail: `tokens` read 1 for the 6 the stub reported | crates/trellis-cli/src/run_cmd.rs:244:9: replace Driver::tokens -> Option<u64> with Some(1)
+killed (#248) by prompt_tokens::openai_prompt_tokens_are_summed_into_the_trail: in crates/trellis-cli/tests; with `None` the trail had no `prompt_tokens` field, where the test asks for the 250 the stub's two replies summed to | crates/trellis-cli/src/run_cmd.rs:253:9: replace Driver::prompt_tokens -> Option<u64> with None
+killed (#248) by prompt_tokens::openai_prompt_tokens_are_summed_into_the_trail: `prompt_tokens` read 0 for 250 | crates/trellis-cli/src/run_cmd.rs:253:9: replace Driver::prompt_tokens -> Option<u64> with Some(0)
+killed (#248) by prompt_tokens::openai_prompt_tokens_are_summed_into_the_trail: `prompt_tokens` read 1 for 250 | crates/trellis-cli/src/run_cmd.rs:253:9: replace Driver::prompt_tokens -> Option<u64> with Some(1)
+unexercisable (#248): needs exactly one of stdin and stdout to be a terminal; every test here runs both as pipes, and the pty tests under util-linux `script` (shard 0's batch) run both as the one pty, so `&&` and `||` agree in each; the shape of main.rs:1407:43 at 989b2a2, unexercisable there on the same ground, so no kill is refuted | crates/trellis-cli/src/run_cmd.rs:355:43: replace && with || in Human::terminal
 ```
 
 </details>
