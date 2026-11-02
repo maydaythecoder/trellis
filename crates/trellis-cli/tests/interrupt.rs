@@ -284,6 +284,29 @@ fn after_run_interrupted_by_sigint_runs_before_the_rollback_with_reason_interrup
 }
 
 #[test]
+fn hooks_without_after_run_are_not_announced_as_running_on_an_interrupt() {
+    // #248. The risk: the interrupt path reading "hooks are configured" as
+    // "after_run is configured", so a repository with only a pre_tool hook
+    // is told `after_run` is running and that Ctrl-C again stops it, when
+    // there is nothing to run or to stop.
+    let root = scratch("sigint-no-after-run");
+    let hooks = "[hooks]\npre_tool = ['sh', '-c', 'exit 0']\n";
+    let (base, held) = provider_stub();
+    let f = fixture(root, hooks, &base);
+    let child = start_run(&f, &held);
+
+    sigint(&child);
+    let o = wait(child, Duration::from_secs(60));
+    let said = combined(&o);
+    assert_eq!(o.status.code(), Some(130), "{said}");
+    assert!(said.contains("INTERRUPTED"), "{said}");
+    assert!(
+        !said.contains("after_run (reason: interrupted)"),
+        "no after_run is configured, so none is announced:\n{said}"
+    );
+}
+
+#[test]
 fn after_run_interrupted_a_second_sigint_stops_the_hook_and_the_rollback_proceeds() {
     // The risk: a hook that hangs holds the person's Ctrl-C hostage for its
     // whole timeout. A second Ctrl-C stops it, and the rollback still runs.
