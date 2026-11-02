@@ -786,11 +786,50 @@ fn agents_above_one_in_approve_mode_is_refused_before_the_snapshot() {
 }
 
 #[test]
+fn one_agent_at_a_time_in_approve_mode_is_not_refused_for_the_width() {
+    // #248. The risk: the width check reading `>= 1` rather than `> 1`, so
+    // a scripted model with targets, which runs its partitions one at a
+    // time (the comment above), is refused as if its agents asked at once.
+    let f = fixture_with(
+        "approve-one",
+        Some(CHECKS_PASS),
+        r#"{"steps":[{"tool":"done","summary":"x"}]}"#,
+    );
+    let o = run(
+        &f,
+        &[
+            "run",
+            "change fa and fb",
+            "--model",
+            &f.spec,
+            "--agents",
+            "2",
+            "--target",
+            "fa",
+            "--target",
+            "fb",
+            "--approve",
+        ],
+    );
+    let err = said(&o);
+    assert!(
+        !err.contains("agents asking at once"),
+        "refused for a width of one:\n{err}"
+    );
+}
+
+#[test]
 fn agents_above_one_with_trusted_repository_code_is_refused_before_the_snapshot() {
     // The trust guard and the writer guards watch the repository root
     // (tooling.rs), not a partition's worktree, so trusted code running in
     // one would go unwatched. Refused rather than run unguarded (#466).
-    let config = format!("{CHECKS_PASS}\n[tools]\nbash = true\nbash_unattended = true\n");
+    // A custom tool beside bash, so the refusal has to name both kinds of
+    // trusted code it found, not only the first (#248).
+    let config = format!(
+        "{CHECKS_PASS}\n[tools]\nbash = true\nbash_unattended = true\n\n\
+         [[tools.custom]]\nname = \"lister\"\ndescription = \"Lists.\"\n\
+         command = ['ls']\nschema = {{ type = \"object\", properties = {{}} }}\n"
+    );
     let f = fixture_with(
         "trusted",
         Some(&config),
@@ -825,6 +864,10 @@ fn agents_above_one_with_trusted_repository_code_is_refused_before_the_snapshot(
     assert_refused_before_snapshot(&f, &o);
     let err = said(&o);
     assert!(err.contains("bash") && err.contains("--agents 1"), "{err}");
+    assert!(
+        err.contains("custom tools (lister)"),
+        "the custom tool the trust covers is not named:\n{err}"
+    );
 }
 
 #[test]
