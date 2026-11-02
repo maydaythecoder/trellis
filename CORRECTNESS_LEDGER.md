@@ -1622,11 +1622,12 @@ refuted. Of the 21 lines of `shard-5-of-10/` itself, the second batch
 (#1031) dispositions the 7 `process_agent.rs` lines (715–759): they are the
 `#[cfg(windows)]` `impl Running`, which the Linux run does not compile and
 which reads the same text at HEAD, so each is missed on Linux by
-construction and takes `windows-only`. §4's `file=crates/trellis-cli/src/process_agent.rs
-os=windows` dispatch, run 41521832453 at `bd269fcc`, gave no verdict: its
-unmutated baseline ran past cargo-mutants' 300 s test limit on the hosted
-Windows runner (`TIMEOUT Unmutated baseline in 103s build + 300s test`), as
-the services.rs `os=windows` run did, so the seven stand on their reasons
+construction and takes `windows-only`. §4's
+`file=crates/trellis-cli/src/process_agent.rs os=windows` dispatch, run
+41521832453 at `bd269fcc`, gave no verdict: its unmutated baseline ran past
+cargo-mutants' 300 s test limit on the hosted Windows runner (`TIMEOUT
+Unmutated baseline in 103s build + 300s test`), as the services.rs
+`os=windows` run did, so the seven stand on their reasons
 and on 989b2a2's Windows host, where the self-test run recorded `try_wait
 -> Ok(None)` as a timeout (the list under "Tiers 5 and 6", above) and the
 pass that followed killed `take_stdin -> None` and `finish -> ()` by hand;
