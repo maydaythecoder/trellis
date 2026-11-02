@@ -861,6 +861,19 @@ fn add_id(d: &Path, args: &[&str]) -> String {
     new.remove(0)
 }
 
+#[test]
+fn queue_cancel_of_a_task_that_does_not_exist_is_refused_and_logs_nothing() {
+    // #248. The risk: the quiet path for a child that left pending/ while
+    // `--children` ran widened to every edit error, so cancelling an id
+    // that is not in the queue at all exited 0 and said nothing.
+    let d = fixture("cancel-unknown");
+    add_id(&d, &["one"]);
+    let o = trellis(&d, &["queue", "cancel", "no-such-task"]);
+    assert!(!o.status.success(), "{}", combined(&o));
+    assert!(cancel_events(&d).is_empty());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 fn cancel_events(d: &Path) -> Vec<serde_json::Value> {
     activity(d)
         .into_iter()
