@@ -437,6 +437,15 @@ fn three_partition_run_converges_with_every_partitions_edit() {
         out.contains("CONVERGED") && !out.contains("NOT CONVERGED"),
         "{out}"
     );
+    // Each partition's own outcome is reported, not the "did not finish"
+    // a partition with no report gets (#248).
+    for id in 0..3 {
+        assert!(
+            out.contains(&format!("partition {id}: converged in its worktree")),
+            "{out}"
+        );
+    }
+    assert!(!out.contains("did not finish"), "{out}");
     // At width 3, measured, not degraded to one at a time.
     assert!(
         out.contains("up to 3 at once (--agents is 3; the runtime reports 3 slots)"),
