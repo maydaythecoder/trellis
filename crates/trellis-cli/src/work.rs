@@ -2652,6 +2652,7 @@ mod runner_tests {
 mod task_worktree_tests {
     use super::*;
     use crate::testutil::{git_commit_all, git_init, git_stdout, scratch};
+    use trellis_queue::routine::Repo as _;
     use trellis_queue::{Left, NewTask, RunEnd, Runner, State, Stop, WorkOptions};
 
     /// `CliRunner`'s own worktree handling with the run faked: each run
@@ -2895,6 +2896,51 @@ mod task_worktree_tests {
             "{stop:?}"
         );
         assert_eq!(r.heads.len(), 1, "the second claim never ran");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn last_run_asked_is_a_model_note_at_or_after_notes_seen_and_nothing_else() {
+        // The risk (#248): the actor test inverted, so a task whose last
+        // run left only a person's or the queue's notes read as asked and
+        // its branch was reused, while one whose run asked did not.
+        let mut t = trellis_queue::Task::default();
+        assert!(!last_run_asked(&t), "no notes");
+        t.note(Actor::Human, "do it");
+        t.notes_seen = Some(1);
+        t.note(Actor::Human, "a note after the claim, from a person");
+        assert!(!last_run_asked(&t), "a person's note is not a question");
+        t.note(Actor::Model, "which one?");
+        assert!(last_run_asked(&t), "the model's note is");
+        t.notes_seen = Some(2);
+        assert!(
+            last_run_asked(&t),
+            "the question is the only note after the marker"
+        );
+        t.notes_seen = Some(3);
+        assert!(
+            !last_run_asked(&t),
+            "a question before the marker was an earlier run's"
+        );
+    }
+
+    #[test]
+    fn routine_repo_changed_lists_the_paths_between_two_commits() {
+        // The risk (#248): `changed` answering None, nothing, or a made-up
+        // path whatever git says, so a routine on `changed` fired for every
+        // commit, for none, or on a path no commit touched.
+        let (root, _q) = repo("routine-repo-changed");
+        let first = git_stdout(&root, &["rev-parse", "HEAD"]);
+        std::fs::write(root.join("b.py"), "y = 2\n").unwrap();
+        git_commit_all(&root, "add b");
+        let second = git_stdout(&root, &["rev-parse", "HEAD"]);
+        let repo = RoutineRepo(&root);
+        assert_eq!(repo.head().as_deref(), Some(second.trim()));
+        assert_eq!(
+            repo.changed(first.trim(), second.trim()),
+            Some(vec!["b.py".to_string()])
+        );
+        assert_eq!(repo.changed(first.trim(), first.trim()), Some(Vec::new()));
         let _ = std::fs::remove_dir_all(&root);
     }
 
