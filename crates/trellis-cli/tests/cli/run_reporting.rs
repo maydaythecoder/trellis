@@ -32,6 +32,31 @@ fn a_run_with_only_skipped_skills_still_says_so() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+#[test]
+fn a_run_with_only_valid_skills_says_how_many_were_listed() {
+    // #248. The risk: the `repo:` line printed for valid skills only when
+    // an invalid one was found beside them (`&&` where the conditions are
+    // joined by `||`), so a repository whose skills are all well-formed
+    // never hears that the model was shown them.
+    let d = repo("skills-only-valid");
+    add_skill(&d, "lint", "lint", "Runs the linter.");
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "skills"]);
+    let scripts = scratch("skills-only-valid-script");
+    let out = run(&d, &["run", "--model", &script_that_stops(&scripts), "t"]);
+    let said = stdout(&out);
+    let repo_line = said
+        .lines()
+        .find(|l| l.starts_with("repo:"))
+        .unwrap_or_else(|| panic!("no repo: line\n{}", combined(&out)));
+    assert!(
+        repo_line.contains("skills: 1 listed, 0 omitted (cap)"),
+        "{repo_line}"
+    );
+    assert!(!repo_line.contains("invalid"), "{repo_line}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// What `trellis run` printed for a run whose typecheck prints `n` lines
 /// and fails.
 fn check_failure_said(name: &str, n: usize) -> String {
