@@ -1618,16 +1618,21 @@ partitioned run (`2483`–`2484`), whose tests assert neither trail field;
 calls, so at HEAD (`run_cmd.rs:617` and `620`) the single-run trail tests
 reach them. None of the seven has a 989b2a2 line that said "killed"
 (989b2a2's `Human::terminal` line was unexercisable), so no kill is
-refuted. The 21 lines of `shard-5-of-10/` itself (3 missed and 11 timed
-out in `rpc.rs`, 7 missed in `process_agent.rs`) are the second batch: the
-7 `process_agent.rs` lines (715–759) are the `#[cfg(windows)]` `impl
-Running`, which the Linux run does not compile, and §4's
-`file=crates/trellis-cli/src/process_agent.rs os=windows` dispatch at this
-branch, run 41521832453 at `bd269fcc`, gave no verdict: its unmutated
-baseline ran past cargo-mutants' 300 s test limit on the hosted Windows
-runner (`TIMEOUT Unmutated baseline in 103s build + 300s test`), as the
-services.rs `os=windows` run did, so those seven lines will stand on their
-reasons alone.
+refuted. Of the 21 lines of `shard-5-of-10/` itself, the second batch
+(#1031) dispositions the 7 `process_agent.rs` lines (715–759): they are the
+`#[cfg(windows)]` `impl Running`, which the Linux run does not compile and
+which reads the same text at HEAD, so each is missed on Linux by
+construction and takes `windows-only`. §4's
+`file=crates/trellis-cli/src/process_agent.rs os=windows` dispatch, run
+41521832453 at `bd269fcc`, gave no verdict: its unmutated baseline ran past
+cargo-mutants' 300 s test limit on the hosted Windows runner (`TIMEOUT
+Unmutated baseline in 103s build + 300s test`), as the services.rs
+`os=windows` run did, so the seven stand on their reasons
+and on 989b2a2's Windows host, where the self-test run recorded `try_wait
+-> Ok(None)` as a timeout (the list under "Tiers 5 and 6", above) and the
+pass that followed killed `take_stdin -> None` and `finish -> ()` by hand;
+no 989b2a2 kill is refuted. The 14 `rpc.rs` lines (3 missed, 11 timed out)
+are the third batch.
 
 ```
 unexercisable (#248): needs exactly one of stdin and stdout to be a terminal; every test here runs both as pipes, where `&&` and `||` agree, and a terminal needs a pty (the shape of main.rs:527:43 at 989b2a2) | crates/trellis-cli/src/main.rs:1055:44: replace || with && in terminal_ui
@@ -1754,6 +1759,13 @@ killed (#248) by prompt_tokens::openai_prompt_tokens_are_summed_into_the_trail: 
 killed (#248) by prompt_tokens::openai_prompt_tokens_are_summed_into_the_trail: `prompt_tokens` read 0 for 250 | crates/trellis-cli/src/run_cmd.rs:253:9: replace Driver::prompt_tokens -> Option<u64> with Some(0)
 killed (#248) by prompt_tokens::openai_prompt_tokens_are_summed_into_the_trail: `prompt_tokens` read 1 for 250 | crates/trellis-cli/src/run_cmd.rs:253:9: replace Driver::prompt_tokens -> Option<u64> with Some(1)
 unexercisable (#248): needs exactly one of stdin and stdout to be a terminal; every test here runs both as pipes, and the pty tests under util-linux `script` (shard 0's batch) run both as the one pty, so `&&` and `||` agree in each; the shape of main.rs:1407:43 at 989b2a2, unexercisable there on the same ground, so no kill is refuted | crates/trellis-cli/src/run_cmd.rs:355:43: replace && with || in Human::terminal
+windows-only (#248): the whole `impl Running` is `#[cfg(windows)]`, which the Linux run does not compile; on Windows `Running` holds a `Box<dyn ChildWrapper>` and a `tokio::runtime::Runtime`, neither `Default`, so the replacement would not compile there either (unviable, as cargo-mutants would list it). The `file=crates/trellis-cli/src/process_agent.rs os=windows` dispatch at this branch (run 41521832453) gave no verdict: its unmutated baseline ran past the 300 s test limit | crates/trellis-cli/src/process_agent.rs:715:9: replace Running::spawn -> std::io::Result<Running> with Ok(Default::default())
+windows-only (#248): `#[cfg(windows)]`, not compiled by the Linux run. On Windows the task text is never written to the command, and `process_agent::tests::the_task_text_reaches_the_command_on_stdin` (its Windows arm is `cmd /C more > app\task.txt`) asks for it in the file the command copied it to; 989b2a2's line killed this mutant by that test on the Windows host by hand, and the `impl` reads the same text since. The `os=windows` dispatch (run 41521832453) gave no verdict, its baseline having run past the 300 s test limit | crates/trellis-cli/src/process_agent.rs:737:9: replace Running::take_stdin -> Option<std::fs::File> with None
+windows-only (#248): `#[cfg(windows)]`, not compiled by the Linux run; `std::fs::File` has no `Default`, so on Windows the replacement would not compile either (unviable). The `os=windows` dispatch (run 41521832453) gave no verdict, its baseline having run past the 300 s test limit | crates/trellis-cli/src/process_agent.rs:737:9: replace Running::take_stdin -> Option<std::fs::File> with Some(Default::default())
+windows-only (#248): `#[cfg(windows)]`, not compiled by the Linux run. On Windows the run loop (`try_wait` at `process_agent.rs:343`) never sees the command end, so every command runs to its `timeout_s` and the tests that ask for `Converged` (20 s profiles) would fail; the 989b2a2 self-test run on the Windows host recorded this mutant as a timeout (the list under "Tiers 5 and 6"), not a kill, and what ran past 300 s is not read from its log; the `impl` reads the same text since. The `os=windows` dispatch (run 41521832453) gave no verdict, its baseline having run past the 300 s test limit | crates/trellis-cli/src/process_agent.rs:743:9: replace Running::try_wait -> std::io::Result<Option<std::process::ExitStatus>> with Ok(None)
+windows-only (#248): `#[cfg(windows)]`, not compiled by the Linux run. On Windows `ExitStatus::default()` is success, so the loop would read every command as `exited 0` on its first poll, before it ran, and `process_agent::tests::a_timed_out_command_says_it_timed_out`, whose command sleeps past a 1 s timeout, asks for `timed out`; the Windows suite is expected to kill it, and the kill is not shown, because the `os=windows` dispatch (run 41521832453) gave no verdict, its baseline having run past the 300 s test limit, and it is to be read from the next Windows dispatch that completes | crates/trellis-cli/src/process_agent.rs:743:9: replace Running::try_wait -> std::io::Result<Option<std::process::ExitStatus>> with Ok(Some(Default::default()))
+windows-only (#248): `#[cfg(windows)]`, not compiled by the Linux run. On Windows `end` is `finish` and a 2 s bounded reap, and the loop calls `finish` again as soon as it breaks (`process_agent.rs:361`), so the job is ended either way and only the reap of an already-killed command is lost; 989b2a2's line called it equivalent on the same ground, so no kill is refuted. The `os=windows` dispatch (run 41521832453) gave no verdict, its baseline having run past the 300 s test limit | crates/trellis-cli/src/process_agent.rs:749:9: replace Running::end with ()
+windows-only (#248): `#[cfg(windows)]`, not compiled by the Linux run. On Windows nothing ends the command's job after the loop, so a command past its timeout keeps running while the run is judged, and `process_agent::tests::a_timed_out_command_is_ended_before_it_can_write_again` (its Windows arm is `cmd /C ping -n 3 … & echo late> <file>`) asks that its late write never lands; 989b2a2's line killed this mutant by that test on the Windows host by hand, and the `impl` reads the same text since. The `os=windows` dispatch (run 41521832453) gave no verdict, its baseline having run past the 300 s test limit | crates/trellis-cli/src/process_agent.rs:759:9: replace Running::finish with ()
 ```
 
 </details>
