@@ -1,0 +1,26 @@
+crates/trellis-cli/src/run_cmd.rs:244:9: replace Driver::tokens -> Option<u64> with None
+crates/trellis-cli/src/run_cmd.rs:244:9: replace Driver::tokens -> Option<u64> with Some(0)
+crates/trellis-cli/src/run_cmd.rs:244:9: replace Driver::tokens -> Option<u64> with Some(1)
+crates/trellis-cli/src/run_cmd.rs:253:9: replace Driver::prompt_tokens -> Option<u64> with None
+crates/trellis-cli/src/run_cmd.rs:253:9: replace Driver::prompt_tokens -> Option<u64> with Some(0)
+crates/trellis-cli/src/run_cmd.rs:253:9: replace Driver::prompt_tokens -> Option<u64> with Some(1)
+crates/trellis-cli/src/run_cmd.rs:355:43: replace && with || in Human::terminal
+crates/trellis-cli/src/run_cmd.rs:688:26: replace > with >= in run_body
+crates/trellis-cli/src/run_cmd.rs:763:12: delete ! in run_body
+crates/trellis-cli/src/run_cmd.rs:1027:31: replace match guard unconstrained with true in run_body
+crates/trellis-cli/src/run_cmd.rs:1027:31: replace match guard unconstrained with false in run_body
+crates/trellis-cli/src/run_cmd.rs:1414:32: replace match guard h.config().after_run.is_some() with true in run_body
+crates/trellis-cli/src/run_cmd.rs:1501:38: replace match guard !paths.is_empty() with true in run_body
+crates/trellis-cli/src/run_cmd.rs:1835:81: replace match guard restored with true in run_body
+crates/trellis-cli/src/run_cmd.rs:1905:9: replace || with && in repo_context
+crates/trellis-cli/src/run_cmd.rs:2251:5: replace is_restored_to -> bool with true
+crates/trellis-cli/src/run_cmd.rs:2251:44: replace && with || in is_restored_to
+crates/trellis-cli/src/run_cmd.rs:2537:9: delete match arm Some(Ok(i)) in run_partitioned
+crates/trellis-cli/src/run_cmd.rs:2685:12: delete ! in run_partitioned
+crates/trellis-cli/src/run_cmd.rs:2840:48: delete ! in PartitionedTrail::partition
+crates/trellis-cli/src/run_cmd.rs:2841:69: delete ! in PartitionedTrail::partition
+crates/trellis-cli/src/run_cmd.rs:2862:16: delete ! in PartitionedTrail::partition
+crates/trellis-cli/src/run_cmd.rs:3294:16: delete ! in rollback_and_report
+crates/trellis-cli/src/run_cmd.rs:3305:46: replace && with || in rollback_and_report
+crates/trellis-cli/src/run_cmd.rs:3763:41: replace > with == in record_trail
+crates/trellis-cli/src/run_cmd.rs:3763:41: replace > with >= in record_trail
