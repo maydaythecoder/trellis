@@ -1564,8 +1564,9 @@ the batch's test commits: the mutant applied, the named test run with
 second batch (#1005) dispositioned the two `unconstrained` match guards of
 `run_cmd.rs:1027:31` the same way on base `f53ffe1c`, with the rpc run
 against a loopback llama.cpp stub that the first batch lacked: `get_state`
-is the only reader of the tier a run records. `run_cmd.rs` was split since 6b804cb (#927): `2251`, `2537`,
-`2685`, `2840`, `2841` and `2862` are `run_partitioned.rs:264`, `555`,
+is the only reader of the tier a run records. `run_cmd.rs` was split
+since 6b804cb (#927): `2251`, `2537`, `2685`, `2840`, `2841` and `2862`
+are `run_partitioned.rs:264`, `555`,
 `692`, `841`, `842` and `863` at HEAD; `688`, `763`, `1027`, `1414`,
 `1501`, `1835`, `1905`, `3294`, `3305`, `3666` and `3763` are
 `run_cmd.rs:708`, `798`, `1116`, `1531`, `1618`, `1930`, `2000`, `2623`,
