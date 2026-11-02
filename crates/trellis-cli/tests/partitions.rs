@@ -713,6 +713,13 @@ fn induced_collision_fails_the_integrated_check_rolls_back_and_records_a_gap() {
     let out = said(&o);
     assert_eq!(o.status.code(), Some(1), "not converged, restored:\n{out}");
     assert!(out.contains("NOT CONVERGED"), "{out}");
+    // What the failed integrated check wrote is shown under it, indented;
+    // a passing check's output is not (#248).
+    assert!(
+        out.contains("integrated Typecheck: FAILED\n  a.py:1: error\n  b.py:1: error"),
+        "{out}"
+    );
+    assert!(!out.contains("\n  git version"), "{out}");
     // Every file as HEAD has it; the only new commit is the trail's.
     assert_eq!(git(&f.root, &["rev-parse", "HEAD~1"]), f.head, "{out}");
     assert_eq!(git(&f.root, &["status", "--porcelain"]), "", "{out}");
