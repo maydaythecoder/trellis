@@ -1533,8 +1533,14 @@ stale_claims = \"release\"
         for (before, after) in [
             (None, entry.to_string()),
             (Some(""), entry.to_string()),
-            (Some("[model]\nspec = \"m\""), format!("[model]\nspec = \"m\"\n{entry}")),
-            (Some("[model]\nspec = \"m\"\n"), format!("[model]\nspec = \"m\"\n{entry}")),
+            (
+                Some("[model]\nspec = \"m\""),
+                format!("[model]\nspec = \"m\"\n{entry}"),
+            ),
+            (
+                Some("[model]\nspec = \"m\"\n"),
+                format!("[model]\nspec = \"m\"\n{entry}"),
+            ),
         ] {
             let d = tempfile::tempdir().unwrap();
             let file = d.path().join("config.toml");
@@ -1554,10 +1560,15 @@ stale_claims = \"release\"
         // an edit changed nothing else held nothing.
         let kept: toml::Table = toml::from_str("x = 1\n").unwrap();
         assert_eq!(
-            all_but_providers("x = 1\n[[providers]]\nname = \"a\"\nprotocol = \"openai\"\nbase_url = \"u\"\n"),
+            all_but_providers(
+                "x = 1\n[[providers]]\nname = \"a\"\nprotocol = \"openai\"\nbase_url = \"u\"\n"
+            ),
             Some(kept.clone())
         );
-        assert_eq!(all_but_model_spec("x = 1\n[model]\nspec = \"m\"\n"), Some(kept));
+        assert_eq!(
+            all_but_model_spec("x = 1\n[model]\nspec = \"m\"\n"),
+            Some(kept)
+        );
         let model_rest: toml::Table = toml::from_str("[model]\ntimeout_s = 5\n").unwrap();
         assert_eq!(
             all_but_model_spec("[model]\nspec = \"m\"\ntimeout_s = 5\n"),

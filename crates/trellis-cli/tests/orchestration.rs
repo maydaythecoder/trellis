@@ -2309,7 +2309,10 @@ fn an_approve_mode_agent_is_not_held_back_when_work_has_a_terminal() {
             "model = \"scripted:{ROOT}/converge.json\"\n[control]\nmode = \"approve\"\n",
         )],
     );
-    ok(&d, &["queue", "add", "change the greeting", "--assignee", "rev"]);
+    ok(
+        &d,
+        &["queue", "add", "change the greeting", "--assignee", "rev"],
+    );
     let home = d.with_extension("home");
     let shown = home.join("terminal.txt");
     std::fs::create_dir_all(&home).unwrap();

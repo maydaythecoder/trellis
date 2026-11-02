@@ -166,7 +166,10 @@ fn vault_new_keeps_dates_json_in_step_when_it_exists() {
     let doc: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(d.join("notes/dates.json")).unwrap())
             .unwrap();
-    assert_eq!(doc["notes"]["third.md"]["created"]["estimated"], false, "{doc}");
+    assert_eq!(
+        doc["notes"]["third.md"]["created"]["estimated"], false,
+        "{doc}"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }
 

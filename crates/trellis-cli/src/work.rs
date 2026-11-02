@@ -2913,7 +2913,10 @@ mod task_worktree_tests {
         t.note(Actor::Model, "which one?");
         assert!(last_run_asked(&t), "the model's note is");
         t.notes_seen = Some(3);
-        assert!(!last_run_asked(&t), "a question before the marker was an earlier run's");
+        assert!(
+            !last_run_asked(&t),
+            "a question before the marker was an earlier run's"
+        );
     }
 
     #[test]
