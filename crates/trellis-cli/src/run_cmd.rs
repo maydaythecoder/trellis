@@ -3586,6 +3586,34 @@ mod interrupt_tests {
         let said = String::from_utf8_lossy(&out);
         assert!(said.contains("Worktree restored: true"), "{said}");
         assert!(!said.contains("WARNING"), "{said}");
+        // Nothing differs, so the list of what still differs is not
+        // printed, empty (#248).
+        assert!(!said.contains("still differs"), "{said}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_written_file_the_reset_left_behind_is_named_and_the_worktree_is_not_restored() {
+        // #248. The risk: `restored` read as "the written files match OR
+        // git sees a clean tree". An ignored file the run wrote is both
+        // invisible to `git status` and left in place by `clean -fd`, so
+        // the tree reads clean while the file the model wrote is still
+        // there: that is not a restoration, and the file is named.
+        let dir = temp_repo("recovery-ignored-write");
+        std::fs::write(dir.join(".gitignore"), "scratch.txt\n").unwrap();
+        crate::testutil::git_commit_all(&dir, "ignore scratch");
+        let snap = trellis_vcs::snapshot(&dir).unwrap();
+        std::fs::write(dir.join("scratch.txt"), "written by the run\n").unwrap();
+
+        let mut out = Vec::new();
+        let restored = rollback_and_report(&snap, &["scratch.txt".to_string()], &mut out);
+        let said = String::from_utf8_lossy(&out);
+        assert!(!restored, "{said}");
+        assert!(
+            said.contains("still differs from the snapshot after the reset: scratch.txt"),
+            "{said}"
+        );
+        assert!(said.contains("Worktree restored: false"), "{said}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
