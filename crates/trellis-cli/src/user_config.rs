@@ -1496,4 +1496,74 @@ stale_claims = \"release\"
             ]
         );
     }
+
+    #[test]
+    fn set_colibri_provider_treats_only_a_missing_file_as_empty() {
+        // The risk (#248): the NotFound arm widened to every read error, so
+        // a file that exists and cannot be read (here a directory) was
+        // taken for an absent one and a `.toml.tmp` was written beside it;
+        // or narrowed to none, so the first write on a fresh machine, where
+        // there is no config.toml yet, was refused as unreadable.
+        let d = tempfile::tempdir().unwrap();
+        let missing = d.path().join("fresh").join("config.toml");
+        assert!(set_colibri_provider(&missing, "http://127.0.0.1:8080/v1").unwrap());
+        let written = std::fs::read_to_string(&missing).unwrap();
+        assert!(written.contains("name = \"colibri\""), "{written}");
+
+        let dir_not_file = d.path().join("config.toml");
+        std::fs::create_dir(&dir_not_file).unwrap();
+        let e = set_colibri_provider(&dir_not_file, "http://127.0.0.1:8080/v1").unwrap_err();
+        let said = format!("{e:#}");
+        assert!(said.starts_with("reading "), "{said}");
+        assert!(
+            !d.path().join("config.toml.tmp").exists(),
+            "nothing is written beside a file that could not be read"
+        );
+    }
+
+    #[test]
+    fn set_colibri_provider_separates_the_entry_from_the_text_before_it_by_one_blank_line() {
+        // The risk (#248): the newline guard inverted on either side, so an
+        // empty file gained a leading blank line, or a file whose last line
+        // has no newline had `[[providers]]` run on from it with none, or
+        // one that ends in a newline gained two. All three parse; what is
+        // asserted is the text a person then reads.
+        let entry = "\n[[providers]]\nname = \"colibri\"\nprotocol = \"openai\"\n\
+                     base_url = \"http://127.0.0.1:8080/v1\"\nkey_env = \"COLI_API_KEY\"\n";
+        for (before, after) in [
+            (None, entry.to_string()),
+            (Some(""), entry.to_string()),
+            (Some("[model]\nspec = \"m\""), format!("[model]\nspec = \"m\"\n{entry}")),
+            (Some("[model]\nspec = \"m\"\n"), format!("[model]\nspec = \"m\"\n{entry}")),
+        ] {
+            let d = tempfile::tempdir().unwrap();
+            let file = d.path().join("config.toml");
+            if let Some(text) = before {
+                std::fs::write(&file, text).unwrap();
+            }
+            assert!(set_colibri_provider(&file, "http://127.0.0.1:8080/v1").unwrap());
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), after, "{before:?}");
+        }
+    }
+
+    #[test]
+    fn all_but_helpers_drop_only_the_table_the_edit_may_change() {
+        // The risk (#248): either helper answering None or an empty table
+        // for every text, where `all_but(old) != all_but(out)` is false
+        // whatever the edit did to the rest of the file, so the check that
+        // an edit changed nothing else held nothing.
+        let kept: toml::Table = toml::from_str("x = 1\n").unwrap();
+        assert_eq!(
+            all_but_providers("x = 1\n[[providers]]\nname = \"a\"\nprotocol = \"openai\"\nbase_url = \"u\"\n"),
+            Some(kept.clone())
+        );
+        assert_eq!(all_but_model_spec("x = 1\n[model]\nspec = \"m\"\n"), Some(kept));
+        let model_rest: toml::Table = toml::from_str("[model]\ntimeout_s = 5\n").unwrap();
+        assert_eq!(
+            all_but_model_spec("[model]\nspec = \"m\"\ntimeout_s = 5\n"),
+            Some(model_rest)
+        );
+        assert_eq!(all_but_providers("x = \n"), None);
+        assert_eq!(all_but_model_spec("x = \n"), None);
+    }
 }

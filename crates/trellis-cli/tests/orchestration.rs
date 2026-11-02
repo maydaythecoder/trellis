@@ -2271,6 +2271,88 @@ fn export_says_how_many_claimed_tasks_it_left_out_and_nothing_when_none() {
 }
 
 #[test]
+fn export_names_this_checkout_s_runtime_state_only_when_there_is_some() {
+    // #248. The risk: a "0 activity log line(s) not exported" line on
+    // every export of a checkout with no runtime state, or no line at all
+    // for the state an export really left behind.
+    let d = fixture("export-runtime", &[]);
+    let out = scratch("export-runtime-out");
+    let s = ok(&d, &["queue", "export", out.join("a").to_str().unwrap()]);
+    assert!(!s.contains("runtime state of this checkout"), "{s}");
+    // The first queue write is the first activity log line.
+    ok(&d, &["queue", "add", "held"]);
+    let s = ok(&d, &["queue", "export", out.join("b").to_str().unwrap()]);
+    assert!(
+        s.contains("1 activity log line(s) not exported: runtime state of this checkout"),
+        "{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_approve_mode_agent_is_not_held_back_when_work_has_a_terminal() {
+    // #248, the other side of the test below: the terminal check answering
+    // "none" whatever stdin and stdout are, so an approve-mode agent was
+    // never run even by a person at a terminal. `work --once` runs under
+    // util-linux `script`, which gives it a pty for both; the claim then
+    // reaches the scripted run, whose first edit asks a person the pty's
+    // closed input cannot answer, and however that run ends the task has
+    // left pending/ and the "no terminal" line was never printed.
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let d = fixture(
+        "approve-tty",
+        &[(
+            ".trellis/agents/rev.toml",
+            "model = \"scripted:{ROOT}/converge.json\"\n[control]\nmode = \"approve\"\n",
+        )],
+    );
+    ok(&d, &["queue", "add", "change the greeting", "--assignee", "rev"]);
+    let home = d.with_extension("home");
+    let shown = home.join("terminal.txt");
+    std::fs::create_dir_all(&home).unwrap();
+    let cmd = format!("'{}' work --once", env!("CARGO_BIN_EXE_trellis"));
+    let mut child = Command::new("script")
+        .args(["-qfec", &cmd, "/dev/null"])
+        .current_dir(&d)
+        .env_remove("TRELLIS_RUN_ID")
+        .env_remove("TRELLIS_TASK_ID")
+        .env("TRELLIS_CONFIG_DIR", home.join("trellis"))
+        .env("APPDATA", &home)
+        .env("XDG_CONFIG_HOME", &home)
+        .env("NO_COLOR", "1")
+        .env("TERM", "dumb")
+        .env("SHELL", "/bin/sh")
+        .env_remove("RUST_LOG")
+        .stdin(Stdio::piped())
+        .stdout(std::fs::File::create(&shown).unwrap())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("util-linux `script` must be on PATH for the pty tests");
+    // Nothing to say: every question the run asks is answered by end of input.
+    child.stdin.take().unwrap().write_all(b"").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "`{cmd}` did not exit within 60 s: {}",
+                std::fs::read_to_string(&shown).unwrap_or_default()
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let s = std::fs::read_to_string(&shown).unwrap();
+    assert!(!s.contains("has no terminal to ask on"), "{s}");
+    assert!(s.contains("? [y/N]"), "the run asked at the terminal: {s}");
+    assert!(ids(&d, "pending").is_empty(), "the task was claimed: {s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn an_approve_mode_agent_waits_when_work_has_no_terminal_to_ask_on() {
     // #248, ADR 0020 §5. The risk: a profile in approve mode run by a
     // heartbeat nobody is watching, where every approval it asks for goes

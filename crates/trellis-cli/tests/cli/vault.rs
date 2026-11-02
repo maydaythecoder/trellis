@@ -155,6 +155,22 @@ fn vault_new_says_what_it_created() {
 }
 
 #[test]
+fn vault_new_keeps_dates_json_in_step_when_it_exists() {
+    // #248. The risk: an edit landing with dates.json left as it was, so
+    // a created note had no entry until the next `dates --seed`, and the
+    // edit said nothing about it.
+    let (d, _) = repo_with_vault("vault-new-dates", "vault = \"notes\"\n");
+    stdout(&run(&d, &["vault", "dates", "--seed"]));
+    let s = stdout(&run(&d, &["vault", "new", "Third", "--parent", "root"]));
+    assert!(s.contains("dates.json updated"), "{s}");
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(d.join("notes/dates.json")).unwrap())
+            .unwrap();
+    assert_eq!(doc["notes"]["third.md"]["created"]["estimated"], false, "{doc}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn vault_dates_says_there_is_no_file_and_seed_makes_one_dated_from_the_files() {
     // #248. The risk: `dates` silent about a missing dates.json, `--seed`
     // refusing to create one, or the seeded entries carrying no day where
