@@ -270,7 +270,7 @@ const NO_HOOKS: &str = "core.hooksPath=NUL";
 const NO_HOOKS: &str = "core.hooksPath=/dev/null";
 
 /// Environment every `git` trellis runs is given beside [`OVERRIDES`], for
-/// what no `-c` turns off (security finding F1, AUDIT-2026-10-11):
+/// what no `-c` turns off (security finding F1, AUDIT-2026-10-11 at 5f6de094):
 /// - `GIT_NO_LAZY_FETCH=1`: in a partial clone, git fetches an object it
 ///   is asked to read and lacks (`cat-file` for the Atlas, `diff HEAD`,
 ///   the rollback's `reset --hard`), and the fetch runs the transport the
@@ -1848,7 +1848,7 @@ mod tests {
     /// Makes `dir` a partial clone whose promisor remote writes `marker`
     /// and then fails, as a remote holding nothing would: what an
     /// attacker-supplied `.git/` (an archive, a shared folder) can carry
-    /// (security finding F1, AUDIT-2026-10-11). The transport's
+    /// (security finding F1, AUDIT-2026-10-11 at 5f6de094). The transport's
     /// `protocol.<name>.allow=always` is planted too, since that beats a
     /// `-c protocol.allow=never` on the command line. Shell builtins only,
     /// so Git for Windows' `sh` runs it as well.
@@ -1971,7 +1971,7 @@ mod tests {
 
     #[test]
     fn a_planted_partial_clone_remote_never_runs_from_a_read() {
-        // The risk (security finding F1, AUDIT-2026-10-11): in a partial
+        // The risk (security finding F1, AUDIT-2026-10-11 at 5f6de094): in a partial
         // clone, git fetches an object it is asked to read and lacks, and
         // the fetch runs the transport `.git/config` names. The Atlas's
         // `get_codebase {ref}` reads every blob of a tagged commit through
