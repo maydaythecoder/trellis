@@ -36,7 +36,9 @@ Each issue body has a generated triage block with its tasks and `blocked_by`.
    ticket is not workable yet: dispatch **architect** to add a `## Done when`
    and a `## Verify` section (a fenced command), then re-run G0. Do not dispatch
    an implementer against a ticket G0 rejects.
-3. Create a branch `t<n>-<slug>` off `dev` (ADR 0051). Dispatch to the specialist (Routing).
+3. Create a branch `t<n>-<slug>` off `dev` (ADR 0051), push it and open its
+   draft pull request into `audit` (ADR 0061; docs/BUILD_SYSTEM.md, "Branches").
+   Dispatch to the specialist (Routing).
 4. When it returns, run every gate: `scripts/gates/run-all.sh <n>`. It stops at
    the first failure and prints GATE / COMMAND / EXIT / OUTPUT. Dispatch the
    **verifier** to run it when you want the raw output kept out of your context.
