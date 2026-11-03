@@ -1708,6 +1708,24 @@ never sent: the stub now gives up after 30 s, as `tests/modes.rs`'s
 `accept_within` does (#1031). None of the 30 has a 989b2a2 line, so no
 kill is refuted.
 
+Shard 7 (run 41462469276 at `d741a5e`, accepted under `COMMIT 6b804cb` by
+the owner's decision of 2026-11-03 on #995): `252 mutants tested: 18
+missed, 227 caught, 6 unviable, 1 timeouts` (the four files under
+`shard-7-of-10/`). Its 19 lines follow shard 2's (#1049). Each kill was
+shown by hand on base `54a039d8`, at the batch's test commit `0d26a99d`:
+the mutant applied, the named test run with `cargo test -p trellis-cli`
+(`--bin trellis`, or `--test cli` for `session::`) and seen to fail, the
+source restored. `session.rs` and `start_screen.rs` read the same text at
+the same lines at HEAD. The timed-out `answer` mutant never reports end of
+input, so a screen asks forever and its test's `Vec` grew without bound;
+every screen test now writes into a writer that refuses past 1 MiB, and
+under the mutant all seven fail in 0.13 s. Four of the 19 have a 989b2a2
+line on the same function and mutation (`session.rs:38:9`, `208:37`,
+`385:39`, `589:43` there), none of them a kill, so no kill is refuted.
+`208:37`'s three were unexercisable there for want of a prompt on a pipe;
+rustyline prints its own prompt on stdout under `TERM=dumb`, terminal or
+not, which is the kill below.
+
 ```
 unexercisable (#248): needs exactly one of stdin and stdout to be a terminal; every test here runs both as pipes, where `&&` and `||` agree, and a terminal needs a pty (the shape of main.rs:527:43 at 989b2a2) | crates/trellis-cli/src/main.rs:1055:44: replace || with && in terminal_ui
 unexercisable (#248): needs stdout to be a terminal: every test here runs it as a pipe, where `!stdout` is true and the two agree, and a terminal needs a pty | crates/trellis-cli/src/main.rs:1055:12: delete ! in terminal_ui
@@ -1911,6 +1929,25 @@ killed (#248) by first_run::tests::first_run_choosing_a_spec_writes_the_user_con
 killed (#248) by first_run::tests::first_run_choosing_a_spec_writes_the_user_config_and_not_the_repository: `choose` asked no runtime and wrote nothing; the stub's `accept` now gives up after 30 s (`accept_within`), so the test fails on its `join` instead of blocking there, which is what ran past 300 s | crates/trellis-cli/src/first_run.rs:343:5: replace choose -> Result<Option<String>> with Ok(Some("xyzzy".into()))
 killed (#248) by first_run::tests::first_run_an_ollama_stub_with_two_models_lists_two_vllm_specs: `get` connected to nothing; the stub's `accept` now gives up after 30 s (`accept_within`), so the test fails on its `join` instead of blocking there, which is what ran past 300 s | crates/trellis-cli/src/first_run.rs:428:5: replace get -> std::result::Result<String, String> with Ok(String::new())
 killed (#248) by first_run::tests::first_run_an_ollama_stub_with_two_models_lists_two_vllm_specs: `get` connected to nothing; the stub's `accept` now gives up after 30 s (`accept_within`), so the test fails on its `join` instead of blocking there, which is what ran past 300 s | crates/trellis-cli/src/first_run.rs:428:5: replace get -> std::result::Result<String, String> with Ok("xyzzy".into())
+unexercisable (#248): `Stdout` is written only by a steered run, which needs stdin and stdout both terminals, and Rust's stdout flushes itself at each newline and at exit, so a missing flush shows only as a partial line arriving late; a test would need a pty and a reader that waits for that partial line before it types, and the suite's pty helper (util-linux `script`) feeds its input up front (989b2a2's `session.rs:38:9` line, the same reason) | crates/trellis-cli/src/session.rs:42:9: replace <impl std::io::Write for Stdout>::flush -> std::io::Result<()> with Ok(())
+killed (#248) by session::the_prompt_counts_uncommitted_changes_only_when_there_are_some: in crates/trellis-cli/tests/cli; with `==` a clean tree's prompt read `[0 pending] > ` and a tree with one untracked file's read `> ` | crates/trellis-cli/src/session.rs:224:37: replace > with == in Session::run
+killed (#248) by session::the_prompt_counts_uncommitted_changes_only_when_there_are_some: in crates/trellis-cli/tests/cli; with `<` the tree with one untracked file had no count in its prompt | crates/trellis-cli/src/session.rs:224:37: replace > with < in Session::run
+killed (#248) by session::the_prompt_counts_uncommitted_changes_only_when_there_are_some: in crates/trellis-cli/tests/cli; with `>=` a clean tree's prompt read `[0 pending] > ` | crates/trellis-cli/src/session.rs:224:37: replace > with >= in Session::run
+equivalent (#248): `rest` is trimmed before `/skill` splits it (`dispatch`'s `r.trim()`), and `trim` and the split use the same whitespace, so whatever follows the first whitespace ends in a non-whitespace character and `task.trim()` is never empty (989b2a2's `session.rs:385:39` line, the same reason) | crates/trellis-cli/src/session.rs:401:39: replace match guard !task.trim().is_empty() with true in Session::dispatch
+unexercisable (#248): needs exactly one of stdin and stdout to be a terminal; every pipe test runs both as pipes, where `&&` and `||` agree. The Linux pty helper can redirect one stream, but what `||` changes there is that a stdin reader takes the script's later lines as steers of the run in flight, and which lines it takes turns on how soon the scripted run ends, a race with no hook to order it (989b2a2's `session.rs:589:43` line, unexercisable for want of a pty) | crates/trellis-cli/src/session.rs:608:43: replace && with || in Session::run_task
+killed (#248) by session::tests::session_status_tokens_a_trail_that_will_not_read_is_counted_not_dropped: with `-=` the first trail that did not read back overflowed the count and panicked | crates/trellis-cli/src/session.rs:1103:36: replace += with -= in Session::keep_trail
+killed (#248) by session::tests::session_status_tokens_a_trail_that_will_not_read_is_counted_not_dropped: with `*=` the count stayed at 0 after two trails did not read back, and `/status` said `none yet` | crates/trellis-cli/src/session.rs:1103:36: replace += with *= in Session::keep_trail
+killed (#248) by session::tests::session_status_tokens_a_trail_that_will_not_read_is_counted_not_dropped: with `<` `/status` never said that two runs were not counted | crates/trellis-cli/src/session.rs:1158:31: replace > with < in Session::status_to
+killed (#248) by start_screen::tests::start_screen_a_list_that_cannot_be_read_is_an_error_and_a_missing_one_is_empty: a `recent.json` that is a directory read as an empty list | crates/trellis-cli/src/start_screen.rs:51:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in read
+killed (#248) by start_screen::tests::start_screen_listed_says_whether_the_file_named_any_repository: a file naming one repository said it named none | crates/trellis-cli/src/start_screen.rs:112:15: delete ! in listed
+killed (#248) by start_screen::tests::start_screen_is_temporary_matches_a_root_named_either_way: a root under `t/../t`, matched as given or only once resolved, was not temporary | crates/trellis-cli/src/start_screen.rs:122:28: replace || with && in is_temporary
+killed (#248) by start_screen::tests::start_screen_a_number_out_of_range_or_an_empty_line_asks_again: `0` indexed before the list and panicked | crates/trellis-cli/src/start_screen.rs:203:22: replace match guard (1..=recent.len()).contains(&n) with true in screen
+killed (#248) by start_screen::tests::start_screen_a_number_out_of_range_or_an_empty_line_asks_again: an empty line was taken as the working directory and refused as outside a repository, not as a choice | crates/trellis-cli/src/start_screen.rs:205:23: replace match guard t.is_empty() with false in screen
+killed (#248) by start_screen::tests::start_screen_home_is_the_directory_the_environment_names: `None` where `HOME` names a directory | crates/trellis-cli/src/start_screen.rs:241:5: replace home -> Option<PathBuf> with None
+killed (#248) by start_screen::tests::start_screen_home_is_the_directory_the_environment_names: an empty path where `HOME` names a directory | crates/trellis-cli/src/start_screen.rs:241:5: replace home -> Option<PathBuf> with Some(Default::default())
+killed (#248) by start_screen::tests::start_screen_home_is_the_directory_the_environment_names: a set `HOME` was dropped and an empty one would have been kept | crates/trellis-cli/src/start_screen.rs:243:25: delete ! in home
+killed (#248) by start_screen::tests::start_screen_home_named_another_way_is_still_the_home_directory: a home directory named `h/../h` was not recognised, and `git init` was offered in it | crates/trellis-cli/src/start_screen.rs:256:12: replace || with && in same_dir
+killed (#248) by start_screen::tests::start_screen_git_init_runs_only_after_an_explicit_y: the screen asked again on every `xyzzy` until the capped writer refused, and the test's `unwrap` failed in 0.06 s rather than waiting | crates/trellis-cli/src/start_screen.rs:261:5: replace answer -> Result<Option<String>> with Ok(Some("xyzzy".into()))
 ```
 
 </details>
