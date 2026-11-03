@@ -292,7 +292,9 @@ pub async fn probe_tools(
     .await
     {
         Ok(r) => r,
-        Err(SendError::Timeout) => {
+        // `Deadline` and `Stream` come only from a streamed request, which
+        // this is not; matched with their nearest kin, not left to a `_`.
+        Err(SendError::Timeout | SendError::Deadline) => {
             return Ok(ToolsProbe::NotVerified {
                 reason: format!("no answer within {} s", READ_TIMEOUT.as_secs()),
             });
@@ -300,7 +302,7 @@ pub async fn probe_tools(
         // A `Broken` message can quote the server's status line, so it is
         // not repeated. The others are TRELLIS's own: an address and an OS
         // error, or a configuration fault, and never a response byte.
-        Err(SendError::Broken(_)) => {
+        Err(SendError::Broken(_) | SendError::Stream(_)) => {
             return Ok(ToolsProbe::NotVerified {
                 reason: "the connection broke, or the reply was not well-formed HTTP".to_string(),
             });
@@ -364,13 +366,14 @@ async fn read(
     transport::get(origin, path, auth, READ_TIMEOUT)
         .await
         .map_err(|e| match e {
-            SendError::Connect(m) | SendError::ConnectTimedOut(m) | SendError::Broken(m) => {
-                RuntimeError::Connect {
-                    base: base.to_string(),
-                    source: std::io::Error::other(m),
-                }
-            }
-            SendError::Timeout => RuntimeError::Timeout(READ_TIMEOUT),
+            SendError::Connect(m)
+            | SendError::ConnectTimedOut(m)
+            | SendError::Broken(m)
+            | SendError::Stream(m) => RuntimeError::Connect {
+                base: base.to_string(),
+                source: std::io::Error::other(m),
+            },
+            SendError::Timeout | SendError::Deadline => RuntimeError::Timeout(READ_TIMEOUT),
             SendError::Config(m) => RuntimeError::Config(m),
         })
 }
