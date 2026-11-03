@@ -268,7 +268,9 @@ The self-hosted runners below are set aside as of 2026-10-19: the runner
 host stopped taking jobs on 2026-10-12, every run queued until the next push
 cancelled it, and #736 moved the jobs off them so promotion PRs could merge
 again. The table and the procedure that follow are kept as the record of
-that setup; the low-privilege account move is #219, open and parked. What
+that setup; the low-privilege account move is #219, closed as not planned
+on 2026-11-02 when the last runner registration (`trellis-wsl`) was
+deleted, and to be reopened if a self-hosted runner returns. What
 was true until then: GitHub-hosted jobs stopped starting on 2026-09-28
 ("recent account payments have failed or your spending limit needs to be
 increased") and CI ran on two self-hosted runners on the owner's machine
