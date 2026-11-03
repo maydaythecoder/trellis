@@ -1,0 +1,196 @@
+crates/trellis-cli/src/doctor_supply.rs:276:5: replace error_line -> String with String::new()
+crates/trellis-cli/src/doctor_supply.rs:276:5: replace error_line -> String with "xyzzy".into()
+crates/trellis-cli/src/doctor_supply.rs:276:61: delete ! in error_line
+crates/trellis-cli/src/doctor_supply.rs:354:5: replace package -> Option<(String, String)> with None
+crates/trellis-cli/src/doctor_supply.rs:354:5: replace package -> Option<(String, String)> with Some((String::new(), String::new()))
+crates/trellis-cli/src/doctor_supply.rs:354:5: replace package -> Option<(String, String)> with Some((String::new(), "xyzzy".into()))
+crates/trellis-cli/src/doctor_supply.rs:354:5: replace package -> Option<(String, String)> with Some(("xyzzy".into(), String::new()))
+crates/trellis-cli/src/doctor_supply.rs:354:5: replace package -> Option<(String, String)> with Some(("xyzzy".into(), "xyzzy".into()))
+crates/trellis-cli/src/doctor_supply.rs:364:5: replace render -> String with String::new()
+crates/trellis-cli/src/doctor_supply.rs:364:5: replace render -> String with "xyzzy".into()
+crates/trellis-cli/src/doctor_supply.rs:366:14: replace == with != in render
+crates/trellis-cli/src/first_run.rs:47:5: replace no_model -> String with String::new()
+crates/trellis-cli/src/first_run.rs:47:5: replace no_model -> String with "xyzzy".into()
+crates/trellis-cli/src/first_run.rs:55:31: replace << with >>
+crates/trellis-cli/src/first_run.rs:74:9: replace Api::path -> &'static str with ""
+crates/trellis-cli/src/first_run.rs:74:9: replace Api::path -> &'static str with "xyzzy"
+crates/trellis-cli/src/first_run.rs:162:9: replace Offer::label -> String with String::new()
+crates/trellis-cli/src/first_run.rs:162:9: replace Offer::label -> String with "xyzzy".into()
+crates/trellis-cli/src/first_run.rs:185:5: replace offers -> Vec<Offer> with vec![]
+crates/trellis-cli/src/first_run.rs:204:17: delete match arm Ok(ModelSpec::Runtime{model:Some(m), ..}) in offers
+crates/trellis-cli/src/first_run.rs:205:17: delete match arm Ok(ModelSpec::Provider{name, model}) in offers
+crates/trellis-cli/src/first_run.rs:204:66: delete ! in offers
+crates/trellis-cli/src/first_run.rs:204:80: replace == with != in offers
+crates/trellis-cli/src/first_run.rs:206:37: replace == with != in offers
+crates/trellis-cli/src/first_run.rs:206:86: replace == with != in offers
+crates/trellis-cli/src/first_run.rs:210:24: replace && with || in offers
+crates/trellis-cli/src/first_run.rs:210:27: delete ! in offers
+crates/trellis-cli/src/first_run.rs:210:54: replace == with != in offers
+crates/trellis-cli/src/first_run.rs:228:5: replace owned_by_colibri -> bool with true
+crates/trellis-cli/src/first_run.rs:228:5: replace owned_by_colibri -> bool with false
+crates/trellis-cli/src/first_run.rs:228:12: replace != with == in owned_by_colibri
+crates/trellis-cli/src/first_run.rs:239:9: replace == with != in owned_by_colibri
+crates/trellis-cli/src/first_run.rs:244:5: replace specs -> Vec<String> with vec![]
+crates/trellis-cli/src/first_run.rs:244:5: replace specs -> Vec<String> with vec![String::new()]
+crates/trellis-cli/src/first_run.rs:244:5: replace specs -> Vec<String> with vec!["xyzzy".into()]
+crates/trellis-cli/src/first_run.rs:248:5: replace ids -> Vec<String> with vec![]
+crates/trellis-cli/src/first_run.rs:248:5: replace ids -> Vec<String> with vec![String::new()]
+crates/trellis-cli/src/first_run.rs:248:5: replace ids -> Vec<String> with vec!["xyzzy".into()]
+crates/trellis-cli/src/first_run.rs:266:5: replace usable -> bool with true
+crates/trellis-cli/src/first_run.rs:266:5: replace usable -> bool with false
+crates/trellis-cli/src/first_run.rs:266:42: replace && with || in usable
+crates/trellis-cli/src/first_run.rs:266:20: replace && with || in usable
+crates/trellis-cli/src/first_run.rs:266:5: delete ! in usable
+crates/trellis-cli/src/first_run.rs:266:32: replace <= with > in usable
+crates/trellis-cli/src/first_run.rs:266:45: delete ! in usable
+crates/trellis-cli/src/first_run.rs:266:80: replace || with && in usable
+crates/trellis-cli/src/first_run.rs:272:5: replace nothing_found -> String with String::new()
+crates/trellis-cli/src/first_run.rs:272:5: replace nothing_found -> String with "xyzzy".into()
+crates/trellis-cli/src/first_run.rs:297:5: replace pick -> Result<Option<String>> with Ok(None)
+crates/trellis-cli/src/first_run.rs:297:5: replace pick -> Result<Option<String>> with Ok(Some(String::new()))
+crates/trellis-cli/src/first_run.rs:297:5: replace pick -> Result<Option<String>> with Ok(Some("xyzzy".into()))
+crates/trellis-cli/src/first_run.rs:324:22: replace match guard (1..=offered.len()).contains(&n) with true in pick
+crates/trellis-cli/src/first_run.rs:324:22: replace match guard (1..=offered.len()).contains(&n) with false in pick
+crates/trellis-cli/src/first_run.rs:325:42: replace - with + in pick
+crates/trellis-cli/src/first_run.rs:325:42: replace - with / in pick
+crates/trellis-cli/src/first_run.rs:366:26: replace == with != in choose
+crates/trellis-cli/src/first_run.rs:405:5: replace ollama_ps -> std::result::Result<String, String> with Ok(String::new())
+crates/trellis-cli/src/first_run.rs:405:5: replace ollama_ps -> std::result::Result<String, String> with Ok("xyzzy".into())
+crates/trellis-cli/src/first_run.rs:411:8: delete ! in ollama_ps
+crates/trellis-cli/src/first_run.rs:428:35: replace + with - in get
+crates/trellis-cli/src/first_run.rs:433:21: replace == with != in get
+crates/trellis-cli/src/first_run.rs:468:22: replace > with < in get
+crates/trellis-cli/src/first_run.rs:475:25: replace == with != in get
+crates/trellis-cli/src/first_run.rs:483:15: replace != with == in get
+crates/trellis-cli/src/first_run.rs:495:30: replace + with - in get
+crates/trellis-cli/src/first_run.rs:495:30: replace + with * in get
+crates/trellis-cli/src/floor.rs:52:9: replace Measured::name -> String with String::new()
+crates/trellis-cli/src/floor.rs:52:9: replace Measured::name -> String with "xyzzy".into()
+crates/trellis-cli/src/floor.rs:56:9: replace Measured::located -> bool with true
+crates/trellis-cli/src/floor.rs:56:9: replace Measured::located -> bool with false
+crates/trellis-cli/src/floor.rs:56:23: replace > with == in Measured::located
+crates/trellis-cli/src/floor.rs:56:23: replace > with < in Measured::located
+crates/trellis-cli/src/floor.rs:56:23: replace > with >= in Measured::located
+crates/trellis-cli/src/floor.rs:139:5: replace tier_number -> u8 with 0
+crates/trellis-cli/src/floor.rs:139:5: replace tier_number -> u8 with 1
+crates/trellis-cli/src/floor.rs:150:5: replace count_word -> String with String::new()
+crates/trellis-cli/src/floor.rs:150:5: replace count_word -> String with "xyzzy".into()
+crates/trellis-cli/src/floor.rs:160:5: replace capitalised -> String with String::new()
+crates/trellis-cli/src/floor.rs:160:5: replace capitalised -> String with "xyzzy".into()
+crates/trellis-cli/src/floor.rs:176:5: replace floor_words -> String with String::new()
+crates/trellis-cli/src/floor.rs:176:5: replace floor_words -> String with "xyzzy".into()
+crates/trellis-cli/src/floor.rs:218:38: replace > with == in floor_words
+crates/trellis-cli/src/floor.rs:218:38: replace > with < in floor_words
+crates/trellis-cli/src/floor.rs:218:38: replace > with >= in floor_words
+crates/trellis-cli/src/floor.rs:223:29: replace - with + in floor_words
+crates/trellis-cli/src/floor.rs:223:29: replace - with / in floor_words
+crates/trellis-cli/src/floor.rs:234:5: replace wrap -> String with String::new()
+crates/trellis-cli/src/floor.rs:234:5: replace wrap -> String with "xyzzy".into()
+crates/trellis-cli/src/floor.rs:241:12: delete ! in wrap
+crates/trellis-cli/src/floor.rs:241:36: replace > with == in wrap
+crates/trellis-cli/src/floor.rs:241:30: replace + with - in wrap
+crates/trellis-cli/src/floor.rs:245:19: delete ! in wrap
+crates/trellis-cli/src/floor.rs:247:17: replace += with -= in wrap
+crates/trellis-cli/src/floor.rs:247:17: replace += with *= in wrap
+crates/trellis-cli/src/floor.rs:250:13: replace += with -= in wrap
+crates/trellis-cli/src/floor.rs:263:5: replace floor_line -> String with String::new()
+crates/trellis-cli/src/floor.rs:263:5: replace floor_line -> String with "xyzzy".into()
+crates/trellis-cli/src/floor.rs:267:5: replace floor_line_from -> String with String::new()
+crates/trellis-cli/src/floor.rs:267:5: replace floor_line_from -> String with "xyzzy".into()
+crates/trellis-cli/src/floor.rs:277:5: replace measured_for -> Option<&'t Measured> with None
+crates/trellis-cli/src/floor.rs:287:41: replace && with || in measured_for
+crates/trellis-cli/src/floor.rs:287:29: replace == with != in measured_for
+crates/trellis-cli/src/floor.rs:287:57: replace == with != in measured_for
+crates/trellis-cli/src/floor.rs:297:5: replace run_warning -> Option<String> with None
+crates/trellis-cli/src/floor.rs:297:5: replace run_warning -> Option<String> with Some(String::new())
+crates/trellis-cli/src/floor.rs:297:5: replace run_warning -> Option<String> with Some("xyzzy".into())
+crates/trellis-cli/src/floor.rs:301:5: replace run_warning_from -> Option<String> with None
+crates/trellis-cli/src/floor.rs:301:5: replace run_warning_from -> Option<String> with Some(String::new())
+crates/trellis-cli/src/floor.rs:301:5: replace run_warning_from -> Option<String> with Some("xyzzy".into())
+crates/trellis-cli/src/floor.rs:301:50: delete ! in run_warning_from
+crates/trellis-cli/src/hosted.rs:55:9: replace SpecSource::wording -> (&'static str, &'static str) with ("", "")
+crates/trellis-cli/src/hosted.rs:55:9: replace SpecSource::wording -> (&'static str, &'static str) with ("", "xyzzy")
+crates/trellis-cli/src/hosted.rs:55:9: replace SpecSource::wording -> (&'static str, &'static str) with ("xyzzy", "")
+crates/trellis-cli/src/hosted.rs:55:9: replace SpecSource::wording -> (&'static str, &'static str) with ("xyzzy", "xyzzy")
+crates/trellis-cli/src/hosted.rs:82:5: replace resolve -> Result<Option<Resolved>> with Ok(None)
+crates/trellis-cli/src/hosted.rs:95:5: replace resolve_from -> Result<Option<Resolved>> with Ok(None)
+crates/trellis-cli/src/hosted.rs:96:42: delete ! in resolve_from
+crates/trellis-cli/src/hosted.rs:110:5: replace resolve_with -> Result<Option<Resolved>> with Ok(None)
+crates/trellis-cli/src/hosted.rs:111:9: delete match arm ModelSpec::Hosted{protocol, base, model,} in resolve_with
+crates/trellis-cli/src/hosted.rs:133:9: delete match arm ModelSpec::Provider{name, model} in resolve_with
+crates/trellis-cli/src/hosted.rs:121:37: replace == with != in resolve_with
+crates/trellis-cli/src/hosted.rs:130:28: replace && with || in resolve_with
+crates/trellis-cli/src/hosted.rs:130:17: delete ! in resolve_with
+crates/trellis-cli/src/hosted.rs:130:31: delete ! in resolve_with
+crates/trellis-cli/src/hosted.rs:149:72: replace == with != in resolve_with
+crates/trellis-cli/src/hosted.rs:158:17: delete ! in resolve_with
+crates/trellis-cli/src/hosted.rs:192:5: replace allowed -> Result<()> with Ok(())
+crates/trellis-cli/src/hosted.rs:202:17: replace && with || in allowed
+crates/trellis-cli/src/hosted.rs:202:20: delete ! in allowed
+crates/trellis-cli/src/hosted.rs:219:35: replace && with || in allowed
+crates/trellis-cli/src/hosted.rs:219:25: replace == with != in allowed
+crates/trellis-cli/src/hosted.rs:219:40: replace == with != in allowed
+crates/trellis-cli/src/hosted.rs:256:5: replace origin -> Option<(String, bool)> with None
+crates/trellis-cli/src/hosted.rs:256:5: replace origin -> Option<(String, bool)> with Some((String::new(), true))
+crates/trellis-cli/src/hosted.rs:256:5: replace origin -> Option<(String, bool)> with Some((String::new(), false))
+crates/trellis-cli/src/hosted.rs:256:5: replace origin -> Option<(String, bool)> with Some(("xyzzy".into(), true))
+crates/trellis-cli/src/hosted.rs:256:5: replace origin -> Option<(String, bool)> with Some(("xyzzy".into(), false))
+crates/trellis-cli/src/hosted.rs:259:9: delete match arm "https" in origin
+crates/trellis-cli/src/hosted.rs:260:9: delete match arm "http" in origin
+crates/trellis-cli/src/hosted.rs:274:54: replace || with && in origin
+crates/trellis-cli/src/hosted.rs:291:5: replace origin_of -> Option<String> with None
+crates/trellis-cli/src/hosted.rs:291:5: replace origin_of -> Option<String> with Some(String::new())
+crates/trellis-cli/src/hosted.rs:291:5: replace origin_of -> Option<String> with Some("xyzzy".into())
+crates/trellis-cli/src/hosted.rs:336:5: replace runtime_context_bytes -> usize with 0
+crates/trellis-cli/src/hosted.rs:336:5: replace runtime_context_bytes -> usize with 1
+crates/trellis-cli/src/hosted.rs:357:5: replace hosted_context_bytes -> Result<usize> with Ok(0)
+crates/trellis-cli/src/hosted.rs:357:5: replace hosted_context_bytes -> Result<usize> with Ok(1)
+crates/trellis-cli/src/hosted.rs:404:5: replace describe -> String with String::new()
+crates/trellis-cli/src/hosted.rs:404:5: replace describe -> String with "xyzzy".into()
+crates/trellis-cli/src/hosted.rs:422:5: replace thinking_ignored -> Option<String> with None
+crates/trellis-cli/src/hosted.rs:422:5: replace thinking_ignored -> Option<String> with Some(String::new())
+crates/trellis-cli/src/hosted.rs:422:5: replace thinking_ignored -> Option<String> with Some("xyzzy".into())
+crates/trellis-cli/src/hosted.rs:440:5: replace doctor -> (String, String, Vec<String>) with (String::new(), String::new(), vec![])
+crates/trellis-cli/src/hosted.rs:440:5: replace doctor -> (String, String, Vec<String>) with (String::new(), String::new(), vec![String::new()])
+crates/trellis-cli/src/hosted.rs:440:5: replace doctor -> (String, String, Vec<String>) with (String::new(), String::new(), vec!["xyzzy".into()])
+crates/trellis-cli/src/hosted.rs:440:5: replace doctor -> (String, String, Vec<String>) with (String::new(), "xyzzy".into(), vec![])
+crates/trellis-cli/src/hosted.rs:440:5: replace doctor -> (String, String, Vec<String>) with (String::new(), "xyzzy".into(), vec![String::new()])
+crates/trellis-cli/src/hosted.rs:440:5: replace doctor -> (String, String, Vec<String>) with (String::new(), "xyzzy".into(), vec!["xyzzy".into()])
+crates/trellis-cli/src/hosted.rs:440:5: replace doctor -> (String, String, Vec<String>) with ("xyzzy".into(), String::new(), vec![])
+crates/trellis-cli/src/hosted.rs:440:5: replace doctor -> (String, String, Vec<String>) with ("xyzzy".into(), String::new(), vec![String::new()])
+crates/trellis-cli/src/hosted.rs:440:5: replace doctor -> (String, String, Vec<String>) with ("xyzzy".into(), String::new(), vec!["xyzzy".into()])
+crates/trellis-cli/src/hosted.rs:440:5: replace doctor -> (String, String, Vec<String>) with ("xyzzy".into(), "xyzzy".into(), vec![])
+crates/trellis-cli/src/hosted.rs:440:5: replace doctor -> (String, String, Vec<String>) with ("xyzzy".into(), "xyzzy".into(), vec![String::new()])
+crates/trellis-cli/src/hosted.rs:440:5: replace doctor -> (String, String, Vec<String>) with ("xyzzy".into(), "xyzzy".into(), vec!["xyzzy".into()])
+crates/trellis-cli/src/hosted.rs:481:39: replace && with || in doctor
+crates/trellis-cli/src/hosted.rs:481:42: delete ! in doctor
+crates/trellis-cli/src/hosted.rs:496:5: replace colibri_key -> Option<ApiKey> with None
+crates/trellis-cli/src/hosted.rs:503:5: replace probed -> &'static Mutex<HashMap<(String, String), ToolsProbe>> with Box::leak(Box::new(Mutex::new(HashMap::new())))
+crates/trellis-cli/src/hosted.rs:561:9: replace ColibriTier::label -> String with String::new()
+crates/trellis-cli/src/hosted.rs:561:9: replace ColibriTier::label -> String with "xyzzy".into()
+crates/trellis-cli/src/hosted.rs:632:11: replace != with == in colibri_tier
+crates/trellis-cli/src/hosted.rs:647:21: replace == with != in colibri_tier
+crates/trellis-cli/src/hosted.rs:657:14: replace && with || in colibri_tier
+crates/trellis-cli/src/hosted.rs:657:37: replace == with != in colibri_tier
+crates/trellis-cli/src/hosted.rs:720:5: replace preflight -> Result<Option<String>> with Ok(None)
+crates/trellis-cli/src/hosted.rs:720:5: replace preflight -> Result<Option<String>> with Ok(Some(String::new()))
+crates/trellis-cli/src/hosted.rs:720:5: replace preflight -> Result<Option<String>> with Ok(Some("xyzzy".into()))
+crates/trellis-cli/src/hosted.rs:769:5: replace self_report with ()
+crates/trellis-cli/src/hosted.rs:781:5: replace log_self_report with ()
+crates/trellis-cli/src/hosted.rs:796:5: replace fallback_sentence -> &'static str with ""
+crates/trellis-cli/src/hosted.rs:796:5: replace fallback_sentence -> &'static str with "xyzzy"
+crates/trellis-cli/src/hosted.rs:806:5: replace compaction_line -> Option<String> with None
+crates/trellis-cli/src/hosted.rs:806:5: replace compaction_line -> Option<String> with Some(String::new())
+crates/trellis-cli/src/hosted.rs:806:5: replace compaction_line -> Option<String> with Some("xyzzy".into())
+crates/trellis-cli/src/hosted.rs:843:5: replace requested_compaction_line -> Option<String> with None
+crates/trellis-cli/src/hosted.rs:843:5: replace requested_compaction_line -> Option<String> with Some(String::new())
+crates/trellis-cli/src/hosted.rs:843:5: replace requested_compaction_line -> Option<String> with Some("xyzzy".into())
+crates/trellis-cli/src/image_input.rs:20:5: replace refuse_unless_hosted -> Result<()> with Ok(())
+crates/trellis-cli/src/image_input.rs:20:25: replace || with && in refuse_unless_hosted
+crates/trellis-cli/src/image_input.rs:41:5: replace load -> Result<Loaded> with Ok(Default::default())
+crates/trellis-cli/src/image_input.rs:58:5: replace fits -> Result<()> with Ok(())
+crates/trellis-cli/src/image_input.rs:59:14: replace > with == in fits
+crates/trellis-cli/src/image_input.rs:59:14: replace > with < in fits
+crates/trellis-cli/src/image_input.rs:59:14: replace > with >= in fits
+crates/trellis-cli/src/image_input.rs:73:5: replace lines -> Vec<String> with vec![]
+crates/trellis-cli/src/image_input.rs:73:5: replace lines -> Vec<String> with vec![String::new()]

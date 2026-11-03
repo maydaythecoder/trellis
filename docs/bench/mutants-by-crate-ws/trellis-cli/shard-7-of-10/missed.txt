@@ -1,0 +1,18 @@
+crates/trellis-cli/src/session.rs:42:9: replace <impl std::io::Write for Stdout>::flush -> std::io::Result<()> with Ok(())
+crates/trellis-cli/src/session.rs:224:37: replace > with == in Session::run
+crates/trellis-cli/src/session.rs:224:37: replace > with < in Session::run
+crates/trellis-cli/src/session.rs:224:37: replace > with >= in Session::run
+crates/trellis-cli/src/session.rs:401:39: replace match guard !task.trim().is_empty() with true in Session::dispatch
+crates/trellis-cli/src/session.rs:608:43: replace && with || in Session::run_task
+crates/trellis-cli/src/session.rs:1103:36: replace += with -= in Session::keep_trail
+crates/trellis-cli/src/session.rs:1103:36: replace += with *= in Session::keep_trail
+crates/trellis-cli/src/session.rs:1158:31: replace > with < in Session::status_to
+crates/trellis-cli/src/start_screen.rs:51:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in read
+crates/trellis-cli/src/start_screen.rs:112:15: delete ! in listed
+crates/trellis-cli/src/start_screen.rs:122:28: replace || with && in is_temporary
+crates/trellis-cli/src/start_screen.rs:203:22: replace match guard (1..=recent.len()).contains(&n) with true in screen
+crates/trellis-cli/src/start_screen.rs:205:23: replace match guard t.is_empty() with false in screen
+crates/trellis-cli/src/start_screen.rs:241:5: replace home -> Option<PathBuf> with None
+crates/trellis-cli/src/start_screen.rs:241:5: replace home -> Option<PathBuf> with Some(Default::default())
+crates/trellis-cli/src/start_screen.rs:243:25: delete ! in home
+crates/trellis-cli/src/start_screen.rs:256:12: replace || with && in same_dir
