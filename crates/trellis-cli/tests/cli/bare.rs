@@ -371,3 +371,211 @@ fn launch_route_tui_flag_keeps_the_terminal() {
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(exe.parent().unwrap());
 }
+
+// ---------------------------------------------------------------------------
+// `trellis --web` waited for, and the human stream's colour (#248, Unix only)
+// ---------------------------------------------------------------------------
+
+/// [`trellis_copy`] with a stub `trellis-desktop` beside it that prints the
+/// web view's URL line and then runs `then`, and a directory holding only a
+/// stub browser opener (`open` on macOS, `xdg-open` elsewhere, as
+/// `launch::opener` names them) that exits `opener_exit`. That directory is
+/// the whole of the PATH the caller gives trellis, so no real browser opens
+/// and nothing else on the host is started. The stubs use only `sh`
+/// builtins for the same reason.
+#[cfg(unix)]
+fn trellis_web(name: &str, then: &str, opener_exit: i32) -> (Scratch, PathBuf, Scratch) {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, exe) = trellis_copy(name);
+    let stub = dir.join("trellis-desktop");
+    std::fs::write(
+        &stub,
+        format!("#!/bin/sh\nprintf '%s\\n' '{{\"url\":\"http://127.0.0.1:7/?t=stub\"}}'\n{then}\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    wait_until_executable(&stub);
+    let tools = scratch(&format!("{name}-path"));
+    let opener = tools.join(if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    });
+    std::fs::write(&opener, format!("#!/bin/sh\nexit {opener_exit}\n")).unwrap();
+    std::fs::set_permissions(&opener, std::fs::Permissions::from_mode(0o755)).unwrap();
+    wait_until_executable(&opener);
+    (dir, exe, tools)
+}
+
+/// `trellis --web` from `exe`, outside any repository, with `path` as its
+/// whole PATH and a scratch user directory.
+#[cfg(unix)]
+fn web_command(exe: &Path, path: &Path, user: &Path) -> Command {
+    let outside = exe.parent().unwrap();
+    let mut c = Command::new(exe);
+    c.arg("--web")
+        .current_dir(outside)
+        .env("PATH", path)
+        .env("NO_COLOR", "1")
+        .env_remove("RUST_LOG")
+        .env("TRELLIS_CONFIG_DIR", user);
+    c
+}
+
+#[cfg(unix)]
+#[test]
+fn launch_web_says_the_browser_opened_and_exits_as_the_web_view_did() {
+    // The risk (#248, `open_in_browser` and `launch_web`): a browser that
+    // could not be opened reported as opened, so the person waits for a
+    // page that never comes instead of opening the URL by hand; an opener
+    // that worked reported as failed; and `trellis --web` exiting 0 when the
+    // web view failed, or 1 when it ended cleanly. Neither the opener nor
+    // the web view's exit was reached by a test: the unit tests drive
+    // `attend` and `web_url`, not `launch_web`.
+    let user = scratch("web-exit-user");
+
+    let (bin, exe, path) = trellis_web("web-exit-ok", "exit 0", 0);
+    let o = web_command(&exe, &path, &user).output().unwrap();
+    let said = combined(&o);
+    assert!(o.status.success(), "{said}");
+    assert!(
+        said.contains("serving the desktop's page at http://127.0.0.1:7/?t=stub"),
+        "{said}"
+    );
+    assert!(said.contains("opened in the browser"), "{said}");
+    assert!(!said.contains("could not open the browser"), "{said}");
+    drop((bin, path));
+
+    let (bin, exe, path) = trellis_web("web-exit-fail", "exit 3", 1);
+    let o = web_command(&exe, &path, &user).output().unwrap();
+    let said = combined(&o);
+    assert!(!o.status.success(), "{said}");
+    assert!(said.contains("the web view exited with"), "{said}");
+    assert!(said.contains("could not open the browser"), "{said}");
+    assert!(said.contains("exited with exit status: 1"), "{said}");
+    assert!(!said.contains("opened in the browser"), "{said}");
+    drop((bin, path));
+    let _ = std::fs::remove_dir_all(&user);
+}
+
+#[cfg(unix)]
+#[test]
+fn launch_web_ctrl_c_stops_the_web_view_and_waits_for_it() {
+    // The risk (#248, `ctrl_c_presses`): Ctrl-C not reaching `attend`, so
+    // the signal's default action kills trellis with the web view still
+    // holding its rpc child, which is never sent `quit` (ADR 0048 §9).
+    // `kill -INT`, as tests/interrupt.rs sends it. The stub web view stops
+    // when its stdin closes, as the desktop does.
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    let user = scratch("web-ctrl-c-user");
+    let (_bin, exe, path) = trellis_web("web-ctrl-c", "read -r line\nexit 0", 0);
+    let mut child = web_command(&exe, &path, &user)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut all = String::new();
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            all.push_str(&line);
+            all.push('\n');
+            let _ = tx.send(line);
+        }
+        all
+    });
+    let until = Instant::now() + Duration::from_secs(30);
+    loop {
+        let left = until.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(l) if l.contains("Ctrl-C stops the web view") => break,
+            Ok(_) => {}
+            Err(_) => {
+                let _ = child.kill();
+                panic!("`trellis --web` never said Ctrl-C stops the web view");
+            }
+        }
+    }
+    // The listener is spawned just after that line; the pause covers the
+    // runtime polling it once, which registers the handler.
+    std::thread::sleep(Duration::from_millis(500));
+    let sent = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .expect("kill(1) is on PATH")
+        .success();
+    assert!(sent, "kill -INT failed");
+    let until = Instant::now() + Duration::from_secs(20);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() > until {
+            let _ = child.kill();
+            panic!("`trellis --web` did not stop within 20 s of Ctrl-C");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let o = child.wait_with_output().unwrap();
+    let said = reader.join().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        o.status.success(),
+        "stopped by Ctrl-C, not by the signal ({:?}):\n{said}{err}",
+        o.status
+    );
+    assert!(err.contains("stopping the web view"), "{said}{err}");
+    let _ = std::fs::remove_dir_all(&user);
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_pty_the_human_stream_is_coloured_at_a_terminal_without_no_color() {
+    // The risk (#248, `output::human_colour`): a terminal with NO_COLOR
+    // unset losing the colour of a warning's level, so a WARN reads like
+    // any other line. `colour`'s own test holds the rule; this holds that
+    // the stream's real terminal answer reaches it. A user config with an
+    // `[agents]` table gives a WARN on any command (#958). util-linux
+    // `script` on Linux and the BSD one on macOS take different arguments.
+    use std::process::Stdio;
+    let d = repo("colour-pty");
+    let user = scratch("colour-pty-user");
+    std::fs::write(user.join("config.toml"), "[agents]\ncount = 2\n").unwrap();
+    let exe = env!("CARGO_BIN_EXE_trellis");
+    let args: Vec<String> = if cfg!(target_os = "linux") {
+        vec!["-qfec".into(), format!("'{exe}' log"), "/dev/null".into()]
+    } else {
+        vec!["-q".into(), "/dev/null".into(), exe.into(), "log".into()]
+    };
+    let run = |no_color: bool| {
+        let mut c = Command::new("script");
+        c.args(&args)
+            .current_dir(&d)
+            .env_remove("RUST_LOG")
+            .env("TRELLIS_CONFIG_DIR", &user)
+            .stdin(Stdio::null());
+        if no_color {
+            c.env("NO_COLOR", "1");
+        } else {
+            c.env_remove("NO_COLOR");
+        }
+        let o = c
+            .output()
+            .expect("`script` must be on PATH for the pty tests");
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    let shown = run(false);
+    assert!(shown.contains("has an [agents] table"), "{shown:?}");
+    assert!(
+        shown.contains("\u{1b}[33m"),
+        "no colour at a terminal: {shown:?}"
+    );
+    let shown = run(true);
+    assert!(shown.contains("has an [agents] table"), "{shown:?}");
+    assert!(
+        !shown.contains("\u{1b}["),
+        "colour under NO_COLOR: {shown:?}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&user);
+}

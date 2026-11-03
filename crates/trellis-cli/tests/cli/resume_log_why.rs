@@ -598,6 +598,29 @@ fn why_separates_a_file_that_changed_from_a_word_in_the_task() {
 }
 
 #[test]
+fn why_does_not_call_a_run_found_by_a_person_s_decision_named_in_the_task() {
+    // The risk (#248, C-024 refuted): a run is also found when the only
+    // match is a person's approve-mode answer (`mentions_any` yields a
+    // mention for `!decisions.is_empty()` since 2f8b273b). Its task does
+    // not name the query, and saying it did reports context that is not
+    // there, beside the decision that is.
+    let d = repo("why-decision-only");
+    let runs = d.join(".trellis/runs");
+    std::fs::create_dir_all(&runs).unwrap();
+    std::fs::write(
+        runs.join("r1.json"),
+        r#"{"run_id":"r1","task":"tidy the docs","factual":{"proposed":[],"actions":[
+            {"turn":1,"tool":"approval","target":"billing.py","outcome":"declined","wrote":false}]}}"#,
+    )
+    .unwrap();
+    let s = stdout(&run(&d, &["why", "billing"]));
+    assert!(s.contains("1 run(s) mention `billing`"), "{s}");
+    assert!(s.contains("declined by a person: billing.py"), "{s}");
+    assert!(!s.contains("named in the task"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn why_says_when_a_trail_no_longer_matches_its_digest() {
     // A trail lives in a repository that takes contributions, so it is read
     // back as untrusted data (S10). Tamper-evidence is only worth having if
