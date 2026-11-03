@@ -268,6 +268,28 @@ mod tests {
         assert_eq!(a, b);
     }
 
+    /// The risk (#996, ADR 0060 §6): `probe_ps` is the probe on macOS and the
+    /// BSDs, and no suite run reaches it, because Linux takes `probe_proc`
+    /// and Windows `probe_windows`. A broken guard there would call a live
+    /// claimant unknown, or a dead one unknown instead of gone, with no
+    /// test failing. On Linux the runner's procps `ps` takes the same
+    /// `-p <pid> -o lstart=`, so calling `probe_ps` directly holds its two
+    /// answers: the start time for this process, and gone for a reaped one.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn probe_ps_reads_this_process_as_running_and_a_reaped_child_as_gone() {
+        match probe_ps(std::process::id()) {
+            Probe::Running { started: Some(s) } if !s.is_empty() => {}
+            other => panic!("ps must read this process as running with a start time: {other:?}"),
+        }
+        let mut c = Command::new("true");
+        trellis_core::secrets::scrub(&mut c);
+        let mut child = c.spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        assert_eq!(probe_ps(pid), Probe::Gone);
+    }
+
     #[test]
     fn a_child_that_has_exited_and_been_reaped_is_gone() {
         let mut c = if cfg!(windows) {

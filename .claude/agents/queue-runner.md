@@ -16,6 +16,9 @@ implementer's rules are your rules while you write code.
 1. `scripts/tickets/next.sh --why | grep ELIGIBLE` — pick the first that is
    not in the deferred list you were given. Nothing eligible → stop, report.
 2. Branch: `git checkout dev && git pull --ff-only origin dev && git checkout -b t<n>-<slug>` (ADR 0051).
+   Push it at once (an empty commit is fine) and open its draft pull request:
+   `gh pr create --draft --base audit` with a body that links the ticket
+   (ADR 0061; docs/BUILD_SYSTEM.md, "Branches").
 3. `gh issue view <n>`: `## Done when` and `## Verify` are the whole spec.
    Implement with tests that name the risk they defend. Never: `#[allow]`,
    `unsafe`, a new crate dependency, a new CLI command/flag, a public signature
@@ -31,7 +34,7 @@ implementer's rules are your rules while you write code.
    PowerShell, `bash` is WSL's and has no `gh`). Fix what fails, re-run.
    The same gate failing three times: park the ticket with the three outputs
    verbatim, delete the branch, move on.
-6. All gates exit 0 → `git checkout audit && git pull --ff-only origin audit && git merge --no-ff t<n>-<slug> -m "merge #<n> (t<n>-<slug>): all gates green"`,
+6. All gates exit 0 → `gh pr ready`, then `git checkout audit && git pull --ff-only origin audit && git merge --no-ff t<n>-<slug> -m "merge #<n> (t<n>-<slug>): all gates green"`,
    `git push origin audit`; promotion into `dev` goes through an `audit → dev` pull request, whose CI checks the tree (CI does not run on a push to `dev`, #477), so do not promote by pushing `dev`; `gh issue close <n> --comment "<commit>, gates G0–G6 exit 0 on the branch tip"`,
    `git branch -d t<n>-<slug>`. Never push to `main` or `v0.1-resolver`.
 7. Append a line to the ledger you were given: ticket, result, attempts, note.
