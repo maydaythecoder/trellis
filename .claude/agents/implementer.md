@@ -37,6 +37,8 @@ You implement exactly what the ticket specifies. Nothing more.
 Run the ticket's Verify command, then `scripts/gates/run-all.sh <n>`. If
 either fails, you are not done. Report what you ran and the actual output, not
 a summary of it. Commit on the ticket branch with a message that says why.
+The ticket's draft pull request (ADR 0061) is opened when work starts and
+marked ready by whoever merges; you do neither.
 
 ## Never
 - Weaken, skip or delete a test to make a build pass.
