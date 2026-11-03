@@ -514,7 +514,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = std::thread::spawn(move || {
-            let (mut s, _) = listener.accept().unwrap();
+            let mut s = accept_within(&listener);
             let mut req = Vec::new();
             let mut b = [0u8; 1];
             while !req.ends_with(b"\r\n\r\n") {
@@ -537,6 +537,151 @@ mod tests {
             .unwrap();
         });
         (addr, handle)
+    }
+
+    /// One connection on `l`, or a panic after 30 s with none.
+    ///
+    /// The risk (#248): a mutant that never connects (`probe`, `choose` or
+    /// `get` returning at once) left the stub blocked in `accept`, and a
+    /// test joining it hung until cargo-mutants' 300 s limit, a timeout
+    /// rather than a failure. The panic ends the stub, and the test's
+    /// `join().unwrap()` fails on it.
+    fn accept_within(l: &TcpListener) -> std::net::TcpStream {
+        const NO_REQUEST: Duration = Duration::from_secs(30);
+        l.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + NO_REQUEST;
+        loop {
+            match l.accept() {
+                Ok((s, _)) => {
+                    // An accepted socket can inherit the listener's mode.
+                    s.set_nonblocking(false).unwrap();
+                    return s;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "no request within {NO_REQUEST:?}"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => panic!("accept: {e}"),
+            }
+        }
+    }
+
+    /// One connection: read the request's head, then do `then` with the
+    /// stream, for the answers [`serve_at`] does not give.
+    fn serve_then(
+        then: impl FnOnce(&mut std::net::TcpStream) + Send + 'static,
+    ) -> (SocketAddr, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let mut s = accept_within(&listener);
+            let mut req = Vec::new();
+            let mut b = [0u8; 1];
+            while !req.ends_with(b"\r\n\r\n") {
+                if s.read(&mut b).unwrap() == 0 {
+                    break;
+                }
+                req.push(b[0]);
+            }
+            then(&mut s);
+        });
+        (addr, handle)
+    }
+
+    /// A 200 whose head and body together are `total` bytes, the body
+    /// `{"models":[]}` padded with spaces, written as `parts` writes of the
+    /// given sizes with a pause between, so the reader takes each apart.
+    fn answer_of(
+        total: usize,
+        parts: &[usize],
+    ) -> impl FnOnce(&mut std::net::TcpStream) + Send + use<> {
+        let head = "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n";
+        let mut all = format!("{head}{{\"models\":[]}}").into_bytes();
+        all.resize(total, b' ');
+        let parts = parts.to_vec();
+        move |s| {
+            let mut at = 0;
+            for n in parts {
+                s.write_all(&all[at..at + n]).unwrap();
+                s.flush().unwrap();
+                at += n;
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            assert_eq!(at, all.len(), "the parts add up to the answer");
+        }
+    }
+
+    #[test]
+    fn get_takes_an_answer_of_exactly_the_cap_and_refuses_one_byte_more() {
+        // The risk (#248): the size cap refusing an answer that fits it, or
+        // letting one past it through because no read ended exactly on it.
+        // The second answer is sent as all but one byte of the cap, then two
+        // bytes, so no read ends on the cap itself.
+        let (addr, server) = serve_then(answer_of(MAX_RESPONSE, &[MAX_RESPONSE]));
+        let got = get(addr, "/api/tags", Duration::from_secs(20));
+        server.join().unwrap();
+        assert!(got.is_ok(), "{got:?}");
+
+        let over = MAX_RESPONSE + 1;
+        let (addr, server) = serve_then(answer_of(over, &[MAX_RESPONSE - 1, 2]));
+        let got = get(addr, "/api/tags", Duration::from_secs(20));
+        server.join().unwrap();
+        assert_eq!(
+            got,
+            Err(format!("answered with more than {MAX_RESPONSE} bytes"))
+        );
+    }
+
+    #[test]
+    fn get_says_a_silent_server_did_not_answer_in_time_and_names_a_reset_as_one() {
+        // The risk (#248): the two ways a read fails told apart wrongly. A
+        // server that accepts and says nothing must read as "no complete
+        // answer within" the bound, not the OS's "would block"; one that
+        // resets the connection must read as the reset, not as slow.
+        let bound = Duration::from_millis(500);
+        let (addr, server) = serve_then(|_| std::thread::sleep(Duration::from_secs(2)));
+        let got = get(addr, "/api/tags", bound);
+        server.join().unwrap();
+        assert_eq!(got, Err(format!("no complete answer within {bound:?}")));
+
+        // Closed with the request unread, so the kernel resets the
+        // connection rather than ending it (RFC 1122 4.2.2.13). The request
+        // is in the stub's buffer once `serve_then` has read its head, so a
+        // fresh listener that reads nothing is used here.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let s = accept_within(&listener);
+            std::thread::sleep(Duration::from_millis(300));
+            drop(s);
+        });
+        let got = get(addr, "/api/tags", Duration::from_secs(10));
+        server.join().unwrap();
+        let err = got.expect_err("a reset connection is no answer");
+        assert!(err.to_lowercase().contains("reset"), "{err}");
+    }
+
+    #[test]
+    fn get_refuses_only_a_chunked_transfer_encoding() {
+        // The risk (#248): any `Transfer-Encoding` header, or any header
+        // whose value says "chunked", refused as a chunked body, so a
+        // runtime that names its (identity) encoding offers no model.
+        let (addr, server) = serve_then(|s| {
+            let body = r#"{"models":[]}"#;
+            write!(
+                s,
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: identity\r\nX-Note: not chunked\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        let got = get(addr, "/api/tags", Duration::from_secs(10));
+        server.join().unwrap();
+        assert_eq!(got, Ok(r#"{"models":[]}"#.to_string()));
     }
 
     const TWO_MODELS: &str = r#"{"models":[
