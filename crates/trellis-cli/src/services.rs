@@ -136,6 +136,9 @@ impl Services {
                 changed: Vec::new(),
                 changed_count: 0,
                 duration_ms: None,
+                // Not an edit: no line counts (ADR 0007, #811).
+                lines_added: None,
+                lines_removed: None,
             })
             .collect()
     }
@@ -588,5 +591,46 @@ mod tests {
         let e = format!("{:#}", create_fresh(&t.join("x.log")).unwrap_err());
         assert!(e.contains("cannot replace"), "{e}");
         let _ = std::fs::remove_dir_all(&t);
+    }
+
+    /// A real exit status for the `try_wait` stand-ins below; `reap` only
+    /// looks at whether one is there.
+    #[cfg(unix)]
+    fn an_exit_status() -> std::process::ExitStatus {
+        std::process::Command::new("true").status().unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reap_waits_through_a_not_yet_exited_poll_and_stops_on_an_error() {
+        // #248. The risk: a service reaped on the second poll reported as
+        // not reaped, because the deadline was read as already passed
+        // (`now - REAP_BOUND`, or a guard that fires on the first `None`),
+        // or an error from `try_wait` reported as a reap.
+        let mut polls = 0;
+        let reaped = reap(|| {
+            polls += 1;
+            Ok((polls > 1).then(an_exit_status))
+        });
+        assert!(reaped, "exited on the second poll, within the bound");
+        assert_eq!(polls, 2);
+        assert!(!reap(|| Err(std::io::Error::other("no such child"))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reap_gives_up_at_the_bound_instead_of_waiting_for_an_exit_past_it() {
+        // #248. The risk: a drop that hangs on a service in uninterruptible
+        // sleep, because the bound was never checked; the exit here comes
+        // only after the bound, and `reap` must have stopped polling first.
+        let started = std::time::Instant::now();
+        let reaped = reap(|| {
+            Ok((started.elapsed() > REAP_BOUND + Duration::from_secs(1)).then(an_exit_status))
+        });
+        assert!(
+            !reaped,
+            "the exit came after the bound, so it is not a reap"
+        );
+        assert!(started.elapsed() < REAP_BOUND + Duration::from_secs(1));
     }
 }

@@ -361,7 +361,7 @@ fn package(p: Option<&serde_json::Value>) -> Option<(String, String)> {
 /// from the lockfile, the registry and the tool, so they are printed plain,
 /// as everything from outside the binary is.
 pub(crate) fn render(report: &Report) -> String {
-    use crate::log_cmd::plain;
+    use crate::plain;
     let ignored_note = |n: usize| {
         if n == 0 {
             String::new()
@@ -693,6 +693,20 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err, "trellis-no-such-tool-7f3a is not on PATH");
+    }
+
+    #[test]
+    fn a_program_that_exists_but_cannot_start_is_not_called_absent() {
+        // #248 (6b804cb, shard 1). The risk: every spawn failure reported
+        // as "not on PATH", which sends a user to install a tool that is
+        // there. A directory is found, and refused, on both platforms.
+        let dir = crate::testutil::scratch("doctor-supply-not-a-program");
+        let err = output_within(&dir, &args(&["audit"]), Duration::from_secs(5)).unwrap_err();
+        assert!(
+            err.contains("doctor-supply-not-a-program") && err.contains(" could not be started: "),
+            "{err}"
+        );
+        assert!(!err.contains("not on PATH"), "{err}");
     }
 
     #[test]

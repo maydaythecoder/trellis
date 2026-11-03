@@ -19,6 +19,7 @@ const (
 	forPaths    = "paths"
 	forCodebase = "codebase"
 	forRadius   = "radius"
+	forClosing  = "closing"
 )
 
 // ask sends a command whose answer is read for purpose. The newest
@@ -84,6 +85,7 @@ func (m *Model) stateAnswered(data any) {
 	if s, isStr := d["root"].(string); isStr {
 		m.strip.Root = view.Plain(s)
 	}
+	m.pendingListed(d)
 }
 
 // runtimeText is what a runtime said of itself, for Where it is: the

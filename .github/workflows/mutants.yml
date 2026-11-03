@@ -165,6 +165,23 @@ jobs:
       # red on any, and the upload below runs anyway. Its own limit sits under
       # the job's so a long shard stops here, with outcomes written so far,
       # and the upload still has time to run.
+      #
+      # On Linux the step runs inside a memory-capped cgroup (#1026). A mutant
+      # whose test allocates without bound (two in trellis-cli at 6b804cb:
+      # `pick` never returning at end of input, `answer` always returning an
+      # empty line) took every byte of the runner before `--timeout 300`
+      # could fire; the runner service died, the job was cancelled, the
+      # upload never ran, and the shard's outcomes went with it, three times
+      # each for shards 2 and 7 (#995). Under the cap the test is killed
+      # instead and the mutant counted as caught (a slower allocator would
+      # meet `--timeout 300` first and count as a timeout; either way the
+      # runner lives). The cap is 12 GB of ubuntu-latest's 16 GB, so the
+      # runner service keeps its own room; swap is off so the kill is prompt
+      # rather than a thrash. The flags and the mutant list are untouched:
+      # `--shard` partitions one list, and eight shards of it are already
+      # committed. Windows has no cgroups: #995's shards are Linux, and a
+      # Windows dispatch that meets one of these mutants still loses its
+      # runner.
       - name: cargo mutants (whole workspace suite per mutant)
         shell: bash
         timeout-minutes: 345
@@ -178,6 +195,18 @@ jobs:
           args=(-p "$CRATE" --test-workspace true --timeout 300 --no-shuffle -j 1 --cargo-arg=--locked)
           if [ -n "$SHARD" ]; then args+=(--shard "$SHARD"); fi
           if [ -n "$FILE" ]; then args+=(-f "$FILE"); fi
+          if [ "$RUNNER_OS" = Linux ]; then
+            cg=/sys/fs/cgroup/mutants
+            sudo mkdir -p "$cg"
+            echo 12G | sudo tee "$cg/memory.max" > /dev/null
+            echo 0 | sudo tee "$cg/memory.swap.max" > /dev/null
+            # This shell moves itself in; cargo mutants and every build and
+            # test it starts inherit the cgroup. memory.oom.group stays at
+            # its default 0, so the kernel kills the one largest process
+            # (the test binary), not the shell and cargo mutants with it.
+            echo $$ | sudo tee "$cg/cgroup.procs" > /dev/null
+            echo "memory cap: $(cat "$cg/memory.max") bytes, swap $(cat "$cg/memory.swap.max"), in $(cut -d: -f3 /proc/self/cgroup)"
+          fi
           cargo mutants "${args[@]}"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

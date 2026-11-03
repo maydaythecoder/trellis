@@ -1,28 +1,25 @@
  Run                                                                                                    L1 / 4  TRELLIS 
- ● RUNNING  1:23*  █░░░░░░░ 3/40  ran edit, turn 3 → src/parser.py                                                      
+ ● RUNNING  1:23*  █░░░░░░░ 3/40  [^P] pause  running edit → src/parser.py                         plan  summary so far 
 ┌ transcript ──────────────────────────────────────────────────────────┐┌ where ───────────────────────────────────────┐
-│> fix the failing parser test                                         ││  phase    ran edit, turn 3                   │
-│· blast_radius parse_expr                                             ││  runtime  ollama · qwen2.5-coder:32b         │
-│    resolved 12 · candidates 1                                        ││  control  —                                  │
-│The parser drops the last token when the input ends in a comment.     ││  root     trellis-demo                       │
-│· run_checks  ✓ check passed                                          │└──────────────────────────────────────────────┘
-│                                                                      │┌ actions ─────────────────────────────────────┐
-│                                                                      ││  blast_radius           1 ●─┐                │
-│                                                                      ││  read_file                ○─┤                │
-│                                                                      ││  edit         1 · 1 wrote ●─┤──◆ 3 actions   │
+│▎ you · task  fix the failing parser test, keeping the comment        ││  phase    ran edit, turn 3                   │
+│▎ handling the tokenizer already has                                  ││  call     edit → src/parser.py               │
+│─ turn 1 · model 6200 ms · 412 tok out · 12400 B prompt               ││  model    ollama… · tier 2, native tool calls│
+│· Measured the blast radius of parse_expr                             ││  root     trellis-demo · control approve     │
+│    resolved 12 · candidates 1                                        ││  runtime  ollama · qwen2.5-coder:32b         │
+│The parser drops the last token when the input ends in a comment.     │└──────────────────────────────────────────────┘
+│▎ you · steer · queued  leave tokens.py alone                         │┌ actions ─────────────────────────────────────┐
+│─ turn 2 · model 4800 ms · — tok out · — B prompt                     ││  blast_radius           1 ●─┐                │
+│· Ran the checks: Tests on whole repository                           ││  read_file                ○─┤                │
+│✓ Tests passed · trellis-checks verdict                               ││  edit         1 · 1 wrote ●─┤──◆ 3 actions   │
 │                                                                      ││  run_checks             1 ●─┘                │
 │                                                                      ││  ✎ 1                                         │
-│                                                                      ││  ✎ edit src/parser.py                        │
 │                                                                      ││  · run_checks                                │
 │                                                                      │└──────────────────────────────────────────────┘
 │                                                                      │┌ edits ───────────────────────────────────────┐
-│                                                                      ││~ src/index/resolve.rs                        │
-│                                                                      ││                                              │
+│                                                                      ││~ src/index/resolve.rs                       —│
 │                                                                      │└──────────────────────────────────────────────┘
 │                                                                      │┌ checks ──────────────────────────────────────┐
 │                                                                      ││typecheck passed                              │
-│                                                                      ││                                              │
-│                                                                      ││                                              │
 │                                                                      ││                                              │
 │                                                                      │└──────────────────────────────────────────────┘
 │                                                                      │┌ radius ──────────────────────────────────────┐
@@ -31,10 +28,13 @@
 │                                                                      ││  unresolved     2 ○─┘                        │
 │                                                                      ││  a floor on reach, not a boundary            │
 └──────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────┘
-┌ budget ──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│TURNS █░░░░░░░░░░░░░░░ 3/40  ·  PROMPT 24.1 kB  ·  TIME 1:23*                                                         │
+┌ budget  [^R] raise ──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│   TURNS        █░░░░░░░░░░░░░░░ 3/40                                                                                 │
+│   WALL CLOCK   1:23*/—                                                                                               │
+│   COMPLETION   —/— tokens                                                                                            │
+│   LAST PROMPT  24.1 kB/—                                                                                             │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌ steer  [⏎] queue for the next turn ──────────────────────────────────────────────────────────────────────────────────┐
 │█                                                                                                                     │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
- [TAB] select  [⏎] in  [^C] stop                 ● 1 pending  model ollama:qwen2.5-coder:32b  tier 2, native tool calls 
+ [TAB] select  [⏎] in  [^F] filter  [^N] quiet  [^O] call  [^C] stop  ● 1 pending  model ol…  tier 2, native tool calls 

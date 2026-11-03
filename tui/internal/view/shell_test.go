@@ -18,17 +18,38 @@ func shellState() State {
 	s := populated()
 	s.Running = true
 	s.Model, s.Tier = "ollama:qwen2.5-coder:32b", "2, native tool calls"
+	call1 := &RawCall{Turn: 1, Call: `{"tool":"blast_radius","symbol":"parse_expr"}`, Observation: strp("resolved 12 · candidates 1")}
+	call2 := &RawCall{Turn: 2, Call: `{"tool":"run_checks","scope":"all"}`}
 	s.Transcript = []Row{
-		{Text: "> fix the failing parser test", Role: RoleYou},
-		{Text: "· blast_radius parse_expr", Role: RoleTool, Turn: 1},
-		{Text: "    resolved 12 · candidates 1", Role: RoleOutput, Turn: 1},
+		{Text: "you · task  fix the failing parser test, keeping the comment handling the tokenizer already has", Role: RoleYou, Bar: true},
+		{Text: TurnDivider(1, u(6200), u(412), u(12400)), Role: RoleLabel, Turn: 1},
+		{Text: "· Measured the blast radius of parse_expr", Role: RoleTool, Turn: 1, Raw: call1},
+		{Text: "    resolved 12 · candidates 1", Role: RoleOutput, Turn: 1, Raw: call1},
 		{Text: "The parser drops the last token when the input ends in a comment."},
-		{Text: "· run_checks  ✓ check passed", Role: RolePassed, Turn: 2},
+		{Text: "you · steer · queued  leave tokens.py alone", Role: RoleYou, Bar: true},
+		{Text: TurnDivider(2, u(4800), nil, nil), Role: RoleLabel, Turn: 2},
+		{Text: "· Ran the checks: Tests on whole repository", Role: RoleTool, Turn: 2, Raw: call2},
+		{Text: "✓ Tests passed · trellis-checks verdict", Role: RolePassed, Turn: 2, Raw: call2},
 	}
 	s.Actions = []Action{{Tool: "blast_radius", Target: "parse_expr"}, {Tool: "edit", Target: "src/parser.py", Wrote: true}, {Tool: "run_checks"}}
 	s.Budget = Budget{Iteration: 3, MaxIterations: u(40), PromptBytes: u(24100), ElapsedSecs: u(83)}
 	s.Now = Now{Phase: Phase{Kind: "tool", Turn: 3, Tool: "edit", Target: "src/parser.py"},
+		Call: Call{Tool: "edit", Target: "src/parser.py"}, Control: "approve",
 		Runtime: "ollama · qwen2.5-coder:32b", Root: "/work/trellis-demo"}
+	return s
+}
+
+// planState is a run in flight at the plan level, its plan one the model
+// sent at turn 4 with every state and a cut, offering ^E.
+func planState() State {
+	s := shellState()
+	s.Plan = Plan{Seen: true, Turn: u(4), StepsCut: u(2), TextsCut: u(0), CanEdit: true, Steps: []PlanStep{
+		{Text: "find where parse_expr drops the last token", State: "done"},
+		{Text: "keep the token when the input ends in a comment", State: "current"},
+		{Text: "add a test for the comment case", State: "todo"},
+		{Text: "run the type checker and the tests\x1b[2J", State: "todo"},
+	}}
+	s.Nav = Nav{Open: PanelPlan, Selected: PanelPlan}
 	return s
 }
 
@@ -52,7 +73,7 @@ func TestShellTrailFirstStatusLastAt120x40And80x24(t *testing.T) {
 				}
 			}
 			top, now, last := rows[0], rows[1], rows[h-1]
-			wantTrail, wantDepth, wantKeys := " Run ", "L1 / 4", "[TAB] select  [⏎] in  [^C] stop"
+			wantTrail, wantDepth, wantKeys := " Run ", "L1 / 4", "[TAB] select  [⏎] in  [^F] filter  [^N] quiet  [^O] call  [^C] stop"
 			if open != "" {
 				wantTrail, wantDepth, wantKeys = " Run ⟩ actions", "L2 / 4  [ESC] out", "[ESC] out  [^C] stop"
 			}
@@ -116,7 +137,10 @@ func TestShellSelectedPaneAndTheRail(t *testing.T) {
 		t.Fatalf("the selected pane is not the heavy one:\n%s", out)
 	}
 	s.Nav.Open = PanelChecks
-	rows := strings.Split(Render(s, 120, 40), "\n")
+	// 43 rows: the budget box's four rows (#951) leave a 120x40 stage
+	// three rows shorter, and the rail's share of it cuts each title to
+	// four letters.
+	rows := strings.Split(Render(s, 120, 43), "\n")
 	if !strings.HasPrefix(rows[2], " w ┌ checks") {
 		t.Fatalf("the rail and the open pane do not start the stage: %q", rows[2])
 	}
@@ -140,11 +164,35 @@ func TestShellGoldenRenders(t *testing.T) {
 	}{
 		{"run-80x24", 80, 24, ""},
 		{"run-120x40", 120, 40, ""},
+		// Where it is gone into (#952): at 80 columns its rows are the
+		// whole width, folded out of the right column.
+		{"where-80x24", 80, 24, PanelWhere},
+		{"where-120x40", 120, 40, PanelWhere},
 		{"actions-80x24", 80, 24, PanelActions},
 		{"actions-120x40", 120, 40, PanelActions},
+		// The code level and a file's diff (#853), from codeState.
+		{"edits-80x24", 80, 24, PanelEdits},
+		{"edits-120x40", 120, 40, PanelEdits},
+		{"diff-80x24", 80, 24, PanelEdits},
+		{"diff-120x40", 120, 40, PanelEdits},
+		// The summary level (#854), from summaryState.
+		{"summary-80x24", 80, 24, PanelSummary},
+		{"summary-120x40", 120, 40, PanelSummary},
+		// The plan level (#857), from planState.
+		{"plan-80x24", 80, 24, PanelPlan},
+		{"plan-120x40", 120, 40, PanelPlan},
 	} {
 		s := shellState()
 		s.Nav = Nav{Open: c.open, Selected: c.open}
+		switch c.open {
+		case PanelEdits:
+			s = codeState()
+			s.Nav = Nav{Open: c.open, Selected: c.open, Diff: strings.HasPrefix(c.name, "diff")}
+		case PanelSummary:
+			s = summaryState()
+		case PanelPlan:
+			s = planState()
+		}
 		got := Render(s, c.w, c.h) + "\n"
 		path := filepath.Join("testdata", "shell-"+c.name+".golden")
 		if *update {

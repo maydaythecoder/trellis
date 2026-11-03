@@ -6,9 +6,7 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 
-use trellis_tickets::{
-    GH_VIEW_FIELDS, IntakeError, Line, Report, TriageError, Value, gh_view_args, triage_with,
-};
+use trellis_tickets::{IntakeError, Line, Report, TriageError, Value, gh_view_args, triage_with};
 
 fn recorded(n: u64) -> Result<String, String> {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -133,14 +131,11 @@ fn triage_json_is_one_object_and_blocker_state_comes_from_the_same_read() {
 }
 
 #[test]
-fn triage_only_reads_the_issue_and_its_blockers_through_gh_issue_view() {
+fn triage_only_reads_the_issue_and_its_blockers_through_one_rest_read() {
     // Read-only is the ticket's contract: `sweep --apply` is the only
     // command that changes an issue. The one argv is a view, and it is
     // asked for #77 and the two issues its triage block names, nothing else.
-    assert_eq!(
-        gh_view_args(77),
-        ["issue", "view", "77", "--json", GH_VIEW_FIELDS]
-    );
+    assert_eq!(gh_view_args(77), ["api", "repos/{owner}/{repo}/issues/77"]);
     let (r, asked) = triage_recorded(77);
     assert_eq!(asked, [77, 75, 76]);
     // #77's body has no `**Files:**` line, so every file-derived dimension

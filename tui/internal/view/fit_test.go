@@ -63,20 +63,21 @@ func TestViewFitsEightyColumnsActionsAndRadiusLabelsAreWhole(t *testing.T) {
 }
 
 // #655: the budget line, cut by its box, ended "· queu" once a turn had
-// reported a rate and a wait. Whole segments give way instead, the rate
-// first; wider, the same state draws everything.
+// reported a rate and a wait. Whole Stats give way instead, the rate
+// first, and the rows they sit beside are never cut (#951); wider, the
+// same state draws everything.
 func TestBudgetLineAtEightyColumnsEndsWithAWholeSegment(t *testing.T) {
 	s := populated()
 	s.Running = true
 	s.Budget = Budget{Iteration: 4, MaxIterations: u(40), PromptBytes: u(16800), ElapsedSecs: u(36),
 		CompletionTokens: u(85), ModelMs: u(9600), QueueWaitMs: u(2100)}
 	b := strings.Join(paneRows(t, s, "budget", 80, 24), "\n")
-	for _, want := range []string{"TURNS █░░░░░░░░░░░░░░░ 4/40", "PROMPT 16.8 kB", "TIME 0:36*", "queued 2.1 s"} {
+	for _, want := range []string{"TURNS        █░░░░░░░░░░░░░░░ 4/40", "LAST PROMPT  16.8 kB/—", "WALL CLOCK   0:36*/—", "queued 2.1 s"} {
 		if !strings.Contains(b, want) {
 			t.Fatalf("%q missing: %s", want, b)
 		}
 	}
-	if strings.Contains(b, "tok") || strings.Contains(b, "queu ") || strings.Contains(b, "…") {
+	if strings.Contains(b, " tok,") || strings.Contains(b, "tok/s") || strings.Contains(b, "queu ") || strings.Contains(b, "…") {
 		t.Fatalf("the rate did not give way first, or a segment was cut: %s", b)
 	}
 	wide := Render(s, 140, 24)
@@ -166,15 +167,15 @@ func TestBudgetLineUnreportedFiguresAreNamedNotDrawnAsZero(t *testing.T) {
 			t.Fatalf("%q drawn:\n%s", bad, out)
 		}
 	}
-	if !strings.Contains(out, "TURNS —/—") || !strings.Contains(out, "PROMPT —") || !strings.Contains(out, "TIME —") {
+	if !strings.Contains(out, "TURNS        —/—") || !strings.Contains(out, "LAST PROMPT  —/—") || !strings.Contains(out, "WALL CLOCK   —/—") {
 		t.Fatalf("unreported figures are not drawn as —:\n%s", out)
 	}
 	s := State{Running: true, Budget: Budget{Iteration: 2, MaxIterations: u(40), ElapsedSecs: u(18)}}
-	if out := Render(s, 120, 24); !strings.Contains(out, "PROMPT —") || !strings.Contains(out, "TURNS █░░░░░░░░░░░░░░░ 2/40") {
+	if out := Render(s, 120, 24); !strings.Contains(out, "LAST PROMPT  —/—") || !strings.Contains(out, "TURNS        █░░░░░░░░░░░░░░░ 2/40") {
 		t.Fatalf("%s", out)
 	}
 	s = State{Running: true, Budget: Budget{MaxIterations: u(40), ElapsedSecs: u(75)}}
-	if out := Render(s, 120, 24); !strings.Contains(out, "TIME 1:15*") || !strings.Contains(out, "TURNS —/40") || strings.Contains(out, "░") {
+	if out := Render(s, 120, 24); !strings.Contains(out, "WALL CLOCK   1:15*/—") || !strings.Contains(out, "TURNS        —/40") || strings.Contains(out, "░") {
 		t.Fatalf("%s", out)
 	}
 }

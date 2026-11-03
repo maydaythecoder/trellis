@@ -9,7 +9,8 @@ import (
 // the Trail that says what is happening right now, the pane that says where
 // the run is, and trellis's newest stderr line. Every figure is one trellis
 // reported or this view's own clock, marked * as its own; one that was not
-// reported is Dash, never 0 or a guess (#911).
+// reported is Dash, never 0 or a guess (#911). The clock is trellis's own
+// once it reports one (#906).
 
 // Phase is what a run is on, as its last event said: the model being
 // called for a turn, or the tool the last turn ran.
@@ -24,14 +25,38 @@ type Phase struct {
 	Tool, Target string
 }
 
+// Call is a turn's tool call as the turn event named it: the tool and
+// what it was pointed at, either "" when the event carried none.
+type Call struct {
+	Tool, Target string
+}
+
 // Now is what the Now strip and Where it is draw that the rest of State
 // does not hold.
 type Now struct {
 	Phase Phase
+	// Call is the last turn's call (#952), kept when the phase moves on to
+	// the next model call or the run ends; zero before this run's first.
+	Call Call
+	// Control is the control mode the run's prompt named, or before any
+	// prompt the one the next names (#952); "" when the TUI names none.
+	Control string
 	// Waiting is set while a question trellis asked waits on the person.
 	Waiting bool
+	// Question is that question as the approval box names it, served
+	// text; "" when none waits.
+	Question string
+	// EngineClock is set when the Budget's elapsed time counts on from an
+	// elapsed_ms trellis sent (#906), and clear when it is this view's own.
+	EngineClock bool
 	// Stopping is set once a stop was sent and the run has not ended.
 	Stopping bool
+	// Paused is set from the loop's paused event to its resumed event or
+	// the run's end (#806): only the event says the run is held. PauseAsked
+	// is set from a pause sent until that event or the pause's answer: the
+	// strip still says RUNNING, and offers resume, which withdraws a pause
+	// not yet reached, as trellis counts a pause asked as one.
+	Paused, PauseAsked bool
 	// Outcome and Exit are the last run_end's own words, for an ended run;
 	// "" and nil when no run has ended or it did not say.
 	Outcome string
@@ -41,11 +66,26 @@ type Now struct {
 	// Root is the repository trellis serves, from get_state; "" until it
 	// has said.
 	Root string
+	// Compactions is how many compacted and compacted on request events
+	// this run has sent (#954), a count of events and not a figure trellis
+	// sent; RequestBytes and BudgetBytes are the latest compacted event's
+	// request size and budget, two figures never divided, nil until one.
+	Compactions               int
+	RequestBytes, BudgetBytes *uint64
 }
 
-// whereH is the Where it is pane's height: phase, runtime, control and
-// root, and two borders.
-const whereH = 6
+// whereH is the Where it is pane's height: phase, last call, model and
+// tier, root and control, and runtime, and two borders. Two facts share a
+// row twice, model with tier as the status bar has them and the
+// repository with the mode the run works on it in: at 40 rows a sixth or
+// seventh row would take the actions graph's or the checks pane's own
+// rows (#952). whereMinH is its height without the runtime, the row it
+// gives up first, since only a colibri endpoint identifies itself: so the
+// pane is no rarer than its four rows before #952 made it five.
+const (
+	whereH    = 7
+	whereMinH = 6
+)
 
 // stateWord is the run's state as the strip names it: run_end's own words
 // for an ended run, never "done" or "failed" (DESIGN.md §2.1).
@@ -55,6 +95,8 @@ func stateWord(s State) string {
 		return "STOPPING"
 	case s.Running && s.Now.Waiting:
 		return "WAITING ON YOU"
+	case s.Running && s.Now.Paused:
+		return "PAUSED"
 	case s.Running:
 		return "RUNNING"
 	case s.Now.Outcome != "":
@@ -83,39 +125,138 @@ func Activity(p Phase) string {
 	return "none"
 }
 
-// nowStrip is the Now strip's row as spans (#911, the NowStrip card): the
-// state as a Status, the time by this view's clock, the turn as a Meter
-// against the run's ceiling, what the run is on (the last turn's tool →
-// target when it ran one), and while a question waits the keys that
-// answer it.
-func nowStrip(s State) []Span {
+// nowStrip is the Now strip's row as spans at w cells (#911, the NowStrip
+// card): the state as a Status, the run's time (clockText), the turn as a
+// Meter against the run's ceiling, how many sent items are still queued,
+// the pause key, and what the run is on in -ing form (doing); or, while a
+// question waits, the question in that place and the keys that answer it
+// (#950). The figures and keys come first, and what the run is on is the
+// part the row cuts when it runs short; the question is cut to the room
+// the keys leave, so they are never the part cut.
+func nowStrip(s State, w int) []Span {
 	gap := Span{Text: "  "}
 	out := []Span{{Text: " "}, statusSpan(stateWord(s), nowRole(s))}
 	if s.Running || s.Now.Outcome != "" {
 		out = append(out, gap, Span{Text: clockText(s)}, gap)
 		out = append(out, meter("", turnUsed(s), s.Budget.MaxIterations, meterCellsShort)...)
 	}
+	if n := queuedCount(s.Compose.Queue); n > 0 {
+		out = append(out, gap, Span{Text: fmt.Sprintf("%d queued", n), Role: RoleLabel})
+	}
+	if k, ok := pauseKey(s); ok {
+		out = append(out, gap, Span{Text: keyRow(k), Role: RoleLabel})
+	}
+	if s.Running && s.Now.Waiting {
+		// The run is on the question now, not on the call it last made,
+		// and at 80 columns the row has room for one of the two.
+		keys := Span{Text: keyRow(key{"y", "accept"}, key{"n", "reject"}), Role: RoleYou}
+		room := w - spansWidth(out) - 2*Width(gap.Text) - Width(keys.Text)
+		// Below two cells Cut keeps one character and no "…", which would
+		// read as the whole question.
+		if q := Plain(s.Now.Question); q != "" && room >= 2 {
+			out = append(out, gap, Span{Text: Cut(q, room), Role: RoleYou})
+		}
+		return append(out, gap, keys)
+	}
 	// Before its first model call a run is on nothing yet, and the strip
 	// says nothing for it rather than "none".
 	if p := s.Now.Phase; s.Running && p.Kind != "" {
-		on := Activity(p)
-		if p.Kind == "tool" && p.Target != "" {
-			on += " → " + Plain(p.Target)
-		}
-		out = append(out, gap, Span{Text: on, Role: RoleTool})
-	}
-	if s.Running && s.Now.Waiting {
-		out = append(out, gap, Span{Text: keyRow(key{"y", "accept"}, key{"n", "reject"}), Role: RoleYou})
+		out = append(out, gap, Span{Text: doing(p), Role: RoleTool})
 	}
 	return out
 }
 
-// clockText is the run's time by this view's clock, marked * as its own:
-// trellis does not report its own yet (#906), and this one pauses while a
-// question waits on the person. A run in flight reads 0:00* until the
-// clock's first second; a run whose time this view never measured, Dash.
+// doing is what the run is on as the Now strip says it, in -ing form
+// (#950): "calling the model, turn 3", "running edit → src/a.py". The
+// turn is the meter's beside it, so a tool's line leaves it out. Where it
+// is keeps Activity's "ran edit, turn 3", the sentence the desktop's Where
+// it is also uses.
+func doing(p Phase) string {
+	if p.Kind != "tool" {
+		return Activity(p)
+	}
+	on := "running " + Plain(p.Tool)
+	if p.Target != "" {
+		on += " → " + Plain(p.Target)
+	}
+	return on
+}
+
+// queuedCount is how many of the composer's items are still queued: the
+// steers and follow_ups get_state's pending listed (#801) and the line a
+// Stop and send holds, so the strip's figure is the rows the task box
+// draws as queued.
+func queuedCount(q []Queued) int {
+	n := 0
+	for _, it := range q {
+		if it.Fate == FateQueued {
+			n++
+		}
+	}
+	return n
+}
+
+// pauseKey is the Now strip's one pause control (#857), as the desktop's
+// (#837): pause, or resume once a pause is asked or held, while a run is in
+// flight and not stopping. Not while a question waits: the box takes the
+// keys then.
+func pauseKey(s State) (key, bool) {
+	switch {
+	case !s.Running || s.Now.Stopping || s.Now.Waiting:
+		return key{}, false
+	case s.Now.Paused || s.Now.PauseAsked:
+		return key{"^P", "resume"}, true
+	}
+	return key{"^P", "pause"}, true
+}
+
+// The register dial's faces (#857), the brand book's Ascii and the
+// desktop's (#836): one for a screen with no run yet and one for a run
+// that has ended, the same face whatever the outcome, since a face that
+// differed by outcome would be a status, which play never is (DESIGN.md
+// section 3.1).
+const (
+	FaceEmpty = "(•_•)"
+	FaceEnded = "(•‿•)"
+)
+
+// playFace is the playful register's face and copy for the Now strip,
+// only where the strip has no run to show: before any run, and once one
+// has ended. Serious, and while a run is in flight, nothing. It is chosen
+// from the strip's state alone and names no figure, state word or outcome.
+func playFace(s State) (Span, bool) {
+	switch {
+	case !s.Playful || s.Running:
+		return Span{}, false
+	case s.Now.Outcome != "":
+		// Ended, as the strip's own word says it.
+		return Span{Text: FaceEnded + " that one is over", Role: RolePlay}, true
+	}
+	return Span{Text: FaceEmpty + " nothing here yet", Role: RolePlay}, true
+}
+
+// withFace is the strip with the playful face after it, when the face fits
+// beside the strip and what stands on its right (right cells, 0 for
+// nothing): the face is the first thing the row gives up, never a key or
+// a figure.
+func withFace(s State, now []Span, right, w int) []Span {
+	f, ok := playFace(s)
+	if !ok || spansWidth(now)+2+Width(f.Text)+right+1 > w {
+		return now
+	}
+	return append(append([]Span{}, now...), Span{Text: "  "}, f)
+}
+
+// clockText is the run's time. Once trellis reports its own (elapsed_ms,
+// #906) it is that figure, counted on between events, and unmarked; until
+// then, and for a run whose run_end carried none, it is this view's clock,
+// marked * as its own. Either pauses while a question waits on the person.
+// A run in flight reads 0:00* until the first figure; a run whose time
+// nothing measured, Dash.
 func clockText(s State) string {
 	switch {
+	case s.Budget.ElapsedSecs != nil && s.Now.EngineClock:
+		return Clock(*s.Budget.ElapsedSecs)
 	case s.Budget.ElapsedSecs != nil:
 		return Clock(*s.Budget.ElapsedSecs) + "*"
 	case s.Running:
@@ -139,25 +280,73 @@ func turnUsed(s State) *uint64 {
 	return &n
 }
 
-// where is the Where it is pane: the run's phase, the runtime, the control
-// mode and the repository. trellis reports no control mode to a client
-// yet, so it is Dash, as anything trellis has not said is.
+// where is the Where it is pane: the run's phase, its last call, the
+// model and tier get_state named, the repository with the control mode,
+// and the runtime, the row a short pane cuts. The control mode is the one the TUI sent (#952), since
+// trellis reports none to a client; the rest is what trellis said, and
+// Dash where it has said nothing.
 func where(s State, w, h int) []string {
-	runtime := Plain(s.Now.Runtime)
-	if runtime == "" {
-		runtime = Dash
+	orDash := func(v string) string {
+		if v = Plain(v); v == "" {
+			return Dash
+		}
+		return v
+	}
+	call := Dash
+	if t := Plain(s.Now.Call.Tool); t != "" {
+		call = t
+		if g := Plain(s.Now.Call.Target); g != "" {
+			call += " → " + g
+		}
 	}
 	root := Dash
 	if r := Plain(s.Now.Root); r != "" {
 		root = baseName(r)
 	}
+	phase := Activity(s.Now.Phase)
+	if s.Running && s.Now.Paused {
+		// The desktop's words for a held run (#837).
+		phase = "paused before the next model call"
+	}
 	rows := []Row{
-		{Text: "  phase    " + Activity(s.Now.Phase)},
-		{Text: "  runtime  " + runtime},
-		{Text: "  control  " + Dash, Role: RoleLabel},
-		{Text: "  root     " + root},
+		{Text: "  phase    " + phase},
+		{Text: "  call     " + call},
+		{Text: paired("model", orDash(s.Model), "tier", orDash(s.Tier), w-2)},
+		{Text: paired("root", root, "control", orDash(s.Now.Control), w-2)},
+		{Text: "  runtime  " + orDash(s.Now.Runtime)},
+		// Last, below the runtime, so the run column's pane keeps the rows
+		// it had (#952) and this one is read where the pane is opened.
+		{Text: "  context  " + contextText(s.Now)},
 	}
 	return paneBox(s, PanelWhere, "where", "", rows, w, h)
+}
+
+// contextText is Where it is's context row (#954), the desktop's words:
+// the compactions this run made, then the latest compacted request's bytes
+// beside the budget it was held to, each figure as trellis sent it and
+// left out until a compacted event has said it; never a share of the two.
+func contextText(n Now) string {
+	t := fmt.Sprintf("%d compactions", n.Compactions)
+	if n.Compactions == 1 {
+		t = "1 compaction"
+	}
+	if n.RequestBytes != nil {
+		t += fmt.Sprintf(" · request %d B", *n.RequestBytes)
+	}
+	if n.BudgetBytes != nil {
+		t += fmt.Sprintf(" · budget %d B", *n.BudgetBytes)
+	}
+	return t
+}
+
+// paired is one of Where it is's two-fact rows at w cells: the first fact
+// under its label, then the second after its own, the second whole and
+// the first cut, with "…", to the room it leaves, as the status bar cuts
+// the model before the tier. A cut tier label or mode could read as
+// another one; a cut model or path still reads as the start of itself.
+func paired(label, first, label2, second string, w int) string {
+	head, tail := "  "+Pad(label, 9), " · "+label2+" "+second
+	return head + Cut(first, max(w-Width(head)-Width(tail), 1)) + tail
 }
 
 // messages is the messages row: trellis's newest stderr line, human text
@@ -187,8 +376,13 @@ func baseName(path string) string {
 // askingRows is the rows drawn around the approval box: the Trail and the
 // Now strip above it and the status bar below, which stay on screen while
 // a question waits, so the person answering sees the run's state and how
-// to answer (#850, #851).
-const askingRows = 3
+// to answer (#850, #851). The call box (log.go) has the same around it;
+// the approval box has one more, approvalRows, the row naming the prompt
+// or follow-up the question belongs to (#954).
+const (
+	askingRows   = 3
+	approvalRows = askingRows + 1
+)
 
 // Asking is the screen while a question waits on the person: the Trail
 // and the Now strip, the approval box (Modal) over the stage, which covers
@@ -200,15 +394,33 @@ func Asking(s State, question, diff string, scroll, w, h int) string {
 	if !fits(w, h) {
 		return Modal(s.Theme, question, diff, scroll, w, h)
 	}
-	top := line(s.Theme, trail(s, w), w) + "\n" + line(s.Theme, nowStrip(s), w)
-	return top + "\n" + Modal(s.Theme, question, diff, scroll, w, h-askingRows) + "\n" + line(s.Theme, statusBar(s, w), w)
+	top := line(s.Theme, trail(s, w), w) + "\n" + line(s.Theme, nowStrip(s, w), w) + "\n" + line(s.Theme, askedFor(s), w)
+	return top + "\n" + Modal(s.Theme, question, diff, scroll, w, h-approvalRows) + "\n" + line(s.Theme, statusBar(s, w), w)
+}
+
+// askedFor is the row above the approval box naming the prompt or
+// follow-up whose run asks (#954), which line cuts to the screen: the
+// person's own words and served text, made plain again here, and Dash
+// when nothing named it.
+func askedFor(s State) []Span {
+	what := Dash
+	if a, ok := onScreen(s); ok && Plain(a.For) != "" {
+		what = Plain(a.For)
+	}
+	return []Span{{Text: " for " + what, Role: RoleOutput}}
 }
 
 // AskingLastFrom is ModalLastFrom for the box Asking draws at w by h: the
 // furthest line the model scrolls the question's diff to.
 func AskingLastFrom(diff string, w, h int) int {
+	return lastFromAround(diff, w, h, approvalRows)
+}
+
+// lastFromAround is ModalLastFrom for a box drawn with rows rows around it
+// at w by h, or alone over the screen below the minimum size.
+func lastFromAround(text string, w, h, rows int) int {
 	if !fits(w, h) {
-		return ModalLastFrom(diff, w, h)
+		return ModalLastFrom(text, w, h)
 	}
-	return ModalLastFrom(diff, w, h-askingRows)
+	return ModalLastFrom(text, w, h-rows)
 }

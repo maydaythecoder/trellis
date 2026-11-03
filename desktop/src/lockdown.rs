@@ -12,7 +12,8 @@
 //! CSP, the capability, no dev server or build hook); `ui/index.html`'s
 //! elements and every `ui/*.js` module's source (what each draws, sends and
 //! listens for, the helpers that live in one module each, the icons and
-//! their labels); and `ui/style.css`'s rules (the tokens, field contrast,
+//! their labels); and the page's own stylesheets' rules, `ui/style.css`
+//! and the sheets split from it (the tokens, field contrast,
 //! the minimum window). An edit that widens one of these fails here.
 
 use tauri::Url;
@@ -239,6 +240,14 @@ mod tests {
         "run", "overview", "codebase", "trails", "vault", "board", "atlas",
     ];
 
+    /// The levels below a section (#831), after the seven in page order:
+    /// each with the section it is burrowed into from, through a
+    /// `data-burrow` way in there rather than a panel of the overview. The
+    /// summary (#832) is the last section in page order, after the Code
+    /// levels.
+    const SUB_LEVELS: [(&str, &str); 3] =
+        [("code", "run"), ("code-file", "code"), ("summary", "run")];
+
     #[test]
     fn csp_has_no_unsafe_source_and_no_network_origin() {
         // The risk: a CSP edit that lets inline or eval'd script run, or
@@ -404,7 +413,40 @@ mod tests {
         );
         let sections: Vec<&Element> = page.iter().filter(|e| e.tag == "section").collect();
         let ids: Vec<&str> = sections.iter().filter_map(|s| s.attr("id")).collect();
-        assert_eq!(ids, SECTIONS, "every section, each with a way in");
+        let below: Vec<&str> = SUB_LEVELS.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            ids,
+            [&SECTIONS[..], &below[..]].concat(),
+            "every section, each with a way in"
+        );
+        // A level below a section is hidden at load, and entered from its
+        // section: the Code level by a way in the run section serves, a
+        // file by the rows code.js draws in the Code level.
+        for (id, from) in SUB_LEVELS {
+            let s = &page[index_of(&page, id)];
+            assert!(s.attrs.contains_key("hidden"), "#{id} is shown at load");
+            assert!(
+                !s.text.contains("Not built yet"),
+                "#{id} says it is not built"
+            );
+            let ways: Vec<usize> = (0..page.len())
+                .filter(|&i| page[i].attr("data-burrow") == Some(id))
+                .collect();
+            if from == "run" {
+                assert_eq!(ways.len(), 1, "one way into #{id}");
+                assert!(
+                    within(&page, ways[0], index_of(&page, from)),
+                    "#{id}'s way in is outside #{from}"
+                );
+                assert_eq!(page[ways[0]].tag, "button", "#{id}'s way in is a button");
+            } else {
+                assert!(ways.is_empty(), "#{id}'s ways in are drawn per file");
+                assert!(
+                    code_of("code.js").contains(&format!("pick.dataset.burrow = \"{id}\";")),
+                    "code.js draws no way into #{id}"
+                );
+            }
+        }
         let stage = index_of(&page, "stage");
         for &i in &(0..page.len())
             .filter(|&i| page[i].tag == "section")
@@ -674,6 +716,79 @@ mod tests {
                 .any(|s| s.trim() == ".approval-detail:focus-visible")
                 && squeeze(d).contains("outline:2px")),
             "focus on the details draws no outline"
+        );
+    }
+
+    #[test]
+    fn code_level_answers_and_comments_through_the_core_s_checks() {
+        // The risk (#831): Approve and Reject beside a diff that send their
+        // own `approve`, a second path that could answer a question twice or
+        // skip the dialog's bookkeeping; a Review in Code close taken as a
+        // no; or a line comment sent as something other than a steer naming
+        // the line the reducer named. No JavaScript runs under cargo test,
+        // so this holds the text; the reducer's side is
+        // a_line_comment_becomes_a_steer_naming_file_and_line.
+        let code = code_of("code.js");
+        let dialogs = code_of("dialogs.js");
+        assert!(
+            !code.contains("type: \"approve\"") && !code.contains("invoke("),
+            "code.js sends an answer itself"
+        );
+        assert!(
+            function_body(&code, "wireCode")
+                .contains("answerApproval(doc, bar.dataset.id, b.dataset.answer === \"approve\");"),
+            "Approve and Reject do not answer through dialogs.js"
+        );
+        assert_eq!(
+            dialogs.matches("type: \"approve\"").count(),
+            1,
+            "dialogs.js sends an answer from more than one place"
+        );
+        let answer = function_body(&dialogs, "answerApproval");
+        for want in [
+            "if (answered.has(id) || sendAnswer === null) return;",
+            "answered.add(id);",
+            "if (shown === id) withdraw(",
+            "sendAnswer(id, yes);",
+        ] {
+            assert!(answer.contains(want), "answerApproval lacks {want}");
+        }
+        // Review in Code answers nothing, and is decided before any answer.
+        let close = dialogs
+            .split("dialog.addEventListener(\"close\"")
+            .nth(1)
+            .expect("dialogs.js listens for the dialog's close");
+        let review = close
+            .find("dialog.returnValue === \"review\"")
+            .expect("the close reads Review in Code");
+        let answered = close.find("answered.add(id);").expect("the close answers");
+        assert!(review < answered, "Review in Code is taken as an answer");
+        assert!(
+            function_body(&dialogs, "forgetChild").contains("deferred.clear();"),
+            "a replaced child's deferred questions are kept"
+        );
+        let page = page();
+        let dialog = index_of(&page, "approval");
+        let b = index_of(&page, "approval-review");
+        assert!(within(&page, b, dialog) && page[b].attrs.contains_key("hidden"));
+        assert_eq!(page[b].attr("value"), Some("review"));
+        let bar = index_of(&page, "code-approve");
+        assert!(within(&page, bar, index_of(&page, "code-file")));
+        assert!(
+            page[bar].attrs.contains_key("hidden"),
+            "Approve and Reject show at load"
+        );
+        // A comment is a steer whose message starts with the line's name.
+        let send = function_body(&code, "sendComment");
+        for want in [
+            "type: \"steer\", message: `${at}: ${text}`",
+            "await send(tauri, line,",
+        ] {
+            assert!(send.contains(want), "sendComment lacks {want}");
+        }
+        assert!(
+            function_body(&code, "commentControl").contains("const at = str(l.at);"),
+            "a comment is offered on a line the reducer did not name"
         );
     }
 
@@ -1194,21 +1309,28 @@ mod tests {
                 "turn",
                 json!({"turn": 1, "call": "blast_radius app.core.f", "verdict": "None",
                        "check_kind": "", "observation": "4 callers resolved",
+                       "tool": "blast_radius", "target": "app.core.f", "wrote": false,
                        "resolved": 4, "candidates": 1, "unresolved": 2,
-                       "model_ms": 1200, "prompt_bytes": 2048, "completion_tokens": 40}),
+                       "model_ms": 1200, "prompt_bytes": 2048, "completion_tokens": 40,
+                       "elapsed_ms": 1400}),
             ),
             loop_event(
                 "turn",
                 json!({"turn": 2, "call": "edit app/core.py", "verdict": "None",
                        "check_kind": "", "observation": "applied: true (+1 -1)",
+                       "tool": "edit", "target": "app/core.py", "wrote": true,
                        "model_ms": 900, "prompt_bytes": 2300, "completion_tokens": 55,
-                       "queue_wait_ms": 100}),
+                       "queue_wait_ms": 100, "elapsed_ms": 2500,
+                       "lines_added": 1, "lines_removed": 1, "start_line": 3,
+                       "diff": "--- app/core.py\n+++ app/core.py\n@@ -2,3 +2,3 @@\n def f():\n-    return 1\n+    return 2\n \n"}),
             ),
             loop_event(
                 "turn",
                 json!({"turn": 3, "call": "run_checks app/core.py", "verdict": "Some(true)",
                        "check_kind": "Tests", "observation": "3 passed",
-                       "model_ms": 700, "prompt_bytes": 2500, "completion_tokens": 12}),
+                       "tool": "run_checks", "target": "Tests on app/core.py", "wrote": false,
+                       "model_ms": 700, "prompt_bytes": 2500, "completion_tokens": 12,
+                       "elapsed_ms": 3600}),
             ),
             json!({"type": "approval_request", "id": "approval-1",
                    "question": "Run bash?", "detail": "pytest -q"})
@@ -1216,7 +1338,8 @@ mod tests {
         ];
         let end = [
             json!({"type": "run_end", "outcome": "converged", "exit": 0,
-                   "id": "desktop-prompt-1", "run_id": "20261010-120000-000"})
+                   "id": "desktop-prompt-1", "run_id": "20261010-120000-000",
+                   "elapsed_ms": 61_000})
             .to_string(),
             json!({"type": "response", "command": "get_state", "success": true,
                    "id": "desktop-state",
@@ -1269,6 +1392,9 @@ mod tests {
         assert_eq!(view["budget"]["turn"], 3, "{view}");
         assert_eq!(view["outcome"]["outcome"], "converged", "{view}");
         assert_eq!(view["tier"], "scripted", "{view}");
+        assert_eq!(view["now"]["word"], "ended · converged", "{view}");
+        assert_eq!(view["now"]["elapsed"], "01:01", "{view}");
+        assert_eq!(view["where"]["root"], "/w/app", "{view}");
         assert!(view["alert"].is_string(), "{view}");
         assert_eq!(
             view["stderr"]["rows"][0]["text"], "trellis: indexed 12 modules",
@@ -1492,6 +1618,16 @@ mod tests {
         for id in ["repo-form", "repo-path", "repo-note"] {
             assert!(
                 switch.contains(&format!("getElementById(\"{id}\")")),
+                "settings.js no longer wires #{id}"
+            );
+            written.insert(id.to_string());
+        }
+        // The register dial (#836) sits under the form, and is settings.js's
+        // in the same way.
+        let dial = function_body(&ui["settings.js"], "wireRegister");
+        for id in ["register-dial", "register-serious", "register-playful"] {
+            assert!(
+                dial.contains(&format!("getElementById(\"{id}\")")),
                 "settings.js no longer wires #{id}"
             );
             written.insert(id.to_string());
@@ -1878,7 +2014,7 @@ mod tests {
         }));
         let overview_pane = overview["last_run"]["outcome"].clone();
 
-        assert_eq!(run_pane, json!("not converged"), "the Run pane's word");
+        assert_eq!(run_pane, json!("not_converged"), "the Run pane's word");
         assert_eq!(
             trails_pane, run_pane,
             "the Trails list's word differs from the Run pane's"
@@ -1889,7 +2025,7 @@ mod tests {
         );
         // The trail's word stays the trail's text: mapping it does not
         // promote it out of the untrusted wrapper (ADR 0007).
-        assert_eq!(trail_row["outcome"], json!({"untrusted": "not converged"}));
+        assert_eq!(trail_row["outcome"], json!({"untrusted": "not_converged"}));
     }
 
     #[test]
@@ -1900,7 +2036,7 @@ mod tests {
         // arms; the trail's are query.rs's Entry::outcome arms.
         let rpc = ["converged", "not_converged", "interrupted", "error"];
         let trail = ["converged", "not converged", "no check ran"];
-        let shown = ["converged", "not converged", "interrupted", "error"];
+        let shown = ["converged", "not_converged", "interrupted", "error"];
         for w in rpc.iter().chain(trail.iter()) {
             let out = crate::state::outcome_words(w);
             assert!(
@@ -2459,6 +2595,24 @@ mod tests {
             .join("\n")
     }
 
+    /// The Atlas's modules: atlas.js, the one index.html loads, and the
+    /// modules #955 split out of it along its sections.
+    const ATLAS_MODULES: [&str; 7] = [
+        "atlas.js",
+        "atlas-ask.js",
+        "atlas-view.js",
+        "atlas-draw.js",
+        "atlas-detail.js",
+        "atlas-toolbar.js",
+        "atlas-search.js",
+    ];
+
+    /// The Atlas's code, every module of it read as `code_of` reads one,
+    /// so a test of the Atlas holds wherever #955's split put a line.
+    fn atlas_code() -> String {
+        ATLAS_MODULES.map(code_of).join("\n")
+    }
+
     #[test]
     fn board_section_holds_what_queue_js_draws() {
         // The risk (#311): queue.js drawing into an id the page lacks, so
@@ -2960,7 +3114,7 @@ mod tests {
     }
 
     /// The ids atlas.js draws into or reads, every one inside #atlas.
-    const ATLAS_IDS: [&str; 32] = [
+    const ATLAS_IDS: [&str; 35] = [
         "at-where",
         "at-open-search",
         "at-status",
@@ -2983,12 +3137,15 @@ mod tests {
         "at-canvas",
         "at-legend",
         "at-minimap",
-        "at-tab-sel",
-        "at-tab-chg",
-        "at-tab-pin",
         "at-detail",
         "at-detail-title",
         "at-detail-meta",
+        "at-chg",
+        "at-chg-title",
+        "at-chg-meta",
+        "at-pin",
+        "at-pin-title",
+        "at-pin-meta",
         "at-search",
         "at-q",
         "at-qclose",
@@ -3003,15 +3160,10 @@ mod tests {
         // reach; or the section still saying it is not built.
         let page = page();
         let section = index_of(&page, "atlas");
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         for id in ATLAS_IDS {
-            // The three tabs are named through one template, `at-tab-${t}`,
-            // over their suffixes.
-            let tab = id
-                .strip_prefix("at-tab-")
-                .is_some_and(|t| js.contains("`at-tab-${t}`") && js.contains(&format!("\"{t}\"")));
             assert!(
-                js.contains(&format!("\"{id}\"")) || js.contains(&format!("#{id} ")) || tab,
+                js.contains(&format!("\"{id}\"")) || js.contains(&format!("#{id} ")),
                 "atlas.js draws no {id}"
             );
             assert!(
@@ -3050,6 +3202,72 @@ mod tests {
         );
     }
 
+    /// Each element of `page` that is drawn as a tab, a tab list or a tab
+    /// panel, by its id or its tag.
+    fn tab_roles(page: &[Element]) -> Vec<String> {
+        page.iter()
+            .filter(|e| matches!(e.attr("role"), Some("tab" | "tablist" | "tabpanel")))
+            .map(|e| e.attr("id").map_or_else(|| e.tag.clone(), str::to_string))
+            .collect()
+    }
+
+    #[test]
+    fn atlas_detail_has_no_tabs() {
+        // The risk (#955; DESIGN.md: "No tabs"): the Atlas's detail pane
+        // switching between Selection, Changes and Working set behind tabs,
+        // so two of the three are hidden at any time and a page drawn as one
+        // overview a person burrows into has a second way of moving inside
+        // a level. The three are Panels one under another in the Atlas's
+        // level, the one the Trail names once its overview panel is entered
+        // with ⏎ and that ESC leaves, and nothing in the page is a tab.
+        let page = page();
+        let tabs = tab_roles(&page);
+        assert!(tabs.is_empty(), "the page draws tabs: {tabs:?}");
+        for (module, code) in ui_code() {
+            for bad in [r#"setAttribute("role", "tab"#, "A.tab"] {
+                assert!(!code.contains(bad), "{module} draws a tab: {bad}");
+            }
+        }
+        let atlas = index_of(&page, "atlas");
+        assert_eq!(
+            page[atlas].tag, "section",
+            "the Atlas is not a level's section"
+        );
+        assert!(
+            page.iter()
+                .any(|e| e.tag == "button" && e.attr("data-enter") == Some("atlas")),
+            "no overview panel enters the Atlas"
+        );
+        let js = atlas_code();
+        let render = function_body(&js, "renderPanel");
+        for (body, title, served) in [
+            ("at-detail", "at-detail-title", "Atlas"),
+            ("at-chg", "at-chg-title", "Changes"),
+            ("at-pin", "at-pin-title", "Working set"),
+        ] {
+            let panel = page[index_of(&page, body)]
+                .parent
+                .expect("a detail body has a Panel");
+            assert!(within(&page, panel, atlas), "#{body} is outside #atlas");
+            assert_eq!(page[panel].attr("role"), Some("region"), "#{body}");
+            assert_eq!(page[panel].attr("aria-labelledby"), Some(title), "#{body}");
+            assert_eq!(page[index_of(&page, title)].text.trim(), served);
+            assert!(
+                render.contains(&format!("\"{body}\"")) && render.contains(&format!("\"{title}\"")),
+                "renderPanel does not draw #{body} every time"
+            );
+        }
+        // A planted tab is caught.
+        let html = ui_file("index.html");
+        let planted = html.replacen(
+            r#"<div id="at-chg" class="at-detail">"#,
+            r#"<div id="at-chg" class="at-detail" role="tabpanel">"#,
+            1,
+        );
+        assert_ne!(planted, html, "the Changes Panel's body moved");
+        assert_eq!(tab_roles(&page_of(&planted)), ["at-chg"]);
+    }
+
     #[test]
     fn atlas_js_draws_text_and_asks_only_for_reads() {
         // The risk (ADR 0007, S10; the owner's request of 2026-10-11): a
@@ -3060,7 +3278,7 @@ mod tests {
         // this holds the text; a node smoke script with a fake DOM and a
         // recording canvas ran atlas.js over views the core emitted for the
         // poetry data (see the commit).
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         for bad in [
             "innerHTML",
             "outerHTML",
@@ -3090,8 +3308,7 @@ mod tests {
         // It reaches the core only through rpc.js's send (#819), which
         // calls only rpc_send (model_gate_model_js_parses_no_html).
         assert!(
-            !js.contains("invoke(")
-                && js.contains(r#"import { onShown, send, start } from "./rpc.js";"#),
+            !js.contains("invoke(") && js.contains(r#"import { send } from "./rpc.js";"#),
             "atlas.js reaches the core some other way"
         );
         // Every question carries an Atlas id, so the core keeps its
@@ -3118,7 +3335,7 @@ mod tests {
         // The risk: a map drawn in colours of its own, which ignore the
         // system theme and the page's palette; or a map that stays light
         // when the system turns dark, since the desktop has no theme toggle.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         let palette = function_body(&js, "readPalette");
         for want in ["getComputedStyle(", "getPropertyValue(`--${t}`)"] {
             assert!(palette.contains(want), "readPalette lacks {want}");
@@ -3139,8 +3356,9 @@ mod tests {
                 && !js[i + 1..].starts_with("at-")
         });
         assert!(!hex, "atlas.js names a colour of its own");
-        // Each colour it reads is one style.css sets, in both themes.
-        let css = ui_file("style.css");
+        // Each colour it reads is one the page's stylesheets set, in both
+        // themes.
+        let css = page_css_from(&ui_file("index.html"), ui_file);
         let tokens = js
             .split("const TOKENS = [")
             .nth(1)
@@ -3153,7 +3371,7 @@ mod tests {
         {
             assert!(
                 css.matches(&format!("--{t}:")).count() >= 2,
-                "style.css does not set --{t} for both themes"
+                "the page's stylesheets do not set --{t} for both themes"
             );
         }
     }
@@ -3163,7 +3381,7 @@ mod tests {
         // The risk: an animated flight across the map for someone whose
         // system asks for reduced motion; or a stylesheet rule for the
         // Atlas that moves on its own.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         assert!(js.contains(r#"reduced: win.matchMedia("(prefers-reduced-motion: reduce)")"#));
         let go = function_body(&js, "go");
         let jump = go
@@ -3181,7 +3399,10 @@ mod tests {
             "go does not jump under reduced motion"
         );
         let (rules, moving) = crate::graph::motion_in_rules_naming("at-");
-        assert!(rules > 0, "style.css has no rule for the Atlas");
+        assert!(
+            rules > 0,
+            "the page's stylesheets have no rule for the Atlas"
+        );
         assert!(moving.is_empty(), "Atlas rules that move: {moving:?}");
     }
 
@@ -3191,7 +3412,7 @@ mod tests {
         // because the working set threw; or, after another repository is
         // opened, the last one's map, selection and questions in flight
         // staying drawn and answerable as the new one's.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         for f in ["loadPins", "savePins"] {
             let body = function_body(&js, f);
             assert!(
@@ -3226,7 +3447,7 @@ mod tests {
         // section, pushed the whole Atlas below the fold at 1440x900.
         // Showing the Atlas folds it; the user can open it again, and every
         // other section leaves it to model.js, as before.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         let shown = js
             .split(r#"onShown(doc, "atlas", () => {"#)
             .nth(1)
@@ -3253,7 +3474,7 @@ mod tests {
         // scrolled to. A plain wheel scrolls the page, and zooms only once
         // the map has focus or with Ctrl or Meta held, which a trackpad's
         // pinch sends; a one-line hint says so when the wheel was let by.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         let zooms = function_body(&js, "wheelZooms");
         for want in [
             "A.doc.activeElement === A.canvas",
@@ -3288,7 +3509,7 @@ mod tests {
         // taken for being a class; and a "15 defs" line drawn where its
         // module's name did not fit, a count with nothing to say what it
         // counts.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         let symbols = function_body(&js, "drawSymbols");
         assert!(
             !symbols.contains(r#"s.holds ? "class ""#),
@@ -3313,7 +3534,7 @@ mod tests {
         // snapshot before the one shown, almost empty; and the history held
         // eight months, since get_history was asked for its default twelve
         // tags.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         assert!(js.contains("const HISTORY_ASKED = { commits: 20, tags: 200 };"));
         let lens = function_body(&js, "setLens");
         assert!(
@@ -3331,7 +3552,7 @@ mod tests {
         // started heard no child-started, so the root crumb read
         // "repository"; and the first search open took over a second while
         // it built its index.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         assert!(!js.contains(r#""repository""#), "a root with no name");
         let frame = js
             .split(r#"listen("rpc-frame""#)
@@ -3350,7 +3571,7 @@ mod tests {
         // three counts beside ambiguous and unresolved, where the resolved
         // sites belong. Each line says what it counts and where it comes
         // from, and nothing draws them as parts of a whole or a share.
-        let js = code_of("atlas.js");
+        let js = atlas_code();
         let head = function_body(&js, "overviewView");
         for want in [
             ".definitions",
@@ -3573,13 +3794,24 @@ mod tests {
         }
     }
 
-    /// The levels #910 moved to the design system's components.
-    const DS_SECTIONS: [&str; 5] = ["trails", "codebase", "board", "vault", "atlas"];
+    /// The levels #910 moved to the design system's components, and the
+    /// ones added after it on them: Code and its file (#831) and the
+    /// summary (#832).
+    const DS_SECTIONS: [&str; 8] = [
+        "trails",
+        "codebase",
+        "board",
+        "vault",
+        "atlas",
+        "code",
+        "code-file",
+        "summary",
+    ];
 
     /// Each module that draws one of them, and what it draws with from
     /// ds.js: its Panels' meta, its figures as Stats, its states as
     /// Statuses and its sequences as Rails.
-    const DS_MODULES: [(&str, &[&str]); 6] = [
+    const DS_MODULES: [(&str, &[&str]); 9] = [
         (
             "trails.js",
             &[
@@ -3595,7 +3827,23 @@ mod tests {
         ("radius.js", &["figure", "stats"]),
         ("queue.js", &["figure", "panelMeta", "railRows", "stat"]),
         ("vault.js", &["panelMeta", "stats"]),
-        ("atlas.js", &["panelMeta", "stats", "unreported"]),
+        ("atlas-detail.js", &["panelMeta", "stats", "unreported"]),
+        (
+            "code.js",
+            &["diff", "dsStatus", "lineCounts", "railRows", "wholeFile"],
+        ),
+        ("plan.js", &["planEditor", "planSteps"]),
+        (
+            "summary.js",
+            &[
+                "budgetRows",
+                "dsStatus",
+                "lineCounts",
+                "modelWords",
+                "railRows",
+                "stats",
+            ],
+        ),
     ];
 
     /// What is wrong with the regions of `section` in `page`: a region that
@@ -3763,6 +4011,33 @@ mod tests {
             ui["radius.js"].contains(r#""a floor on reach, not a boundary""#),
             "the radius pane lost its caption"
         );
+
+        // The levels added after #910 draw each part with the component
+        // it is: a file's rows and a summary's sequences as Rails, a diff
+        // and a whole file through ds.js, a state as a Status, the budget
+        // as its rows, and the model's closing words fenced as its own.
+        for (module, f, want) in [
+            ("code.js", "drawFiles", "railRows(doc, rows)"),
+            ("code.js", "drawFile", "diff(doc, {"),
+            ("code.js", "stateOf", "dsStatus(doc, "),
+            ("code.js", "countsOf", "lineCounts(doc, "),
+            ("code.js", "drawWhole", "wholeFile(doc, {"),
+            ("plan.js", "drawPlan", "planEditor(doc, draft)"),
+            ("plan.js", "planBody", "planSteps(doc, steps)"),
+            ("summary.js", "drawChecks", "railRows(doc, rows)"),
+            ("summary.js", "drawRadius", "stats(doc, ["),
+            ("summary.js", "drawFiles", "lineCounts(doc, "),
+            ("summary.js", "drawTrail", "dsStatus(doc, INTEGRITY_TONES"),
+            ("summary.js", "drawSteers", "railRows(doc, rows)"),
+            ("summary.js", "drawPath", "railRows(doc, rows)"),
+            ("summary.js", "drawSummary", "budgetRows(doc, "),
+            ("summary.js", "drawClosing", "modelWords(doc, "),
+        ] {
+            assert!(
+                function_body(&ui[module], f).contains(want),
+                "{module}'s {f} lacks {want}"
+            );
+        }
     }
 
     #[test]
@@ -3799,12 +4074,25 @@ mod tests {
                 assert!(!code.contains(bad), "{name} falls back to 0: {bad}");
             }
         }
-        // The page draws no clock, so the budget's elapsed is the dash.
+        // The page draws no clock: the budget's elapsed is the wall-clock
+        // row the core built from trellis's elapsed_ms (#829), and each side
+        // of a row the core sent null is the dash with its reason.
+        let render = code_of("render.js");
+        let budget = function_body(&render, "budget");
         assert!(
-            function_body(&code_of("render.js"), "budget")
-                .contains(r#"{ label: "elapsed", value: unreported(doc,"#),
-            "the budget draws an elapsed time the core did not send"
+            budget.contains("budgetRows(doc, Array.isArray(v.limits) ? v.limits : [], v.raise)"),
+            "the budget draws rows the core did not send"
         );
+        for clock in ["Date", "performance", "setInterval", "setTimeout"] {
+            assert!(!budget.contains(clock), "the budget keeps a clock: {clock}");
+        }
+        let rows = function_body(&ds, "budgetRows");
+        for want in [
+            "used === null ? unreported(doc, str(r.why_used)",
+            "ceiling === null ? unreported(doc, str(r.why_ceiling)",
+        ] {
+            assert!(rows.contains(want), "budgetRows lacks {want}");
+        }
         let rules = css_rules();
         let dash: Vec<String> = rules
             .iter()
@@ -3898,7 +4186,15 @@ mod tests {
             r#"if (kind === "check" && typeof row.passed === "boolean") {"#,
             r#"passed ? "cd-tx-check-ok" : "cd-tx-check-down""#,
             r#"kind === "refusal" ? "cd-tx-refusal" : "cd-tx-system""#,
-            "raw.hidden = true;",
+            // The raw call and observation open on demand in a <details>
+            // (#949), which needs no listener at all, as text.
+            r#"const open = el(doc, "details", null, "tx-details");"#,
+            r#"open.append(el(doc, "summary", "raw call and observation", "cd-tx-open"), raw);"#,
+            r#"raw.append(el(doc, "span", "$ ", "k"), str(row.call) ?? text);"#,
+            // A check row says whose verdict it is (#949), as the TUI's
+            // does (#947).
+            r#"el(doc, "span", "trellis-checks verdict", "tx-check-src")"#,
+            r#"if (kind === "turn") return txTurn(doc, row);"#,
         ] {
             assert!(entry.contains(want), "txEntry lacks {want}");
         }
@@ -3908,13 +4204,10 @@ mod tests {
         );
         let render = code_of("render.js");
         let wire = function_body(&render, "wireLog");
-        for want in [
-            r#"pane.addEventListener("click", toggle);"#,
-            r#"pane.addEventListener("keydown", (e) => {"#,
-            r#"e.target.closest(".cd-tx-tool")"#,
-        ] {
-            assert!(wire.contains(want), "wireLog lacks {want}");
-        }
+        assert!(
+            !wire.contains("addEventListener(\"keydown\"") && !wire.contains(".cd-tx-raw"),
+            "wireLog opens the raw call itself again: {wire}"
+        );
         assert!(
             function_body(&render, "drawView").contains("onMissing();"),
             "drawView does not say when rows are missing"
@@ -3935,6 +4228,90 @@ mod tests {
             page[index_of(&page, "pane-transcript")].attr("class"),
             Some("log cd-tx"),
             "the log is not the system's Transcript"
+        );
+    }
+
+    #[test]
+    fn action_log_filter_hides_entries_never_drops_them() {
+        // The risk (#949): a filter or quiet mode that removes the rows it
+        // hides, so turning it off shows a log with holes, the feed's
+        // append-or-replace by seq finds rows missing, or a turn's rule goes
+        // with its rows. The filter bar only marks the log, its data-filter
+        // and its log-quiet class, and run.css hides rows by the kind
+        // drawFeed marks each with. No JavaScript runs under cargo test, so
+        // this holds the text; the smoke run loads the page with the bar.
+        let render = code_of("render.js");
+        let wire = function_body(&render, "wireLog");
+        let bar = between(wire, r#"bar.addEventListener("click", (e) => {"#, "\n  });");
+        for want in [
+            "pane.dataset.filter = button.dataset.filter;",
+            r#"pane.classList.toggle("log-quiet")"#,
+            r#"option.setAttribute("aria-pressed", String(on));"#,
+            r#"button.setAttribute("aria-pressed", String(quiet));"#,
+        ] {
+            assert!(bar.contains(want), "the filter bar lacks {want}: {bar}");
+        }
+        for bad in [
+            ".remove(",
+            "replaceChildren",
+            "replaceWith",
+            "removeChild",
+            ".hidden",
+            "textContent",
+            "drawFeed",
+            "send(",
+        ] {
+            assert!(
+                !bar.contains(bad),
+                "the filter bar drops or redraws rows: {bad}"
+            );
+        }
+        assert!(
+            function_body(&code_of("dom.js"), "drawFeed")
+                .contains(r#"if (typeof row.kind === "string") e.dataset.kind = row.kind;"#),
+            "drawFeed does not mark a row with its kind"
+        );
+
+        // Each filter the bar offers, and quiet, hides by display in
+        // run.css, and a turn's rule is never hidden by a filter.
+        let page = page();
+        let filters: Vec<&str> = page
+            .iter()
+            .filter(|e| e.tag == "button")
+            .filter_map(|e| e.attr("data-filter"))
+            .collect();
+        assert_eq!(filters, ["all", "you", "tool", "check", "note"]);
+        let quiet = page
+            .iter()
+            .position(|e| e.tag == "button" && e.attrs.contains_key("data-quiet"))
+            .expect("the bar has a quiet toggle");
+        let log = index_of(&page, "pane-transcript");
+        assert_eq!(
+            page[quiet].parent.and_then(|p| page[p].parent),
+            page[log].parent,
+            "the bar is not beside the log"
+        );
+        let css = page_css_from(&ui_file("index.html"), ui_file);
+        let rule = between(&css, ".cd-tx[data-filter=\"you\"]", "}");
+        assert!(rule.contains("display: none;"), "{rule}");
+        for f in &filters[1..] {
+            let selector =
+                format!(".cd-tx[data-filter=\"{f}\"] > [data-kind]:not([data-kind=\"turn\"], ");
+            assert!(
+                css.contains(&selector),
+                "no rule hides by {f}, sparing the turn's rule"
+            );
+        }
+        assert!(
+            css.contains(
+                ".cd-tx.log-quiet > [data-kind=\"tool\"]:not(.tx-edit) {\n  display: none;"
+            ),
+            "quiet hides something other than the calls that wrote nothing"
+        );
+        assert!(
+            code_of("ds.js")
+                .contains(r#"cx("cd-tx-e cd-tx-tool", row.wrote === true && "tx-edit")"#),
+            "a call that wrote is not marked to stay in view"
         );
     }
 
@@ -4314,6 +4691,136 @@ mod tests {
     }
 
     #[test]
+    fn composer_queue_draws_pending_through_ds_and_sends_its_prompt_only_with_the_abort() {
+        // The risk (#830): the queue drawn by composer.js's own markup,
+        // drifting from the Queue card; or Stop and send writing its prompt
+        // from the page, on a timer or before the run has ended, rather than
+        // as the abort's `then` the core sequences. And (#838) Take back
+        // putting the text back in the textarea on its click, before trellis
+        // has said it took the message back, so a steer a model request
+        // already carries is sent twice; or a withdraw sent from anywhere
+        // but the queue's own control. The queue is ds.js's queueItems over
+        // the view's `pending`; its one listener sends the one withdraw,
+        // naming the item by its own id, and touches no text; the text
+        // returns only in the core's `taken-back` listener; edit and
+        // reorder are marked not built; and the Stop and send branch of
+        // Send only opens the Stop dialog.
+        let js = code_of("composer.js");
+        assert!(
+            function_body(&js, "drawPending").contains("queueItems(doc, items)"),
+            "the queue is not drawn through ds.js"
+        );
+        assert!(
+            js.contains(r#"if ("pending" in view) drawPending(doc, view.pending);"#),
+            "the queue is not the view's pending"
+        );
+        for bad in ["setTimeout", "setInterval"] {
+            assert!(!js.contains(bad), "composer.js holds {bad}");
+        }
+        assert_eq!(
+            js.matches("type: \"withdraw\"").count(),
+            1,
+            "composer.js sends withdraw from more than one place"
+        );
+        let take = click_handler(&js, "p.queueList");
+        assert!(
+            take.contains("forward(tauri, p, { id: b.dataset.takeBack, type: \"withdraw\""),
+            "Take back does not send the item's withdraw: {take}"
+        );
+        assert!(
+            !take.contains("p.text"),
+            "Take back puts the text back on the click: {take}"
+        );
+        assert!(
+            listener(&js, "taken-back").contains("p.text.value ="),
+            "the text does not come back on trellis's answer"
+        );
+        assert_eq!(
+            js.matches("p.text.value = ").count(),
+            js.matches("p.text.value = \"\"").count() + 1,
+            "composer.js fills the textarea somewhere other than taken-back"
+        );
+        let submit = composer_submit(&js);
+        let stop = submit
+            .split("if (running && verb === \"stop\") {")
+            .nth(1)
+            .and_then(|r| r.split("\n    }\n").next())
+            .expect("Send has a Stop and send branch");
+        for bad in ["forward(", "send(", "invoke("] {
+            assert!(!stop.contains(bad), "Stop and send sends from Send: {stop}");
+        }
+        for want in ["p.stopConfirm.showModal();", "p.stopCancel.focus();"] {
+            assert!(stop.contains(want), "Stop and send lacks {want}: {stop}");
+        }
+        let close = js
+            .split("p.stopConfirm.addEventListener(\"close\"")
+            .nth(1)
+            .and_then(|r| r.split("});").next())
+            .expect("composer.js listens for the dialog's close");
+        assert!(
+            close.contains("if (then !== null) line.then = then;"),
+            "{close}"
+        );
+        let page = page();
+        let queue = index_of(&page, "composer-queue");
+        assert!(within(&page, queue, index_of(&page, "composer")));
+        assert!(page[queue].attrs.contains_key("hidden"), "shown as served");
+        assert!(
+            (0..page.len()).any(|i| within(&page, i, queue)
+                && page[i].attr("class") == Some("unbuilt")
+                && page[i].text.contains("not built")),
+            "edit and reorder are not marked not built"
+        );
+        assert!(
+            !page[queue].text.contains("Take back"),
+            "take back is still marked not built"
+        );
+    }
+
+    #[test]
+    fn a_plan_edit_is_sent_as_a_steer_through_rpc_js_alone() {
+        // The risk (#838, ADR 0058 section 5): the Plan panel sending its
+        // edit some other way than the composer's steer (a command of its
+        // own, a second send, a call around rpc.js), so the core's rules do
+        // not hold for it or the trail does not keep it as the person's; or
+        // offering Edit when no steer can reach the run. The core's side is
+        // a_plan_edit_is_sent_as_a_steer in commands.rs. The panel is
+        // render.js's `plan` pane, its one send is a steer whose message is
+        // steerHead's words then the edited lines, and Edit shows only
+        // while the reducer's can_steer says a steer reaches the run.
+        let js = code_of("plan.js");
+        assert!(
+            code_of("render.js").contains("plan: [\"pane-plan\", drawPlan],"),
+            "render.js does not draw the plan pane"
+        );
+        for bad in ["invoke(", "type: \"plan\"", "withdraw", "setTimeout"] {
+            assert!(!js.contains(bad), "plan.js holds {bad}");
+        }
+        assert_eq!(
+            js.matches("send(").count(),
+            1,
+            "plan.js sends from more than one place"
+        );
+        assert!(
+            function_body(&js, "sendEdit").contains(
+                "{ id: lineId(\"plan\", \"steer\"), type: \"steer\", message: `${steerHead(plan.turn)}\\n${edited}` }"
+            ),
+            "the edit is not one steer of steerHead and the edited lines"
+        );
+        assert!(
+            function_body(&js, "drawPlan").contains(
+                "const editable = steps !== null && steps.length > 0 && plan.can_steer === true;"
+            ),
+            "Edit is offered without the reducer's can_steer"
+        );
+        assert_eq!(
+            imports_of(&js).get("send").map(String::as_str),
+            Some("rpc.js"),
+            "plan.js sends around rpc.js"
+        );
+    }
+
+    #[test]
     fn stop_confirm_dialog_has_named_cancel_and_stop_buttons() {
         // The risk (#637): the confirmation is a dialog whose buttons a
         // screen reader names only as "button", or whose text does not say
@@ -4444,6 +4951,124 @@ mod tests {
                 && parts.contains("stopCancel: doc.getElementById(\"stop-confirm-cancel\")"),
             "composer.js looks up another dialog: {parts}"
         );
+    }
+
+    #[test]
+    fn now_strip_stop_only_opens_the_stop_confirm_dialog() {
+        // The risk (#828, #637): the Now strip's Stop is a second path to
+        // `abort` beside the composer's, which walks around the
+        // confirmation; or "Summary so far" (#832) sends something, or
+        // opens anything but the summary level. The strip's Stop opens the
+        // one dialog whose close sends the abort, and sends nothing itself;
+        // Summary so far, and Summary once the run has ended, only burrows
+        // into the summary level, and no not-built mark is left for it.
+        // Pause and Resume (#837) are the strip's only sends: one call to
+        // rpc.js's send, its type `pause` or `resume` and nothing else, so
+        // no abort or other line leaves the strip.
+        let js = code_of("now.js");
+        for bad in ["abort", "invoke(", "set_budget"] {
+            assert!(!js.contains(bad), "now.js sends something: {bad}");
+        }
+        assert_eq!(
+            js.matches("send(").count(),
+            1,
+            "now.js sends more than its controls"
+        );
+        let control = function_body(&js, "control");
+        assert!(
+            control
+                .contains("await send(nowTauri, { id: lineId(\"now\", type), type }, (why) => {"),
+            "the strip's one send is not its control's: {control}"
+        );
+        let calls: Vec<&str> = js.matches("control(doc, \"").collect();
+        assert_eq!(calls.len(), 2, "the strip sends more than pause and resume");
+        for want in [r#"control(doc, "pause")"#, r#"control(doc, "resume")"#] {
+            assert!(js.contains(want), "now.js lacks {want}");
+        }
+        let draw = function_body(&js, "drawNow");
+        for want in [
+            r#"doc.getElementById("stop-confirm")"#,
+            r#"dialog.returnValue = "";"#,
+            "dialog.showModal();",
+            r#"doc.getElementById("stop-confirm-cancel").focus();"#,
+            r#"stop.setAttribute("aria-controls", "stop-confirm");"#,
+            "if (v.can_stop === true) {",
+            r#"state === "ended" ? "Summary" : "Summary so far""#,
+            r#"summary.addEventListener("click", () => burrow(doc, ["run", "summary"]));"#,
+        ] {
+            assert!(draw.contains(want), "drawNow lacks {want}");
+        }
+        assert!(
+            !js.contains("not built") && !js.contains("unbuilt"),
+            "the summary is still marked not built"
+        );
+    }
+
+    #[test]
+    fn summary_page_draws_the_model_s_words_fenced_and_the_modes_apart() {
+        // The risk (#832; CLAUDE.md rules 4 and 10): the summary level draws
+        // the model's closing words as markup, unlabelled, or in a check's
+        // tone, so they read as the desktop's or as a verdict; or draws
+        // Verified and Reviewed as one figure. The words are read only from
+        // the reducer's `{untrusted}` fence and drawn by ds.js's modelWords
+        // as text under the label saying whose they are; the two counts are
+        // two Stats on two rows; and no outcome is drawn but run_end's.
+        let js = code_of("summary.js");
+        let closing = function_body(&js, "drawClosing");
+        for want in [
+            "const words = untrusted(c.words);",
+            "modelWords(doc, str(c.label) ?? \"the model's words, not a verdict\", words)",
+        ] {
+            assert!(closing.contains(want), "drawClosing lacks {want}");
+        }
+        let fence = function_body(&js, "untrusted");
+        assert!(
+            fence.contains("typeof v.untrusted === \"string\" ? v.untrusted : null"),
+            "{fence}"
+        );
+        let ds = code_of("ds.js");
+        let words = function_body(&ds, "modelWords");
+        for want in [
+            r#"el(doc, "div", null, "cd-tx-e cd-tx-model")"#,
+            r#"el(doc, "span", label, "cd-tx-label")"#,
+            r#"el(doc, "div", text, "cd-tx-body")"#,
+        ] {
+            assert!(words.contains(want), "modelWords lacks {want}");
+        }
+        for tone in ["cd-tx-check", "cd-status", "ok", "down"] {
+            assert!(!words.contains(tone), "modelWords takes a tone: {tone}");
+        }
+        let modes = function_body(&js, "drawModes");
+        assert!(
+            modes.contains(r#"stats(doc, [{ label: "Verified", value: figure(doc, m.verified, "#)
+                && modes.contains(
+                    r#"stats(doc, [{ label: "Reviewed", value: figure(doc, m.reviewed, "#
+                ),
+            "Verified and Reviewed are not two rows of one Stat each: {modes}"
+        );
+        for joined in [
+            "m.verified +",
+            "+ m.reviewed",
+            "m.reviewed +",
+            "+ m.verified",
+            "/",
+        ] {
+            assert!(!modes.contains(joined), "drawModes joins the two: {joined}");
+        }
+        let end = function_body(&js, "drawEnd");
+        assert!(
+            end.contains("const o = s.outcome !== null && typeof s.outcome === \"object\" ? s.outcome : null;"),
+            "drawEnd draws an outcome the reducer did not send"
+        );
+        for bad in [
+            "innerHTML",
+            "insertAdjacentHTML",
+            "outerHTML",
+            "send(",
+            "invoke(",
+        ] {
+            assert!(!js.contains(bad), "summary.js uses {bad}");
+        }
     }
 
     #[test]
@@ -5308,7 +5933,7 @@ mod tests {
             }
         }
         assert!(
-            code_of("atlas.js").contains("onEscape((ev) => {"),
+            atlas_code().contains("onEscape((ev) => {"),
             "the Atlas's ESC is not keys.js's"
         );
     }
@@ -5398,19 +6023,69 @@ mod tests {
         }
     }
 
-    /// `style.css` with its comments removed, as `(selector, declarations)`
-    /// for each innermost rule, in order; an `@media` block's own rules
-    /// are listed, not the block.
-    fn css_rules() -> Vec<(String, String)> {
-        let css = ui_file("style.css");
+    /// The page's own stylesheets, in the order `index.html` links them:
+    /// `style.css` split by level (#978). The order is the cascade's, so it
+    /// is written down here and `page_links_its_stylesheets_in_cascade_order`
+    /// holds the page to it.
+    const PAGE_STYLESHEETS: [&str; 6] = [
+        "style.css",
+        "run.css",
+        "codebase.css",
+        "trails.css",
+        "atlas.css",
+        "code.css",
+    ];
+
+    /// Every stylesheet `html` links, in order, but the design system's
+    /// `ds.css`, which is the bundle's copy and is held by
+    /// `ds_css_is_the_design_systems_bundle`, not by the page's rules.
+    fn linked_stylesheets(html: &str) -> Vec<String> {
+        page_of(html)
+            .into_iter()
+            .filter(|e| {
+                e.tag == "link" && e.attrs.get("rel") == Some(&Some("stylesheet".to_string()))
+            })
+            .map(|e| {
+                e.attrs["href"]
+                    .clone()
+                    .expect("a stylesheet link names its file")
+            })
+            .filter(|href| href != "ds.css")
+            .collect()
+    }
+
+    /// The text of every stylesheet `html` links (but `ds.css`), each read
+    /// by `read`, joined in link order, so a test can plant a rule in one.
+    fn page_css_from(html: &str, read: impl Fn(&str) -> String) -> String {
+        linked_stylesheets(html)
+            .iter()
+            .map(|name| read(name))
+            .collect()
+    }
+
+    /// `css` with its comments removed.
+    fn without_comments(css: &str) -> String {
         let mut text = String::new();
-        let mut rest = css.as_str();
+        let mut rest = css;
         while let Some(i) = rest.find("/*") {
             text.push_str(&rest[..i]);
             let end = rest[i..].find("*/").expect("an unclosed CSS comment");
             rest = &rest[i + end + 2..];
         }
         text.push_str(rest);
+        text
+    }
+
+    /// The page's own stylesheets, as `index.html` links them, with their
+    /// comments removed, as `(selector, declarations)` for each innermost
+    /// rule, in order; an `@media` block's own rules are listed, not the
+    /// block.
+    fn css_rules() -> Vec<(String, String)> {
+        css_rules_of(&css_text())
+    }
+
+    /// [`css_rules`] over `text`, comments already removed.
+    fn css_rules_of(text: &str) -> Vec<(String, String)> {
         let mut open: Vec<String> = Vec::new();
         let mut segment = String::new();
         let mut rules = Vec::new();
@@ -5446,7 +6121,7 @@ mod tests {
         let rules = css_rules();
         assert!(
             rules.iter().any(|(_, d)| d.contains("display")),
-            "style.css was read: no display rule at all"
+            "the page's stylesheets were read: no display rule at all"
         );
         let hidden: Vec<&(String, String)> = rules
             .iter()
@@ -5496,25 +6171,28 @@ mod tests {
     fn page_css_fits_the_minimum_window() {
         // The risk: a fixed width wider than the narrowest window the shell
         // allows, so the page scrolls sideways or clips a pane there.
-        //
-        // Each `width`, `min-width`, `flex-basis` and `flex` declaration
-        // (and each length in `grid-template-columns`, which fixes widths
-        // the same way) is read value by value. A px length must be at most
-        // the window's minimum; %, vw, fr, auto, 0 and the content keywords
-        // are relative to the window or its contents and pass. Any other
-        // length (em, rem, ch, pt, calc() ...) fails: this test cannot
-        // measure it, so it is not taken on trust.
         let max = min_window_width();
-        let css = ui_file("style.css");
-        let mut text = String::new();
-        let mut rest = css.as_str();
-        while let Some(i) = rest.find("/*") {
-            text.push_str(&rest[..i]);
-            let end = rest[i..].find("*/").expect("an unclosed CSS comment");
-            rest = &rest[i + end + 2..];
-        }
-        text.push_str(rest);
+        let (read, wide) = too_wide(&css_text(), max);
+        assert!(
+            read > 0,
+            "the page's stylesheets set no width at all: read the right files?"
+        );
+        assert!(wide.is_empty(), "{}", wide.join("\n"));
+    }
+
+    /// Of `text`'s `width`, `min-width`, `flex-basis` and `flex`
+    /// declarations (and each length in `grid-template-columns`, which
+    /// fixes widths the same way), how many were read, and each value that
+    /// does not fit a `max` px window, said as why.
+    ///
+    /// Each is read value by value. A px length must be at most `max`; %,
+    /// vw, fr, auto, 0 and the content keywords are relative to the window
+    /// or its contents and pass. Any other length (em, rem, ch, pt, calc()
+    /// ...) is reported: this cannot measure it, so it is not taken on
+    /// trust.
+    fn too_wide(text: &str, max: f64) -> (usize, Vec<String>) {
         let mut read = 0;
+        let mut wide = Vec::new();
         for decl in text.split(['{', '}', ';']) {
             let Some((prop, value)) = decl.split_once(':') else {
                 continue;
@@ -5543,56 +6221,48 @@ mod tests {
                     .unwrap_or(v.len());
                 let (number, unit) = v.split_at(number_end);
                 if number.is_empty() {
-                    assert!(
-                        [
-                            "auto",
-                            "none",
-                            "max-content",
-                            "min-content",
-                            "fit-content",
-                            "repeat",
-                            "minmax",
-                            "auto-fill",
-                            "auto-fit",
-                            "inherit",
-                            "initial",
-                            "unset",
-                        ]
-                        .contains(&v.as_str()),
-                        "{prop}: {v} cannot be measured against the window"
-                    );
+                    if ![
+                        "auto",
+                        "none",
+                        "max-content",
+                        "min-content",
+                        "fit-content",
+                        "repeat",
+                        "minmax",
+                        "auto-fill",
+                        "auto-fit",
+                        "inherit",
+                        "initial",
+                        "unset",
+                    ]
+                    .contains(&v.as_str())
+                    {
+                        wide.push(format!("{prop}: {v} cannot be measured against the window"));
+                    }
                     continue;
                 }
-                let n: f64 = number
-                    .parse()
-                    .unwrap_or_else(|_| panic!("{prop}: {v} is not a number"));
+                let Ok(n) = number.parse::<f64>() else {
+                    wide.push(format!("{prop}: {v} is not a number"));
+                    continue;
+                };
                 match unit {
-                    "px" => assert!(n <= max, "{prop}: {v} is wider than the {max}px window"),
-                    "%" | "vw" | "fr" => {}
+                    "px" if n > max => {
+                        wide.push(format!("{prop}: {v} is wider than the {max}px window"));
+                    }
+                    "px" | "%" | "vw" | "fr" => {}
                     // A bare number: `flex`'s grow and shrink, or a 0 length.
                     "" => {}
-                    _ => panic!("{prop}: {v} is in a unit this test cannot measure"),
+                    _ => wide.push(format!("{prop}: {v} is in a unit this cannot measure")),
                 }
             }
         }
-        assert!(
-            read > 0,
-            "style.css sets no width at all: read the right file?"
-        );
+        (read, wide)
     }
 
-    /// `style.css` with its comments removed.
+    /// The page's own stylesheets, as `index.html` links them, joined in
+    /// that order with their comments removed.
     fn css_text() -> String {
-        let css = ui_file("style.css");
-        let mut text = String::new();
-        let mut rest = css.as_str();
-        while let Some(i) = rest.find("/*") {
-            text.push_str(&rest[..i]);
-            let end = rest[i..].find("*/").expect("an unclosed CSS comment");
-            rest = &rest[i + end + 2..];
-        }
-        text.push_str(rest);
-        text
+        without_comments(&page_css_from(&ui_file("index.html"), ui_file))
     }
 
     /// The custom properties of every rule whose selector, spaces dropped,
@@ -5683,6 +6353,19 @@ mod tests {
         // tokens, no declaration names a colour of its own but the
         // ::backdrop's commented var() fallback, and every box-shadow is an
         // inset line or a frame token.
+        let (shadows, own) = own_colours(&css_rules());
+        assert!(own.is_empty(), "{}", own.join("\n"));
+        assert!(
+            shadows > 0,
+            "the scan found no box-shadow at all; it reads nothing"
+        );
+    }
+
+    /// Of `rules`, how many `box-shadow`s were read, and each declaration
+    /// outside the token definitions that names a colour of its own (but
+    /// the ::backdrop's commented fallback) or draws a drop shadow, said as
+    /// `selector { declaration }` and why.
+    fn own_colours(rules: &[(String, String)]) -> (usize, Vec<String>) {
         let named = [
             "white", "black", "red", "green", "blue", "gray", "grey", "orange", "yellow", "silver",
             "purple", "pink", "brown",
@@ -5708,31 +6391,285 @@ mod tests {
             hex || function || word
         };
         let mut shadows = 0;
-        for (selector, decls) in css_rules() {
+        let mut own = Vec::new();
+        for (selector, decls) in rules {
             for d in decls.split(';').map(str::trim).filter(|d| !d.is_empty()) {
                 if d.starts_with("--") {
                     continue;
                 }
-                if colour(d) {
-                    assert!(
-                        selector == ".approval::backdrop"
-                            && d == "background: var(--scrim, #000000b3)",
-                        "{selector} {{ {d} }} names a colour of its own"
-                    );
+                if colour(d)
+                    && !(selector == ".approval::backdrop"
+                        && d == "background: var(--scrim, #000000b3)")
+                {
+                    own.push(format!("{selector} {{ {d} }} names a colour of its own"));
                 }
                 if let Some(v) = d.strip_prefix("box-shadow:") {
                     shadows += 1;
                     let v = v.trim();
-                    assert!(
-                        v.starts_with("inset ") || v == "none" || v.starts_with("var(--frame"),
-                        "{selector} {{ {d} }} draws a drop shadow"
-                    );
+                    if !(v.starts_with("inset ") || v == "none" || v.starts_with("var(--frame")) {
+                        own.push(format!("{selector} {{ {d} }} draws a drop shadow"));
+                    }
                 }
             }
         }
+        (shadows, own)
+    }
+
+    /// Of `rules`' `margin`, `padding`, `gap` and `border-radius`
+    /// declarations (longhands included), how many were read, and each that
+    /// writes a length of its own and is not in `exceptions`, as
+    /// `selector { declaration }`. A spacing value may be `0`, `auto` or a
+    /// `var(--space-*)`; a radius `0` or a `var(--radius-*)`. Custom
+    /// properties are the token definitions and are not read. Selectors and
+    /// declarations are compared with their whitespace collapsed.
+    fn off_token_lengths(
+        rules: &[(String, String)],
+        exceptions: &[(&str, &str)],
+    ) -> (usize, Vec<String>) {
+        let mut read = 0;
+        let mut off = Vec::new();
+        for (selector, decls) in rules {
+            let selector = selector.split_whitespace().collect::<Vec<_>>().join(" ");
+            for d in decls.split(';').map(str::trim).filter(|d| !d.is_empty()) {
+                if d.starts_with("--") {
+                    continue;
+                }
+                let Some((prop, value)) = d.split_once(':') else {
+                    continue;
+                };
+                let prop = prop.trim().to_ascii_lowercase();
+                let space = ["margin", "padding", "gap", "row-gap", "column-gap"]
+                    .contains(&prop.as_str())
+                    || prop.starts_with("margin-")
+                    || prop.starts_with("padding-");
+                let radius = prop.starts_with("border") && prop.ends_with("-radius");
+                if !space && !radius {
+                    continue;
+                }
+                read += 1;
+                let token = if space {
+                    "var(--space-"
+                } else {
+                    "var(--radius-"
+                };
+                // `auto` is a keyword that centres or pushes a box, not a
+                // length, so it is no off-scale value.
+                let from_tokens = value.split_whitespace().all(|v| {
+                    v == "0" || (space && v == "auto") || (v.starts_with(token) && v.ends_with(')'))
+                });
+                let d = d.split_whitespace().collect::<Vec<_>>().join(" ");
+                if !from_tokens && !exceptions.contains(&(selector.as_str(), d.as_str())) {
+                    off.push(format!("{selector} {{ {d} }}"));
+                }
+            }
+        }
+        (read, off)
+    }
+
+    #[test]
+    fn page_css_space_and_radius_come_from_the_tokens() {
+        // The risk (#956): a margin, padding, gap or radius written as a
+        // literal length, which tokens.json does not hold, so the page's
+        // rhythm drifts from the design system's 4px grid one rule at a
+        // time. Each is a --space-* or --radius-* token, 0 or auto, except
+        // the off-scale values below, kept as they were so the page draws
+        // exactly as before (1px, 3px, 5px, 9px, 10px, 14px, 18px and 22px
+        // fall between steps, and .at-dot's 50% is a circle at any size).
+        // A 6px radius is --radius-node's value, but DESIGN.md 3.2 gives
+        // that token to graph nodes, and .alert, .messages and .at-seg are
+        // none, so theirs stays 6px rather than move when nodes do.
+        // Each exception names its rule, so a new literal is not waved
+        // through by an old one.
+        let exceptions = [
+            ("h4", "margin: 10px 0 var(--space-1)"),
+            (".alert", "border-radius: 6px"),
+            (".messages", "border-radius: 6px"),
+            (".at-seg", "border-radius: 6px"),
+            (".log-filters .cd-q-opt", "padding: 1px var(--space-2)"),
+            (".rows", "padding-left: 18px"),
+            (".rows li.empty", "margin-left: -18px"),
+            (".alert button, .approval button", "padding: 3px 10px"),
+            (
+                ".cb-bar button, .cb-crumbs button",
+                "padding: 1px var(--space-2)",
+            ),
+            (".qb-bar button", "padding: 1px var(--space-2)"),
+            (".at-top", "gap: var(--space-1) 14px"),
+            (".at-btn", r"padding: var(--space-0\.5) 9px"),
+            (".at kbd", "border-radius: 3px"),
+            (".at-toolbar", "gap: var(--space-2) 22px"),
+            (".at-toolbar", "margin-bottom: 10px"),
+            (".at-field", "gap: 3px"),
+            (".at-seg button", "padding: 3px 10px"),
+            (".at-crumbs button", "border-radius: 3px"),
+            (".at-hint", "padding: 3px 10px"),
+            (".at-mapfoot", "gap: 10px"),
+            (
+                ".at-mapfoot",
+                r"padding: var(--space-1\.5) 10px var(--space-0\.5)",
+            ),
+            (".at-keys", r"padding: 0 10px var(--space-1\.5)"),
+            (".at-legend", "gap: 3px"),
+            (".at-lg-keys", "gap: 3px var(--space-4)"),
+            (".at-sw", "margin-top: 3px"),
+            (".at-detail", "padding: 10px var(--space-3) 14px"),
+            (".at-detail > * + *", "margin-top: 10px"),
+            (".at-src", "margin-left: 5px"),
+            (".at-pres", "gap: 3px"),
+            (".at-pchip", "padding: 0 5px"),
+            (".at-pchip", "border-radius: 3px"),
+            (".at-rows", "gap: 1px"),
+            (".at-lnk", "padding: 1px 3px"),
+            (".at-lnk", "border-radius: 3px"),
+            (".at-bar", "border-radius: 1px"),
+            (".at-tag", "border-radius: 3px"),
+            (".at-dot", "margin: var(--space-1) 3px 0 var(--space-1)"),
+            (".at-dot", "border-radius: 50%"),
+            ("#at-q", "padding: 5px var(--space-2)"),
+            (".at-shint", "padding: var(--space-1) 10px var(--space-2)"),
+        ];
+
+        // The scan reads what it claims to: a literal in each property
+        // family, in a longhand and behind a token, is reported, and the
+        // exception list waves through only its own rule.
+        let planted: Vec<(String, String)> = [
+            (".a", "padding: 3px; margin-top: 8px; color: var(--ink)"),
+            (".b", "gap: var(--space-2) 10px; --space-x: 5px"),
+            (".c", "border-radius: 4px; border-top-left-radius: 2px"),
+            (".d", "margin: 0 auto; border-radius: var(--radius-sm)"),
+            (".e", "gap: var(--radius-sm)"),
+            (".at-sw", "margin-top: 3px"),
+            (".elsewhere", "margin-top: 3px"),
+        ]
+        .into_iter()
+        .map(|(s, d)| (s.to_string(), d.to_string()))
+        .collect();
+        let (read, off) = off_token_lengths(&planted, &exceptions);
+        assert_eq!(read, 10, "the scan skipped a declaration it should read");
+        assert_eq!(
+            off,
+            [
+                ".a { padding: 3px }",
+                ".a { margin-top: 8px }",
+                ".b { gap: var(--space-2) 10px }",
+                ".c { border-radius: 4px }",
+                ".c { border-top-left-radius: 2px }",
+                ".e { gap: var(--radius-sm) }",
+                ".elsewhere { margin-top: 3px }",
+            ],
+            "the scan misses a literal length it should report"
+        );
+
+        let rules = css_rules();
+        let (read, off) = off_token_lengths(&rules, &exceptions);
         assert!(
-            shadows > 0,
-            "the scan found no box-shadow at all; it reads nothing"
+            read > 0,
+            "the page's stylesheets set no spacing at all: read the right files?"
+        );
+        assert!(
+            off.is_empty(),
+            "literal lengths outside the tokens:\n{}",
+            off.join("\n")
+        );
+        // An exception whose rule changed or went away is stale, and would
+        // wave the next literal there through.
+        let (_, unlisted) = off_token_lengths(&rules, &[]);
+        for (selector, d) in exceptions {
+            assert!(
+                unlisted.contains(&format!("{selector} {{ {d} }}")),
+                "the exception {selector} {{ {d} }} matches nothing in the page's stylesheets"
+            );
+        }
+        // Panels are square: --radius-0, as ds.css's .cd-panel is.
+        assert!(
+            rules
+                .iter()
+                .any(|(s, d)| s.trim() == ".pane" && d.contains("border-radius: var(--radius-0)")),
+            ".pane, the page's Panel, does not use --radius-0"
+        );
+    }
+
+    #[test]
+    fn page_links_its_stylesheets_in_cascade_order() {
+        // The risk (#978): style.css split into sheets linked out of the
+        // order its rules had, so a later rule that won a tie now loses; a
+        // sheet under ui/ the page never links, whose rules no page CSS test
+        // reads and no level draws; or one sheet grown back past 1,000
+        // lines, the limit the split is for.
+        let html = ui_file("index.html");
+        assert_eq!(
+            linked_stylesheets(&html),
+            PAGE_STYLESHEETS,
+            "index.html links the page's stylesheets in another order"
+        );
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
+        let on_disk: BTreeSet<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n.ends_with(".css") && n != "ds.css")
+            .collect();
+        let linked: BTreeSet<String> = PAGE_STYLESHEETS.iter().map(|n| n.to_string()).collect();
+        assert_eq!(on_disk, linked, "a stylesheet under ui/ is not linked");
+        for name in PAGE_STYLESHEETS {
+            let lines = ui_file(name).lines().count();
+            assert!(lines < 1000, "ui/{name} is {lines} lines");
+        }
+        // The list is the page's: one dropped from a copy of the page is
+        // not in it.
+        let dropped = html.replace(r#"<link rel="stylesheet" href="atlas.css">"#, "");
+        assert!(!linked_stylesheets(&dropped).contains(&"atlas.css".to_string()));
+    }
+
+    #[test]
+    fn page_css_tests_read_every_stylesheet_the_page_links() {
+        // The risk (#978): a page CSS test still reading style.css alone
+        // after its rules were split into other sheets, so a literal colour,
+        // spacing or width in run.css or atlas.css passes unread. A rule
+        // breaking all three is planted in each linked sheet in turn, and
+        // each scan names it; planted in a sheet a copy of the page does
+        // not link, no scan sees it, so what they read is the page's links.
+        let planted = "\n.planted978 { width: 2000px; color: #123456; padding: 7px; }\n";
+        let named = |text: &str| {
+            let rules = css_rules_of(text);
+            let (_, wide) = too_wide(text, min_window_width());
+            let (_, own) = own_colours(&rules);
+            let (_, off) = off_token_lengths(&rules, &[]);
+            [
+                wide.iter().any(|w| w.contains("2000px")),
+                own.iter().any(|c| c.starts_with(".planted978 ")),
+                off.iter().any(|o| o.starts_with(".planted978 ")),
+            ]
+        };
+        let html = ui_file("index.html");
+        assert_eq!(
+            named(&css_text()),
+            [false; 3],
+            "the page already breaks a scan"
+        );
+        for sheet in PAGE_STYLESHEETS {
+            let text = without_comments(&page_css_from(&html, |name| {
+                let css = ui_file(name);
+                if name == sheet { css + planted } else { css }
+            }));
+            assert_eq!(
+                named(&text),
+                [true; 3],
+                "a rule planted in {sheet}: [width, colour, spacing] seen"
+            );
+        }
+        let unlinked = html.replace(r#"<link rel="stylesheet" href="code.css">"#, "");
+        let text = without_comments(&page_css_from(&unlinked, |name| {
+            let css = ui_file(name);
+            if name == "code.css" {
+                css + planted
+            } else {
+                css
+            }
+        }));
+        assert_eq!(
+            named(&text),
+            [false; 3],
+            "a sheet the page does not link was read"
         );
     }
 

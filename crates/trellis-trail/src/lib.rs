@@ -141,6 +141,16 @@ pub struct Factual {
     /// empty, so a trail with no steering keeps its shape and its digest.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steering: Vec<Steer>,
+    /// The person's run controls that took effect (ADR 0058 §6, ADR 0007's
+    /// amendment of 2026-10-27): each pause, raised ceiling and withdrawn
+    /// message, in the order the loop recorded them.
+    ///
+    /// Not in `steering`, which says a text reached the model or waited for
+    /// a later run; a withdrawn message did neither. Inside `factual`, so
+    /// under the digest. Omitted when empty, so a run with no control keeps
+    /// its shape and its digest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub controls: Vec<Control>,
     /// Integrated-check failures that named files changed by two or more
     /// partitions (ADR 0005, ADR 0042): a collision the partition plan did
     /// not predict, and so evidence the graph's recall missed an edge.
@@ -223,6 +233,51 @@ impl Steer {
             len: text.chars().count() as u64,
         }
     }
+}
+
+/// One run control a person sent that took effect, as `Factual::controls`
+/// records it.
+///
+/// Tagged `control` rather than `kind`, because a withdrawal keeps a steering
+/// entry's own `kind` and `len`. None of it is a correctness claim, and there
+/// is no pass variant (ADR 0004). Read back, every field is data written by
+/// whoever last edited the file (ADR 0007): a recorded ceiling is never a
+/// budget.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "control", rename_all = "snake_case")]
+pub enum Control {
+    /// The loop held before model call `turn`, for `paused_ms`, the
+    /// `resumed` event's figure.
+    Pause { turn: u32, paused_ms: u64 },
+    /// A ceiling the budget check before model call `turn` first enforced
+    /// at `new`, in the `run budget` event's name and units. One entry per
+    /// ceiling that changed.
+    Raise {
+        turn: u32,
+        /// `max_iterations`, `max_wall_clock_ms` or `max_completion_tokens`.
+        /// A string, as `SuspectedRecallGap::check` is, so a name this build
+        /// does not know still reads back.
+        ceiling: String,
+        old: u64,
+        new: u64,
+    },
+    /// A message taken back before it reached the model or a later run.
+    /// `turn` is the one its steering entry would have carried.
+    ///
+    /// No text, by the owner's decision of 2026-10-27 (ADR 0007's #868
+    /// amendment): a committed trail is a file a later run's model can read
+    /// through `read_file` or `bash`, and it would see what the person took
+    /// back.
+    Withdraw {
+        turn: u32,
+        kind: SteerKind,
+        /// The message's length in characters, as `Steer::len` counts it.
+        len: u64,
+    },
+    /// A control written by a newer build. Kept so its trail still parses
+    /// rather than being refused whole; nothing reads anything from it.
+    #[serde(other)]
+    Unrecognised,
 }
 
 /// One file a run was given, as `Factual::inputs` records it.
@@ -329,6 +384,22 @@ pub struct Action {
     /// when absent, so an old-shaped run keeps its bytes and its digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// For an `edit` that applied: how many lines its one hunk added, the
+    /// figure its rpc `turn` event carries, from the same `EditDiff`, so
+    /// the trail and the event cannot disagree (ADR 0007, amended #811).
+    ///
+    /// Absent on every other action, `write_file` included, and in a trail
+    /// written before the field: absent is not recorded, never 0. A
+    /// recorded 0 is written, since a pure deletion adding no lines is a
+    /// measurement, which is why the skip is `is_none` and not `is_zero`.
+    /// Read back, it is the trail's claim and nothing more (rule 10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines_added: Option<u64>,
+    /// How many lines the same hunk removed, under the same rules as
+    /// `lines_added`. The writer sets both or neither; a reader infers
+    /// neither from the other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines_removed: Option<u64>,
 }
 
 /// The most paths one action's `changed` lists. A command that rewrites a
@@ -673,6 +744,8 @@ mod tests {
                         changed: Vec::new(),
                         changed_count: 0,
                         duration_ms: Some(10),
+                        lines_added: None,
+                        lines_removed: None,
                     },
                     Action {
                         turn: 2,
@@ -683,6 +756,8 @@ mod tests {
                         changed: Vec::new(),
                         changed_count: 0,
                         duration_ms: Some(10),
+                        lines_added: Some(1),
+                        lines_removed: Some(1),
                     },
                     Action {
                         turn: 3,
@@ -693,6 +768,8 @@ mod tests {
                         changed: Vec::new(),
                         changed_count: 0,
                         duration_ms: Some(10),
+                        lines_added: None,
+                        lines_removed: None,
                     },
                 ],
                 control: None,
@@ -702,6 +779,7 @@ mod tests {
                 label: None,
                 inputs: Vec::new(),
                 steering: Vec::new(),
+                controls: Vec::new(),
                 suspected_recall_gaps: Vec::new(),
             },
 

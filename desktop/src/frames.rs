@@ -20,18 +20,54 @@ use serde_json::Value;
 /// One child line, typed.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Frame {
-    /// The loop's `turn` event.
-    Turn(Turn),
+    /// The loop's `turn` event, boxed: with an applied edit's diff (#802)
+    /// it is the largest frame by far, and every other frame would carry
+    /// its size.
+    Turn(Box<Turn>),
     /// The loop's `model call` event, sent before each call to the model
     /// with the number the `turn` it produces will carry (#614). Without
     /// the turn it names nothing, so one that lacks it is [`Frame::Ignored`].
     ModelCall {
         turn: u64,
+        /// The run's wall-clock spend as the budget checked it just before
+        /// this call (#799); `None` from a trellis that sends none.
+        elapsed_ms: Option<u64>,
     },
-    /// The loop's one `run budget` event per run.
-    RunBudget {
-        max_iterations: Option<u64>,
+    /// The loop's `run budget` event: every ceiling in force, sent as the
+    /// loop starts and again after a `set_budget` raise takes effect
+    /// (#807), so the latest one replaces the last whole.
+    RunBudget(RunBudget),
+    /// The loop's `paused` event (#806): the run holds before model call
+    /// `turn`, at the hold a `pause` asked for. Without the turn it names
+    /// no hold, so one that lacks it is [`Frame::Ignored`].
+    Paused {
+        turn: u64,
     },
+    /// The loop's `resumed` event: the held run goes on. `paused_ms` is
+    /// how long it was held, left out of the wall-clock spend; `None` from
+    /// a line that did not carry it.
+    Resumed {
+        turn: Option<u64>,
+        paused_ms: Option<u64>,
+    },
+    /// The loop's `plan` event (#810): the model's plan as trellis kept it.
+    /// `steps` is the JSON array in one string, kept as sent: it is model
+    /// output, read by the reducer, which says when it cannot be read
+    /// rather than dropping the event. Each field is `None` when absent or
+    /// of the wrong type.
+    Plan {
+        turn: Option<u64>,
+        steps: Option<String>,
+        steps_cut: Option<u64>,
+        texts_cut: Option<u64>,
+    },
+    /// The loop's `compacted` event: older observations were elided so a
+    /// model request fit the run's context budget. Each figure is `None`
+    /// when the line did not carry it; the event itself is the compaction.
+    Compacted(Compacted),
+    /// The loop's `compacted on request` event: the request after a
+    /// client's `compact` folded at least one turn.
+    CompactedOnRequest(CompactedOnRequest),
     /// The loop's `steer delivered` event.
     SteerDelivered {
         after_step: Option<u64>,
@@ -54,11 +90,18 @@ pub enum Frame {
 }
 
 /// A `turn` event. `turn` and `call` are what make an event a turn, the
-/// test `tui_bridge.rs` and `rpc.rs` apply, so both are required.
+/// test `rpc.rs` applies, so both are required.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Turn {
     pub turn: u64,
     pub call: String,
+    /// What the trail records for the turn (#800), from the engine's own
+    /// reading of the call and its whole observation, so the desktop never
+    /// splits `call` or searches `observation` for them.
+    pub tool: Option<String>,
+    pub target: Option<String>,
+    /// True only for an edit that applied or a file `write_file` created.
+    pub wrote: Option<bool>,
     /// The loop's Debug rendering: `"Some(true)"`, `"Some(false)"` or
     /// `"None"`, kept as sent.
     pub verdict: Option<String>,
@@ -69,6 +112,9 @@ pub struct Turn {
     pub resolved: Option<u64>,
     pub candidates: Option<u64>,
     pub unresolved: Option<u64>,
+    /// How many of the radius's call sites its observation summarised by
+    /// file instead of listing them; 0 when it listed every one.
+    pub summarised: Option<u64>,
     /// Absent when the driver sent no prompt (a scripted run).
     pub prompt_bytes: Option<u64>,
     /// The wall time of the step's model call, queue wait included.
@@ -79,6 +125,64 @@ pub struct Turn {
     /// colibri's queue waits summed; absent unless every reply carried the
     /// `x-colibri-queue-wait-ms` header.
     pub queue_wait_ms: Option<u64>,
+    /// The run's wall-clock spend after the turn, by the budget's own
+    /// clock (#799), with waits on a person and pauses taken out.
+    pub elapsed_ms: Option<u64>,
+    /// The tool call's time by the monotonic clock, waits on a person taken
+    /// out, and on the governance audit's turn the audit's own (#800): what
+    /// the summary level shows beside each check (#832).
+    pub duration_ms: Option<u64>,
+    /// The completion (output) tokens over every reply so far, the counter
+    /// `run budget`'s `max_completion_tokens` is checked against (#799): never prompt
+    /// tokens, and never a sum of the two.
+    pub completion_tokens_used: Option<u64>,
+    /// An applied edit's whole lines added and removed (#802); absent on
+    /// any other turn, a refused edit and `write_file` included.
+    pub lines_added: Option<u64>,
+    pub lines_removed: Option<u64>,
+    /// The 1-based line, in the file before the edit, of the first line it
+    /// removed or replaced.
+    pub start_line: Option<u64>,
+    /// The edit's one hunk as a unified diff, cut by trellis at 8192
+    /// bytes. Repository text and model output (CLAUDE.md rule 10).
+    pub diff: Option<String>,
+}
+
+/// A `run budget` event's ceilings (#799). Each is `None` when the event
+/// did not carry it: an older trellis sends `max_iterations` alone, and the
+/// scripted driver, which elides nothing, sends no `max_context_bytes`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RunBudget {
+    pub max_iterations: Option<u64>,
+    pub max_wall_clock_ms: Option<u64>,
+    /// A ceiling on completion tokens only, as `completion_tokens_used`.
+    pub max_completion_tokens: Option<u64>,
+    /// The ceiling on one prompt, in bytes.
+    pub max_context_bytes: Option<u64>,
+}
+
+/// A `compacted` event's figures (client_contract.json): the turn the
+/// request produced, turns 1 to `elided_turns` elided, holding
+/// `elided_bytes`, and the request's size after eliding against the budget
+/// in force, two figures and never a share.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Compacted {
+    pub turn: Option<u64>,
+    pub elided_turns: Option<u64>,
+    pub elided_bytes: Option<u64>,
+    pub request_bytes: Option<u64>,
+    pub budget: Option<u64>,
+}
+
+/// A `compacted on request` event's figures: the request a client's
+/// `compact` built, the turns it folded and its size before and after.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CompactedOnRequest {
+    pub turn: Option<u64>,
+    pub turns_folded: Option<u64>,
+    pub elided_turns: Option<u64>,
+    pub bytes_before: Option<u64>,
+    pub bytes_after: Option<u64>,
 }
 
 /// colibri's self-report (client_contract.json's `runtime identified`).
@@ -118,6 +222,9 @@ pub struct RunEnd {
     pub restored: Option<bool>,
     /// Present when the outcome is `error`.
     pub error: Option<String>,
+    /// The loop's whole wall-clock spend (#799); absent, never a partial
+    /// figure, for a run the loop did not finish.
+    pub elapsed_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -136,6 +243,9 @@ pub struct ApprovalRequest {
     pub id: String,
     pub question: Option<String>,
     pub detail: Option<String>,
+    /// The id of the prompt or follow-up whose run asks; `None` when it was
+    /// sent with no id (trellis sends `null`).
+    pub request_id: Option<String>,
 }
 
 /// Types one stdout line. Never fails: a line that is not a JSON object is
@@ -162,6 +272,7 @@ pub fn parse_stdout(line: &str) -> Frame {
                 run_id: json::string(&o, "run_id"),
                 restored: json::bool(&o, "restored"),
                 error: json::string(&o, "error"),
+                elapsed_ms: json::u64(&o, "elapsed_ms"),
             }),
             Some("response") => Frame::Response(Response {
                 command: json::string(&o, "command"),
@@ -175,6 +286,7 @@ pub fn parse_stdout(line: &str) -> Frame {
                     id,
                     question: json::string(&o, "question"),
                     detail: json::string(&o, "detail"),
+                    request_id: json::string(&o, "request_id"),
                 }),
                 None => Frame::Ignored,
             },
@@ -186,29 +298,80 @@ pub fn parse_stdout(line: &str) -> Frame {
     };
     match f.get("message").and_then(Value::as_str) {
         Some("turn") => match (json::u64(f, "turn"), json::string(f, "call")) {
-            (Some(turn), Some(call)) => Frame::Turn(Turn {
+            (Some(turn), Some(call)) => Frame::Turn(Box::new(Turn {
                 turn,
                 call,
+                tool: json::string(f, "tool"),
+                target: json::string(f, "target"),
+                wrote: json::bool(f, "wrote"),
                 verdict: json::string(f, "verdict"),
                 check_kind: json::string(f, "check_kind"),
                 observation: json::string(f, "observation"),
                 resolved: json::u64(f, "resolved"),
                 candidates: json::u64(f, "candidates"),
                 unresolved: json::u64(f, "unresolved"),
+                summarised: json::u64(f, "summarised"),
                 prompt_bytes: json::u64(f, "prompt_bytes"),
                 model_ms: json::u64(f, "model_ms"),
                 completion_tokens: json::u64(f, "completion_tokens"),
                 queue_wait_ms: json::u64(f, "queue_wait_ms"),
-            }),
+                elapsed_ms: json::u64(f, "elapsed_ms"),
+                duration_ms: json::u64(f, "duration_ms"),
+                completion_tokens_used: json::u64(f, "completion_tokens_used"),
+                lines_added: json::u64(f, "lines_added"),
+                lines_removed: json::u64(f, "lines_removed"),
+                start_line: json::u64(f, "start_line"),
+                diff: json::string(f, "diff"),
+            })),
             _ => Frame::Ignored,
         },
         Some("model call") => match json::u64(f, "turn") {
-            Some(turn) => Frame::ModelCall { turn },
+            Some(turn) => Frame::ModelCall {
+                turn,
+                elapsed_ms: json::u64(f, "elapsed_ms"),
+            },
             None => Frame::Ignored,
         },
-        Some("run budget") => Frame::RunBudget {
+        Some("run budget") => Frame::RunBudget(RunBudget {
             max_iterations: json::u64(f, "max_iterations"),
+            max_wall_clock_ms: json::u64(f, "max_wall_clock_ms"),
+            max_completion_tokens: json::u64(f, "max_completion_tokens"),
+            max_context_bytes: json::u64(f, "max_context_bytes"),
+        }),
+        Some("paused") => match json::u64(f, "turn") {
+            Some(turn) => Frame::Paused { turn },
+            None => Frame::Ignored,
         },
+        // Read whatever it carries: the run going on is the fact, and a
+        // line missing a figure still says it.
+        Some("resumed") => Frame::Resumed {
+            turn: json::u64(f, "turn"),
+            paused_ms: json::u64(f, "paused_ms"),
+        },
+        // Read whatever it carries: a plan event is the model's latest plan
+        // even when its steps cannot be read, and the panel says so.
+        Some("plan") => Frame::Plan {
+            turn: json::u64(f, "turn"),
+            steps: json::string(f, "steps"),
+            steps_cut: json::u64(f, "steps_cut"),
+            texts_cut: json::u64(f, "texts_cut"),
+        },
+        // Read whatever each carries: the event is the compaction, and a
+        // line missing a figure still says one happened.
+        Some("compacted") => Frame::Compacted(Compacted {
+            turn: json::u64(f, "turn"),
+            elided_turns: json::u64(f, "elided_turns"),
+            elided_bytes: json::u64(f, "elided_bytes"),
+            request_bytes: json::u64(f, "request_bytes"),
+            budget: json::u64(f, "budget"),
+        }),
+        Some("compacted on request") => Frame::CompactedOnRequest(CompactedOnRequest {
+            turn: json::u64(f, "turn"),
+            turns_folded: json::u64(f, "turns_folded"),
+            elided_turns: json::u64(f, "elided_turns"),
+            bytes_before: json::u64(f, "bytes_before"),
+            bytes_after: json::u64(f, "bytes_after"),
+        }),
         Some("steer delivered") => Frame::SteerDelivered {
             after_step: json::u64(f, "after_step"),
         },

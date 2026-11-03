@@ -212,7 +212,7 @@ pub(crate) fn screen(
                 }
                 // `root_from` is the walk every command uses: up from the
                 // path to the first `.git`, never into the tree (ADR 0050 §3).
-                match crate::root_from(&path) {
+                match crate::startup::root_from(&path) {
                     Some(root) => return Ok(Some(root)),
                     None => writeln!(out, "{shown} is not inside a git repository.")?,
                 }

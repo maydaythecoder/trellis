@@ -1,0 +1,10 @@
+crates/trellis-cli/src/templates.rs:322:30: replace + with - in substitute
+crates/trellis-cli/src/templates.rs:322:30: replace + with * in substitute
+crates/trellis-cli/src/user_config.rs:324:5: replace key_in -> Option<String> with Some(String::new())
+crates/trellis-cli/src/user_config.rs:324:5: replace key_in -> Option<String> with Some("xyzzy".into())
+crates/trellis-cli/src/user_config.rs:325:9: replace key_in::keyish -> bool with true
+crates/trellis-cli/src/user_config.rs:340:9: replace key_in::walk -> Option<String> with Some(String::new())
+crates/trellis-cli/src/user_config.rs:340:9: replace key_in::walk -> Option<String> with Some("xyzzy".into())
+crates/trellis-cli/src/user_config.rs:341:39: replace match guard s.trim_start().starts_with("sk-") with true in key_in::walk
+crates/trellis-cli/src/user_config.rs:349:37: replace && with || in key_in::walk
+crates/trellis-cli/src/user_config.rs:349:26: replace && with || in key_in::walk

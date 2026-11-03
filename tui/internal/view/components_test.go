@@ -112,7 +112,7 @@ func TestStatusBarDrawsTheWorktreeAsAStatusAndTheKeysAsKeycaps(t *testing.T) {
 		return rows[len(rows)-1]
 	}
 	s := shellState()
-	if bar := lastRow(s); !strings.Contains(bar, th.Cool.Render("● 1 pending")) || !strings.Contains(bar, th.InkSecondary.Render(" [TAB] select  [⏎] in  [^C] stop")) {
+	if bar := lastRow(s); !strings.Contains(bar, th.Cool.Render("● 1 pending")) || !strings.Contains(bar, th.InkSecondary.Render(" [TAB] select  [⏎] in  [^F] filter  [^N] quiet  [^O] call  [^C] stop")) {
 		t.Fatalf("running: %q", bar)
 	}
 	s.Running = false

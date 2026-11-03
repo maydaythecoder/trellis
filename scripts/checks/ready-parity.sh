@@ -16,8 +16,8 @@
 # Only the verdict is compared, not the reasons: `ready` appends the lookup
 # error to a `blocked_by #n is UNKNOWN`, and G0 does not.
 #
-# Read-only. The only GitHub calls are `gh issue list` here and the
-# `gh issue view` reads the two tools make. The binary is built first, so a
+# Read-only. The only GitHub calls are the open-issue list here and the
+# issue reads the two tools make (G0's through REST, #924). The binary is built first, so a
 # stale one in target/ is never what gets compared.
 #
 # A classifier self-test over canned outputs runs before the live pass, so
@@ -167,7 +167,9 @@ BIN="$target/debug/trellis-tickets"
 # Far above the open count; reaching it means the list may be cut short, and
 # "every open issue" could not be claimed.
 LIMIT=1000
-list="$(gh issue list --state open --limit "$LIMIT" --json number -q '.[].number')" \
+# shellcheck source=../tickets/issues.sh
+source "$ROOT/scripts/tickets/issues.sh"
+list="$(open_issues_each '.number')" \
   || { echo "FAIL: cannot list open issues"; exit 1; }
 issues="$(printf '%s\n' "$list" | sed '/^$/d' | sort -n)"
 count="$(printf '%s\n' "$issues" | sed '/^$/d' | wc -l | tr -d ' ')"

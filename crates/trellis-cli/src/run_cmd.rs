@@ -1,6 +1,6 @@
 //! `trellis run`: one task, from a clean worktree to a trail.
 //!
-//! What starts here: `cmd_run_with`, which `trellis run` (`main.rs`) and
+//! What starts here: `cmd_run_with`, which `trellis run` (`cmd_run_args`) and
 //! `trellis rpc`'s `prompt` (`rpc.rs`) call; `cmd_run` is it with no extras.
 //! It frames the run's output and calls `run_body`, which refuses what it
 //! can before it touches the tree (the control mode, trust, whether the
@@ -11,18 +11,21 @@
 //! trail, in which `action_from` makes each turn's record. The whole path,
 //! from `main.rs` to the trail: docs/ENTRY_POINTS.md.
 
+use crate::approval::{Human, NEEDS_A_TERMINAL, RunControl, answer_on_the_line, print_undelivered};
 use crate::doctor_cmd::{runtime_tier_label, schema_report};
+use crate::driver::Driver;
+use crate::observed_model::Observed;
 use crate::plain;
+use crate::run_partitioned::{
+    Agents, Fanout, Partitioned, agents_for, parse_agents, run_partitioned,
+};
 use crate::{
-    config, context_files, hosted, image_input, output, rpc, tooling, user_config, vault_cmd,
+    config, context_files, first_run, floor, hosted, image_input, output, templates, tooling,
+    user_config, vault_cmd,
 };
 use anyhow::{Context, Result};
-use std::collections::HashMap;
 use std::io::Write as _;
-use std::num::NonZeroUsize;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-use trellis_core::PartitionId;
 
 /// How a run ended, and what the process should exit with.
 ///
@@ -71,243 +74,6 @@ impl RunExit {
     }
 }
 
-/// What drives the loop this run.
-///
-/// Not a trait object: `Model::next_step` is an `async fn` in a trait, which
-/// is not dyn-compatible, and the loop is generic over it.
-enum Driver {
-    Scripted(trellis_loop::ScriptedModel),
-    Runtime(trellis_loop::RuntimeModel),
-    /// Tier 1: a hosted provider's own tool calling (ADR 0024).
-    ///
-    /// Boxed: it carries the conversation's replayed provider messages, and
-    /// the other variants should not pay for its size.
-    Hosted(Box<trellis_loop::HostedModel>),
-}
-
-/// A driver that remembers the `done` summary it handed the loop, and
-/// every step, for the run's replay recording (#620, ADR 0056).
-///
-/// `Outcome` does not carry the summary, and the session's `/copy` wants it.
-/// The transcript does not carry a `done` step, and a model's step that a
-/// gate refused is still the model's, so the steps are taken here, as the
-/// driver handed them over, rather than from the transcript.
-/// Observing it on the way past keeps that inside the binary: the loop's
-/// types stay as they are, and every method the loop reads passes straight
-/// through, so the budget, the context figures, the compactions and the
-/// step's usage are the driver's own.
-///
-/// `prompt_tokens` and `requested_compactions` are not forwarded, and need
-/// not be (#487): the loop never calls them, and the trail reads them, with
-/// the compactions, from the concrete `Driver` after the run, around this
-/// wrapper (`prompt_tokens` and `driver.requested_compactions()` in
-/// `cmd_run`). A compaction asked for over RPC is acted on by the driver,
-/// through `Driver::compact_on_request`, not through this trait. A new read
-/// through the wrapper needs the method forwarded here and in
-/// `rpc::Watched`.
-struct SeesDone<'a, M> {
-    inner: &'a mut M,
-    done: &'a mut Option<String>,
-    steps: &'a mut Vec<trellis_loop::Step>,
-}
-
-impl<M: trellis_loop::Model + Send> trellis_loop::Model for SeesDone<'_, M> {
-    async fn next_step(
-        &mut self,
-        t: &trellis_loop::Transcript,
-    ) -> Result<trellis_loop::Step, String> {
-        let step = self.inner.next_step(t).await;
-        if let Ok(trellis_loop::Step::Done { summary }) = &step {
-            *self.done = Some(summary.clone());
-        }
-        if let Ok(s) = &step {
-            self.steps.push(s.clone());
-        }
-        step
-    }
-
-    fn tokens_used(&self) -> Option<u64> {
-        self.inner.tokens_used()
-    }
-
-    fn prompt_bytes(&self) -> Option<usize> {
-        self.inner.prompt_bytes()
-    }
-
-    fn context_bytes(&self) -> Option<usize> {
-        self.inner.context_bytes()
-    }
-
-    fn compactions(&self) -> &[trellis_loop::Compacted] {
-        self.inner.compactions()
-    }
-
-    fn step_usage(&self) -> trellis_loop::StepUsage {
-        self.inner.step_usage()
-    }
-}
-
-impl Driver {
-    /// Builds the driver a parsed spec names.
-    ///
-    /// Takes a [`ModelSpec`] rather than a string: the string form was parsed
-    /// here, in `cmd_doctor` and in the session, each deciding for itself what
-    /// was valid. Construction is now the only thing this does.
-    ///
-    /// `targets` is `(every target of the run, this agent's)` for one agent
-    /// of a multi-agent run, which a script answers from its `targets`
-    /// section (#466); `None` for every other run.
-    fn build(
-        spec: &trellis_model::ModelSpec,
-        unconstrained: bool,
-        tools: &trellis_loop::ToolSet,
-        cfg: &config::RepoConfig,
-        from_user: bool,
-        source: hosted::SpecSource,
-        targets: Option<(&[String], &[String])>,
-    ) -> Result<Self> {
-        if let Some(r) = hosted::resolve_from(spec, cfg, from_user, source)? {
-            if unconstrained {
-                anyhow::bail!(
-                    "--unconstrained is meaningless for a hosted model: it calls tools \
-                     through the provider's own API (tier 1)"
-                );
-            }
-            // The profile is off until `preflight` identifies colibri, which
-            // is after this; `cmd_run` rebuilds the driver then.
-            return Ok(Driver::Hosted(Box::new(hosted::build(&r, cfg, false)?)));
-        }
-        match spec {
-            trellis_model::ModelSpec::Scripted(path) => {
-                if unconstrained {
-                    anyhow::bail!("--unconstrained is meaningless for a scripted model");
-                }
-                let text = std::fs::read_to_string(path)
-                    .with_context(|| format!("cannot read script {}", path.display()))?;
-                // Against the run's own tool set: a step calling a tool this
-                // run does not offer fails here, before the snapshot.
-                let m = match targets {
-                    None => trellis_loop::ScriptedModel::from_json_with(&text, tools),
-                    Some((all, mine)) => {
-                        trellis_loop::ScriptedModel::from_json_for(&text, tools, all, mine)
-                    }
-                }
-                .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-                Ok(Driver::Scripted(m))
-            }
-            trellis_model::ModelSpec::Runtime {
-                dialect,
-                base,
-                model,
-            } => {
-                // `[model] timeout_s` bounds each request (ADR 0047 decision
-                // 9); the wall-clock budget still bounds the run (ADR 0008).
-                let client = trellis_model::RuntimeClient::new(base, *dialect, model.clone())?
-                    .with_timeout(cfg.model_timeout());
-                // Named rather than `new(client, !unconstrained)`: the flag is
-                // called --unconstrained, so a negated bool at the call site
-                // meant reading two negations to learn which tier runs.
-                Ok(Driver::Runtime(
-                    if unconstrained {
-                        trellis_loop::RuntimeModel::unconstrained(client)
-                    } else {
-                        trellis_loop::RuntimeModel::constrained(client)
-                    }
-                    .with_context_bytes(Some(hosted::runtime_context_bytes(cfg))),
-                ))
-            }
-            trellis_model::ModelSpec::Hosted { .. } | trellis_model::ModelSpec::Provider { .. } => {
-                unreachable!("resolved above")
-            }
-        }
-    }
-
-    /// Every compaction the driver made (ADR 0024 §5).
-    fn compactions(&self) -> Vec<trellis_loop::Compacted> {
-        use trellis_loop::Model;
-        match self {
-            Driver::Scripted(m) => m.compactions().to_vec(),
-            Driver::Runtime(m) => m.compactions().to_vec(),
-            Driver::Hosted(m) => m.compactions().to_vec(),
-        }
-    }
-
-    /// Every compaction a client asked for over RPC (ADR 0025 §5).
-    fn requested_compactions(&self) -> Vec<trellis_loop::RequestedCompaction> {
-        use trellis_loop::Model;
-        match self {
-            Driver::Scripted(m) => m.requested_compactions().to_vec(),
-            Driver::Runtime(m) => m.requested_compactions().to_vec(),
-            Driver::Hosted(m) => m.requested_compactions().to_vec(),
-        }
-    }
-
-    /// Hands RPC's `compact` requests to the driver that will answer them.
-    fn compact_on_request(&mut self, requests: std::sync::Arc<trellis_loop::CompactRequests>) {
-        match self {
-            Driver::Scripted(_) => requests.close(
-                "this run's model is scripted: it is sent no prompt, so there is nothing \
-                 to compact",
-            ),
-            Driver::Runtime(m) => m.compact_on_request(requests),
-            Driver::Hosted(m) => m.compact_on_request(requests),
-        }
-    }
-
-    /// Completion tokens as the adapter counted them, for the trail (ADR
-    /// 0026 §8); `None` for a scripted driver, and for a hosted one once a
-    /// reply went unreported.
-    fn tokens(&self) -> Option<u64> {
-        match self {
-            Driver::Scripted(_) => None,
-            Driver::Runtime(m) => trellis_loop::Model::tokens_used(m),
-            // Hosted runs count against a profile's budget too; the provider
-            // reports output tokens and the adapter sums them (ADR 0024).
-            // Not `tokens_used`, which charges an unreported reply its upper
-            // bound for the in-run ceiling: the trail takes only a measured
-            // count, and `None` once any reply went unreported.
-            Driver::Hosted(m) => m.tokens_measured(),
-        }
-    }
-
-    /// Prompt tokens, `None` once any call went unreported (ADR 0027).
-    fn prompt_tokens(&self) -> Option<u64> {
-        match self {
-            Driver::Scripted(_) => None,
-            Driver::Runtime(m) => trellis_loop::Model::prompt_tokens(m),
-            Driver::Hosted(m) => trellis_loop::Model::prompt_tokens(m.as_ref()),
-        }
-    }
-
-    fn describe(&self) -> String {
-        match self {
-            Driver::Scripted(m) => format!(
-                "scripted, {} steps — real loop, real checks, real rollback; judgement stubbed",
-                m.len()
-            ),
-            // `degradation()` answers "what do you lose at this tier", and
-            // printed bare it read as `LlamaCpp via RuntimeConstrained —
-            // none for correctness; grammar compilation happens in the
-            // serving runtime`, which says nothing to a reader who has not
-            // memorised the tier table. Number the tier and label the string.
-            Driver::Runtime(m) => format!(
-                "{:?}, tier {} — degradation: {}",
-                m.dialect(),
-                match m.tier() {
-                    trellis_model::AdapterTier::Native => "1, native tool calls",
-                    trellis_model::AdapterTier::RuntimeConstrained =>
-                        "2, schema enforced by the runtime",
-                    trellis_model::AdapterTier::HarnessConstrained => "3",
-                    trellis_model::AdapterTier::ValidateAndRetry =>
-                        "4, no schema; the reply is validated after",
-                },
-                m.tier().degradation()
-            ),
-            Driver::Hosted(m) => hosted::describe(m),
-        }
-    }
-}
-
 /// What a run is seeded with beyond the task: text for the prompt that
 /// informs the model and never counts toward convergence.
 ///
@@ -347,149 +113,6 @@ pub(crate) struct RunSeeding<'a> {
     /// fingerprint-match that entry (ADR 0053 decision 3). `None` for every
     /// caller but `work`.
     pub(crate) trust_root: Option<&'a Path>,
-}
-
-/// Who answers an approval question in approve mode (ADR 0018).
-pub(crate) enum Human {
-    /// Nobody. A run in approve mode refuses to start rather than start and
-    /// refuse every edit, which would look like a run that did the work.
-    Absent,
-    /// This terminal: the diff and the question are written to the run's
-    /// output, and the answer is one line from this reader. `None` is end of
-    /// input, which is a no.
-    Line(Box<dyn FnMut() -> Option<String> + Send>),
-    /// A caller that answers off its own thread: `rpc`, whose client shows
-    /// the request and sends `approve`, and the session's in-flight reader.
-    Channel(tokio::sync::mpsc::Sender<trellis_loop::ApprovalRequest>),
-}
-
-impl Human {
-    /// This process's terminal, if a person is both reading it and typing
-    /// into it.
-    ///
-    /// Stdin because the answer has to come from somebody, and a pipe is not
-    /// somebody. Stdout as well because the diff and the question are written
-    /// there: with stdout redirected to a file, a person at the keyboard would
-    /// be answering a question they cannot see, and a `y` given blind is not
-    /// an approval.
-    pub(crate) fn terminal() -> Self {
-        use std::io::IsTerminal;
-        if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-            Human::Line(Box::new(|| {
-                let mut line = String::new();
-                match std::io::stdin().read_line(&mut line) {
-                    Ok(0) | Err(_) => None,
-                    Ok(_) => Some(line),
-                }
-            }))
-        } else {
-            Human::Absent
-        }
-    }
-}
-
-/// How much a run asks before it acts: the flag, if any, over `[control]`.
-pub(crate) struct RunControl {
-    /// `--approve` or `--auto`; `None` takes the configured mode.
-    pub(crate) flag: Option<config::ControlMode>,
-    pub(crate) human: Human,
-    /// What the person types while the run is in flight (#113), delivered
-    /// between turns. Beside `human` because both are a person reaching into
-    /// a running task, and on its own channel so a steer can never be read
-    /// as an approval answer. `None` for every caller but `trellis tui`
-    /// (#115), `session` at a terminal (#116) and `rpc`'s `steer` (#114,
-    /// ADR 0025 §5).
-    pub(crate) steering: Option<trellis_loop::SteeringRx>,
-}
-
-impl Default for RunControl {
-    fn default() -> Self {
-        Self {
-            flag: None,
-            human: Human::Absent,
-            steering: None,
-        }
-    }
-}
-
-/// The exact refusal ADR 0018 names, so a script can match on it.
-///
-/// Both ways out are named because `session` reaches this too, and `--auto`
-/// is a `run` flag: a session user told only to pass it has nowhere to pass it.
-const NEEDS_A_TERMINAL: &str =
-    "approve mode needs an interactive terminal; pass --auto, or set [control] mode = \"auto\"";
-
-/// Whether a typed answer is a yes. Only an explicit one counts: the prompt
-/// says `[y/N]`, and an empty line, a typo or end of input is the N.
-fn is_yes(answer: Option<&str>) -> bool {
-    matches!(
-        answer.map(|a| a.trim().to_ascii_lowercase()).as_deref(),
-        Some("y" | "yes")
-    )
-}
-
-/// Answers approval questions on a line terminal until the channel closes.
-///
-/// The read runs on the blocking pool, not on the runtime thread, so a
-/// Ctrl-C while the question is up still reaches the select in `cmd_run`
-/// and aborts the run with a rollback. The reader is handed to the pool and
-/// back each time because it is one stdin and there is only ever one
-/// question open.
-async fn answer_on_the_line(
-    mut rx: tokio::sync::mpsc::Receiver<trellis_loop::ApprovalRequest>,
-    mut read: Box<dyn FnMut() -> Option<String> + Send>,
-    out: &mut dyn std::io::Write,
-) {
-    while let Some(req) = rx.recv().await {
-        show_question(&req, out);
-        let (back, answer) = match tokio::task::spawn_blocking(move || {
-            let a = read();
-            (read, a)
-        })
-        .await
-        {
-            Ok(r) => r,
-            // The reader panicked. Nothing can be asked again, so every
-            // later question is declined by the dropped channel.
-            Err(_) => return,
-        };
-        read = back;
-        let _ = req.reply.send(show_answer(answer.as_deref(), out));
-    }
-}
-
-/// What the person typed that no request carried: a steer that arrived
-/// after the last request. Printed so no text they typed goes missing
-/// without a word (#116).
-pub(crate) fn print_undelivered(log: &trellis_loop::SteeringLog, out: &mut dyn std::io::Write) {
-    for m in &log.undelivered {
-        let (trellis_loop::Steering::Steer(text) | trellis_loop::Steering::FollowUp(text)) = m;
-        let _ = writeln!(out, "not delivered: {}", plain(text));
-    }
-}
-
-/// An approval question as the line terminal shows it: the detail, then the
-/// question with its `[y/N]`. Shared with `session`'s reader (#116), so a
-/// question asked there reads exactly as one asked here.
-pub(crate) fn show_question(req: &trellis_loop::ApprovalRequest, out: &mut dyn std::io::Write) {
-    let _ = writeln!(out);
-    for line in req.detail.lines() {
-        let _ = writeln!(out, "  {}", plain(line));
-    }
-    let _ = write!(out, "{}? [y/N] ", plain(&req.question));
-    let _ = out.flush();
-}
-
-/// Reads a typed answer (`None` is end of input), says what it was taken
-/// as, and returns whether it is a yes.
-pub(crate) fn show_answer(answer: Option<&str>, out: &mut dyn std::io::Write) -> bool {
-    let yes = is_yes(answer);
-    if answer.is_none() {
-        // End of input leaves the cursor on the question line.
-        let _ = writeln!(out);
-    }
-    let _ = writeln!(out, "  {}", if yes { "approved" } else { "declined" });
-    yes
 }
 
 /// `input` (ADR 0023 §5), for [`cmd_run_with`]: `Err` when it refused the
@@ -555,6 +178,110 @@ pub(crate) fn cmd_run(
         control,
         output::RunExtras::default(),
         out,
+    )
+}
+
+/// `trellis run`'s flags, checked and handed to `cmd_run_with`. The exit
+/// code is returned rather than acted on: `main` is the caller that is the
+/// process (`RunExit`).
+pub(crate) fn cmd_run_args(root: &Path, flags: crate::RunArgs) -> Result<RunExit> {
+    let crate::RunArgs {
+        task,
+        model,
+        unconstrained,
+        agents,
+        target,
+        resume,
+        prompt,
+        args,
+        skill,
+        focus,
+        approve,
+        auto,
+        image,
+    } = flags;
+    // Checked here rather than in `cmd_run`: the session and the
+    // interface always run one agent, and this is the only caller
+    // that takes the flags. Every refusal below comes before
+    // `cmd_run_with`, which owns the snapshot.
+    let width = parse_agents(&agents)?;
+    if target.is_empty() && width != Agents::Count(1) {
+        anyhow::bail!(
+            concat!(
+                "--agents {} needs the run's work units named: pass --target <symbol> ",
+                "once per unit. `trellis partitions <symbol>...` shows the plan those ",
+                "targets would produce without running it (ADR 0045)."
+            ),
+            agents
+        );
+    }
+    // ADR 0025 §3: frontmatter stripped, `--args` substituted.
+    let task = templates::task_text(root, prompt.as_deref(), args.as_deref(), &task)?;
+    let model_from_user = model.is_some();
+    // A config that fails to load says why, rather than reading as
+    // "no model": the refusal may be the point (ADR 0024 §3).
+    let model = match model {
+        Some(m) => m,
+        None => config::RepoConfig::load(root)?
+            .model()
+            .with_context(first_run::no_model)?,
+    };
+    // Here, not in `run_body`: this is `trellis run`'s own path, and
+    // the session, the TUI and rpc share `run_body`, where a line on
+    // stderr would land under a drawn interface. Before `agents_for`
+    // and `cmd_run_with`, so before any request reaches the runtime.
+    // A spec that does not parse gets no warning; `cmd_run_with`
+    // refuses it with the reason.
+    if let Ok(spec) = model.parse::<trellis_model::ModelSpec>()
+        && let Some(w) = floor::run_warning(&spec)
+    {
+        eprintln!("{}", plain(&w));
+    }
+    // With no target the width is 1 (refused above otherwise), and
+    // the run is today's single-agent run with nothing added. With
+    // targets, the plan's partitions run each in its own agent (#466),
+    // one at a time at width 1 (ADR 0045 §2, #482), which is also the
+    // width of any N on a backend not measured to batch (#483).
+    let mut fanout = None;
+    if !target.is_empty() {
+        let (n, why) = agents_for(root, width, &target, &model, model_from_user)?;
+        fanout = Some(Fanout::plan(root, &target, n, why)?);
+    }
+    let flag = match (approve, auto) {
+        (true, _) => Some(config::ControlMode::Approve),
+        (_, true) => Some(config::ControlMode::Auto),
+        _ => None,
+    };
+    cmd_run_with(
+        root,
+        &task,
+        ModelChoice {
+            spec: &model,
+            unconstrained,
+        },
+        RunSeeding {
+            resume,
+            focus: focus.as_deref(),
+            profile: None,
+            model_from_user,
+            model_source: crate::hosted::SpecSource::Repository,
+            // `trellis run` has no task for a question to wait on.
+            queued: false,
+            services: &[],
+            trust_root: None,
+        },
+        RunControl {
+            flag,
+            human: Human::terminal(),
+            steering: None,
+        },
+        output::RunExtras {
+            skills: skill,
+            images: image,
+            fanout,
+            ..output::RunExtras::default()
+        },
+        &mut output::human(),
     )
 }
 
@@ -663,7 +390,9 @@ struct RunSinks<'a> {
     rec: &'a mut trellis_loop::Recording,
 }
 
-/// The body of a run; see `cmd_run`.
+/// The body of a run; see `cmd_run`. One call per phase, in the order the
+/// run's safety rests on: everything that can refuse before the snapshot,
+/// then the snapshot and its guards, the loop, the report and the outcome.
 fn run_body(
     root: &Path,
     task: &str,
@@ -674,19 +403,15 @@ fn run_body(
     sinks: RunSinks<'_>,
 ) -> Result<RunExit> {
     let RunSinks { out, rec } = sinks;
-    let ModelChoice {
-        spec: model_spec,
-        unconstrained,
-    } = model;
+    let model_spec = model.spec;
     let RunSeeding {
         resume,
         focus,
         profile,
         model_from_user,
         model_source,
-        queued,
         services,
-        trust_root,
+        ..
     } = seeding;
     let cfg = config::RepoConfig::load(root)?;
 
@@ -694,6 +419,279 @@ fn run_body(
     // mode with nobody to ask would deny every listed call and end looking
     // like a run that tried (ADR 0018). Before the model, before the
     // snapshot, before any file is read.
+    let mut dial = control_dial(&cfg, &control, profile, extras)?;
+
+    // Tools, hooks and trust (ADR 0023), decided before the model is built
+    // so a script is parsed against the tools this run actually offers, and
+    // before the snapshot so a bad `[tools]` section costs nothing. The id is
+    // stamped now and given to the trail, so `TRELLIS_RUN_ID` names the trail
+    // file this run writes.
+    let (stamp, run_id, mut tooling) =
+        prepare_tooling(root, task, model_spec, seeding, &cfg, &mut dial, extras)?;
+
+    // The vault is compiled here, in memory, before the model is contacted
+    // and before the snapshot. Writing the compiled file anywhere in the
+    // repository would dirty the worktree the snapshot needs clean; and an
+    // invalid vault or an over-cap note is a run that cannot start as
+    // configured, which should cost nothing (ADR 0017).
+    let RunVault {
+        setting: vault_setting,
+        refusal: vault_refusal,
+        note: vault,
+    } = prepare_vault(root, focus, &cfg, &mut tooling)?;
+    let built = build_driver(root, model, seeding, &cfg, &tooling, extras)?;
+
+    // Printed after reachability, not before. Describing the tier of a
+    // runtime that is not listening is noise ahead of the only line that
+    // matters.
+    print_preamble(out, &dial, &tooling, &cfg, &built);
+    let Built {
+        spec,
+        mut driver,
+        tier4,
+        colibri,
+        images,
+        probe_rt,
+        ..
+    } = built;
+
+    // Read before the snapshot, so a missing or corrupt trail fails the run
+    // before anything has been written.
+    let prior = read_prior(root, resume, out)?;
+
+    // ADR 0025: context files, system prompt files and forced skills. Read
+    // before the snapshot, so an unreadable or over-cap file costs nothing.
+    // User-level skill directories (ADR 0025, integrated), for the listing,
+    // `read_skill` and forced skills alike, so all three agree on a name.
+    let (skill_dirs, added) = load_inputs(root, &cfg, extras)?;
+
+    // A recording git tracks would be reset by a rollback and rewritten by
+    // this run (ADR 0056). Before the snapshot, so the refusal costs nothing.
+    crate::replay::refuse_if_tracked(root)?;
+    rec.run_id = run_id.clone();
+    rec.task = task.to_string();
+
+    // `input` (ADR 0023 §5): the last thing before the snapshot, so a task
+    // it refuses costs nothing and leaves no trail. It is handed the task
+    // and can only refuse it; nothing it prints becomes the task. It runs
+    // in the repository, so a write here dirties the worktree and the
+    // snapshot below refuses the run.
+    if let Some(h) = &tooling.hooks {
+        input_hook(&probe_rt, h, task, out)?;
+    }
+
+    // A multi-agent run branches here, before the snapshot: its snapshot and
+    // its rollback are `Supervisor::run_integrated`'s alone, so this path
+    // never takes one of its own (#466).
+    if let Some(fanout) = &extras.fanout {
+        return run_partitioned(
+            Partitioned {
+                root,
+                task,
+                model_spec,
+                spec: &spec,
+                tier4,
+                model_from_user,
+                model_source,
+                colibri: colibri.as_ref(),
+                fanout,
+                cfg: &cfg,
+                dial: &dial,
+                tooling: &tooling,
+                vault_refusal: vault_refusal.as_ref(),
+                vault_setting: vault_setting.as_ref(),
+                vault,
+                prior,
+                added: &added,
+                skill_dirs: &skill_dirs,
+                stamp: &stamp,
+                run_id: &run_id,
+                label: extras.label.clone(),
+                abort: extras.abort.clone(),
+                human: control.human,
+                rec,
+            },
+            out,
+        );
+    }
+
+    let Snapshotted {
+        snapshot,
+        rules,
+        governance,
+        writers,
+    } = take_snapshot(
+        root,
+        &cfg,
+        vault_refusal.as_ref(),
+        profile,
+        &tooling,
+        out,
+        rec,
+    )?;
+    // From here until the outcome is dispatched, a panic anywhere (inside
+    // `block_on` or after it) rolls back on its way out.
+    let mut on_panic = RollbackOnPanic {
+        root,
+        snapshot: &snapshot,
+        writers: writers.as_ref(),
+        armed: true,
+    };
+
+    let (repo, skill_policy) = repo_context(
+        RepoInputs {
+            root,
+            profile,
+            governance: &governance,
+            rules: &rules,
+            vault_refusal: vault_refusal.as_ref(),
+            vault_setting: vault_setting.as_ref(),
+            vault,
+            tooling: &tooling,
+            added: &added,
+            skill_dirs: &skill_dirs,
+        },
+        &mut *out,
+    )?;
+    // The loop's spend when it returns, for `run_end` (`framed`). An
+    // interrupt drops the loop, which then sends nothing.
+    let (elapsed_tx, mut elapsed_rx) = tokio::sync::oneshot::channel();
+    let mut seed = trellis_loop::Seed {
+        prior,
+        repo,
+        // `None` for every caller but `trellis tui` (#115), `session` at a
+        // terminal (#116) and `rpc` (ADR 0025 §5), and a run given `None` is
+        // exactly the one before #113.
+        steering: control.steering,
+        elapsed: Some(elapsed_tx),
+        // rpc's `pause` and `resume` (ADR 0058 §1); `None` everywhere else.
+        hold: extras.hold.clone(),
+        // rpc's `set_budget` (ADR 0058 §2), raising this one run's whole
+        // ceiling; `None` everywhere else.
+        budget: extras.budget.clone(),
+        // rpc's `withdraw` (ADR 0058 §3): the port that sends on `steering`
+        // and the loop's drain decide each message's fate under it. `None`
+        // everywhere but rpc, where nothing withdraws.
+        fates: extras.steer_watch.as_ref().map(|p| p.fates()),
+    };
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    // After the snapshot, because a hook can write to the tree and the
+    // rollback has to cover it. Its output joins the notes inside the
+    // repository fence (ADR 0023 §5).
+    before_run_hook(&rt, &tooling, &mut seed, out);
+    let Driven {
+        outcome,
+        transcript,
+        gate_log,
+        recorded,
+    } = drive_loop(
+        LoopInputs {
+            root,
+            task,
+            cfg: &cfg,
+            dial: &dial,
+            human: control.human,
+            governance,
+            rules,
+            tooling: &tooling,
+            skill_dirs,
+            skill_policy,
+            extras,
+            run_id: &run_id,
+            seed,
+            driver: &mut driver,
+        },
+        rt,
+        out,
+    )?;
+    rec.steps = recorded;
+    if let Ok(ms) = elapsed_rx.try_recv() {
+        let _ = extras.elapsed_ms.set(ms);
+    }
+
+    // Completion tokens as the adapter counted them (ADR 0026 §8). A
+    // scripted driver has no count, which is `None`, not a free run.
+    let tokens = driver.tokens();
+    // Prompt tokens, summed by the adapter and absent once any call went
+    // unreported (ADR 0027, #106). Its own field, never added to `tokens`.
+    let prompt_tokens = driver.prompt_tokens();
+    let compactions = driver.compactions();
+    let requested = driver.requested_compactions();
+    let facts = |approved| TrailFacts {
+        approved,
+        base_commit: &snapshot.head,
+        model: Some(model_spec),
+        control: Some(dial.describe()),
+        gates: &gate_log,
+        stamp: Some(&stamp),
+        tokens,
+        prompt_tokens,
+        agent: profile.map(|p| p.name.clone()),
+        label: extras.label.clone(),
+        inputs: added.inputs.iter().chain(&images.inputs).cloned().collect(),
+        compactions: &compactions,
+        requested: &requested,
+        services,
+        plan: Vec::new(),
+        integrated: Vec::new(),
+        suspected_recall_gaps: Vec::new(),
+    };
+    let Some(outcome) = outcome else {
+        // The interrupt path rolls back itself and then commits a trail; a
+        // second rollback on a later panic would remove that commit.
+        on_panic.armed = false;
+        return interrupted_run(
+            root,
+            task,
+            &transcript,
+            &snapshot,
+            writers.as_ref(),
+            facts(trellis_trail::Approval::None),
+            out,
+        );
+    };
+
+    let (outcome, turns) = outcome;
+    print_report(&turns, &transcript, &compactions, &requested, out);
+
+    // Before any git command below (the ignored listing, the rollback's
+    // reset, the trail's commit): `.git/` goes back to what it was, since a
+    // `core.fsmonitor` runs at the next `git status` and a hook at the next
+    // commit. On a converged run a change there is never part of the
+    // change left for review, so the run is demoted; on any other the
+    // rollback puts it back first.
+    let outcome = settle_outcome(outcome, writers.as_ref(), &snapshot, out);
+
+    // Each branch below disposes of the tree itself: a converged run leaves
+    // it for review, a non-converged one rolls back and then commits a
+    // trail, which a rollback on a later panic would remove.
+    on_panic.armed = false;
+    dispatch_outcome(
+        outcome,
+        Finished {
+            root,
+            task,
+            turns: &turns,
+            transcript: &transcript,
+            snapshot: &snapshot,
+            writers: writers.as_ref(),
+        },
+        facts,
+        out,
+    )
+}
+
+/// The control dial this run is held to, with a profile's approvals added,
+/// or the refusal of an approve-mode run that has nobody to ask.
+fn control_dial(
+    cfg: &config::RepoConfig,
+    control: &RunControl,
+    profile: Option<&trellis_queue::profile::Profile>,
+    extras: &output::RunExtras,
+) -> Result<config::Control> {
     let mut dial = cfg.control(control.flag)?;
     // A profile's approve list adds to the layered one for its runs; the
     // mode itself arrives as the flag (ADR 0026 §4).
@@ -720,16 +718,31 @@ fn run_body(
     if dial.mode == config::ControlMode::Approve && matches!(control.human, Human::Absent) {
         anyhow::bail!(NEEDS_A_TERMINAL);
     }
+    Ok(dial)
+}
 
-    // Tools, hooks and trust (ADR 0023), decided before the model is built
-    // so a script is parsed against the tools this run actually offers, and
-    // before the snapshot so a bad `[tools]` section costs nothing. The id is
-    // stamped now and given to the trail, so `TRELLIS_RUN_ID` names the trail
-    // file this run writes.
+/// The run's id, stamped now, and the tools, hooks and trust it runs with,
+/// narrowed by a profile and reflected in the approve list; or the refusal
+/// of a multi-agent run that loaded trusted code.
+fn prepare_tooling(
+    root: &Path,
+    task: &str,
+    model_spec: &str,
+    seeding: RunSeeding<'_>,
+    cfg: &config::RepoConfig,
+    dial: &mut config::Control,
+    extras: &output::RunExtras,
+) -> Result<((String, String), String, tooling::Tooling)> {
+    let RunSeeding {
+        profile,
+        queued,
+        trust_root,
+        ..
+    } = seeding;
     let stamp = trellis_trail::now();
     let run_id = format!("{}-{}", stamp.0, trellis_trail::slugify(task));
     let mut tooling =
-        tooling::prepare_as(root, trust_root.unwrap_or(root), &cfg, &run_id, model_spec)?;
+        tooling::prepare_as(root, trust_root.unwrap_or(root), cfg, &run_id, model_spec)?;
     // Before the profile narrows the set, so a profile with a `tools` list
     // keeps the question only by naming it, as with any other tool.
     if queued {
@@ -741,7 +754,7 @@ fn run_body(
     if let Some(p) = profile
         && let Some(list) = &p.file.tools
     {
-        tooling::check_profile_tools(&p.name, list, &cfg)?;
+        tooling::check_profile_tools(&p.name, list, cfg)?;
         tooling.narrow_for_profile(&p.name, list);
     }
     if tooling.tools.bash().is_some()
@@ -799,12 +812,23 @@ fn run_body(
             loaded.join(", ")
         );
     }
+    Ok((stamp, run_id, tooling))
+}
 
-    // The vault is compiled here, in memory, before the model is contacted
-    // and before the snapshot. Writing the compiled file anywhere in the
-    // repository would dirty the worktree the snapshot needs clean; and an
-    // invalid vault or an over-cap note is a run that cannot start as
-    // configured, which should cost nothing (ADR 0017).
+/// The configured vault, its notes root as a write refusal, and the focus
+/// note compiled in memory; the note tools are attached to `tooling` here.
+struct RunVault {
+    setting: Option<config::VaultSetting>,
+    refusal: Option<(String, String)>,
+    note: Option<CompiledNote>,
+}
+
+fn prepare_vault(
+    root: &Path,
+    focus: Option<&str>,
+    cfg: &config::RepoConfig,
+    tooling: &mut tooling::Tooling,
+) -> Result<RunVault> {
     let vault_setting = cfg.vault(root, focus)?;
     // Model writes stay out of the vault's notes root (ADR 0049). Worked out
     // here, before the snapshot, so a notes root that is the whole
@@ -845,6 +869,49 @@ fn run_body(
         }
         _ => None,
     };
+    Ok(RunVault {
+        setting: vault_setting,
+        refusal: vault_refusal,
+        note: vault,
+    })
+}
+
+/// The driver that runs, after `--image` and the reachability, colibri and
+/// schema probes, with what those probes decided.
+struct Built {
+    spec: trellis_model::ModelSpec,
+    driver: Driver,
+    /// Whether the driver that runs is tier 4, after the schema probe.
+    tier4: bool,
+    /// The endpoint `preflight` identified as colibri, when it did.
+    colibri: Option<hosted::Resolved>,
+    /// The `runtime:` line for an identified colibri endpoint.
+    colibri_line: Option<String>,
+    images: image_input::Loaded,
+    /// What the schema probe found, for the preamble.
+    schema_note: Option<String>,
+    /// The runtime the probes ran on, which the `input` hook runs on too.
+    probe_rt: tokio::runtime::Runtime,
+}
+
+fn build_driver(
+    root: &Path,
+    model: ModelChoice<'_>,
+    seeding: RunSeeding<'_>,
+    cfg: &config::RepoConfig,
+    tooling: &tooling::Tooling,
+    extras: &output::RunExtras,
+) -> Result<Built> {
+    let ModelChoice {
+        spec: model_spec,
+        unconstrained,
+    } = model;
+    let RunSeeding {
+        profile,
+        model_from_user,
+        model_source,
+        ..
+    } = seeding;
     let spec: trellis_model::ModelSpec = model_spec.parse()?;
     // In a multi-agent run this is the first partition's driver, built to be
     // described and probed; each partition gets its own in `run_partitioned`.
@@ -856,7 +923,7 @@ fn run_body(
         &spec,
         unconstrained,
         &tooling.tools,
-        &cfg,
+        cfg,
         model_from_user,
         model_source,
         first_agent,
@@ -895,10 +962,10 @@ fn run_body(
         // again rather than read off the driver: it is a pure function of the
         // spec, the config and the environment, and `refuse_unless_hosted`
         // above means it names a hosted model.
-        let budget = match hosted::resolve_from(&spec, &cfg, model_from_user, model_source)? {
+        let budget = match hosted::resolve_from(&spec, cfg, model_from_user, model_source)? {
             // Not yet identified as colibri: `preflight` reads the endpoint
             // below, so this is the hosted budget (ADR 0047 decision 6).
-            Some(r) => hosted::hosted_context_bytes(&r, &cfg, false)?,
+            Some(r) => hosted::hosted_context_bytes(&r, cfg, false)?,
             None => anyhow::bail!(
                 "--image: `{model_spec}` passed the hosted-model check but does not \
                  resolve to a hosted model; nothing was snapshotted"
@@ -958,7 +1025,7 @@ fn run_body(
     // read.
     let (colibri_line, colibri) = match &driver {
         Driver::Hosted(_) => {
-            match hosted::resolve_from(&spec, &cfg, model_from_user, model_source)? {
+            match hosted::resolve_from(&spec, cfg, model_from_user, model_source)? {
                 Some(r) => {
                     let tier =
                         probe_rt.block_on(hosted::colibri_tier(&r, !extras.images.is_empty()))?;
@@ -992,12 +1059,12 @@ fn run_body(
         // budget, so an explicit `[model] context_bytes` still decides.
         image_input::fits(
             &images,
-            hosted::hosted_context_bytes(r, &cfg, true)?,
+            hosted::hosted_context_bytes(r, cfg, true)?,
             ", an identified colibri endpoint's default (ADR 0047 decision 6) when \
              neither of these is set",
         )?;
         driver = Driver::Hosted(Box::new(
-            hosted::build(r, &cfg, true)?.with_images(images.images.clone()),
+            hosted::build(r, cfg, true)?.with_images(images.images.clone()),
         ));
     }
 
@@ -1032,7 +1099,7 @@ fn run_body(
                 &spec,
                 true,
                 &tooling.tools,
-                &cfg,
+                cfg,
                 model_from_user,
                 model_source,
                 first_agent,
@@ -1063,11 +1130,34 @@ fn run_body(
     if let Some(c) = &extras.compact {
         driver.compact_on_request(c.clone());
     }
+    Ok(Built {
+        spec,
+        driver,
+        tier4,
+        colibri,
+        colibri_line,
+        images,
+        schema_note,
+        probe_rt,
+    })
+}
 
-    // Printed after reachability, not before. Describing the tier of a
-    // runtime that is not listening is noise ahead of the only line that
-    // matters.
-    //
+/// The configuration the run prints before it starts: the model, the
+/// runtime, the images, the control dial, the tools and the schema note.
+fn print_preamble(
+    out: &mut dyn std::io::Write,
+    dial: &config::Control,
+    tooling: &tooling::Tooling,
+    cfg: &config::RepoConfig,
+    built: &Built,
+) {
+    let Built {
+        driver,
+        colibri_line,
+        images,
+        schema_note,
+        ..
+    } = built;
     // Every line below that echoes configuration goes through `plain`: a
     // cloned repository chooses `[model] spec`, `[control]` and `[tools]`,
     // and a control character in any of them would otherwise reach the
@@ -1077,11 +1167,11 @@ fn run_body(
         let _ = writeln!(out, "runtime:  {line}");
     }
     if let Driver::Runtime(m) = &driver
-        && let Some(n) = hosted::thinking_ignored(&cfg, &format!("{:?}", m.dialect()))
+        && let Some(n) = hosted::thinking_ignored(cfg, &format!("{:?}", m.dialect()))
     {
         let _ = writeln!(out, "{n}");
     }
-    for line in image_input::lines(&images) {
+    for line in image_input::lines(images) {
         let _ = writeln!(out, "{}", plain(&line));
     }
     let _ = writeln!(out, "control:  {}", plain(&dial.describe()));
@@ -1091,9 +1181,14 @@ fn run_body(
     if let Some(note) = schema_note {
         let _ = writeln!(out, "{note}");
     }
+}
 
-    // Read before the snapshot, so a missing or corrupt trail fails the run
-    // before anything has been written.
+/// `--resume`: the latest trail as prior context, fenced as data.
+fn read_prior(
+    root: &Path,
+    resume: bool,
+    out: &mut dyn std::io::Write,
+) -> Result<Option<trellis_loop::PriorContext>> {
     let prior = if resume {
         match trellis_trail::latest(root)? {
             Some((path, trail)) => {
@@ -1119,11 +1214,16 @@ fn run_body(
     } else {
         None
     };
+    Ok(prior)
+}
 
-    // ADR 0025: context files, system prompt files and forced skills. Read
-    // before the snapshot, so an unreadable or over-cap file costs nothing.
-    // User-level skill directories (ADR 0025, integrated), for the listing,
-    // `read_skill` and forced skills alike, so all three agree on a name.
+/// The user-level skill directories and the context files, system prompt
+/// files and forced skills (ADR 0025).
+fn load_inputs(
+    root: &Path,
+    cfg: &config::RepoConfig,
+    extras: &output::RunExtras,
+) -> Result<(Vec<std::path::PathBuf>, context_files::Loaded)> {
     let skill_dirs = user_config::skill_dirs()?;
     let added = context_files::load(
         root,
@@ -1132,57 +1232,27 @@ fn run_body(
         &extras.skills,
         &skill_dirs,
     )?;
+    Ok((skill_dirs, added))
+}
 
-    // A recording git tracks would be reset by a rollback and rewritten by
-    // this run (ADR 0056). Before the snapshot, so the refusal costs nothing.
-    crate::replay::refuse_if_tracked(root)?;
-    rec.run_id = run_id.clone();
-    rec.task = task.to_string();
+/// The snapshot, the governance the run is held to, and the writer guards a
+/// run with `bash`, custom tools or hooks is watched with.
+struct Snapshotted {
+    snapshot: trellis_vcs::Snapshot,
+    rules: Vec<trellis_checks::governance::Rule>,
+    governance: trellis_loop::Governance,
+    writers: Option<WriterGuards>,
+}
 
-    // `input` (ADR 0023 §5): the last thing before the snapshot, so a task
-    // it refuses costs nothing and leaves no trail. It is handed the task
-    // and can only refuse it; nothing it prints becomes the task. It runs
-    // in the repository, so a write here dirties the worktree and the
-    // snapshot below refuses the run.
-    if let Some(h) = &tooling.hooks {
-        input_hook(&probe_rt, h, task, out)?;
-    }
-
-    // A multi-agent run branches here, before the snapshot: its snapshot and
-    // its rollback are `Supervisor::run_integrated`'s alone, so this path
-    // never takes one of its own (#466).
-    if let Some(fanout) = &extras.fanout {
-        return run_partitioned(
-            Partitioned {
-                root,
-                task,
-                model_spec,
-                spec: &spec,
-                tier4,
-                model_from_user,
-                model_source,
-                colibri: colibri.as_ref(),
-                fanout,
-                cfg: &cfg,
-                dial: &dial,
-                tooling: &tooling,
-                vault_refusal: vault_refusal.as_ref(),
-                vault_setting: vault_setting.as_ref(),
-                vault,
-                prior,
-                added: &added,
-                skill_dirs: &skill_dirs,
-                stamp: &stamp,
-                run_id: &run_id,
-                label: extras.label.clone(),
-                abort: extras.abort.clone(),
-                human: control.human,
-                rec,
-            },
-            out,
-        );
-    }
-
+fn take_snapshot(
+    root: &Path,
+    cfg: &config::RepoConfig,
+    vault_refusal: Option<&(String, String)>,
+    profile: Option<&trellis_queue::profile::Profile>,
+    tooling: &tooling::Tooling,
+    out: &mut dyn std::io::Write,
+    rec: &mut trellis_loop::Recording,
+) -> Result<Snapshotted> {
     // A clean worktree is required so rollback is `git reset --hard` rather
     // than a restore of a dirty tree, which is where data-loss bugs live
     // (ADR 0009).
@@ -1207,7 +1277,7 @@ fn run_body(
     //
     // The governance is read before the writers are guarded, which judge a
     // changed ignored file by the same rules.
-    let (rules, governance) = run_governance(root, &cfg, vault_refusal.as_ref(), profile)?;
+    let (rules, governance) = run_governance(root, cfg, vault_refusal, profile)?;
     let writers = if tooling.tools.bash().is_some()
         || !tooling.tools.customs().is_empty()
         || tooling.hooks.is_some()
@@ -1232,49 +1302,21 @@ fn run_body(
     } else {
         None
     };
-    // From here until the outcome is dispatched, a panic anywhere (inside
-    // `block_on` or after it) rolls back on its way out.
-    let mut on_panic = RollbackOnPanic {
-        root,
-        snapshot: &snapshot,
-        writers: writers.as_ref(),
-        armed: true,
-    };
+    Ok(Snapshotted {
+        snapshot,
+        rules,
+        governance,
+        writers,
+    })
+}
 
-    let (repo, skill_policy) = repo_context(
-        RepoInputs {
-            root,
-            profile,
-            governance: &governance,
-            rules: &rules,
-            vault_refusal: vault_refusal.as_ref(),
-            vault_setting: vault_setting.as_ref(),
-            vault,
-            tooling: &tooling,
-            added: &added,
-            skill_dirs: &skill_dirs,
-        },
-        &mut *out,
-    )?;
-    // The loop's spend when it returns, for `run_end` (`framed`). An
-    // interrupt drops the loop, which then sends nothing.
-    let (elapsed_tx, mut elapsed_rx) = tokio::sync::oneshot::channel();
-    let mut seed = trellis_loop::Seed {
-        prior,
-        repo,
-        // `None` for every caller but `trellis tui` (#115), `session` at a
-        // terminal (#116) and `rpc` (ADR 0025 §5), and a run given `None` is
-        // exactly the one before #113.
-        steering: control.steering,
-        elapsed: Some(elapsed_tx),
-    };
-
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    // After the snapshot, because a hook can write to the tree and the
-    // rollback has to cover it. Its output joins the notes inside the
-    // repository fence (ADR 0023 §5).
+/// `before_run` (ADR 0023 §5), whose output joins the repository notes.
+fn before_run_hook(
+    rt: &tokio::runtime::Runtime,
+    tooling: &tooling::Tooling,
+    seed: &mut trellis_loop::Seed,
+    out: &mut dyn std::io::Write,
+) {
     if let Some(h) = &tooling.hooks {
         match rt.block_on(h.before_run()) {
             Some(Ok(text)) if !text.trim().is_empty() => {
@@ -1295,11 +1337,63 @@ fn run_body(
             _ => {}
         }
     }
+}
+
+/// What the loop is run with, once the snapshot is taken.
+struct LoopInputs<'a> {
+    root: &'a Path,
+    task: &'a str,
+    cfg: &'a config::RepoConfig,
+    dial: &'a config::Control,
+    human: Human,
+    governance: trellis_loop::Governance,
+    rules: Vec<trellis_checks::governance::Rule>,
+    tooling: &'a tooling::Tooling,
+    skill_dirs: Vec<std::path::PathBuf>,
+    skill_policy: Option<trellis_loop::SkillPolicy>,
+    extras: &'a output::RunExtras,
+    run_id: &'a str,
+    seed: trellis_loop::Seed,
+    driver: &'a mut Driver,
+}
+
+/// What the loop left: its outcome and turns (`None` on an interrupt), the
+/// files it wrote, the gate refusals, and the steps for the recording.
+struct Driven {
+    outcome: Option<(trellis_loop::Outcome, trellis_loop::Transcript)>,
+    transcript: Vec<String>,
+    gate_log: Vec<trellis_loop::GateDenial>,
+    recorded: Vec<trellis_loop::Step>,
+}
+
+/// The approval gate, the orchestrator and the agent loop raced against an
+/// interrupt, then the trust guard and `after_run`, on the run's own stack.
+fn drive_loop(
+    inputs: LoopInputs<'_>,
+    rt: tokio::runtime::Runtime,
+    out: &mut (dyn std::io::Write + Send),
+) -> Result<Driven> {
+    let LoopInputs {
+        root,
+        task,
+        cfg,
+        dial,
+        human,
+        governance,
+        rules,
+        tooling,
+        skill_dirs,
+        skill_policy,
+        extras,
+        run_id,
+        seed,
+        driver,
+    } = inputs;
     // The approval gate and whoever answers it. In auto mode there is no
     // gate at all, rather than a gate that allows everything: which gates
     // are installed is the whole difference between the two ends of the
     // dial, and the trail records it.
-    let (gate, mut answering) = match (dial.mode, control.human) {
+    let (gate, mut answering) = match (dial.mode, human) {
         (config::ControlMode::Auto, _) | (_, Human::Absent) => (None, None),
         (config::ControlMode::Approve, Human::Channel(tx)) => (
             Some(trellis_loop::ApprovalGate::new(
@@ -1388,24 +1482,21 @@ fn run_body(
             out = async {
                 let done = &mut done_summary;
                 let steps = &mut recorded;
-                // Each driver behind `Watched`, which tells RPC's port which
-                // steers each request carried (with no port it only forwards),
-                // and that behind `SeesDone`, which keeps the `done` summary.
+                // Each driver behind `Observed`, which tells RPC's port which
+                // steers each request carried (with no port it tells nobody)
+                // and keeps the `done` summary and the steps.
                 let port = extras.steer_watch.as_deref();
-                match &mut driver {
+                match &mut *driver {
                     Driver::Scripted(m) => {
-                        let mut w = rpc::Watched::new(m, port);
-                        let mut m = SeesDone { inner: &mut w, done, steps };
+                        let mut m = Observed::new(m, port, done, steps);
                         trellis_loop::run_seeded(task, &mut m, &handle, &cfg.budget(), seed).await
                     }
                     Driver::Runtime(m) => {
-                        let mut w = rpc::Watched::new(m, port);
-                        let mut m = SeesDone { inner: &mut w, done, steps };
+                        let mut m = Observed::new(m, port, done, steps);
                         trellis_loop::run_seeded(task, &mut m, &handle, &cfg.budget(), seed).await
                     }
                     Driver::Hosted(m) => {
-                        let mut w = rpc::Watched::new(&mut **m, port);
-                        let mut m = SeesDone { inner: &mut w, done, steps };
+                        let mut m = Observed::new(&mut **m, port, done, steps);
                         trellis_loop::run_seeded(task, &mut m, &handle, &cfg.budget(), seed)
                             .await
                     }
@@ -1456,7 +1547,7 @@ fn run_body(
                 out,
                 "hook:     after_run (reason: interrupted); Ctrl-C again stops it"
             );
-            let payload = tooling::interrupted_json(&touched, &run_id);
+            let payload = tooling::interrupted_json(&touched, run_id);
             tokio::select! {
                 r = h.after_run(&payload) => {
                     if let Some(Err(e)) = r {
@@ -1509,7 +1600,7 @@ fn run_body(
             };
             let guard = o.converged().then(fingerprint);
             if let Some(Err(e)) = h
-                .after_run(&tooling::outcome_json(o, &touched, &run_id))
+                .after_run(&tooling::outcome_json(o, &touched, run_id))
                 .await
             {
                 tracing::warn!(error = %e, "after_run hook failed; it only observes");
@@ -1553,54 +1644,23 @@ fn run_body(
     // is still on the blocking pool, and dropping a runtime waits for that
     // pool — so an interrupted run would hang until someone pressed Enter.
     rt.shutdown_background();
-    rec.steps = recorded;
-    if let Ok(ms) = elapsed_rx.try_recv() {
-        let _ = extras.elapsed_ms.set(ms);
-    }
+    Ok(Driven {
+        outcome,
+        transcript,
+        gate_log,
+        recorded,
+    })
+}
 
-    // Completion tokens as the adapter counted them (ADR 0026 §8). A
-    // scripted driver has no count, which is `None`, not a free run.
-    let tokens = driver.tokens();
-    // Prompt tokens, summed by the adapter and absent once any call went
-    // unreported (ADR 0027, #106). Its own field, never added to `tokens`.
-    let prompt_tokens = driver.prompt_tokens();
-    let compactions = driver.compactions();
-    let requested = driver.requested_compactions();
-    let facts = |approved| TrailFacts {
-        approved,
-        base_commit: &snapshot.head,
-        model: Some(model_spec),
-        control: Some(dial.describe()),
-        gates: &gate_log,
-        stamp: Some(&stamp),
-        tokens,
-        prompt_tokens,
-        agent: profile.map(|p| p.name.clone()),
-        label: extras.label.clone(),
-        inputs: added.inputs.iter().chain(&images.inputs).cloned().collect(),
-        compactions: &compactions,
-        requested: &requested,
-        services,
-        plan: Vec::new(),
-        integrated: Vec::new(),
-        suspected_recall_gaps: Vec::new(),
-    };
-    let Some(outcome) = outcome else {
-        // The interrupt path rolls back itself and then commits a trail; a
-        // second rollback on a later panic would remove that commit.
-        on_panic.armed = false;
-        return interrupted_run(
-            root,
-            task,
-            &transcript,
-            &snapshot,
-            writers.as_ref(),
-            facts(trellis_trail::Approval::None),
-            out,
-        );
-    };
-
-    let (outcome, turns) = outcome;
+/// The end-of-run report: each turn, why the last failed check failed, the
+/// files written, the context fill, compactions and undelivered steers.
+fn print_report(
+    turns: &trellis_loop::Transcript,
+    transcript: &[String],
+    compactions: &[trellis_loop::Compacted],
+    requested: &[trellis_loop::RequestedCompaction],
+    out: &mut dyn std::io::Write,
+) {
     let _ = writeln!(out);
     for (i, t) in turns.turns.iter().enumerate() {
         let mark = match t.verdict_passed {
@@ -1673,21 +1733,23 @@ fn run_body(
             *peak as f64 / *first as f64
         );
     }
-    if let Some(line) = hosted::compaction_line(&compactions) {
+    if let Some(line) = hosted::compaction_line(compactions) {
         let _ = writeln!(out, "{line}");
     }
-    if let Some(line) = hosted::requested_compaction_line(&requested) {
+    if let Some(line) = hosted::requested_compaction_line(requested) {
         let _ = writeln!(out, "{line}");
     }
     print_undelivered(&turns.steering, &mut *out);
+}
 
-    // Before any git command below (the ignored listing, the rollback's
-    // reset, the trail's commit): `.git/` goes back to what it was, since a
-    // `core.fsmonitor` runs at the next `git status` and a hook at the next
-    // commit. On a converged run a change there is never part of the
-    // change left for review, so the run is demoted; on any other the
-    // rollback puts it back first.
-    let outcome = match (outcome, &writers) {
+/// A converged outcome demoted when `.git/` changed or HEAD moved.
+fn settle_outcome(
+    outcome: trellis_loop::Outcome,
+    writers: Option<&WriterGuards>,
+    snapshot: &trellis_vcs::Snapshot,
+    out: &mut dyn std::io::Write,
+) -> trellis_loop::Outcome {
+    let outcome = match (outcome, writers) {
         (
             trellis_loop::Outcome::Converged {
                 iterations,
@@ -1712,7 +1774,7 @@ fn run_body(
     // 10). Checked for every run: one without those writers cannot move
     // HEAD, so the check costs it one `rev-parse`. A HEAD that cannot be
     // read counts as moved.
-    let outcome = match outcome {
+    match outcome {
         trellis_loop::Outcome::Converged {
             iterations,
             checks_passed,
@@ -1732,12 +1794,35 @@ fn run_body(
             },
         },
         o => o,
-    };
+    }
+}
 
-    // Each branch below disposes of the tree itself: a converged run leaves
-    // it for review, a non-converged one rolls back and then commits a
-    // trail, which a rollback on a later panic would remove.
-    on_panic.armed = false;
+/// What a finished run's outcome is disposed of with.
+struct Finished<'a> {
+    root: &'a Path,
+    task: &'a str,
+    turns: &'a trellis_loop::Transcript,
+    transcript: &'a [String],
+    snapshot: &'a trellis_vcs::Snapshot,
+    writers: Option<&'a WriterGuards>,
+}
+
+/// A converged run left for review, or a non-converged one rolled back,
+/// and either way its trail.
+fn dispatch_outcome<'a>(
+    outcome: trellis_loop::Outcome,
+    finished: Finished<'_>,
+    facts: impl Fn(trellis_trail::Approval) -> TrailFacts<'a>,
+    out: &mut dyn std::io::Write,
+) -> Result<RunExit> {
+    let Finished {
+        root,
+        task,
+        turns,
+        transcript,
+        snapshot,
+        writers,
+    } = finished;
     match outcome {
         trellis_loop::Outcome::Converged {
             iterations,
@@ -1773,8 +1858,8 @@ fn run_body(
             let trail = record_trail(
                 root,
                 task,
-                &turns,
-                &transcript,
+                turns,
+                transcript,
                 facts(trellis_trail::Approval::None),
                 &mut *out,
             )?;
@@ -1793,7 +1878,7 @@ fn run_body(
             // user is about to look at.
             if !transcript.is_empty() {
                 let doubt =
-                    trellis_index::doubt_in_files(&trellis_index::build_cached(root), &transcript);
+                    trellis_index::doubt_in_files(&trellis_index::build_cached(root), transcript);
                 if doubt.unbound > 0 {
                     let _ = writeln!(out, "coverage: {}", doubt.one_line());
                     let _ = writeln!(
@@ -1827,26 +1912,20 @@ fn run_body(
             // in an unknown state — was also the one run that never got a
             // trail written. The failure is reported loudly and the recording
             // continues.
-            let restored = rollback_run(root, &snapshot, &transcript, writers.as_ref(), &mut *out);
+            let restored = rollback_run(root, snapshot, transcript, writers, &mut *out);
 
             // Written *after* the rollback, deliberately. Rollback cleans
             // untracked files, and a trail written before it would be one of
             // them — deleting the record of exactly the run worth recording.
-            match record_trail(
+            let written = record_trail(
                 root,
                 task,
-                &turns,
-                &transcript,
+                turns,
+                transcript,
                 facts(trellis_trail::Approval::None),
                 &mut *out,
-            ) {
-                Ok(p) => {
-                    let _ = writeln!(out, "trail:    {} (survives the rollback)", p.display());
-                }
-                Err(e) => {
-                    let _ = writeln!(out, "could not write the trail: {e}");
-                }
-            }
+            );
+            report_trail(&mut *out, written, Some("survives the rollback"));
             match reason {
                 trellis_loop::NotConverged::AskedHuman { question, options } if restored => {
                     Ok(RunExit::Asked { question, options })
@@ -1859,29 +1938,29 @@ fn run_body(
 
 /// What a run reads about the repository for the model's prompt, beyond
 /// the task.
-struct RepoInputs<'a> {
-    root: &'a Path,
-    profile: Option<&'a trellis_queue::profile::Profile>,
-    governance: &'a trellis_loop::Governance,
-    rules: &'a [trellis_checks::governance::Rule],
-    vault_refusal: Option<&'a (String, String)>,
-    vault_setting: Option<&'a config::VaultSetting>,
-    vault: Option<CompiledNote>,
-    tooling: &'a tooling::Tooling,
-    added: &'a context_files::Loaded,
-    skill_dirs: &'a [std::path::PathBuf],
+pub(crate) struct RepoInputs<'a> {
+    pub(crate) root: &'a Path,
+    pub(crate) profile: Option<&'a trellis_queue::profile::Profile>,
+    pub(crate) governance: &'a trellis_loop::Governance,
+    pub(crate) rules: &'a [trellis_checks::governance::Rule],
+    pub(crate) vault_refusal: Option<&'a (String, String)>,
+    pub(crate) vault_setting: Option<&'a config::VaultSetting>,
+    pub(crate) vault: Option<CompiledNote>,
+    pub(crate) tooling: &'a tooling::Tooling,
+    pub(crate) added: &'a context_files::Loaded,
+    pub(crate) skill_dirs: &'a [std::path::PathBuf],
 }
 
 /// A compiled vault note: its stem, where the vault is, the note, and the
 /// `[context] dates` remark.
-type CompiledNote = (String, String, trellis_vault::Compiled, Option<String>);
+pub(crate) type CompiledNote = (String, String, trellis_vault::Compiled, Option<String>);
 
 /// What the model is told about the repository (the notes, the vault note,
 /// the skills, the rules it is held to, the files there are), with the
 /// `repo:`, `vault:` and `files:` lines that say so, and the skill policy
 /// `read_skill` enforces. Only reads. A multi-agent run tells each of its
 /// agents exactly what a single-agent run tells its one (#466).
-fn repo_context(
+pub(crate) fn repo_context(
     i: RepoInputs<'_>,
     out: &mut dyn std::io::Write,
 ) -> Result<(trellis_loop::RepoContext, Option<trellis_loop::SkillPolicy>)> {
@@ -2089,7 +2168,7 @@ fn repo_context(
 /// deny_write` in config.toml. Both feed the same write-path refusal; the
 /// documents additionally carry rank and prose, which the audit and the
 /// prompt need and a config list cannot express.
-fn run_governance(
+pub(crate) fn run_governance(
     root: &Path,
     cfg: &config::RepoConfig,
     vault_refusal: Option<&(String, String)>,
@@ -2123,767 +2202,6 @@ fn run_governance(
         governance = governance.with_allow_write(&p.name, allow);
     }
     Ok((rules, governance))
-}
-
-/// `trellis run --agents N --target <symbol>...` (ADR 0045, #466; N of 1
-/// since #482): the plan the targets make, which targets each partition
-/// holds, and how many partitions run at once.
-pub(crate) struct Fanout {
-    plan: trellis_loop::partition::Plan,
-    /// Every target, as the user typed it.
-    targets: Vec<String>,
-    /// Each partition's targets, as typed, in command-line order.
-    names: HashMap<PartitionId, Vec<String>>,
-    /// `max(1, min(N, plan.parallel.len()))`: the plan decides concurrency,
-    /// never the flag (ADR 0045 §4). N is already 1 on a backend not
-    /// measured to batch (#483).
-    width: NonZeroUsize,
-    /// Why N is what it is, for the `agents:` line.
-    why: String,
-}
-
-impl Fanout {
-    /// The plan `targets` make, as `trellis partitions` shows it, run by up
-    /// to `agents` at once. Each target resolves as `radius` resolves it; an
-    /// unknown or ambiguous one is refused (ADR 0045 §1).
-    pub(crate) fn plan(root: &Path, targets: &[String], agents: u32, why: String) -> Result<Self> {
-        // A target named twice is one work unit, not two.
-        let mut unique: Vec<String> = Vec::with_capacity(targets.len());
-        for t in targets {
-            if !unique.contains(t) {
-                unique.push(t.clone());
-            }
-        }
-        let targets = unique;
-        let index = trellis_index::build_cached(root);
-        let mut units = Vec::with_capacity(targets.len());
-        let mut resolved = Vec::with_capacity(targets.len());
-        for t in &targets {
-            let id = crate::index_cmd::resolve_symbol(&index, t)?;
-            units.push(trellis_loop::partition::unit_for(&index, id));
-            resolved.push((t.clone(), id));
-        }
-        let plan = trellis_loop::partition::plan(&index, units);
-        let names = plan
-            .in_order()
-            .map(|p| {
-                let mine = resolved
-                    .iter()
-                    .filter(|(_, id)| p.units.iter().any(|u| u.target == *id))
-                    .map(|(t, _)| t.clone())
-                    .collect();
-                (p.id, mine)
-            })
-            .collect();
-        let width = NonZeroUsize::new(
-            usize::try_from(agents)
-                .unwrap_or(usize::MAX)
-                .min(plan.parallel.len()),
-        )
-        .unwrap_or(NonZeroUsize::MIN);
-        Ok(Self {
-            plan,
-            targets,
-            names,
-            width,
-            why,
-        })
-    }
-
-    /// What a script needs to choose one agent's steps: every target of the
-    /// run, and the ones partition `id` holds.
-    fn script_targets(&self, id: PartitionId) -> (&[String], &[String]) {
-        (
-            &self.targets,
-            self.names.get(&id).map(Vec::as_slice).unwrap_or(&[]),
-        )
-    }
-}
-
-/// What `run_body` hands a multi-agent run at its branch point: everything
-/// decided before the snapshot.
-struct Partitioned<'a> {
-    root: &'a Path,
-    task: &'a str,
-    model_spec: &'a str,
-    spec: &'a trellis_model::ModelSpec,
-    /// Whether the run's driver is tier 4, after the schema probe.
-    tier4: bool,
-    model_from_user: bool,
-    model_source: hosted::SpecSource,
-    /// The endpoint `preflight` identified as colibri, when it did, whose
-    /// drivers send its request profile (ADR 0047 decision 5).
-    colibri: Option<&'a hosted::Resolved>,
-    fanout: &'a Fanout,
-    cfg: &'a config::RepoConfig,
-    dial: &'a config::Control,
-    tooling: &'a tooling::Tooling,
-    vault_refusal: Option<&'a (String, String)>,
-    vault_setting: Option<&'a config::VaultSetting>,
-    vault: Option<CompiledNote>,
-    prior: Option<trellis_loop::PriorContext>,
-    added: &'a context_files::Loaded,
-    skill_dirs: &'a [std::path::PathBuf],
-    stamp: &'a (String, String),
-    run_id: &'a str,
-    label: Option<String>,
-    abort: Option<std::sync::Arc<output::Abort>>,
-    human: Human,
-    /// The run's replay recording: one `targets` section per agent.
-    rec: &'a mut trellis_loop::Recording,
-}
-
-/// What one partition's agent left behind, for the trail. Filled by the
-/// partition's own task, whether or not it converged, because a partition
-/// that did not converge reports only an error string to the supervisor.
-struct PartitionRun {
-    transcript: trellis_loop::Transcript,
-    touched: Vec<String>,
-    gates: Vec<trellis_loop::GateDenial>,
-    tokens: Option<u64>,
-    prompt_tokens: Option<u64>,
-    compactions: Vec<trellis_loop::Compacted>,
-    requested: Vec<trellis_loop::RequestedCompaction>,
-    /// Every step its driver gave, for the replay recording (ADR 0056).
-    steps: Vec<trellis_loop::Step>,
-}
-
-/// The task one partition's agent is given: the run's task, and which of
-/// its targets are this agent's (#466).
-fn partition_task(task: &str, mine: &[String], partitions: usize) -> String {
-    format!(
-        "{task}\n\nThis run has {partitions} agents, each in its own copy of the repository. \
-         Yours works on: {}. Change what those need, and leave the other targets to their \
-         agents.",
-        mine.join(", ")
-    )
-}
-
-/// Whether the root is back where the run found it: HEAD at `base` and
-/// nothing uncommitted. Read, never restored: the rollback is
-/// `run_integrated`'s, and this only reports on it. A tree that cannot be
-/// read is not one known to be restored.
-fn is_restored_to(root: &Path, base: &str) -> bool {
-    head_of(root).is_ok_and(|h| h == base) && trellis_vcs::pending(root).is_ok_and(|p| p.is_empty())
-}
-
-/// The commit `HEAD` names.
-fn head_of(root: &Path) -> Result<String> {
-    let out = trellis_vcs::command()
-        .args(["rev-parse", "HEAD"])
-        .current_dir(root)
-        .output()
-        .context("running git rev-parse HEAD")?;
-    anyhow::ensure!(
-        out.status.success(),
-        "rev-parse HEAD failed: {}",
-        String::from_utf8_lossy(&out.stderr).trim()
-    );
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
-/// A multi-agent run (#466): each partition of the plan by its own agent in
-/// its own worktree, then the integrated check over the merged union. At
-/// width 1 the partitions run one after another on the same path (#482).
-///
-/// `Supervisor::run_integrated` owns the snapshot and the rollback; nothing
-/// here takes or restores one. Each partition's orchestrator has the run's
-/// governance (the vault's notes root included, ADR 0049), rules, tools and
-/// checks, rooted at its worktree; its own driver; and its share of the run's
-/// one budget (`Budget::shares`, rule 9). The policy is all-or-nothing, so a
-/// partition that did not converge merges nothing, and a partition's own pass
-/// never converges the run: only the integrated verdicts do (rules 5 and 6).
-/// The trail is one, with every partition's actions in plan order.
-///
-/// Refused before this is reached: approve mode at a width above 1, trusted
-/// repository code (its guards watch the root), and `--image`.
-fn run_partitioned(p: Partitioned<'_>, out: &mut (dyn std::io::Write + Send)) -> Result<RunExit> {
-    let Partitioned {
-        root,
-        task,
-        model_spec,
-        spec,
-        tier4,
-        model_from_user,
-        model_source,
-        colibri,
-        fanout,
-        cfg,
-        dial,
-        tooling,
-        vault_refusal,
-        vault_setting,
-        vault,
-        prior,
-        added,
-        skill_dirs,
-        stamp,
-        run_id,
-        label,
-        abort,
-        human,
-        rec,
-    } = p;
-    let plan = &fanout.plan;
-    let count = plan.in_order().count();
-
-    // Every partition's driver before anything is written, so a script
-    // refused for one of them, or a budget too small to divide, costs
-    // nothing.
-    let mut drivers = HashMap::new();
-    for part in plan.in_order() {
-        let driver = match colibri {
-            Some(r) => Driver::Hosted(Box::new(hosted::build(r, cfg, true)?)),
-            None => Driver::build(
-                spec,
-                tier4,
-                &tooling.tools,
-                cfg,
-                model_from_user,
-                model_source,
-                Some(fanout.script_targets(part.id)),
-            )?,
-        };
-        drivers.insert(part.id, driver);
-    }
-    let budget = cfg.budget();
-    budget.shares(u32::try_from(count).unwrap_or(u32::MAX))?;
-    let base = head_of(root)?;
-
-    let (rules, governance) = run_governance(root, cfg, vault_refusal, None)?;
-    let (repo, skill_policy) = repo_context(
-        RepoInputs {
-            root,
-            profile: None,
-            governance: &governance,
-            rules: &rules,
-            vault_refusal,
-            vault_setting,
-            vault,
-            tooling,
-            added,
-            skill_dirs,
-        },
-        &mut *out,
-    )?;
-    // At width 1 the partitions run one after another (ADR 0045 §2), and the
-    // line says so rather than "up to 1 at once" (#482).
-    let pace = match fanout.width.get() {
-        1 => "one at a time".to_string(),
-        n => format!("up to {n} at once"),
-    };
-    let _ = writeln!(
-        out,
-        "agents:   {count} partition(s), {pace} ({})",
-        fanout.why
-    );
-    for part in plan.in_order() {
-        let _ = writeln!(
-            out,
-            "          partition {}: {}{}",
-            part.id.0,
-            fanout
-                .names
-                .get(&part.id)
-                .map(|n| n.join(", "))
-                .unwrap_or_default(),
-            if part.conservative {
-                " (runs first, alone: the graph cannot vouch for it)"
-            } else {
-                ""
-            }
-        );
-    }
-    let _ = writeln!(out, "base:     {base}");
-
-    let checks = cfg.checks();
-    let results: Arc<Mutex<HashMap<PartitionId, PartitionRun>>> = Arc::default();
-    let drivers = Arc::new(Mutex::new(drivers));
-    // At width 1 approve mode is allowed: one agent asks at a time, about
-    // its own worktree. Above 1 it was refused in `run_body`.
-    let (gate_tx, mut answering) = match (dial.mode, human) {
-        (config::ControlMode::Auto, _) | (_, Human::Absent) => (None, None),
-        (config::ControlMode::Approve, Human::Channel(tx)) => (Some(tx), None),
-        (config::ControlMode::Approve, Human::Line(read)) => {
-            let (tx, rx) = tokio::sync::mpsc::channel(1);
-            (Some(tx), Some((rx, read)))
-        }
-    };
-    let skills = trellis_loop::SkillAccess {
-        user_dirs: skill_dirs.to_vec(),
-        policy: skill_policy,
-    };
-    let supervisor = trellis_loop::Supervisor {
-        root,
-        run: run_id,
-        base: &base,
-        budget: &budget,
-        width: fanout.width,
-        policy: trellis_loop::FailurePolicy::AllOrNothing,
-    };
-    let work = |part: trellis_loop::PartitionTask| {
-        let driver = drivers.lock().ok().and_then(|mut d| d.remove(&part.id));
-        let mut orchestrator = trellis_loop::Orchestrator::new(&part.root, checks.clone())
-            .with_governance(governance.clone())
-            .with_rules(rules.clone())
-            .with_tools(tooling.tools.clone())
-            .with_env(tooling.env.clone())
-            .with_skills(skills.clone());
-        if let Some(tx) = &gate_tx {
-            orchestrator = orchestrator.with_gate(Box::new(trellis_loop::ApprovalGate::new(
-                &part.root,
-                dial.approve.clone(),
-                tx.clone(),
-            )));
-        }
-        let mine = fanout.names.get(&part.id).cloned().unwrap_or_default();
-        let text = partition_task(task, &mine, count);
-        let seed = trellis_loop::Seed {
-            prior: prior.clone(),
-            repo: repo.clone(),
-            steering: None,
-            // None for `run_end`: each partition's loop keeps its own clock
-            // against its own share (ADR 0008), alongside others at a width
-            // above 1, so no one of them is the run's spend.
-            elapsed: None,
-        };
-        let results = Arc::clone(&results);
-        async move {
-            let Some(mut driver) = driver else {
-                return Err("no driver was built for it".to_string());
-            };
-            let (handle, join) = orchestrator.spawn();
-            let budget = &part.budget;
-            // Behind `SeesDone` for its steps; the summary is not used here.
-            let (mut done, mut steps) = (None, Vec::new());
-            let (outcome, transcript) = match &mut driver {
-                Driver::Scripted(m) => {
-                    let mut m = SeesDone {
-                        inner: m,
-                        done: &mut done,
-                        steps: &mut steps,
-                    };
-                    trellis_loop::run_seeded(&text, &mut m, &handle, budget, seed).await
-                }
-                Driver::Runtime(m) => {
-                    let mut m = SeesDone {
-                        inner: m,
-                        done: &mut done,
-                        steps: &mut steps,
-                    };
-                    trellis_loop::run_seeded(&text, &mut m, &handle, budget, seed).await
-                }
-                Driver::Hosted(m) => {
-                    let mut m = SeesDone {
-                        inner: &mut **m,
-                        done: &mut done,
-                        steps: &mut steps,
-                    };
-                    trellis_loop::run_seeded(&text, &mut m, &handle, budget, seed).await
-                }
-            };
-            let touched = handle.touched().await;
-            let gates = handle.gate_log().await;
-            // The orchestrator ends once its handle is gone; waited for, so
-            // nothing of it is still running when the worktree is merged and
-            // removed.
-            drop(handle);
-            let _ = join.await;
-            let failed = match &outcome {
-                trellis_loop::Outcome::Converged { .. } => None,
-                trellis_loop::Outcome::NotConverged { reason, .. } => Some(reason.explain()),
-            };
-            if let Ok(mut r) = results.lock() {
-                r.insert(
-                    part.id,
-                    PartitionRun {
-                        transcript,
-                        touched,
-                        gates,
-                        tokens: driver.tokens(),
-                        prompt_tokens: driver.prompt_tokens(),
-                        compactions: driver.compactions(),
-                        requested: driver.requested_compactions(),
-                        steps,
-                    },
-                );
-            }
-            // `Err` for a partition that did not converge, or the supervisor
-            // would merge edits no check passed.
-            match failed {
-                None => Ok(()),
-                Some(why) => Err(why),
-            }
-        }
-    };
-
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let raced = on_run_stack(|| {
-        rt.block_on(async {
-            let answer = async {
-                if let Some((rx, read)) = answering.take() {
-                    answer_on_the_line(rx, read, &mut *out).await;
-                }
-                std::future::pending::<()>().await
-            };
-            // Ctrl-C drops `run_integrated`'s future, whose own guard rolls
-            // the root back to its snapshot; the partitions' tasks are
-            // aborted with it and their worktrees removed as they drop.
-            tokio::select! {
-                r = supervisor.run_integrated(plan, &checks, work) => Some(r),
-                _ = answer => None,
-                _ = tokio::signal::ctrl_c() => None,
-                _ = output::aborted(abort) => None,
-            }
-        })
-    })?;
-    // Not a plain drop, for the reason `run_body` gives: a line reader
-    // blocked on stdin would hold it. The partitions' tasks are dropped
-    // either way, and with them their worktrees.
-    rt.shutdown_background();
-    drop(gate_tx);
-
-    let mut results = match Arc::try_unwrap(results) {
-        Ok(m) => m.into_inner().unwrap_or_default(),
-        Err(shared) => shared
-            .lock()
-            .map(|mut m| std::mem::take(&mut *m))
-            .unwrap_or_default(),
-    };
-    let mut trail = PartitionedTrail::default();
-    let reports: HashMap<PartitionId, String> = match &raced {
-        Some(Ok(i)) => i
-            .reports
-            .iter()
-            .map(|r| {
-                (
-                    r.id,
-                    match &r.outcome {
-                        Ok(()) => "converged in its worktree".to_string(),
-                        Err(e) => e.to_string(),
-                    },
-                )
-            })
-            .collect(),
-        _ => HashMap::new(),
-    };
-    let _ = writeln!(out);
-    // Nothing ran when the snapshot refused the tree, and there is nothing
-    // to record (ADR 0056).
-    let refused_at_snapshot = matches!(
-        &raced,
-        Some(Err(trellis_loop::SuperviseError::Vcs(
-            trellis_vcs::VcsError::DirtyWorktree(_) | trellis_vcs::VcsError::NotARepo(_)
-        )))
-    );
-    if !refused_at_snapshot {
-        rec.base_commit = base.clone();
-    }
-    for part in plan.in_order() {
-        let status = reports
-            .get(&part.id)
-            .cloned()
-            .unwrap_or_else(|| "did not finish".to_string());
-        let _ = writeln!(out, "partition {}: {status}", part.id.0);
-        let names = fanout.names.get(&part.id).map(Vec::as_slice).unwrap_or(&[]);
-        let mut run = results.remove(&part.id);
-        // Keyed by the agent's first target: `ScriptedModel::from_json_for`
-        // gives an agent the one section among its targets, and refuses two.
-        // An agent that never finished left no steps to record.
-        if let (Some(r), Some(first)) = (&mut run, names.first()) {
-            rec.targets
-                .insert(first.clone(), std::mem::take(&mut r.steps));
-        }
-        trail.partition(part.id, names, &status, run);
-    }
-
-    let facts = |gaps, integrated, plan_actions| TrailFacts {
-        approved: trellis_trail::Approval::None,
-        base_commit: &base,
-        model: Some(model_spec),
-        control: Some(dial.describe()),
-        gates: &trail.gates,
-        stamp: Some(stamp),
-        tokens: trail.tokens,
-        prompt_tokens: trail.prompt_tokens,
-        agent: None,
-        label: label.clone(),
-        inputs: added.inputs.clone(),
-        compactions: &trail.compactions,
-        requested: &trail.requested,
-        services: &[],
-        plan: plan_actions,
-        integrated,
-        suspected_recall_gaps: gaps,
-    };
-    let transcript = trellis_loop::Transcript {
-        task: task.to_string(),
-        turns: std::mem::take(&mut trail.turns),
-        final_notice: false,
-        steering: trellis_loop::SteeringLog::default(),
-        prior: None,
-        repo: trellis_loop::RepoContext::default(),
-    };
-
-    let Some(result) = raced else {
-        let _ = writeln!(
-            out,
-            "INTERRUPTED. The partitions were stopped and the root rolled back to its \
-             snapshot; nothing is accepted on an abort."
-        );
-        let restored = is_restored_to(root, &base);
-        let _ = writeln!(out, "Worktree restored: {restored}.");
-        let plan_actions = std::mem::take(&mut trail.plan);
-        match record_trail(
-            root,
-            task,
-            &transcript,
-            &trail.touched,
-            facts(Vec::new(), Vec::new(), plan_actions),
-            &mut *out,
-        ) {
-            Ok(p) => {
-                let _ = writeln!(out, "trail:    {} (interrupted)", p.display());
-            }
-            Err(e) => {
-                let _ = writeln!(out, "could not write the trail: {e}");
-            }
-        }
-        return Ok(RunExit::Interrupted { restored });
-    };
-    let integrated = match result {
-        Ok(i) => i,
-        // Refused at the snapshot: nothing ran, and there is nothing to
-        // record or roll back.
-        Err(trellis_loop::SuperviseError::Vcs(
-            e @ (trellis_vcs::VcsError::DirtyWorktree(_) | trellis_vcs::VcsError::NotARepo(_)),
-        )) => {
-            return Err(anyhow::Error::new(e))
-                .context("a clean git worktree is required before a run");
-        }
-        Err(e) => {
-            // A merge that failed part-way, or a rollback that did: the
-            // message says which, and how to finish a failed one by hand.
-            let _ = writeln!(out, "\nNOT CONVERGED: {e}");
-            let restored = is_restored_to(root, &base);
-            let _ = writeln!(out, "Worktree restored: {restored}.");
-            let plan_actions = std::mem::take(&mut trail.plan);
-            match record_trail(
-                root,
-                task,
-                &transcript,
-                &trail.touched,
-                facts(Vec::new(), Vec::new(), plan_actions),
-                &mut *out,
-            ) {
-                Ok(p) => {
-                    let _ = writeln!(out, "trail:    {} (survives the rollback)", p.display());
-                }
-                Err(e) => {
-                    let _ = writeln!(out, "could not write the trail: {e}");
-                }
-            }
-            return Ok(RunExit::NotConverged { restored });
-        }
-    };
-
-    // The integrated verdicts: the only ones that can converge this run.
-    let mut integrated_checks = Vec::new();
-    let mut plan_actions = std::mem::take(&mut trail.plan);
-    let after = u32::try_from(transcript.turns.len())
-        .unwrap_or(u32::MAX)
-        .saturating_add(1);
-    for (v, ms) in integrated.checks.iter().zip(&integrated.check_ms) {
-        let kind = format!("{:?}", v.kind());
-        let _ = writeln!(
-            out,
-            "integrated {kind}: {}",
-            if v.passed() { "passed" } else { "FAILED" }
-        );
-        if !v.passed() {
-            const SHOWN: usize = 24;
-            let d = v.detail();
-            for line in d.stdout.lines().chain(d.stderr.lines()).take(SHOWN) {
-                let _ = writeln!(out, "  {line}");
-            }
-        }
-        plan_actions.push(read_only_action(
-            after,
-            "integrated_check".to_string(),
-            format!("{kind} on whole repository"),
-            if v.passed() { "passed" } else { "failed" }.to_string(),
-        ));
-        integrated_checks.push(trellis_trail::CheckOutcome {
-            kind,
-            passed: v.passed(),
-            // The supervisor's timing around the call (#622).
-            duration_ms: Some(*ms),
-        });
-    }
-    let gaps: Vec<trellis_trail::SuspectedRecallGap> = integrated
-        .suspected_recall_gaps
-        .iter()
-        .map(|g| trellis_trail::SuspectedRecallGap {
-            partitions: g.partitions.iter().map(|p| p.0).collect(),
-            files: g.files.clone(),
-            check: format!("{:?}", g.check),
-        })
-        .collect();
-    for g in &gaps {
-        let _ = writeln!(
-            out,
-            "recall:   the integrated {} failure named {} from partitions {}: a collision \
-             the plan did not predict, so an edge the graph may have missed (suspected)",
-            g.check,
-            g.files.join(", "),
-            g.partitions
-                .iter()
-                .map(u32::to_string)
-                .collect::<Vec<_>>()
-                .join(" and ")
-        );
-    }
-
-    match &integrated.integration {
-        trellis_loop::Integration::Converged => {
-            let _ = writeln!(out);
-            let _ = writeln!(
-                out,
-                "CONVERGED: {count} partition(s) merged, and the integrated checks passed on \
-                 the union."
-            );
-            let _ = writeln!(
-                out,
-                "files written: {}",
-                if integrated.merged.is_empty() {
-                    "none".to_string()
-                } else {
-                    integrated.merged.join(", ")
-                }
-            );
-            let path = record_trail(
-                root,
-                task,
-                &transcript,
-                &integrated.merged,
-                facts(gaps, integrated_checks, plan_actions),
-                &mut *out,
-            )?;
-            let _ = writeln!(out, "trail:    {}", path.display());
-            let _ = writeln!(
-                out,
-                "{}",
-                concat!(
-                    "Changes are left in the working tree for you to review. ",
-                    "Nothing is committed:\n",
-                    "acceptance is yours, and the trail records the run as unapproved ",
-                    "until you give it."
-                )
-            );
-            Ok(RunExit::Converged)
-        }
-        trellis_loop::Integration::RolledBack(why) => {
-            let _ = writeln!(out);
-            let _ = writeln!(out, "NOT CONVERGED: {why}.");
-            let restored = is_restored_to(root, &base);
-            let _ = writeln!(out, "Rolled back to {base}. Worktree restored: {restored}.");
-            // After the rollback, as in `run_body`: the rollback cleans
-            // untracked files, and the trail is one until it is committed.
-            match record_trail(
-                root,
-                task,
-                &transcript,
-                &trail.touched,
-                facts(gaps, integrated_checks, plan_actions),
-                &mut *out,
-            ) {
-                Ok(p) => {
-                    let _ = writeln!(out, "trail:    {} (survives the rollback)", p.display());
-                }
-                Err(e) => {
-                    let _ = writeln!(out, "could not write the trail: {e}");
-                }
-            }
-            Ok(RunExit::NotConverged { restored })
-        }
-    }
-}
-
-/// Every partition's record, joined in plan order into what one trail
-/// holds: turns numbered on from the partition before, and an action
-/// opening each partition that names its targets and how it ended.
-#[derive(Default)]
-struct PartitionedTrail {
-    turns: Vec<trellis_loop::Turn>,
-    plan: Vec<trellis_trail::Action>,
-    gates: Vec<trellis_loop::GateDenial>,
-    compactions: Vec<trellis_loop::Compacted>,
-    requested: Vec<trellis_loop::RequestedCompaction>,
-    /// Every path a partition wrote, in plan order, once each.
-    touched: Vec<String>,
-    tokens: Option<u64>,
-    prompt_tokens: Option<u64>,
-    /// Whether any partition has been added, so a sum starts at the first
-    /// rather than at a zero nobody measured.
-    started: bool,
-}
-
-impl PartitionedTrail {
-    fn partition(
-        &mut self,
-        id: PartitionId,
-        names: &[String],
-        status: &str,
-        run: Option<PartitionRun>,
-    ) {
-        let offset = u32::try_from(self.turns.len()).unwrap_or(u32::MAX);
-        self.plan.push(read_only_action(
-            offset.saturating_add(1),
-            "partition".to_string(),
-            format!("{} ({})", id.0, names.join(", ")),
-            summarise(status),
-        ));
-        // A partition that never ran counts nothing, and a sum over the
-        // ones that did would be part of the run presented as all of it.
-        let (tokens, prompt_tokens) = run
-            .as_ref()
-            .map_or((None, None), |r| (r.tokens, r.prompt_tokens));
-        let sum = |acc: Option<u64>, this: Option<u64>, first: bool| {
-            if first {
-                this
-            } else {
-                acc.zip(this).map(|(a, b)| a.saturating_add(b))
-            }
-        };
-        self.tokens = sum(self.tokens, tokens, !self.started);
-        self.prompt_tokens = sum(self.prompt_tokens, prompt_tokens, !self.started);
-        self.started = true;
-        let Some(run) = run else {
-            return;
-        };
-        self.turns.extend(run.transcript.turns);
-        self.gates.extend(run.gates.into_iter().map(|mut g| {
-            g.call = g.call.saturating_add(offset);
-            g
-        }));
-        self.compactions
-            .extend(run.compactions.into_iter().map(|mut c| {
-                c.turn = c.turn.saturating_add(offset);
-                c
-            }));
-        self.requested
-            .extend(run.requested.into_iter().map(|mut c| {
-                c.turn = c.turn.saturating_add(offset);
-                c
-            }));
-        for t in run.touched {
-            if !self.touched.contains(&t) {
-                self.touched.push(t);
-            }
-        }
-    }
 }
 
 /// Continues from the last trail entry, or from the run `run_id` names.
@@ -3067,7 +2385,7 @@ const RUN_STACK_BYTES: usize = 8 * 1024 * 1024;
 /// `with_default` is per thread; the retired Rust TUI set one around
 /// `cmd_run` to show the loop's events (#516), and a caller that does so
 /// again would otherwise see the loop emit them where nothing listens.
-fn on_run_stack<T: Send>(f: impl FnOnce() -> T + Send) -> Result<T> {
+pub(crate) fn on_run_stack<T: Send>(f: impl FnOnce() -> T + Send) -> Result<T> {
     let dispatch = tracing::dispatcher::get_default(Clone::clone);
     std::thread::scope(|s| {
         let h = std::thread::Builder::new()
@@ -3172,21 +2490,12 @@ fn handle_interrupt(
         turns: Vec::new(),
         final_notice: false,
         steering: trellis_loop::SteeringLog::default(),
+        controls: Vec::new(),
         prior: None,
         repo: trellis_loop::RepoContext::default(),
     };
-    match record_trail(root, task, &turns, touched, facts, &mut *out) {
-        Ok(p) => {
-            let _ = writeln!(
-                out,
-                "trail:    {} (interrupted; no turns recorded)",
-                p.display()
-            );
-        }
-        Err(e) => {
-            let _ = writeln!(out, "could not write the trail: {e}");
-        }
-    }
+    let written = record_trail(root, task, &turns, touched, facts, &mut *out);
+    report_trail(&mut *out, written, Some("interrupted; no turns recorded"));
 
     // 130 is the shell convention for a process terminated by SIGINT, so a
     // script wrapping TRELLIS can tell a deliberate abort from a failed run.
@@ -3399,17 +2708,8 @@ pub(crate) fn audit_modes(root: &Path, touched: &[String]) -> trellis_trail::Mod
     counts
 }
 
-/// The 1-based line a byte offset falls on: the newlines before it, plus one.
-///
-/// Not `lines().count()`, which gives the line above when the offset starts
-/// a line and 0 at offset 0.
-pub(crate) fn line_of(src: &str, offset: usize) -> usize {
-    src.as_bytes()[..offset.min(src.len())]
-        .iter()
-        .filter(|&&b| b == b'\n')
-        .count()
-        + 1
-}
+/// In trellis-loop since #802, whose edit diffs number their lines with it.
+pub(crate) use trellis_loop::line_of;
 
 /// One turn, as a line in the action log.
 ///
@@ -3418,76 +2718,37 @@ pub(crate) fn line_of(src: &str, offset: usize) -> usize {
 /// trail that kept it would be mostly type-checker output — and the question
 /// this log answers is "what did it do", not "what did the compiler say".
 ///
-/// `wrote` is the one bit that cannot be recovered from anywhere else.
+/// `wrote` is the one bit that cannot be recovered from anywhere else: it is
+/// the turn's own, read from the tool's typed result (#986), not from the
+/// summarised observation.
 /// `proposed` names the files a run ended up touching, not which action did
 /// the touching; a run whose every edit was refused has an empty `proposed`
 /// and a full list of actions, and those are different stories.
 pub(crate) fn action_from(index: usize, t: &trellis_loop::Turn) -> trellis_trail::Action {
-    use trellis_loop::ToolCall;
-
-    let (tool, target) = match &t.call {
-        ToolCall::BlastRadius { symbol } => ("blast_radius", symbol.clone()),
-        ToolCall::ReadFile { path } => ("read_file", path.clone()),
-        ToolCall::Edit { path, .. } => ("edit", path.clone()),
-        ToolCall::RunChecks { paths, kinds } => {
-            let kinds: Vec<String> = kinds.iter().map(|k| format!("{k:?}")).collect();
-            // The checks requested, then what they were pointed at. An empty
-            // `paths` is the whole repository and says so, rather than
-            // rendering as a blank the reader has to interpret.
-            let where_ = if paths.is_empty() {
-                "whole repository".to_string()
-            } else {
-                paths.join(", ")
-            };
-            ("run_checks", format!("{} on {where_}", kinds.join("+")))
-        }
-        ToolCall::ReadSkill { name } => ("read_skill", name.clone()),
-        // ADR 0023's tools. A repository's own tool is recorded under its
-        // own name, with the arguments it was sent.
-        ToolCall::WriteFile { path, .. } => ("write_file", path.clone()),
-        ToolCall::Grep { pattern, path } => (
-            "grep",
-            match path {
-                Some(p) => format!("{pattern} in {p}"),
-                None => pattern.clone(),
-            },
-        ),
-        ToolCall::Find { glob } => ("find", glob.clone()),
-        ToolCall::Ls { path } => ("ls", path.clone()),
-        ToolCall::Bash { command } => ("bash", summarise(command)),
-        ToolCall::SearchNotes { query, .. } => ("search_notes", summarise(query)),
-        ToolCall::ReadNote { note } => ("read_note", note.clone()),
-        ToolCall::CallersOf { symbol } => ("callers_of", symbol.clone()),
-        ToolCall::CalleesOf { symbol } => ("callees_of", symbol.clone()),
-        ToolCall::CoverageReport { paths } => ("coverage_report", summarise(&paths.join(" "))),
-        ToolCall::Custom { name, args } => (name.as_str(), summarise(&args.to_string())),
-        // Quoted: model output, and a trail is read back into prompts.
-        ToolCall::AskHuman { question, .. } => ("ask_human", summarise(&format!("{question:?}"))),
-    };
-
+    // The same reading the run's `turn` event reports (#800), so a trail
+    // and a live view cannot disagree about what a turn touched.
+    let trellis_loop::TurnAction {
+        tool,
+        target,
+        wrote,
+    } = trellis_loop::turn_action(&t.call, t.wrote);
+    // The `EditDiff` the turn event reported (#811): set by the loop only
+    // for an edit that applied, so every other action records neither.
+    // `usize` to `u64` is lossless on every target Rust supports.
+    let edit = t.edit.as_ref();
     trellis_trail::Action {
         turn: index as u32 + 1,
-        tool: tool.to_string(),
+        tool,
         target,
         outcome: summarise(&t.observation),
-        // Only an applied edit or a created file changes the tree through
-        // the orchestrator. A refused one is an action that happened and
-        // wrote nothing, which is exactly what this distinguishes. What bash
-        // or a custom tool changed is recorded in `changed` instead, from
-        // what the orchestrator carried back (ADR 0023 §7), and `wrote`
-        // keeps the meaning older trails gave it.
-        wrote: match &t.call {
-            ToolCall::Edit { .. } => t.observation.contains("applied: true"),
-            ToolCall::WriteFile { path, .. } => {
-                t.observation.starts_with(&format!("created {path} "))
-            }
-            _ => false,
-        },
+        wrote,
         changed: Vec::new(),
         changed_count: 0,
         // The loop's own timing of the call (#622), never a figure from
         // inside the check.
         duration_ms: Some(t.duration_ms),
+        lines_added: edit.map(|e| e.lines_added as u64),
+        lines_removed: edit.map(|e| e.lines_removed as u64),
     }
     .with_changed(&t.changed)
 }
@@ -3511,25 +2772,15 @@ pub(crate) fn read_only_action(
         changed_count: 0,
         // Not a timed call: absent, never 0 (#622).
         duration_ms: None,
+        // Not an edit: absent, never 0 (#811).
+        lines_added: None,
+        lines_removed: None,
     }
 }
 
-/// An observation reduced to one line a person can read in a list.
-pub(crate) fn summarise(observation: &str) -> String {
-    const MAX: usize = 120;
-    let first = observation
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or("");
-    if first.chars().count() <= MAX {
-        return first.to_string();
-    }
-    // Cut on a character boundary, and say it was cut — a silently truncated
-    // line reads as the whole outcome.
-    let head: String = first.chars().take(MAX - 1).collect();
-    format!("{head}…")
-}
+/// Moved to trellis-loop with the turn's action (#800); named here for
+/// the trail's other records.
+pub(crate) use trellis_loop::summarise;
 
 /// What a trail records about a run beyond its turns.
 ///
@@ -3537,54 +2788,54 @@ pub(crate) fn summarise(observation: &str) -> String {
 /// started from, what drove it, and whether a human has accepted it. Passing
 /// them singly pushed `record_trail` past the argument limit, and the limit
 /// was right — three loose values in a row is where a caller swaps two.
-struct TrailFacts<'a> {
-    approved: trellis_trail::Approval,
-    base_commit: &'a str,
-    model: Option<&'a str>,
+pub(crate) struct TrailFacts<'a> {
+    pub(crate) approved: trellis_trail::Approval,
+    pub(crate) base_commit: &'a str,
+    pub(crate) model: Option<&'a str>,
     /// Where the control dial stood (ADR 0018): `auto`, or `approve (edit)`.
     /// Hands-off and fine-grained runs go through one loop, so this is the
     /// only field that says which one the reader is looking at.
-    control: Option<String>,
+    pub(crate) control: Option<String>,
     /// Calls a named gate refused (ADR 0023 §7), each recorded as an action
     /// just before the call it refused.
-    gates: &'a [trellis_loop::GateDenial],
+    pub(crate) gates: &'a [trellis_loop::GateDenial],
     /// `(timestamp, started_at)` taken when the run began, so the trail's
     /// run id is the `TRELLIS_RUN_ID` bash and hooks were given. `None`
     /// stamps it now.
-    stamp: Option<&'a (String, String)>,
+    pub(crate) stamp: Option<&'a (String, String)>,
     /// Completion tokens and the agent profile, for the budget ledger
     /// (ADR 0026 §8).
-    tokens: Option<u64>,
+    pub(crate) tokens: Option<u64>,
     /// Prompt tokens the adapter summed, `None` when any call reported none
     /// (ADR 0027, #106).
-    prompt_tokens: Option<u64>,
-    agent: Option<String>,
+    pub(crate) prompt_tokens: Option<u64>,
+    pub(crate) agent: Option<String>,
     /// The session's `/name` label, when it has one.
-    label: Option<String>,
+    pub(crate) label: Option<String>,
     /// Context files, system files and forced skills, by name and size
     /// (ADR 0025, integrated).
-    inputs: Vec<trellis_trail::Input>,
+    pub(crate) inputs: Vec<trellis_trail::Input>,
     /// Compactions (ADR 0024 §5), each an action under the turn whose
     /// request was compacted. Empty on a run that never compacted, so older
     /// trails keep their shape.
-    compactions: &'a [trellis_loop::Compacted],
+    pub(crate) compactions: &'a [trellis_loop::Compacted],
     /// Compactions a client asked for over RPC (ADR 0025 §5), filed the
     /// same way. Empty outside RPC.
-    requested: &'a [trellis_loop::RequestedCompaction],
+    pub(crate) requested: &'a [trellis_loop::RequestedCompaction],
     /// The services that ran beside the task (ADR 0026 §12), recorded
     /// ahead of the first turn's actions. Empty outside `work`.
-    services: &'a [trellis_trail::Action],
+    pub(crate) services: &'a [trellis_trail::Action],
     /// A multi-agent run's own actions (#466): each partition's opening,
     /// before its first turn, and the integrated checks, after the last.
     /// Each goes before the turn it names, after the last turn when it names
     /// one past it. Empty for a single-agent run.
-    plan: Vec<trellis_trail::Action>,
+    pub(crate) plan: Vec<trellis_trail::Action>,
     /// The integrated checks a multi-agent run ran over its merged union,
     /// after the partitions' own (ADR 0042). Empty for a single-agent run.
-    integrated: Vec<trellis_trail::CheckOutcome>,
+    pub(crate) integrated: Vec<trellis_trail::CheckOutcome>,
     /// Integrated-check failures naming files from two or more partitions
     /// (ADR 0042), from `Integrated::suspected_recall_gaps`.
-    suspected_recall_gaps: Vec<trellis_trail::SuspectedRecallGap>,
+    pub(crate) suspected_recall_gaps: Vec<trellis_trail::SuspectedRecallGap>,
 }
 
 /// What a person sent during the run, as the trail records it (ADR 0034).
@@ -3621,12 +2872,64 @@ pub(crate) fn steering_entries(
     delivered.chain(undelivered).collect()
 }
 
+/// The trail's record of the person's run controls (ADR 0058 §6), in the
+/// order the loop met them.
+///
+/// A withdrawal takes the turn its steering entry would have carried, by
+/// `steering_entries`' rules: a steer dropped at the drain before request
+/// N + 1 takes N + 1, anything else the turn the run had reached. A
+/// withdrawal is its kind and length only; the loop never hands this the
+/// text (ADR 0007's #868 amendment).
+pub(crate) fn control_entries(
+    controls: &[trellis_loop::RunControl],
+    reached: usize,
+) -> Vec<trellis_trail::Control> {
+    use trellis_loop::RunControl;
+    use trellis_trail::{Control, SteerKind};
+    controls
+        .iter()
+        .map(|c| match c {
+            RunControl::Paused { turn, paused_ms } => Control::Pause {
+                turn: *turn,
+                paused_ms: *paused_ms,
+            },
+            RunControl::Raised {
+                turn,
+                ceiling,
+                old,
+                new,
+            } => Control::Raise {
+                turn: *turn,
+                ceiling: (*ceiling).to_string(),
+                old: *old,
+                new: *new,
+            },
+            RunControl::Withdrawn {
+                follow_up,
+                len,
+                before_request,
+            } => Control::Withdraw {
+                turn: match before_request {
+                    Some(after_step) => *after_step as u32 + 1,
+                    None => reached as u32,
+                },
+                kind: if *follow_up {
+                    SteerKind::FollowUp
+                } else {
+                    SteerKind::Steer
+                },
+                len: *len,
+            },
+        })
+        .collect()
+}
+
 /// Records what happened, factual and judgment kept apart.
 ///
 /// Everything in `factual` comes from a tool result the run actually received.
 /// Nothing is defaulted into it: a figure nobody measured has no business in
 /// the section whose promise is that it is machine-checkable.
-fn record_trail(
+pub(crate) fn record_trail(
     root: &Path,
     task: &str,
     turns: &trellis_loop::Transcript,
@@ -3805,6 +3108,9 @@ fn record_trail(
         // Empty on a run nobody steered, and empty is omitted on disk, so
         // such a trail has the bytes it had before the field (ADR 0034).
         steering: steering_entries(&turns.steering, turns.turns.len()),
+        // Empty on a run nobody paused, raised or withdrew from, and empty
+        // is omitted on disk, so such a trail keeps its bytes (ADR 0007).
+        controls: control_entries(&turns.controls, turns.turns.len()),
         // A single-agent run has no partitions, so no failure of its can
         // name files from two of them, and its gaps are empty (ADR 0042).
         // Empty is omitted on disk.
@@ -3858,6 +3164,27 @@ fn record_trail(
     Ok(path)
 }
 
+/// Prints where a written trail landed, with `note` in parentheses after the
+/// path, or why it could not be written. One place for both lines, so every
+/// ending of a run reports its trail in the same words.
+pub(crate) fn report_trail(
+    out: &mut dyn std::io::Write,
+    written: Result<std::path::PathBuf>,
+    note: Option<&str>,
+) {
+    match (written, note) {
+        (Ok(p), Some(note)) => {
+            let _ = writeln!(out, "trail:    {} ({note})", p.display());
+        }
+        (Ok(p), None) => {
+            let _ = writeln!(out, "trail:    {}", p.display());
+        }
+        (Err(e), _) => {
+            let _ = writeln!(out, "could not write the trail: {e}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod interrupt_tests {
     use super::*;
@@ -3885,7 +3212,7 @@ mod interrupt_tests {
         }
     }
 
-    fn temp_repo(name: &str) -> PathBuf {
+    fn temp_repo(name: &str) -> crate::testutil::Scratch {
         let dir = crate::testutil::scratch(&format!("cli-test-{name}"));
         crate::testutil::git_init(&dir);
         std::fs::write(dir.join("a.py"), "def f():\n    return 1\n").unwrap();
@@ -4074,12 +3401,15 @@ mod interrupt_tests {
             may_have_changed_tree: false,
             changed: Vec::new(),
             duration_ms: 0,
+            edit: None,
+            wrote: false,
         };
         let transcript = |turns| trellis_loop::Transcript {
             task: "a wide radius".to_string(),
             turns,
             final_notice: false,
             steering: trellis_loop::SteeringLog::default(),
+            controls: Vec::new(),
             prior: None,
             repo: trellis_loop::RepoContext::default(),
         };
@@ -4256,6 +3586,34 @@ mod interrupt_tests {
         let said = String::from_utf8_lossy(&out);
         assert!(said.contains("Worktree restored: true"), "{said}");
         assert!(!said.contains("WARNING"), "{said}");
+        // Nothing differs, so the list of what still differs is not
+        // printed, empty (#248).
+        assert!(!said.contains("still differs"), "{said}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_written_file_the_reset_left_behind_is_named_and_the_worktree_is_not_restored() {
+        // #248. The risk: `restored` read as "the written files match OR
+        // git sees a clean tree". An ignored file the run wrote is both
+        // invisible to `git status` and left in place by `clean -fd`, so
+        // the tree reads clean while the file the model wrote is still
+        // there: that is not a restoration, and the file is named.
+        let dir = temp_repo("recovery-ignored-write");
+        std::fs::write(dir.join(".gitignore"), "scratch.txt\n").unwrap();
+        crate::testutil::git_commit_all(&dir, "ignore scratch");
+        let snap = trellis_vcs::snapshot(&dir).unwrap();
+        std::fs::write(dir.join("scratch.txt"), "written by the run\n").unwrap();
+
+        let mut out = Vec::new();
+        let restored = rollback_and_report(&snap, &["scratch.txt".to_string()], &mut out);
+        let said = String::from_utf8_lossy(&out);
+        assert!(!restored, "{said}");
+        assert!(
+            said.contains("still differs from the snapshot after the reset: scratch.txt"),
+            "{said}"
+        );
+        assert!(said.contains("Worktree restored: false"), "{said}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4305,12 +3663,15 @@ mod interrupt_tests {
             may_have_changed_tree: false,
             changed: Vec::new(),
             duration_ms: 0,
+            edit: None,
+            wrote: false,
         };
         let t = trellis_loop::Transcript {
             task: "two reads".to_string(),
             turns: vec![read("a.py"), read("b.py")],
             final_notice: false,
             steering: trellis_loop::SteeringLog::default(),
+            controls: Vec::new(),
             prior: None,
             repo: trellis_loop::RepoContext::default(),
         };
@@ -4375,49 +3736,99 @@ mod interrupt_tests {
         assert!(a[3].2.contains("elided 30 B"), "{a:?}");
     }
 
-    #[test]
-    fn the_wrappers_a_run_drives_pass_the_driver_s_figures_through() {
-        // The risk: the budget counts tokens and the trail records prompt
-        // bytes through `SeesDone` over `rpc::Watched`, the stack every
-        // run drives; a wrapper answering a default would make a metered
-        // run look free, its context unmeasured and its `run budget`
-        // without a context ceiling.
-        use trellis_loop::Model;
-        let mut inner = crate::testutil::figures();
-        let mut watched = crate::rpc::Watched::new(&mut inner, None);
-        let (mut done, mut steps) = (None, Vec::new());
-        let m = SeesDone {
-            inner: &mut watched,
-            done: &mut done,
-            steps: &mut steps,
-        };
-        assert_eq!(m.tokens_used(), Some(7));
-        assert_eq!(m.prompt_bytes(), Some(4321));
-        assert_eq!(m.context_bytes(), Some(9_000));
-        assert_eq!(m.compactions().len(), 1);
-        assert_eq!(m.compactions()[0].elided_bytes, 50);
+    /// A one-turn transcript whose turn carries `prompt_bytes`, or none.
+    fn one_turn(prompt_bytes: Option<usize>) -> trellis_loop::Transcript {
+        trellis_loop::Transcript {
+            task: "one read".to_string(),
+            turns: vec![trellis_loop::Turn {
+                call: trellis_loop::ToolCall::ReadFile {
+                    path: "a.py".into(),
+                },
+                observation: String::new(),
+                verdict_passed: None,
+                check_kind: None,
+                prompt_bytes,
+                radius_counts: None,
+                radius_summarised: None,
+                human: None,
+                may_have_changed_tree: false,
+                changed: Vec::new(),
+                duration_ms: 0,
+                edit: None,
+                wrote: false,
+            }],
+            final_notice: false,
+            steering: trellis_loop::SteeringLog::default(),
+            controls: Vec::new(),
+            prior: None,
+            repo: trellis_loop::RepoContext::default(),
+        }
+    }
+
+    fn trail_back(
+        dir: &Path,
+        t: &trellis_loop::Transcript,
+        facts: TrailFacts<'_>,
+    ) -> trellis_trail::UntrustedTrail {
+        let path = record_trail(dir, &t.task, t, &[], facts, &mut std::io::sink()).unwrap();
+        let raw = std::fs::read_to_string(path).unwrap();
+        trellis_trail::UntrustedTrail::from_json(&raw).unwrap()
     }
 
     #[test]
-    fn sees_done_over_watched_forwards_step_usage() {
-        // The risk (#256): a wrapper answering the trait's default would
-        // leave every run's `turn` event without output tokens or queue
-        // wait, though the driver measured both.
-        use trellis_loop::Model;
-        let mut inner = crate::testutil::figures();
-        let mut watched = crate::rpc::Watched::new(&mut inner, None);
-        let (mut done, mut steps) = (None, Vec::new());
-        let m = SeesDone {
-            inner: &mut watched,
-            done: &mut done,
-            steps: &mut steps,
-        };
+    fn a_plan_action_sits_before_its_turn_and_one_past_the_last_turn_goes_last_once() {
+        // #248. The risk: the filter for plan actions past the last turn
+        // reading `>=` (the last turn's partition opening written twice) or
+        // `==` (a partition that ran no turn, after the last, dropped). The
+        // trail is where a reader learns which partition did not run (#466).
+        let dir = temp_repo("plan-placement");
+        let snap = trellis_vcs::snapshot(&dir).unwrap();
+        let mut facts = facts_for(&snap);
+        facts.plan = vec![
+            read_only_action(1, "partition".into(), "0 (a)".into(), "converged".into()),
+            read_only_action(2, "partition".into(), "1 (b)".into(), "did not run".into()),
+        ];
+        let back = trail_back(&dir, &one_turn(None), facts);
+        let _ = std::fs::remove_dir_all(&dir);
+        let shape: Vec<(u32, &str, &str)> = back
+            .factual
+            .actions
+            .iter()
+            .map(|a| (a.turn, a.tool.as_str(), a.target.as_str()))
+            .collect();
         assert_eq!(
-            m.step_usage(),
-            trellis_loop::StepUsage {
-                completion_tokens: Some(13),
-                queue_wait_ms: Some(250),
-            }
+            shape,
+            [
+                (1, "partition", "0 (a)"),
+                (1, "read_file", "a.py"),
+                (2, "partition", "1 (b)"),
+            ],
+            "{shape:?}"
+        );
+    }
+
+    #[test]
+    fn context_fill_is_recorded_only_from_turns_that_measured_a_prompt() {
+        // #248. The risk: the fill recorded from no measurement (a scripted
+        // run, whose turns carry no prompt) as a zero nobody measured, or
+        // dropped for a run that did measure one. The timed-out mutant of
+        // this line indexes an empty list, which must fail here at once.
+        let dir = temp_repo("context-fill");
+        let snap = trellis_vcs::snapshot(&dir).unwrap();
+        let back = trail_back(&dir, &one_turn(None), facts_for(&snap));
+        assert_eq!(
+            back.factual.context, None,
+            "a scripted run measures nothing"
+        );
+        let back = trail_back(&dir, &one_turn(Some(1200)), facts_for(&snap));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            back.factual.context,
+            Some(trellis_trail::ContextFill {
+                first_prompt_bytes: 1200,
+                peak_prompt_bytes: 1200,
+                turns_measured: 1,
+            })
         );
     }
 
@@ -4449,431 +3860,6 @@ mod interrupt_tests {
             eleven.ends_with("... 1 older, `trellis log --limit` lists them"),
             "{eleven}"
         );
-    }
-}
-
-#[cfg(test)]
-mod approval_tests {
-    //! ADR 0018 end to end through `cmd_run`: real files, a real snapshot and
-    //! rollback, a scripted model, and a person played by a closure.
-
-    use super::*;
-    use std::path::PathBuf;
-
-    /// A committed repository in approve mode, and a script outside it.
-    ///
-    /// The script lives elsewhere because an untracked file inside the
-    /// repository would make the worktree dirty, and a run refuses that.
-    fn fixture(name: &str, script: &str) -> (PathBuf, String) {
-        let dir = crate::testutil::scratch(&format!("approval-{name}"));
-        crate::testutil::git_init(&dir);
-        std::fs::create_dir_all(dir.join(".trellis")).unwrap();
-        std::fs::write(
-            dir.join(".trellis/config.toml"),
-            "[control]\nmode = \"approve\"\n",
-        )
-        .unwrap();
-        std::fs::write(dir.join("a.py"), "def f():\n    return 1\n").unwrap();
-        crate::testutil::git_commit_all(&dir, "init");
-        let scripts = crate::testutil::scratch(&format!("approval-{name}-script"));
-        let path = scripts.join("script.json");
-        std::fs::write(&path, script).unwrap();
-        (dir, format!("scripted:{}", path.display()))
-    }
-
-    const EDIT_THEN_STOP: &str = r#"{"steps":[
-        {"tool":"edit","path":"a.py","old":"return 1","new":"return 2"},
-        {"tool":"done","summary":"changed it"}
-    ]}"#;
-
-    /// A person who gives these answers, in order, then closes the input.
-    fn answering(answers: &[&str]) -> Human {
-        let mut left: Vec<String> = answers.iter().rev().map(|s| format!("{s}\n")).collect();
-        Human::Line(Box::new(move || left.pop()))
-    }
-
-    fn run_with(dir: &Path, spec: &str, human: Human) -> (Result<RunExit>, String) {
-        let mut out = Vec::new();
-        let r = cmd_run(
-            dir,
-            "change f",
-            spec,
-            false,
-            RunSeeding::default(),
-            RunControl {
-                flag: None,
-                human,
-                steering: None,
-            },
-            &mut out,
-        );
-        (r, String::from_utf8(out).unwrap())
-    }
-
-    /// The one trail the run wrote, read back the way `trellis log` reads it.
-    fn trail(dir: &Path) -> trellis_trail::UntrustedFactual {
-        let runs = dir.join(".trellis").join("runs");
-        let file = std::fs::read_dir(&runs)
-            .unwrap()
-            .filter_map(Result::ok)
-            .find(|e| e.path().extension().is_some_and(|x| x == "json"))
-            .expect("a trail was written");
-        let raw = std::fs::read_to_string(file.path()).unwrap();
-        let t = trellis_trail::UntrustedTrail::from_json(&raw).unwrap();
-        // Every trail here carries the new `control` field and approval
-        // actions, so every read-back also checks the digest still covers
-        // them: a field added to `factual` that the digest missed would make
-        // each of these trails read as altered.
-        assert_eq!(t.integrity(&raw), trellis_trail::Integrity::Intact);
-        t.factual
-    }
-
-    fn actions(f: &trellis_trail::UntrustedFactual) -> Vec<(String, String, String, bool)> {
-        f.actions
-            .iter()
-            .map(|a| (a.tool.clone(), a.target.clone(), a.outcome.clone(), a.wrote))
-            .collect()
-    }
-
-    /// `fixture`, with `tools` appended to the approve-mode config and the
-    /// repository trusted, so a `[[tools.custom]]` in it is enabled.
-    fn fixture_with_tools(name: &str, tools: &str, script: &str) -> (PathBuf, String) {
-        let (dir, spec) = fixture(name, script);
-        std::fs::write(
-            dir.join(".trellis/config.toml"),
-            format!("[control]\nmode = \"approve\"\n{tools}"),
-        )
-        .unwrap();
-        crate::testutil::git_commit_all(&dir, "tools");
-        crate::testutil::trust(&dir);
-        (dir, spec)
-    }
-
-    /// `write_file` enabled, and a repository tool `stamp` that exits 0.
-    fn writers() -> String {
-        let argv = if cfg!(windows) {
-            "['cmd', '/C', 'exit 0']"
-        } else {
-            "['sh', '-c', 'true']"
-        };
-        format!(
-            "[tools]\nenable = ['write_file']\n\
-             [[tools.custom]]\nname = \"stamp\"\ndescription = \"Stamp.\"\n\
-             command = {argv}\nschema = {{ type = \"object\" }}\n"
-        )
-    }
-
-    const WRITE_THEN_STOP: &str = r#"{"steps":[
-        {"tool":"write_file","path":"pkg/new.py","content":"x = 1\n"},
-        {"tool":"done","summary":"made it"}
-    ]}"#;
-
-    const STAMP_THEN_STOP: &str = r#"{"steps":[
-        {"tool":"stamp"},
-        {"tool":"done","summary":"stamped"}
-    ]}"#;
-
-    #[test]
-    fn approve_mode_asks_before_write_file_with_the_default_list() {
-        // The risk (#425): the default list is `["edit"]` and an unlisted
-        // tool runs unasked, so in approve mode `write_file` created files
-        // without the yes the mode promises.
-        let (dir, spec) = fixture_with_tools("asks-write-file", &writers(), WRITE_THEN_STOP);
-        let (r, said) = run_with(&dir, &spec, answering(&["n"]));
-        assert!(r.is_ok(), "{r:?}");
-        assert!(
-            said.contains("write_file pkg/new.py (+1 new)? [y/N]"),
-            "asked before the write:\n{said}"
-        );
-        let t = trail(&dir);
-        assert_eq!(
-            t.control.as_deref(),
-            Some("approve (edit, write_file, stamp)")
-        );
-        let a = actions(&t);
-        assert_eq!((a[0].0.as_str(), a[0].2.as_str()), ("approval", "declined"));
-        assert_eq!(a[1].0, "write_file");
-        assert!(!a[1].3, "a declined write_file wrote nothing: {a:?}");
-    }
-
-    #[test]
-    fn approve_mode_asks_before_a_custom_tool_with_the_default_list() {
-        // The same hole for a repository's own tool: it runs a command that
-        // can change the tree, and ran unasked in approve mode (#425).
-        let (dir, spec) = fixture_with_tools("asks-custom", &writers(), STAMP_THEN_STOP);
-        let (r, said) = run_with(&dir, &spec, answering(&["n"]));
-        assert!(r.is_ok(), "{r:?}");
-        assert!(said.contains("stamp"), "{said}");
-        assert!(said.contains("[y/N]"), "asked before the tool:\n{said}");
-        let a = actions(&trail(&dir));
-        assert_eq!(
-            (a[0].0.as_str(), a[0].2.as_str()),
-            ("approval", "declined"),
-            "{a:?}"
-        );
-        assert_eq!(a[1].0, "stamp");
-        assert!(a[1].2.contains(trellis_loop::DECLINED), "{a:?}");
-    }
-
-    #[test]
-    fn approve_mode_asks_nothing_under_the_auto_flag_with_both_enabled() {
-        // The widened default is approve mode's; `--auto` still asks
-        // nothing, and the write lands.
-        let (dir, spec) = fixture_with_tools("asks-auto", &writers(), WRITE_THEN_STOP);
-        let mut out = Vec::new();
-        let r = cmd_run(
-            &dir,
-            "change f",
-            &spec,
-            false,
-            RunSeeding::default(),
-            RunControl {
-                flag: Some(config::ControlMode::Auto),
-                human: Human::Absent,
-                steering: None,
-            },
-            &mut out,
-        );
-        assert!(r.is_ok(), "{r:?}");
-        let said = String::from_utf8(out).unwrap();
-        assert!(!said.contains("[y/N]"), "auto asks nothing: {said}");
-        let t = trail(&dir);
-        assert_eq!(t.control.as_deref(), Some("auto"));
-        let a = actions(&t);
-        assert_eq!((a[0].0.as_str(), a[0].3), ("write_file", true), "{a:?}");
-    }
-
-    #[test]
-    fn a_queued_run_that_asks_ends_as_asked_with_the_question() {
-        // #248. The risk: a restored run that ended on `ask_human` reported
-        // as an ordinary rollback, so `work` never parks the task on the
-        // question and the person is never asked.
-        let (dir, spec) = fixture(
-            "asks-human",
-            r#"{"steps":[{"tool":"ask_human","question":"Keep the v1 endpoint?","options":["yes","no"]}]}"#,
-        );
-        let mut out = Vec::new();
-        let r = cmd_run(
-            &dir,
-            "change f",
-            &spec,
-            false,
-            RunSeeding {
-                queued: true,
-                ..RunSeeding::default()
-            },
-            RunControl {
-                flag: Some(config::ControlMode::Auto),
-                human: Human::Absent,
-                steering: None,
-            },
-            &mut out,
-        );
-        let said = String::from_utf8(out).unwrap();
-        assert_eq!(
-            r.unwrap(),
-            RunExit::Asked {
-                question: "Keep the v1 endpoint?".to_string(),
-                options: vec!["yes".to_string(), "no".to_string()],
-            },
-            "{said}"
-        );
-    }
-
-    #[test]
-    fn an_approve_list_someone_wrote_is_not_widened() {
-        // #425 widens only the default. A repository that wrote
-        // `approve = ["edit"]` asked for edits only, and gets that.
-        let (dir, spec) = fixture_with_tools(
-            "asks-explicit",
-            &format!("approve = [\"edit\"]\n{}", writers()),
-            WRITE_THEN_STOP,
-        );
-        let (r, said) = run_with(&dir, &spec, answering(&[]));
-        assert!(r.is_ok(), "{r:?}");
-        assert!(!said.contains("[y/N]"), "{said}");
-        let t = trail(&dir);
-        assert_eq!(t.control.as_deref(), Some("approve (edit)"));
-        assert_eq!(actions(&t)[0].0, "write_file");
-    }
-
-    #[test]
-    fn approve_mode_with_nobody_to_ask_refuses_before_the_snapshot() {
-        // Starting and then denying every edit would be a run that looks as
-        // though it tried. It must not start, and it must cost nothing: no
-        // snapshot, no rollback, no trail.
-        let (dir, spec) = fixture("no-tty", EDIT_THEN_STOP);
-        let (r, said) = run_with(&dir, &spec, Human::Absent);
-        let e = r.expect_err("approve mode with nobody to ask must refuse");
-        assert_eq!(format!("{e}"), NEEDS_A_TERMINAL);
-        assert!(!said.contains("snapshot"), "{said}");
-        assert!(
-            !dir.join(".trellis/runs").exists(),
-            "no trail for a run that never began"
-        );
-        assert_eq!(
-            std::fs::read_to_string(dir.join("a.py")).unwrap(),
-            "def f():\n    return 1\n"
-        );
-    }
-
-    #[test]
-    fn the_auto_flag_needs_nobody_even_where_the_config_says_approve() {
-        let (dir, spec) = fixture("auto-flag", EDIT_THEN_STOP);
-        let mut out = Vec::new();
-        let r = cmd_run(
-            &dir,
-            "change f",
-            &spec,
-            false,
-            RunSeeding::default(),
-            RunControl {
-                flag: Some(config::ControlMode::Auto),
-                human: Human::Absent,
-                steering: None,
-            },
-            &mut out,
-        );
-        assert!(r.is_ok(), "{r:?}");
-        let said = String::from_utf8(out).unwrap();
-        assert!(said.contains("control:  auto"), "{said}");
-        assert!(!said.contains("[y/N]"), "auto asks nothing: {said}");
-        assert_eq!(trail(&dir).control.as_deref(), Some("auto"));
-    }
-
-    #[test]
-    fn a_declined_edit_is_not_applied_and_the_trail_says_declined() {
-        let (dir, spec) = fixture("declined", EDIT_THEN_STOP);
-        let (r, said) = run_with(&dir, &spec, answering(&["n"]));
-        assert!(r.is_ok(), "{r:?}");
-
-        // Asked on the line, with the diff first.
-        let diff_at = said.find("- ").expect("the removed line is shown");
-        let question = said
-            .find("edit a.py (+1 -1)? [y/N]")
-            .unwrap_or_else(|| panic!("the question in the ADR's words:\n{said}"));
-        assert!(
-            diff_at < question,
-            "the diff comes before the question:\n{said}"
-        );
-        assert!(
-            said.contains("-     return 1") && said.contains("+     return 2"),
-            "{said}"
-        );
-        assert!(said.contains("declined"), "{said}");
-
-        // Not applied. The run did not converge and rolled back, so the file
-        // being unchanged proves nothing on its own; the trail's `wrote` bit
-        // is what says the edit never touched the tree.
-        let t = trail(&dir);
-        assert_eq!(t.control.as_deref(), Some("approve (edit)"));
-        let a = actions(&t);
-        assert_eq!(
-            a[0],
-            (
-                "approval".to_string(),
-                "edit a.py".to_string(),
-                "declined".to_string(),
-                false
-            ),
-            "{a:?}"
-        );
-        assert_eq!(a[1].0, "edit");
-        assert!(
-            a[1].2.contains("declined by the user"),
-            "the model is told why: {a:?}"
-        );
-        assert!(!a[1].3, "a declined edit wrote nothing: {a:?}");
-        assert!(t.proposed.is_empty(), "{:?}", t.proposed);
-    }
-
-    #[test]
-    fn an_approved_edit_is_applied_and_the_trail_says_approved() {
-        let (dir, spec) = fixture("approved", EDIT_THEN_STOP);
-        let (r, said) = run_with(&dir, &spec, answering(&["y"]));
-        assert!(r.is_ok(), "{r:?}");
-        assert!(said.contains("approved"), "{said}");
-        let a = actions(&trail(&dir));
-        assert_eq!((a[0].0.as_str(), a[0].2.as_str()), ("approval", "approved"));
-        assert_eq!(a[1].0, "edit");
-        assert!(a[1].3, "an approved edit is applied: {a:?}");
-    }
-
-    #[test]
-    fn end_of_input_on_the_question_is_a_no() {
-        // A closed or piped stdin returns nothing. Reading that as yes would
-        // let a run in approve mode edit with nobody watching.
-        let (dir, spec) = fixture("eof", EDIT_THEN_STOP);
-        let (r, said) = run_with(&dir, &spec, answering(&[]));
-        assert!(r.is_ok(), "{r:?}");
-        assert!(said.contains("declined"), "{said}");
-        let a = actions(&trail(&dir));
-        assert_eq!(a[0].2, "declined");
-        assert!(!a[1].3);
-    }
-
-    #[test]
-    fn only_an_explicit_yes_counts() {
-        for yes in ["y", "Y", "yes", " y \r\n"] {
-            assert!(is_yes(Some(yes)), "{yes:?}");
-        }
-        for no in ["", "\n", "n", "no", "yy", "ok"] {
-            assert!(!is_yes(Some(no)), "{no:?}");
-        }
-        assert!(!is_yes(None));
-    }
-
-    #[test]
-    fn the_interface_s_channel_is_asked_and_its_no_is_recorded() {
-        // The path `trellis tui` takes: the gate's question goes out on a
-        // channel rather than to a terminal, and the answer comes back on the
-        // request's own `oneshot`.
-        let (dir, spec) = fixture("channel", EDIT_THEN_STOP);
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<trellis_loop::ApprovalRequest>(1);
-        let asker = std::thread::spawn(move || {
-            let req = rx.blocking_recv().expect("the gate asks");
-            let q = req.question.clone();
-            let _ = req.reply.send(false);
-            q
-        });
-        let (r, said) = run_with(&dir, &spec, Human::Channel(tx));
-        assert!(r.is_ok(), "{r:?}");
-        assert_eq!(asker.join().unwrap(), "edit a.py (+1 -1)");
-        assert!(
-            !said.contains("[y/N]"),
-            "nothing is asked on the line: {said}"
-        );
-        let a = actions(&trail(&dir));
-        assert_eq!((a[0].0.as_str(), a[0].2.as_str()), ("approval", "declined"));
-        assert!(!a[1].3);
-    }
-
-    /// The run's futures are polled on `RUN_THREAD`, not on the caller's
-    /// stack. Moving `block_on` back inline would leave the binary's run on
-    /// a 1 MiB Windows main thread that a debug build had all but used up
-    /// (#180), and nothing else would fail until a future grew past it.
-    #[test]
-    fn loop_stack_a_run_is_polled_on_the_run_thread_not_the_callers() {
-        let (dir, spec) = fixture("loop-stack", EDIT_THEN_STOP);
-        crate::RUN_POLLED_ON.with(|c| *c.borrow_mut() = None);
-        let mut out = Vec::new();
-        let r = cmd_run(
-            &dir,
-            "change f",
-            &spec,
-            false,
-            RunSeeding::default(),
-            RunControl {
-                flag: Some(config::ControlMode::Auto),
-                human: Human::Absent,
-                steering: None,
-            },
-            &mut out,
-        );
-        assert!(r.is_ok(), "{r:?}");
-        let polled_on = crate::RUN_POLLED_ON.with(|c| c.borrow_mut().take());
-        assert_eq!(polled_on.as_deref(), Some(crate::RUN_THREAD));
-        assert_ne!(std::thread::current().name(), Some(crate::RUN_THREAD));
     }
 }
 
@@ -5005,5 +3991,56 @@ mod audit_mode_tests {
         let counts = audit_modes(&dir, &["app/core.py".to_string()]);
         assert_eq!((counts.verified, counts.reviewed), (0, 0));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod report_trail_tests {
+    use super::report_trail;
+    use std::path::PathBuf;
+
+    fn printed(written: anyhow::Result<PathBuf>, note: Option<&str>) -> String {
+        let mut out = Vec::new();
+        report_trail(&mut out, written, note);
+        String::from_utf8(out).unwrap()
+    }
+
+    /// The six endings that report a trail once spelled these lines out
+    /// each; the expected text is theirs, byte for byte, so folding them into
+    /// one function cannot have changed what a user or a script reads.
+    #[test]
+    fn report_trail_prints_each_ending_s_line_as_the_sites_did() {
+        let p = || Ok(PathBuf::from(".trellis/trails/t.json"));
+        assert_eq!(printed(p(), None), "trail:    .trellis/trails/t.json\n");
+        assert_eq!(
+            printed(p(), Some("survives the rollback")),
+            "trail:    .trellis/trails/t.json (survives the rollback)\n"
+        );
+        assert_eq!(
+            printed(p(), Some("interrupted")),
+            "trail:    .trellis/trails/t.json (interrupted)\n"
+        );
+        assert_eq!(
+            printed(p(), Some("interrupted; no turns recorded")),
+            "trail:    .trellis/trails/t.json (interrupted; no turns recorded)\n"
+        );
+    }
+
+    /// A failed write is said, not swallowed, and only the outermost message
+    /// is printed, as `{e}` on the sites' own errors printed it.
+    #[test]
+    fn report_trail_says_a_failed_write_whatever_the_note() {
+        let failed = || {
+            Err(anyhow::Error::from(std::io::Error::other("disk full"))
+                .context("writing the trail"))
+        };
+        for note in [None, Some("survives the rollback")] {
+            assert_eq!(
+                printed(failed(), note),
+                "could not write the trail: writing the trail\n"
+            );
+        }
+        let io = Err(anyhow::Error::from(std::io::Error::other("disk full")));
+        assert_eq!(printed(io, None), "could not write the trail: disk full\n");
     }
 }

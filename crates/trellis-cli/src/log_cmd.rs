@@ -1,3 +1,4 @@
+use crate::plain;
 use anyhow::Result;
 use std::path::Path;
 
@@ -94,26 +95,6 @@ pub(crate) fn cmd_log(root: &Path, limit: usize, actions: bool) -> Result<()> {
         println!("... {} older, use --limit", entries.len() - limit);
     }
     Ok(())
-}
-
-/// A string from a trail, made safe to print to a terminal.
-///
-/// A trail is read back as untrusted data (S10) and then printed straight to a
-/// terminal, which interprets what it is given. An escape sequence in a task
-/// description or a file path can move the cursor, repaint a line, or clear
-/// the screen — so a run that did not converge can be made to *look* like one
-/// that did, in the one command a user reads to find out which.
-///
-/// That matters more here than in most tools. The claim this project makes is
-/// that work comes back verified rather than merely written, and a forged
-/// terminal defeats the reading of the evidence rather than the evidence
-/// itself.
-///
-/// Control characters become their escaped form rather than vanishing: a path
-/// that contains one is worth seeing, and silently dropping it would print a
-/// name that does not match the file.
-pub(crate) fn plain(s: &str) -> String {
-    trellis_core::text::escape_controls(s)
 }
 
 /// The action log for one run: what it did, in order, and what came back.

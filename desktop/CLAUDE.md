@@ -71,7 +71,11 @@ holder is a wish, so none is written here without one.
   header, and `ui/ds.js` alone writes a component's markup (DESIGN.md §2.1,
   #909; held by `ds_css_is_the_design_systems_bundle` and
   `ds_components_draw_the_bundles_markup` in `src/lockdown.rs`). A change to
-  the system reaches the page by copying the file again.
+  the system reaches the page by copying the file again. Each region of the
+  Trails, Codebase, Board, Vault and Atlas is a Panel with its title in the
+  head, and no module but ds.js
+  builds a head, a Stat or a Status: a count is a Stat, a state a Status, a
+  sequence in time a Rail (#910; held by `every_level_draws_through_ds`).
 - Nothing is added without amending ADR 0048: no Tauri plugin (the
   `desktop-plugin` rule in `desktop-guards.sh`); no capability permission,
   CSP source or navigation target (`main_capability_grants_only_listen_unlisten_and_the_apps_commands`,

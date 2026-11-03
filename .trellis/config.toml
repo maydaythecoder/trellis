@@ -18,13 +18,3 @@ max_iterations   = 40
 max_wall_clock_s = 1200
 max_tokens       = 2000000
 regime           = "local"   # "local" | "metered"
-
-[agents]
-# 1, or "auto" to derive from MEASURED backend batching capacity — never from
-# CPU count. Multi-agent mode needs a continuous-batching runtime (vLLM,
-# SGLang); on llama.cpp or Ollama, agents queue on one GPU and there is no
-# speedup. `trellis doctor` reports which you have. See S18.
-count = 1
-
-# "all-or-nothing" (default, correct under partial recall) | "land-clean"
-failure_policy = "all-or-nothing"

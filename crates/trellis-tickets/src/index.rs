@@ -34,7 +34,7 @@ pub enum IndexError {
     #[error("the issue list is not the JSON index reads: {0}")]
     ListJson(#[source] serde_json::Error),
     #[error(
-        "the list holds {limit} issues, the most asked for, so it may have been cut short; no index was written"
+        "the list holds {limit} or more open issues, the most one index covers; no index was written"
     )]
     Truncated { limit: usize },
     #[error("#{number} appears twice in the issue list")]
@@ -78,7 +78,7 @@ pub struct IndexEntry {
     pub flags: Line,
     pub ready: Line,
     pub triage: Line,
-    /// Always abstained: see [`agent_ok`].
+    /// Always abstained: see `agent_ok`.
     pub agent_ok: Line,
     /// Intake that could not be read, in the order it was met.
     pub notes: Vec<String>,

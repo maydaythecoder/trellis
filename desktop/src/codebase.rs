@@ -524,7 +524,7 @@ pub fn event(r: &Response) -> Value {
 mod tests {
     use super::*;
 
-    /// One module as `get_codebase` sends it (`doctor_cmd::graph_json`).
+    /// One module as `get_codebase` sends it (`codebase_graph::graph_json`).
     fn module(name: &str, calls: &[(&str, u64)], ambiguous: u64, unresolved: u64) -> Value {
         json!({
             "module": name,
@@ -966,7 +966,10 @@ mod tests {
             "index.html does not load codebase.js as a module"
         );
         let (rules, moving) = crate::graph::motion_in_rules_naming("cb-");
-        assert!(rules > 0, "style.css has no rule for the codebase view");
+        assert!(
+            rules > 0,
+            "no page stylesheet has a rule for the codebase view"
+        );
         assert!(moving.is_empty(), "codebase rules that move: {moving:?}");
     }
 

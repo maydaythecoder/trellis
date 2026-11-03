@@ -235,7 +235,6 @@ pub(crate) fn layer(repo: RepoConfig, user: RepoConfig) -> RepoConfig {
                 (None, b) => b,
             },
         }),
-        agents: repo.agents.or(user.agents),
         index: either(repo.index, user.index, |r, u| IndexSection {
             backstop: r.backstop.or(u.backstop),
         }),
@@ -440,6 +439,14 @@ impl RepoConfig {
                 path.display()
             );
         }
+        // `[agents]` was parsed and never read (#958): a table that does
+        // nothing is a quiet way to believe a run was configured. It is no
+        // longer a section; a file that still carries it loads, and says so
+        // once, naming the flag that does set the count.
+        if let Some(notice) = agents_section_notice(&value, path) {
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| tracing::warn!("{notice}"));
+        }
         let parsed: Self = toml::from_str(text)
             .with_context(|| format!("{} is not valid TOML", path.display()))?;
         // Per file, before layering: 0 has no meaning a user would choose
@@ -455,6 +462,23 @@ impl RepoConfig {
         }
         Ok(parsed)
     }
+}
+
+/// The notice for a file that still has an `[agents]` table (#958), or
+/// `None`. `[agents]` set nothing: `trellis run --agents <n>` is how a
+/// run's agent count is chosen, explicit per run, and ADR 0008 divides the
+/// budget across them, so a default from a file would be the quieter way
+/// to multiply runs. The table is not an error, so an older checkout's
+/// config still loads.
+pub(crate) fn agents_section_notice(value: &toml::Value, path: &Path) -> Option<String> {
+    value.get("agents").map(|_| {
+        format!(
+            "{} has an [agents] table, which trellis does not read: it set nothing in \
+             any version. The agent count is `trellis run --agents <n>`, per run. \
+             Remove the table to stop this notice",
+            path.display()
+        )
+    })
 }
 
 /// Write `[model] spec = "<spec>"` into the user's config file at `file`
@@ -853,6 +877,71 @@ mod tests {
             assert!(set_model_spec(&f, "scripted:x.json").is_err(), "{odd:?}");
             assert_eq!(std::fs::read_to_string(&f).unwrap(), odd, "{odd:?}");
         }
+    }
+
+    #[test]
+    fn set_model_spec_treats_only_a_missing_file_as_empty() {
+        // The risk (#248): a file that exists and cannot be read (here a
+        // directory, which `read_to_string` refuses with something other
+        // than NotFound) taken for an absent one, so the edit went on to
+        // write a `.toml.tmp` beside it and failed only at the rename,
+        // with an error about replacing rather than reading.
+        let d = tempfile::tempdir().unwrap();
+        let dir_not_file = d.path().join("config.toml");
+        std::fs::create_dir(&dir_not_file).unwrap();
+        let e = set_model_spec(&dir_not_file, "scripted:x.json").unwrap_err();
+        let said = format!("{e:#}");
+        assert!(said.starts_with("reading "), "{said}");
+        assert!(
+            !d.path().join("config.toml.tmp").exists(),
+            "nothing is written beside a file that could not be read"
+        );
+    }
+
+    #[test]
+    fn replace_value_measures_the_indent_before_the_string_by_subtraction() {
+        // The risk (#248): the leading whitespace after `=` counted as
+        // `len / trimmed_len`, which is 1 for one space and the two
+        // agree, so a line with no space or two spaces found the string
+        // one byte off and the edit refused a file it could read.
+        assert_eq!(
+            replace_value("spec=\"old\"", "\"new\"").as_deref(),
+            Some("spec=\"new\"")
+        );
+        assert_eq!(
+            replace_value("spec =  \"old\"  # was", "\"new\"").as_deref(),
+            Some("spec =  \"new\"  # was")
+        );
+        assert_eq!(
+            replace_value("spec =\t'old'\n", "\"new\"").as_deref(),
+            Some("spec =\t\"new\"\n")
+        );
+    }
+
+    #[test]
+    fn one_line_string_len_reads_both_quote_styles_and_stops_at_a_newline_or_escape() {
+        // The risk (#248): the length of the string a `spec =` line holds,
+        // which decides where the replacement ends. Each case holds one
+        // branch of the function to its reading of TOML: a triple quote of
+        // either kind is multi-line; a literal string ends at its first
+        // quote and never spans a line; a basic string skips an escaped
+        // quote and never spans a line either.
+        let len = one_line_string_len;
+        assert_eq!(len("\"\"\"a\"\"\""), None, "a multi-line basic string");
+        assert_eq!(len("'''a'''"), None, "a multi-line literal string");
+        assert_eq!(len("'a' # c"), Some(3), "a literal string is read");
+        assert_eq!(len("'ab'"), Some(4));
+        assert_eq!(len("'abc' x"), Some(5));
+        assert_eq!(len("'a\nb'"), None, "a literal string does not span a line");
+        assert_eq!(len("\"a\nb\""), None, "a basic string does not span a line");
+        assert_eq!(
+            len("\"a\\\"b\""),
+            Some(6),
+            "an escaped quote does not end it"
+        );
+        assert_eq!(len("\"a\\\\\"b"), Some(5), "an escaped backslash does");
+        assert_eq!(len("\"open"), None);
+        assert_eq!(len("1"), None);
     }
 
     #[test]
@@ -1328,16 +1417,35 @@ stale_claims = \"release\"
     }
 
     #[test]
-    fn a_user_s_agents_and_index_sections_survive_a_repository_without_them() {
+    fn a_user_s_index_section_survives_a_repository_without_it() {
+        let c = load("", "[index]\nbackstop = \"pyright\"\n");
+        assert!(c.pyright_backstop().unwrap());
+    }
+
+    #[test]
+    fn an_agents_table_still_loads_and_the_notice_names_the_flag() {
+        // The risk (#958): `[agents]` was parsed into a struct nothing read,
+        // so a user who set it believed their runs were configured. The
+        // table is gone from the config. A file that still has one is not
+        // refused (an older checkout's config has to load), and the one
+        // notice says what does set the count.
         let c = load(
-            "",
+            "[agents]\ncount = 2\n",
             "[agents]\nfailure_policy = \"stop\"\n[index]\nbackstop = \"pyright\"\n",
         );
-        assert_eq!(
-            c.agents.as_ref().and_then(|a| a.failure_policy.as_deref()),
-            Some("stop")
+        assert!(
+            c.pyright_backstop().unwrap(),
+            "the rest of the file is read"
         );
-        assert!(c.pyright_backstop().unwrap());
+        let value: toml::Value = toml::from_str("[agents]\ncount = 2\n").unwrap();
+        let notice = agents_section_notice(&value, Path::new("c.toml")).expect("a notice");
+        assert!(notice.contains("--agents"), "{notice}");
+        assert!(
+            notice.starts_with("c.toml has an [agents] table"),
+            "{notice}"
+        );
+        let none: toml::Value = toml::from_str("[index]\nbackstop = \"pyright\"\n").unwrap();
+        assert!(agents_section_notice(&none, Path::new("c.toml")).is_none());
     }
 
     #[test]
@@ -1387,5 +1495,86 @@ stale_claims = \"release\"
                 packages.join("zeta").join("prompts")
             ]
         );
+    }
+
+    #[test]
+    fn set_colibri_provider_treats_only_a_missing_file_as_empty() {
+        // The risk (#248): the NotFound arm widened to every read error, so
+        // a file that exists and cannot be read (here a directory) was
+        // taken for an absent one and a `.toml.tmp` was written beside it;
+        // or narrowed to none, so the first write on a fresh machine, where
+        // there is no config.toml yet, was refused as unreadable.
+        let d = tempfile::tempdir().unwrap();
+        let missing = d.path().join("fresh").join("config.toml");
+        assert!(set_colibri_provider(&missing, "http://127.0.0.1:8080/v1").unwrap());
+        let written = std::fs::read_to_string(&missing).unwrap();
+        assert!(written.contains("name = \"colibri\""), "{written}");
+
+        let dir_not_file = d.path().join("config.toml");
+        std::fs::create_dir(&dir_not_file).unwrap();
+        let e = set_colibri_provider(&dir_not_file, "http://127.0.0.1:8080/v1").unwrap_err();
+        let said = format!("{e:#}");
+        assert!(said.starts_with("reading "), "{said}");
+        assert!(
+            !d.path().join("config.toml.tmp").exists(),
+            "nothing is written beside a file that could not be read"
+        );
+    }
+
+    #[test]
+    fn set_colibri_provider_separates_the_entry_from_the_text_before_it_by_one_blank_line() {
+        // The risk (#248): the newline guard inverted on either side, so an
+        // empty file gained a leading blank line, or a file whose last line
+        // has no newline had `[[providers]]` run on from it with none, or
+        // one that ends in a newline gained two. All three parse; what is
+        // asserted is the text a person then reads.
+        let entry = "\n[[providers]]\nname = \"colibri\"\nprotocol = \"openai\"\n\
+                     base_url = \"http://127.0.0.1:8080/v1\"\nkey_env = \"COLI_API_KEY\"\n";
+        for (before, after) in [
+            (None, entry.to_string()),
+            (Some(""), entry.to_string()),
+            (
+                Some("[model]\nspec = \"m\""),
+                format!("[model]\nspec = \"m\"\n{entry}"),
+            ),
+            (
+                Some("[model]\nspec = \"m\"\n"),
+                format!("[model]\nspec = \"m\"\n{entry}"),
+            ),
+        ] {
+            let d = tempfile::tempdir().unwrap();
+            let file = d.path().join("config.toml");
+            if let Some(text) = before {
+                std::fs::write(&file, text).unwrap();
+            }
+            assert!(set_colibri_provider(&file, "http://127.0.0.1:8080/v1").unwrap());
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), after, "{before:?}");
+        }
+    }
+
+    #[test]
+    fn all_but_helpers_drop_only_the_table_the_edit_may_change() {
+        // The risk (#248): either helper answering None or an empty table
+        // for every text, where `all_but(old) != all_but(out)` is false
+        // whatever the edit did to the rest of the file, so the check that
+        // an edit changed nothing else held nothing.
+        let kept: toml::Table = toml::from_str("x = 1\n").unwrap();
+        assert_eq!(
+            all_but_providers(
+                "x = 1\n[[providers]]\nname = \"a\"\nprotocol = \"openai\"\nbase_url = \"u\"\n"
+            ),
+            Some(kept.clone())
+        );
+        assert_eq!(
+            all_but_model_spec("x = 1\n[model]\nspec = \"m\"\n"),
+            Some(kept)
+        );
+        let model_rest: toml::Table = toml::from_str("[model]\ntimeout_s = 5\n").unwrap();
+        assert_eq!(
+            all_but_model_spec("[model]\nspec = \"m\"\ntimeout_s = 5\n"),
+            Some(model_rest)
+        );
+        assert_eq!(all_but_providers("x = \n"), None);
+        assert_eq!(all_but_model_spec("x = \n"), None);
     }
 }

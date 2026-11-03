@@ -1,7 +1,7 @@
 //! `trellis-tickets new`, less the spawns (ADR 0040 decision 4, #79).
 //!
 //! Filing is the one write `new` makes, so it is a closure: the binary
-//! passes one that runs `gh issue create`, and the tests pass one that
+//! passes one that runs `gh api` (a REST `POST`), and the tests pass one that
 //! records what it was given. Reading blockers is the same closure `triage`
 //! takes. Nothing here reaches GitHub on its own.
 //!
@@ -120,8 +120,8 @@ fn g6_line(line: &str) -> Option<String> {
 /// Every reason the title and body would not make a workable ticket.
 fn refusals(title: &str, body: &str) -> Vec<String> {
     let mut out = Vec::new();
-    // `gh issue create` with an empty title prompts for one, and with the
-    // body on stdin there is no terminal to answer it.
+    // GitHub refuses an issue with an empty title; refusing it here says so
+    // before anything is spawned.
     if title.trim().is_empty() {
         out.push("the title is empty".to_string());
     }
@@ -225,25 +225,27 @@ fn shell_word(s: &str) -> String {
 }
 
 impl NewPlan {
-    /// The `gh` argv that files this plan. The body is not in it: it goes
-    /// on stdin (`--body-file -`), so what `gh` files is the body that was
-    /// checked, not whatever the file holds by the time `gh` would read it.
+    /// The `gh api` argv (a REST `POST`, gh's default once a field is
+    /// given) that files this plan. The body is not in it: it goes on stdin
+    /// (`-F body=@-`), so what `gh` files is the body that was checked, not
+    /// whatever the file holds by the time `gh` would read it. The title
+    /// and labels are `-f`, which gh sends as given: no `@file` read, no
+    /// `{owner}` fill. `--jq .html_url` prints the new issue's URL.
     pub fn gh_create_args(&self) -> Vec<String> {
-        let mut args: Vec<String> = [
-            "issue",
-            "create",
-            "--title",
-            &self.title,
-            "--body-file",
-            "-",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+        let mut args: Vec<String> = vec![
+            "api".to_string(),
+            "repos/{owner}/{repo}/issues".to_string(),
+            "-f".to_string(),
+            format!("title={}", self.title),
+            "-F".to_string(),
+            "body=@-".to_string(),
+        ];
         for l in &self.labels {
-            args.push("--label".to_string());
-            args.push((*l).to_string());
+            args.push("-f".to_string());
+            args.push(format!("labels[]={l}"));
         }
+        args.push("--jq".to_string());
+        args.push(".html_url".to_string());
         args
     }
 
