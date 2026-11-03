@@ -18,6 +18,9 @@ architect.
 ## Branches (ADR 0051)
 
 - `t<n>-<slug>` and `feature/<slug>` are cut from `origin/dev`.
+- Each is pushed when it is cut, with a draft pull request into `audit`,
+  marked ready once Verify and the gates pass (ADR 0061; docs/BUILD_SYSTEM.md,
+  "Branches").
 - A branch whose gates all exit 0 merges into `audit` with
   `git merge --no-ff`. Conflicts are resolved on `audit`, never on `dev`.
 - `audit` is promoted into `dev` once its gates pass: `git merge --ff-only`
