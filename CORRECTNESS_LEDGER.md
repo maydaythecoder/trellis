@@ -1631,8 +1631,32 @@ Unmutated baseline in 103s build + 300s test`), as the services.rs
 and on 989b2a2's Windows host, where the self-test run recorded `try_wait
 -> Ok(None)` as a timeout (the list under "Tiers 5 and 6", above) and the
 pass that followed killed `take_stdin -> None` and `finish -> ()` by hand;
-no 989b2a2 kill is refuted. The 14 `rpc.rs` lines (3 missed, 11 timed out)
-are the third batch.
+no 989b2a2 kill is refuted. The third batch (#1031) dispositions the 14
+`rpc.rs` lines (3 missed, 11 timed out), each kill shown by hand on base
+`4f7af7de`: the mutant applied, the named test run with `cargo test -p
+trellis-cli` (`--bin trellis` for `rpc::tests`, `--test modes` for
+`modes`) and seen to fail, the source restored. `SteeringPort::close`'s
+`+=` is gone (`not applicable`); the other twelve functions read the same
+text at HEAD, where `respond` is `rpc.rs:822`, `free_after_run_end`'s `!` is
+`1354`, `classify_pending`'s guard `1366`, `in_flight`'s `1389`,
+`dispatch_command` `1401`, `abort_run`'s loop `1585`, `classify`'s guard
+`1815`, `run_one_task`'s check `2115` and `cleanup_delay` `2218`. Why the
+eleven timed out: under each, an rpc test waits up to 60 s for a record
+that never comes, and 74 such waits are past cargo-mutants' 300 s (#925's
+ledger); under the two `classify` guards a test never ended at all,
+`modes::rpc_classify_reply_carries_every_field_the_contract_lists` joining
+a `provider_stub` blocked on `accept` for a request the refused classify
+never sent. That stub now gives up after 30 s with no connection
+(`modes::accept_within`, the bound `e1d39cd5` gave rpc.rs's stubs), and with
+either guard applied the ten `rpc_classify` tests end in 32 s. Each new
+`rpc::tests` kill fails inside its own bound (10 s, or 60 s for the server's
+join), not at a wait that runs out. Whether the workspace suite ends inside
+300 s on the runner under these mutants is pending a `mutants.yml` dispatch
+at this branch (`os=linux file=crates/trellis-cli/src/rpc.rs`). One 989b2a2
+kill matches by function and mutation, `delete ! in Server::in_flight`;
+989b2a2's `611:33` is the `!` of the waiter pruning, which is `1242:33` at
+6b804cb and in this shard's `caught.txt`, and the timed-out `1244:24` is the
+guard's, so no kill is refuted.
 
 ```
 unexercisable (#248): needs exactly one of stdin and stdout to be a terminal; every test here runs both as pipes, where `&&` and `||` agree, and a terminal needs a pty (the shape of main.rs:527:43 at 989b2a2) | crates/trellis-cli/src/main.rs:1055:44: replace || with && in terminal_ui
@@ -1766,6 +1790,20 @@ windows-only (#248): `#[cfg(windows)]`, not compiled by the Linux run. On Window
 windows-only (#248): `#[cfg(windows)]`, not compiled by the Linux run. On Windows `ExitStatus::default()` is success, so the loop would read every command as `exited 0` on its first poll, before it ran, and `process_agent::tests::a_timed_out_command_says_it_timed_out`, whose command sleeps past a 1 s timeout, asks for `timed out`; the Windows suite is expected to kill it, and the kill is not shown, because the `os=windows` dispatch (run 41521832453) gave no verdict, its baseline having run past the 300 s test limit, and it is to be read from the next Windows dispatch that completes | crates/trellis-cli/src/process_agent.rs:743:9: replace Running::try_wait -> std::io::Result<Option<std::process::ExitStatus>> with Ok(Some(Default::default()))
 windows-only (#248): `#[cfg(windows)]`, not compiled by the Linux run. On Windows `end` is `finish` and a 2 s bounded reap, and the loop calls `finish` again as soon as it breaks (`process_agent.rs:361`), so the job is ended either way and only the reap of an already-killed command is lost; 989b2a2's line called it equivalent on the same ground, so no kill is refuted. The `os=windows` dispatch (run 41521832453) gave no verdict, its baseline having run past the 300 s test limit | crates/trellis-cli/src/process_agent.rs:749:9: replace Running::end with ()
 windows-only (#248): `#[cfg(windows)]`, not compiled by the Linux run. On Windows nothing ends the command's job after the loop, so a command past its timeout keeps running while the run is judged, and `process_agent::tests::a_timed_out_command_is_ended_before_it_can_write_again` (its Windows arm is `cmd /C ping -n 3 … & echo late> <file>`) asks that its late write never lands; 989b2a2's line killed this mutant by that test on the Windows host by hand, and the `impl` reads the same text since. The `os=windows` dispatch (run 41521832453) gave no verdict, its baseline having run past the 300 s test limit | crates/trellis-cli/src/process_agent.rs:759:9: replace Running::finish with ()
+killed (#248) by modes::rpc_a_prompt_right_after_run_end_is_accepted_and_runs: in crates/trellis-cli/tests; with the `!` deleted, `free_after_run_end` calls a run whose thread is still in its tail free, so a `prompt` read after `run_end` is taken without waiting; the test now asks that `q`'s response come at least 1000 ms after `p`'s `run_end` under the seam's 1500 ms tail, and it came 0.2 ms after | crates/trellis-cli/src/rpc.rs:1209:16: delete ! in Server::free_after_run_end
+killed (#248) by rpc::tests::classify_pending_frees_the_slot_once_the_model_has_answered: with `||` a classify whose model has answered still holds the slot while its thread writes the response, so a `prompt` sent on reading that response is refused; the test's second assert, on a thread still going with `answered` set, failed at once | crates/trellis-cli/src/rpc.rs:1221:48: replace && with || in Server::classify_pending
+killed (#248) by modes::rpc_a_prompt_right_after_run_end_is_accepted_and_runs: in crates/trellis-cli/tests; the seam is the only reader of `TRELLIS_TEST_RPC_CLEANUP_DELAY_MS`, and with it gone the test passed without reaching the window it is about; it now asks that `q` be answered at least 1000 ms after `p`'s `run_end`, and it was answered 0.25 ms after | crates/trellis-cli/src/rpc.rs:2046:5: replace cleanup_delay with ()
+not applicable (#248): `dcd8c29f` (#808) replaced the count of delivered steers in `close` with each steer's own record (`self.delivered(&s)`, now `rpc/steering.rs:205`), so no `+=` is left in `SteeringPort::close` | crates/trellis-cli/src/rpc.rs:492:24: replace += with -= in SteeringPort::close
+killed (#248) by rpc::tests::dispatch_command_answers_a_command_and_stops_serving_only_on_quit: no response was written to `get_last_assistant_text`, and the test failed at once on the empty output; it timed out at 6b804cb because every `Client` test waits up to 60 s for a response | crates/trellis-cli/src/rpc.rs:801:9: replace Server::respond with ()
+killed (#248) by rpc::tests::classify_pending_frees_the_slot_once_the_model_has_answered: with the guard true a classify holds the slot for good once started, and the test's second assert failed at once; at 6b804cb every later `prompt` and `classify` in a test was refused and its waits ran out | crates/trellis-cli/src/rpc.rs:1221:24: replace match guard !c.thread.is_finished() && !c.answered.load(Ordering::SeqCst) with true in Server::classify_pending
+killed (#248) by rpc::tests::in_flight_says_a_run_still_going_is_in_flight_without_waiting_for_it: with the guard false `in_flight` joins a run still going, which blocks the reader until the run ends; the test failed at its 10 s bound | crates/trellis-cli/src/rpc.rs:1244:24: replace match guard !r.thread.is_finished() with false in Server::in_flight
+killed (#248) by rpc::tests::in_flight_says_a_run_still_going_is_in_flight_without_waiting_for_it: with the `!` deleted a run still going falls to the arm that joins it, and the test failed at its 10 s bound; 989b2a2's `delete !` kill (`611:33`) is the waiter pruning's `!`, in this shard's `caught.txt` as `1242:33`, so no kill is refuted | crates/trellis-cli/src/rpc.rs:1244:24: delete ! in Server::in_flight
+killed (#248) by rpc::tests::dispatch_command_answers_a_command_and_stops_serving_only_on_quit: no command is handled, so `get_last_assistant_text` wrote no response and the test failed at once; at 6b804cb `quit` no longer stopped `serve`, and each test's waits ran out | crates/trellis-cli/src/rpc.rs:1257:9: replace Server::dispatch_command -> bool with true
+killed (#248) by rpc::tests::dispatch_command_answers_a_command_and_stops_serving_only_on_quit: `serve` stops at the first command, and the test's first assert, that a command other than `quit` keeps it serving, failed at once | crates/trellis-cli/src/rpc.rs:1257:9: replace Server::dispatch_command -> bool with false
+killed (#248) by rpc::tests::abort_run_drops_an_open_question_once_the_run_has_taken_the_abort_path: with `||` the open question is dropped only once the run has also finished, which on its abort path it cannot do while the question is open; the test failed at its 10 s bound | crates/trellis-cli/src/rpc.rs:1417:37: replace && with || in Server::abort_run
+killed (#248) by modes::rpc_classify_answers_a_question_as_data_and_starts_no_run: in crates/trellis-cli/tests; every classify was refused as having no text, and the test failed at its `success` assert at once; eight `rpc_classify` tests failed, and with `modes::accept_within` the ten end in 32 s where one never ended before | crates/trellis-cli/src/rpc.rs:1647:24: replace match guard !t.trim().is_empty() with false in Server::classify
+killed (#248) by modes::rpc_classify_answers_a_question_as_data_and_starts_no_run: in crates/trellis-cli/tests; text that is not blank was refused and blank text taken, and the test failed at its `success` assert at once (as did `rpc_classify_refuses_text_that_is_missing_empty_or_not_a_string` and seven others); the ten `rpc_classify` tests end in 32 s | crates/trellis-cli/src/rpc.rs:1647:24: delete ! in Server::classify
+killed (#248) by rpc::tests::a_question_asked_after_input_ends_is_declined_and_the_server_exits: with `&&` a question asked after end of input, with no abort, is recorded and framed for a client that is gone; the run waits on it and the server's join never returns, and the test failed at its 60 s bound | crates/trellis-cli/src/rpc.rs:1952:47: replace || with && in Chain::run_one_task
 ```
 
 </details>

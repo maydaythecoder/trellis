@@ -205,7 +205,8 @@ Each ticket gets its own `t<n>-<slug>` branch and worktree, and goes through
 `audit` → `dev` → `main` (ADR 0051). The lettered tickets are filed once this
 ADR is accepted. `∥` marks tickets that can run in parallel. (The plan is
 kept as written; the self-hosted runners it names were set aside on
-2026-10-19, #736, after every ticket but T9 had landed.)
+2026-10-19, #736, after every ticket but T9 had landed; #219 closed as not
+planned on 2026-11-02, when the last runner registration was deleted.)
 
 - **Owner actions (P0, not tickets):** apply #219 on WSL; install
   `libwebkit2gtk-4.1-dev`, `libxdo-dev` and `pkg-config` on WSL; check for
