@@ -660,8 +660,13 @@ mod tests {
         });
         let got = get(addr, "/api/tags", Duration::from_secs(10));
         server.join().unwrap();
+        // The OS words it (Windows says "forcibly closed"), so what is held
+        // is that it is the read error itself: neither the bound running
+        // out nor a connection that ended with nothing said.
         let err = got.expect_err("a reset connection is no answer");
-        assert!(err.to_lowercase().contains("reset"), "{err}");
+        assert!(!err.starts_with("no complete answer"), "{err}");
+        assert!(!err.contains("not HTTP"), "{err}");
+        assert!(err.contains("os error"), "{err}");
     }
 
     #[test]
