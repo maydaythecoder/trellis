@@ -838,6 +838,56 @@ fn overview_says_gh_is_not_logged_in_when_it_asks_for_auth() {
 }
 
 #[test]
+fn overview_says_gh_is_not_logged_in_on_its_exit_4_alone() {
+    // The risk (#248, `gh_list`): exit 4 is gh's own code for "needs
+    // authentication", whatever it prints. With the two tests joined by
+    // `&&`, a gh that exits 4 without the `gh auth login` hint (a 401 from
+    // an expired token) was reported as a generic failure, and the person
+    // was not told to log in. The test above has both, so it cannot tell.
+    let d = repo("overview-gh-exit4");
+    let user = scratch("overview-gh-exit4-user");
+    let gh = Gh::Stub {
+        windows: "@echo off\r\necho HTTP 401: Bad credentials 1>&2\r\nexit /b 4\r\n",
+        unix: "#!/bin/sh\necho 'HTTP 401: Bad credentials' >&2\nexit 4\n",
+    };
+    let args = ["--json", "overview"];
+    let v = overview_json(&overview_in("overview-gh-exit4", &d, &user, gh, &args));
+    assert_eq!(v["board"]["pr_ci"]["available"], false, "{v}");
+    assert!(
+        v["board"]["pr_ci"]["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("not logged in")),
+        "{v}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&user);
+}
+
+#[test]
+fn overview_names_the_first_line_gh_wrote_when_it_fails() {
+    // The risk (#248, `gh_list`): a failed gh reported by its exit code
+    // with "no message", or with the blank line it printed first, instead
+    // of the line that says what went wrong.
+    let d = repo("overview-gh-fails");
+    let user = scratch("overview-gh-fails-user");
+    let gh = Gh::Stub {
+        windows: "@echo off\r\necho.1>&2\r\necho HTTP 502: Bad Gateway 1>&2\r\nexit /b 1\r\n",
+        unix: "#!/bin/sh\necho >&2\necho '  HTTP 502: Bad Gateway' >&2\nexit 1\n",
+    };
+    let args = ["--json", "overview"];
+    let v = overview_json(&overview_in("overview-gh-fails", &d, &user, gh, &args));
+    assert_eq!(v["board"]["pr_ci"]["available"], false, "{v}");
+    assert!(
+        v["board"]["pr_ci"]["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("failed (exit 1): HTTP 502: Bad Gateway")),
+        "{v}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&user);
+}
+
+#[test]
 fn overview_gives_up_on_a_gh_that_runs_past_its_bound() {
     // Each `gh` is bounded to 10 s; one that sleeps past it is killed and
     // the board says it timed out, well before the stub would have ended.
