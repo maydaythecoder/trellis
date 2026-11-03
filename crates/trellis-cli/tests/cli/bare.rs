@@ -579,3 +579,57 @@ fn startup_pty_the_human_stream_is_coloured_at_a_terminal_without_no_color() {
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&user);
 }
+
+#[cfg(unix)]
+#[test]
+fn startup_pty_tui_with_no_model_offers_the_picker_before_the_handoff() {
+    // The risk (#248, `first_run::offer_model_choice`): `trellis tui` with
+    // no model configured skipping the first-run picker, handing the
+    // terminal to `trellis-tui` with no model or with one nobody chose.
+    // The picker says where it looks before it looks (#650), whatever this
+    // machine has listening, and `q` (or nothing found) starts nothing.
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let d = repo("tui-first-run");
+    let user = scratch("tui-first-run-user");
+    let (_bin, exe) = trellis_with_stub_tui("tui-first-run-bin");
+    let exe_s = exe.display().to_string();
+    let args: Vec<String> = if cfg!(target_os = "linux") {
+        vec!["-qfec".into(), format!("'{exe_s}' tui"), "/dev/null".into()]
+    } else {
+        vec!["-q".into(), "/dev/null".into(), exe_s, "tui".into()]
+    };
+    let mut child = Command::new("script")
+        .args(&args)
+        .current_dir(&d)
+        .env("NO_COLOR", "1")
+        .env("TERM", "dumb")
+        .env_remove("RUST_LOG")
+        .env("TRELLIS_CONFIG_DIR", &user)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("`script` must be on PATH for the pty tests");
+    child.stdin.take().unwrap().write_all(b"q\n").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("`trellis tui` did not exit within 60 s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let o = child.wait_with_output().unwrap();
+    let shown = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        shown.contains("looking for models at 127.0.0.1:11434"),
+        "{shown}"
+    );
+    assert!(
+        stub_args(&exe, std::time::Duration::from_secs(2)).is_none(),
+        "trellis-tui was started without a chosen model: {shown}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&user);
+}
