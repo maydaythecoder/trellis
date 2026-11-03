@@ -8,8 +8,10 @@
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
+
+mod common;
 
 /// Ollama's `/api/ps` with one model loaded, 4,880,000,000 of its
 /// 5,137,025,024 bytes in VRAM: the split that runs slowly and that
@@ -74,10 +76,8 @@ fn stub(ps: &'static str) -> String {
 }
 
 /// A git repository with one Python file.
-fn repo(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("trellis-placement-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
+fn repo(name: &str) -> common::Scratch {
+    let d = common::scratch_dir(&format!("trellis-placement-{name}"));
     let out = trellis_vcs::command()
         .args(["init", "-q"])
         .current_dir(&d)

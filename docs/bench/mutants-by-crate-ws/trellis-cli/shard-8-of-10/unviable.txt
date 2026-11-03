@@ -1,0 +1,14 @@
+crates/trellis-cli/src/templates.rs:158:5: replace list -> Result<Vec<Listed>> with Ok(vec![Default::default()])
+crates/trellis-cli/src/templates.rs:166:5: replace list_in -> Vec<Listed> with vec![Default::default()]
+crates/trellis-cli/src/templates.rs:224:5: replace listed -> Listed with Default::default()
+crates/trellis-cli/src/templates.rs:376:9: replace && with || in braced
+crates/trellis-cli/src/tooling.rs:40:5: replace fingerprint -> Fingerprint with Default::default()
+crates/trellis-cli/src/tooling.rs:56:9: replace Inputs::fingerprint -> Fingerprint with Default::default()
+crates/trellis-cli/src/tooling.rs:62:9: replace Inputs::fingerprint_cached -> Fingerprint with Default::default()
+crates/trellis-cli/src/tooling.rs:73:9: replace Inputs::of -> Self with Default::default()
+crates/trellis-cli/src/tooling.rs:100:5: replace process_agents -> Vec<trellis_loop::TrustItem> with vec![Default::default()]
+crates/trellis-cli/src/tooling.rs:180:5: replace prepare_as -> Result<Tooling> with Ok(Default::default())
+crates/trellis-cli/src/tooling.rs:375:9: replace Tooling::gates -> Vec<Box<dyn ToolGate>> with vec![Box::new(Default::default())]
+crates/trellis-cli/src/user_config.rs:47:16: replace && with || in resolve
+crates/trellis-cli/src/user_config.rs:280:5: replace either -> Option<T> with Some(Default::default())
+crates/trellis-cli/src/user_config.rs:287:5: replace lower -> Option<T> with Some(Default::default())

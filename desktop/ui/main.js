@@ -1,24 +1,48 @@
 // The TRELLIS desktop page's entry module (ADR 0048 section 5).
 //
-// It switches the rail's sections and hands what the desktop's Rust core
-// emits to render.js, overview.js, composer.js, model.js, settings.js,
+// It starts the shell's levels (keys.js) and hands what the desktop's Rust
+// core emits to render.js, overview.js, composer.js, model.js, settings.js,
 // status.js and dialogs.js, and computes
 // nothing: the run panes the core's reducer sends as `view` events, which
 // child started or why none did, and the overview object trellis printed.
 // There is no bundler, so it reaches Tauri through the global
 // window.__TAURI__ rather than an import of @tauri-apps/api.
 //
+// What index.html loads, in its order (#833):
+// - web.js, first: with `trellis --web` it stands in for window.__TAURI__
+//   over HTTP; in the window it does nothing.
+// - main.js, this module, which starts the page and the modules it imports:
+//   keys.js (the levels and the keys between them), render.js (and
+//   graph.js, which render.js imports), overview.js, composer.js,
+//   dialogs.js, model.js, settings.js, status.js, code.js (the Code
+//   level below Run, #831), summary.js (the summary level below Run,
+//   #832) and plan.js (the Run level's Plan panel, #838, which render.js
+//   draws through).
+// - codebase.js, radius.js, trails.js, vault.js, queue.js and atlas.js,
+//   which each start themselves through rpc.js's start and listen for what
+//   they draw.
+// - dom.js, fmt.js and rpc.js, the shared helpers every module imports, and
+//   ds.js, the design system's components the levels draw with (#909).
+// To add a module, follow docs/ENTRY_POINTS.md, "Adding a page module".
+//
 // Every value is trellis- or model-supplied text, so it reaches the DOM only
 // through textContent (ADR 0007, S10): text that carries markup is shown as
 // characters, never parsed.
 
+import { wireKeys } from "./keys.js";
 import { drawView, wireLog } from "./render.js";
+import { wireBudget } from "./render.js";
+import { runEnded, send, start } from "./rpc.js";
 import { drawOpenRefusal, drawOverview, drawOverviewChild } from "./overview.js";
 import { askStarters, composerStopped, drawComposer, wireComposer } from "./composer.js";
 import { drawDialogs, wireDialogs } from "./dialogs.js";
 import { askModels, drawModelPane, modelPaneStopped, wireModelPane } from "./model.js";
-import { drawSettings, wireRepositorySwitch } from "./settings.js";
+import { drawSettings, wireRegister, wireRepositorySwitch } from "./settings.js";
+import { redrawNow, wireNow } from "./now.js";
 import { drawStatus, exitText, wireStatus } from "./status.js";
+import { drawCode, wireCode } from "./code.js";
+import { drawSummary, wireSummary } from "./summary.js";
+import { wirePlan } from "./plan.js";
 
 function show(id, text) {
   document.getElementById(id).textContent = text;
@@ -26,32 +50,6 @@ function show(id, text) {
 
 function json(value) {
   return JSON.stringify(value);
-}
-
-// The rail: each button names its section with aria-controls, and showing
-// one hides the rest through the hidden attribute, never a style. A press
-// moves focus to the shown section's heading, the one its aria-labelledby
-// names, so Tab goes on from inside the section rather than from the rail
-// (#646).
-function wireRail() {
-  const buttons = [...document.querySelectorAll("nav.rail button[aria-controls]")];
-  const select = (chosen) => {
-    for (const b of buttons) {
-      const section = document.getElementById(b.getAttribute("aria-controls"));
-      const on = b === chosen;
-      if (section) section.hidden = !on;
-      if (on) b.setAttribute("aria-current", "page");
-      else b.removeAttribute("aria-current");
-    }
-  };
-  for (const b of buttons) {
-    b.addEventListener("click", () => {
-      select(b);
-      const section = document.getElementById(b.getAttribute("aria-controls"));
-      const heading = section && document.getElementById(section.getAttribute("aria-labelledby"));
-      if (heading) heading.focus();
-    });
-  }
 }
 
 // How many `child-started` events this page has heard, so a refusal that
@@ -69,15 +67,9 @@ const NO_CHILD = "rpc_send: no trellis rpc child is running: ";
 // that loaded late heard no `no-child` or `rpc-exited` for that, so the
 // refusal is passed on as the not-running state (#638). Says whether the
 // line was forwarded, so a child is known to be running.
-async function askState(tauri) {
+function askState(tauri) {
   const heard = childrenStarted;
-  try {
-    await tauri.core.invoke("rpc_send", {
-      line: { id: "desktop-state", type: "get_state" },
-    });
-    return true;
-  } catch (err) {
-    const said = String(err);
+  return send(tauri, { id: "desktop-state", type: "get_state" }, (said) => {
     show("status", said);
     if (said.startsWith(NO_CHILD) && childrenStarted === heard) {
       const why = said.slice(NO_CHILD.length);
@@ -85,8 +77,7 @@ async function askState(tauri) {
       modelPaneStopped(document, why);
       drawOverviewChild(document, false);
     }
-    return false;
-  }
+  });
 }
 
 // The overview's actions: "Open" on a recent repository. Success needs no
@@ -121,13 +112,11 @@ let lastOutcome = null;
 // core keeps from trellis's own answer: the page adds up no turn itself.
 // A refusal (no child yet) is the status line's to say, not this pane's.
 function askSessionTokens(tauri) {
-  tauri.core
-    .invoke("rpc_send", { line: { id: "desktop-session-stats", type: "get_session_stats" } })
-    .catch((err) => show("status", String(err)));
+  send(tauri, { id: "desktop-session-stats", type: "get_session_stats" }, (why) => show("status", why));
 }
 
 async function main() {
-  wireRail();
+  wireKeys(document);
   wireLog(document);
   const tauri = window.__TAURI__;
 
@@ -138,13 +127,35 @@ async function main() {
   await wireModelPane(document, tauri);
   await wireStatus(document, tauri);
   wireRepositorySwitch(document, tauri);
+  wireRegister(document, window, () => redrawNow(document));
+  wireCode(document, tauri);
+  wireSummary(document);
+  wirePlan(document, tauri);
+  // The run controls (#837): Pause and Resume in the Now strip, and Raise
+  // beside each budget row set_budget takes.
+  wireNow(tauri);
+  wireBudget(document, tauri);
+  // A feed that finds rows missing: this page fell behind its event stream
+  // and lost views (#827), so it asks once for the whole run again.
+  let resend = false;
+  const missing = () => {
+    resend = true;
+  };
   await tauri.event.listen("view", (event) => {
-    drawView(document, event.payload);
+    drawView(document, event.payload, missing);
     drawComposer(document, event.payload);
     drawModelPane(document, event.payload);
     drawSettings(document, event.payload);
     drawStatus(document, event.payload);
-    drawDialogs(document, event.payload);
+    // Before the dialog, which asks the Code level whether a question it
+    // opens is about a file it shows (#831).
+    drawCode(document, event.payload);
+    drawSummary(document, event.payload);
+    drawDialogs(document, event.payload, missing);
+    if (resend) {
+      resend = false;
+      askState(tauri);
+    }
     // A run's end is a new newest trail, so the last run pane is stale. A
     // get_state reply resends the same outcome, which changes nothing.
     const o = event.payload && event.payload.outcome;
@@ -157,7 +168,7 @@ async function main() {
     childrenStarted += 1;
     drawOverviewChild(document, true);
     const c = event.payload;
-    show("status", `${c.version ?? "trellis (version unknown)"} rpc on ${c.root}`);
+    show("status", "");
     askState(tauri);
     readOverview(tauri);
     askSessionTokens(tauri);
@@ -166,8 +177,7 @@ async function main() {
   // type is read: the frame is the child's, and the figures come from
   // trellis's own answer.
   await tauri.event.listen("rpc-frame", (event) => {
-    const f = event.payload;
-    if (f !== null && typeof f === "object" && f.type === "run_end") askSessionTokens(tauri);
+    if (runEnded(event.payload)) askSessionTokens(tauri);
   });
   // A Codebase answer that saved .trellis/index.bin (#654) changes what the
   // overview's codebase pane reads, which is only that cache, so the
@@ -208,10 +218,4 @@ async function main() {
   }
 }
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", () => {
-    main().catch((err) => console.error("trellis desktop:", err));
-  });
-} else {
-  main().catch((err) => console.error("trellis desktop:", err));
-}
+start("trellis desktop", main);

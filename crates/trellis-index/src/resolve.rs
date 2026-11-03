@@ -17,13 +17,14 @@
 //! as though they were.
 
 use crate::coverage::Coverage;
+use crate::discover::read_sources;
 use crate::graph::{
     CallSiteEntry, Edge, FileEntry, Index, Reason, SymbolEntry, SymbolKind, Target,
 };
 use crate::parse::{CalleeShape, FileFacts};
 use smallvec::SmallVec;
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use trellis_core::{CallSiteId, FileId, SymbolId};
 
 /// How far a re-export chain is followed before giving up.
@@ -267,25 +268,6 @@ const BUILTINS: &[&str] = &[
     "Ellipsis",
 ];
 
-/// Directories never walked. `.trellis/work` holds per-partition worktrees,
-/// which are copies of the repository and would double every count.
-const SKIP_DIRS: &[&str] = &[
-    ".git",
-    ".trellis",
-    ".venv",
-    "venv",
-    "node_modules",
-    "__pycache__",
-    ".tox",
-    ".nox",
-    ".mypy_cache",
-    ".pytest_cache",
-    "site-packages",
-    ".eggs",
-    "build",
-    "dist",
-];
-
 /// What an import alias binds to, before the imported *name* is looked up.
 ///
 /// Name lookup is deferred because it may need to follow a re-export chain
@@ -378,16 +360,6 @@ fn key(scope: &[String], name: &str) -> String {
     k
 }
 
-/// Repository-relative path with forward slashes, whatever the platform.
-pub(crate) fn rel_path(root: &Path, p: &Path) -> String {
-    p.strip_prefix(root)
-        .unwrap_or(p)
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
 /// Dotted module path for a repository-relative `.py` path.
 ///
 /// A leading `src/` is stripped: the src-layout convention puts `poetry.x` at
@@ -407,56 +379,10 @@ pub fn module_path_of(rel: &str) -> String {
     stripped.replace('/', ".")
 }
 
-/// Every `.py` file under `root`, excluding vendored and generated trees.
-pub fn discover(root: &Path) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = walkdir::WalkDir::new(root)
-        .into_iter()
-        .filter_entry(|e| {
-            !e.file_type().is_dir()
-                || !e
-                    .file_name()
-                    .to_str()
-                    .is_some_and(|n| SKIP_DIRS.contains(&n))
-        })
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_file())
-        .map(walkdir::DirEntry::into_path)
-        .filter(|p| p.extension().is_some_and(|x| x == "py"))
-        .collect();
-    // Deterministic ids: the same repository must produce the same index,
-    // or `insta` snapshots and committed trails are meaningless.
-    out.sort();
-    out
-}
-
 /// Builds the whole index for a repository: discover, Pass 1, Pass 2, bind.
 #[tracing::instrument(skip_all, fields(root = %root.display()))]
 pub fn build(root: &Path) -> Index {
     build_from_sources(&read_sources(root))
-}
-
-/// Every first-party Python file, as repository-relative paths.
-///
-/// The same walk the graph is built from, deliberately: a second walker in
-/// another crate would drift from this one, and the drift would be silent —
-/// a prompt naming a file the index does not know, or omitting one it does.
-///
-/// Separators are `/` on every platform, because these paths are handed to a
-/// model that must quote them inside JSON, and a Windows `\` is either an
-/// invalid escape or a lie about the path.
-pub fn discover_relative(root: &Path) -> Vec<String> {
-    discover(root).iter().map(|p| rel_path(root, p)).collect()
-}
-
-/// Reads every indexable file under `root` as a `(relative path, source)` pair.
-pub fn read_sources(root: &Path) -> Vec<(String, String)> {
-    discover(root)
-        .iter()
-        .filter_map(|p| {
-            let src = std::fs::read_to_string(p).ok()?;
-            Some((rel_path(root, p), src))
-        })
-        .collect()
 }
 
 /// Loads `.trellis/index.bin` when it matches the current file set, otherwise

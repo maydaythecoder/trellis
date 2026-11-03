@@ -150,6 +150,30 @@ answers, the map's layout included. The page uses no library and loads
 nothing from a network, writes text through `textContent` only, reads its
 colours from `style.css` at draw time, and takes no animated flight under
 `prefers-reduced-motion` (the `atlas_` tests in `src/lockdown.rs`).
+*Amended 2026-10-26 (#795), owner-directed (the owner's decision of
+2026-10-25, about 22:50 New York time, recorded on story #790: replace the
+desktop's tabs with the Trail and burrowing levels):* the section rail of
+2026-10-11 is replaced by the shell of the owner's brand book
+(`docs/design/system/components/Shell.md` and `Trail.md`;
+`docs/design/DESIGN.md` §1). The page is one overview a person burrows into,
+with no tabs anywhere. Across the top, the Trail: the path from the overview
+to where the person is, each earlier segment a way back, the current one
+marked, then the depth as `L n/4` and an `ESC out` keycap. On the left, the
+sibling rail: the panels of the level the person came from, collapsed, each
+still a way in. In the middle, the stage, which holds the level entered.
+Along the bottom, the status bar: the keys that work at that level as
+keycaps, then the model and the time. `⏎` on a focused panel or row, or a
+panel head's `⤢`, goes in; `ESC` goes out one level and keeps the scroll and
+selection of the level it leaves. The seven sections (overview, run, trails,
+codebase, atlas, board and vault) become panels of the overview, and each
+keeps its fetch-on-show: what a section asks the core for when it is shown,
+its panel asks when it is entered. One module owns the level keys, and
+typing in a field is never taken as navigation. What a level registers (its
+DOM listeners and its Tauri subscriptions) ends when the person leaves it.
+The fonts, the focus ring and the order of stop-and-send that the shell
+needs are rows in `docs/design/DESIGN.md` §2.1. Accepted, not built: #826
+builds the shell and rewrites `page_rail_buttons_control_sections_that_exist`
+for levels.
 
 ### 6. The client contract
 
@@ -166,6 +190,252 @@ only for an endpoint identified as colibri, and stays out of the trail.
 Held by `rpc_runtime_identified_carries_every_field_the_contract_lists_once_per_run`
 and `rpc_runtime_identified_leaves_unreported_counts_absent_never_0` in
 `tests/modes.rs`. The desktop pane that draws it is #628.
+*Added 2026-10-26 (#796):* fields trellis already emitted are listed; listing
+them changes no output. They are `approval_request`'s `request_id`; the
+`level` beside every event's fields; the turn's `duration_ms` and
+`summarised`; the `compacted` and `compacted on request` events; the answers
+of `steer`, `abort`, `approve`, `compact`, `get_commands`,
+`get_session_stats`, `get_available_models`, `get_last_assistant_text`,
+`vault_search`, `vault_graph` and `vault_check`; `run_end`'s outcome words
+and the turn's check kinds as `outcome_values` and `check_kind_values`;
+`prompt`, `follow_up` and `quit` as the commands that answer with no data;
+and `log --json`'s `trail.base_commit`, `ended_at`, `factual.radius`,
+`context`, `actions` and `steering`, for the summary level. Some were read
+before: the TUI reads the `level`, a steer's `after_step` and `abort`'s
+ids; the desktop reads `abort`'s text, `get_commands`' prompts, the
+`get_session_stats`, `get_available_models` and vault answers, and
+`run_end`'s outcome words. The rest (`request_id`, `duration_ms`,
+`summarised`, both compaction events, the `approve`, `compact` and
+`get_last_assistant_text` answers and the trail paths) no client reads yet;
+they are listed for the levels story #790 plans. `get_state`'s answer moves
+from `rpc.commands` to `rpc.responses` beside the others. What not every
+client reads yet is under `rpc.not_every_client`, and the trail paths under
+`log_json.not_every_client`, with `read_by` naming the clients that read
+each field, because both clients' contract tests require their parsers to
+keep every field of `rpc.events` and `rpc.framing`, and the desktop's
+`every_trail_field_in_the_log_contract_is_read` (`src/trails.rs`) every
+path of `log_json`'s `always` and `optional`. Held by
+`rpc_stream_carries_every_field_the_desktop_reads`,
+`log_json_carries_every_trail_field_the_desktop_reads` and
+`rpc_steer_abort_compact_answers_carry_what_the_contract_lists` in
+`tests/modes.rs`, with the `rpc_vault_` tests there for the vault answers.
+*Added 2026-10-26 (#799), owner-directed (the owner's decision of
+2026-10-25, about 22:50 New York time, recorded on story #790: build
+additive rpc fields, each with its amendment here):* the run's budget is
+reported, so no client keeps a clock or a ceiling of its own. `model call`,
+`turn` and `run_end` carry `elapsed_ms`, the run budget's wall clock: the
+loop's monotonic time with every wait on a person in approve mode taken out,
+the figure the wall-clock ceiling is checked against. `run budget` carries,
+beside `max_iterations`, `max_wall_clock_ms`, `max_completion_tokens` (the
+budget counts completion tokens only, `Model::tokens_used`) and
+`max_context_bytes` (the byte budget each request is held to; absent for a
+scripted run, which sends no prompt). Each `turn` carries
+`completion_tokens_used`, the count `max_completion_tokens` is checked
+against (absent for a scripted run, which has no count); prompt and
+completion tokens are never summed into it. `run_end` carries `elapsed_ms`
+only when the run's loop returned: a run refused before its loop, an
+interrupted run (a wait still open then was never measured) and a
+multi-agent run (each partition keeps its own clock against its share, and
+sends its own `run budget`) carry none, never a 0. Nothing emitted before
+changes. No client reads these yet; each is under `rpc.not_every_client`
+with `read_by` empty until the clients' own tickets switch to it. Held by
+`rpc_run_budget_carries_every_ceiling` and
+`rpc_elapsed_excludes_time_waiting_on_an_approval` in `tests/modes.rs`,
+the contract tests there that read `not_every_client`, and
+`a_multi_agent_run_end_carries_no_elapsed_and_each_partition_sends_its_share`
+in `tests/partitions.rs`.
+*Added 2026-10-26 (#800):* every `turn`, the governance audit's included,
+carries `tool`, `target` and `wrote`: the trail's record of the turn,
+computed by `trellis_loop::turn_action`, the function the trail's action
+(`action_from`) also uses, from the turn's whole observation. Both clients
+had worked these out by splitting `call` at a space and searching the
+observation's tail for `applied: true`, logic copied from the retired
+ratatui bridge, so the live view and the trail could disagree about what a
+turn touched. `wrote` is true only for an edit that applied or a file
+`write_file` created; what `bash` or a custom tool changed is the trail's
+`changed`, not `wrote`. The governance audit's turn now carries
+`duration_ms`, the audit's own time as the trail records it, so
+`duration_ms` is on every turn. `call` and `observation` are unchanged: the
+clients move to the new fields in their own tickets, and until then the
+fields are under `rpc.not_every_client` with empty `read_by`. Held by
+`rpc_turn_tool_target_wrote_match_the_trail_actions` in `tests/modes.rs`,
+which compares every turn event of a scripted, governed run with the
+trail's actions, and by
+`rpc_every_turn_through_the_governance_audit_keeps_the_contract`.
+*Added 2026-10-26 (#802):* the `turn` of an edit that applied carries
+`lines_added`, `lines_removed`, `start_line` and `diff`, in every control
+mode. Until now a client learned what an edit changed only from
+`approval_request.detail`, which exists in approve mode alone and has no
+`@@` header or line numbers. The figures come from the text `apply_edit`
+read and wrote, not a second read of the file, through the hunk
+`preview_edit` also uses, so the counts on an approval question and on the
+turn agree; `EditOutcome` carries them in a field that is not serialized,
+so a `post_tool` hook's input is unchanged. `start_line` is the 1-based
+line, in the file before the edit, of the first line removed or replaced
+(found with `line_of`, which moved into trellis-loop for this). `diff` is a
+unified diff of that one hunk with a line of context either side, cut at a
+line past 8192 bytes (the cap a command's output is kept to) with a last
+line saying how many diff lines were cut; the counts stay the whole edit's.
+It is repository text and model output, and a client shows it as text and
+never interprets it (CLAUDE.md rule 10). The four fields are absent on
+every other turn, bash's included, since nothing diffs what a command
+changed. `approval_request.detail` is unchanged, and the trail records no
+line counts here; that is its own ticket. (*Amended 2026-10-27 (#811):*
+it now does. An applied edit's trail action carries `lines_added` and
+`lines_removed`, taken from the same `EditDiff` as this event, and only
+those two; see ADR 0007's amendment of that date.) The fields are under
+`rpc.not_every_client` with empty `read_by`. Held by
+`edit_turn_carries_line_counts_and_a_unified_diff` in trellis-loop, and in
+`tests/modes.rs` by `rpc_stream_carries_every_field_the_desktop_reads` (auto
+mode) and `rpc_elapsed_excludes_time_waiting_on_an_approval` (approve mode).
+*Added 2026-10-26 (#809):* `read_file {path}` answers with one file's text
+as `{path, text, bytes, cut}`, for the whole-file view no command fed (ADR
+0058 §4). It refuses, by the rule each breaks, what `list_paths` refuses as
+a prefix, any path `list_paths` would not offer (so an ignored `.env` and
+anything in `.git` are never opened), a link that resolves outside the
+root or into `.git` (`resolve_repo_input`), anything that is not a file,
+and bytes that are not UTF-8. At most 256 KiB is read; a file past that is
+cut at the last whole character before it, with `cut` true and `bytes` the
+file's size. The answer is listed under `rpc.responses.read_file`, which
+neither client's contract test reads, and the desktop's `rpc_send` does not
+forward it yet. Held by `rpc_read_file_refuses_git_and_outside_paths` and
+`rpc_read_file_cuts_a_file_past_the_cap_and_says_so` in `tests/cli.rs`.
+*Added 2026-10-26 (#810):* a `plan` event, for the Plan card (ADR 0058 §5).
+It is sent after the turn of a `plan` call the gates let through, in a run
+whose repository enables the opt-in tool (`[tools] enable = ["plan"]`), with
+`turn`, `steps` (the plan as kept: a JSON array of `{text, state}` in one
+string, since an event's fields are flat), `steps_cut` and `texts_cut`. At
+most eight steps of at most 200 characters are kept; the counts say what was
+cut. The steps are the model's words: a client shows them as text and makes
+no count of `done` ones. A person's edit goes back as a `steer`. The trail
+records the call as an action like any other, with no new field. The event
+is under `rpc.not_every_client` with empty `read_by`, so neither client's
+contract test reads it yet. Held by `plan_result_is_output_never_a_pass` and
+`plan_event_carries_the_steps_and_cuts_past_eight` in trellis-loop, and by
+`rpc_plan_event_keeps_the_contract_and_the_trail_records_the_call_as_an_action`
+in `tests/modes.rs`.
+*Added 2026-10-26 (#806):* `pause` and `resume`, for the Now strip's Pause
+(ADR 0058 §1). Neither takes fields. `pause` is answered `{turn}` once the
+loop holds at the top of its next iteration, after a `paused` event with
+the same `turn`; `resume` is answered at once with no data, and the loop
+sends `resumed` with `turn` and `paused_ms` as it goes on. Held time is not
+charged to the wall clock, so `elapsed_ms` leaves it out. Refusals: `no run
+in flight`, `already paused`, `not paused`, and, after `run_end`, that the
+run ended before it reached the hold. A `resume` before the hold is
+reached withdraws the pause; when input ends a held run goes on, since
+nothing could resume it. `abort`, `approve`, `steer` and `follow_up` work
+while held. The answers are under `rpc.responses`, the events under
+`rpc.not_every_client` with empty `read_by`, so neither client's contract
+test reads them yet, and the desktop's `rpc_send` does not forward them.
+Held by `rpc_pause_holds_before_the_next_model_request`,
+`rpc_pause_is_not_charged_to_the_wall_clock`,
+`rpc_resume_continues_the_same_run` and
+`rpc_abort_while_paused_rolls_back_and_hands_back_the_held_steer` in
+`tests/modes.rs`.
+*Added 2026-10-26 (#807):* `set_budget`, for the Budget card's mid-run
+limits (ADR 0058 §2). It takes any of `max_iterations`,
+`max_wall_clock_ms` and `max_completion_tokens`, the names and units `run budget`
+sends, at least one, and is answered at once with all three after the
+change. It raises and never lowers: a value below the ceiling in force is
+refused naming it, a value equal to it changes nothing, and a request with
+any refused value changes nothing. Also refused: `no run in flight`, a
+value that is not a whole number above 0, `max_context_bytes` (the driver's,
+fixed for the run), any other field, and a raise before the loop's first
+budget check or once the loop has returned; one accepted during the run's
+last turn reaches no check and changes nothing. The raise takes effect at
+the loop's next budget check, where `run budget` is sent again with every ceiling, before
+that iteration's `model call`; `run budget`'s entries say so and gain no
+field. The answer is under `rpc.responses`, so neither client's contract
+test reads it yet, and the desktop's `rpc_send` does not forward it. Held
+by `rpc_set_budget_refuses_a_lower_limit` and
+`rpc_set_budget_sends_run_budget_again` in `tests/modes.rs`, and by
+`budget_shares_divide_a_raised_budget` in trellis-loop (rule 9).
+*Added 2026-10-26 (#808):* `withdraw`, for the Queue card's cancel (ADR
+0058 §3). The command's own `id` names the steer or follow-up to take back,
+by the id it was sent with, as `approve`'s names its question; it is
+answered at once with `{id, type}`. A withdrawn steer is in no model request
+and its `steer` response is answered `success: false`, so a client reads
+two responses with that id, told apart by `command`; a withdrawn follow-up's
+run never starts. Either leaves `get_state`'s `pending` and is not in
+`abort`'s `undelivered`. Refused: `already delivered` once a request
+carries the steer or the follow-up's run has started, `unknown id`, `no run
+in flight`, and a missing or non-string id. The loop now marks a steer
+delivered before its `steer delivered` event, so `pending` no longer lists
+a steer after that event. The answer is under `rpc.responses` and no event
+is added, so neither client's contract test reads it yet, and the
+desktop's `rpc_send` does not forward it. Held by
+`rpc_withdraw_refuses_a_delivered_steer` and
+`rpc_withdraw_removes_an_undelivered_follow_up` in `tests/modes.rs`.
+*Added 2026-10-26 (#837):* the desktop reads `paused`'s `turn` and
+`resumed`'s `turn` and `paused_ms`, so their `read_by` names it, and its
+`rpc_send` now forwards `pause`, `resume` and `set_budget` (the #806 and
+#807 notes above said it did not). The strip's word `paused` comes from the
+`paused` event alone, and a budget row's ceiling from `run budget` alone,
+never from `set_budget`'s answer. Held by
+`pause_and_resume_follow_the_engines_events`,
+`a_raised_ceiling_is_drawn_from_run_budget_not_from_the_input` and
+`every_field_in_the_rpc_contract_is_read` in `src/state.rs`, and by
+`run_controls_need_a_run_and_a_raise_is_checked_before_it_leaves_the_core`
+in `src/commands.rs`.
+*Added 2026-10-26 (#838):* the desktop's `rpc_send` now forwards `withdraw`
+and `read_file`, and it reads the `plan` event's `turn`, `steps`,
+`steps_cut` and `texts_cut`, so their `read_by` names it (the #808, #809
+and #810 notes above said it did not). Take back sends `withdraw` only for
+a steer or follow-up the queue holds still queued during a run, and the
+text returns to the composer only when trellis answers that it withdrew
+the message, through the core's `taken-back` event, never on the click.
+The whole-file view sends `read_file` when asked and draws trellis's
+answer, cut again at 256 KiB; which paths may be read stays rpc's rule. The
+Plan panel draws the latest `plan` event, says a `steps` string it cannot
+read is unreadable rather than drawing part of it, and sends a person's
+edit as an ordinary `steer`. Held by `take_back_withdraws_and_returns_the_text`,
+`whole_file_view_reads_through_read_file` and
+`a_plan_edit_is_sent_as_a_steer` in `src/commands.rs`, and by
+`every_field_in_the_rpc_contract_is_read` in `src/state.rs`.
+*Added 2026-10-27 (#953):* a `turn` carries `said`, the model's own words
+for that step: the text a hosted reply carried beside the tool call the
+loop accepted (OpenAI's `content`, or Anthropic's `text` blocks joined;
+thinking blocks are not words said), trimmed. Until now the loop dropped
+them, so neither client could show what the model said between calls. Only
+the accepted reply's words are sent; a reply retried as a format failure
+sends none. They are cut at the last whole character within 8192 bytes
+(the cap a command's output is kept to) with a last line saying how many
+bytes were cut. `said` is absent, never an empty string, when the reply
+carried no words or only whitespace, on every turn of the local runtime
+driver (a constrained tier's reply is the call itself, and the prose a tier
+4 reply wraps its call in is discarded as packaging, as before), on a
+scripted run, and on the governance audit's turn, which reads no reply.
+The words are model output: a client shows them as text, as the model's
+words and not a verdict, never styled as a check, and never interprets
+them (CLAUDE.md rules 1 and 10). The trail records none of them, and its
+format is unchanged. The field is under `rpc.not_every_client` with empty
+`read_by`; drawing it is the clients' own tickets. Held by
+`said_is_cut_at_a_character_and_says_so` and
+`a_hosted_step_sends_the_accepted_reply_s_words_and_none_when_blank` in
+trellis-loop, and `rpc_turn_carries_the_models_words` in `tests/modes.rs`.
+*Added 2026-10-27 (#868):* `log --json`'s trail carries
+`trail.factual.controls`, the person's run controls that took effect (ADR
+0058 §6, ADR 0007's amendment of this date): a pause with its turn and
+`paused_ms`, the `resumed` event's figure; one raise per ceiling a budget
+check first enforced, with its `run budget` name and its old and new
+values in that event's units; and a withdrawn steer or follow-up with its
+`kind` and its length in characters, `len`, never its text (the owner's
+decision of 2026-10-27: a later run's model can read the trail). Absent
+when none took effect, on an interrupted run, and on every run but rpc's,
+the only one a person can pause, raise or withdraw from. A follow-up
+withdrawn after the loop took it off the channel, at or before the loop's
+final drain, is now in `controls` and no longer in
+`trail.factual.steering`; one withdrawn after the final drain stays in
+`steering`, as ADR 0007's amendment describes. Every field is data a
+client shows and never interprets (CLAUDE.md rule 10); nothing of the
+list reaches a resumed run's prompt. Listed under
+`log_json.not_every_client.optional` with empty `read_by`; drawing it is
+the summary level's (#790). Held by
+`rpc_run_trail_records_its_pause_raise_and_withdrawal_with_their_turns` in
+`tests/modes.rs`, `trail_records_each_run_control_with_its_turn` and
+`a_trail_without_controls_keeps_its_digest` in trellis-trail, and
+`a_follow_up_withdrawn_after_the_drain_is_in_controls_not_steering` in
+trellis-loop.
 
 ### 7. Auditing Tauri's tree
 

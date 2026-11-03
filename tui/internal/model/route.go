@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/maydaythecoder/trellis/tui/internal/frames"
+	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
 // Routing. Whether a typed line is a question or a task is trellis's rule
@@ -15,9 +16,17 @@ import (
 
 const forClassify = "classify"
 
+// echoWords is the echo of a line classify has not answered: the
+// person's, and not yet a task, since it may be a question.
+func echoWords(text string) string { return "you  " + view.Plain(text) }
+
+// taskWords is the person's line once trellis has taken it as a task.
+func taskWords(text string) string { return "you · task  " + view.Plain(text) }
+
 // route asks trellis what a line is before anything runs.
 func (m *Model) route(text string) {
-	m.pushLine("> " + Plain(text))
+	m.pushYou(echoWords(text))
+	m.echoAt = len(m.Transcript)
 	m.classifying = true
 	m.classifyText = text
 	m.ask("classify", forClassify, map[string]any{"text": text})
@@ -27,8 +36,10 @@ func (m *Model) route(text string) {
 // text and nothing runs; a task becomes prompt with the same text.
 func (m *Model) classified(r *frames.ResponseFields, ok bool) {
 	text := m.classifyText
+	echo := m.echoAt
 	m.classifying = false
 	m.classifyText = ""
+	m.echoAt = 0
 	if m.Quitting {
 		return
 	}
@@ -45,13 +56,13 @@ func (m *Model) classified(r *frames.ResponseFields, ok bool) {
 			if strings.TrimSpace(l) == "" {
 				continue
 			}
-			m.pushLine("! " + Plain(l))
+			m.push(view.RoleRefusal, "! "+view.Plain(l))
 			said = true
 		}
 		if !said {
-			m.pushLine("! trellis could not tell whether that was a question or a task, and gave no reason")
+			m.push(view.RoleRefusal, "! trellis could not tell whether that was a question or a task, and gave no reason")
 		}
-		m.pushLine("· nothing was run")
+		m.push(view.RoleNote, "· nothing was run")
 		return
 	}
 	d, _ := r.Data.(map[string]any)
@@ -59,13 +70,18 @@ func (m *Model) classified(r *frames.ResponseFields, ok bool) {
 	case "question":
 		answer, _ := d["answer"].(string)
 		if strings.TrimSpace(answer) == "" {
-			m.pushLine("· trellis took that for a question and gave no answer; nothing was run")
+			m.push(view.RoleNote, "· trellis took that for a question and gave no answer; nothing was run")
 			return
 		}
-		m.pushText(answer)
+		m.pushText(view.RoleText, answer)
 	case "task":
+		// Labelled a task only on trellis's word; an echo the cap dropped
+		// meanwhile has nothing left to relabel.
+		if echo > 0 {
+			m.Transcript[echo-1].Text = capLine(taskWords(text))
+		}
 		m.startRun(text)
 	default:
-		m.pushLine("! trellis answered classify with no intent this view knows; nothing was run")
+		m.push(view.RoleRefusal, "! trellis answered classify with no intent this view knows; nothing was run")
 	}
 }

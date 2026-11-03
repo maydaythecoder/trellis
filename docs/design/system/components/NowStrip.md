@@ -1,0 +1,5 @@
+# NowStrip
+
+The one row that answers "what is happening right now": the run state as an uppercase word with a tone and a dot (`running` amber and pulsing · `waiting on you` amber blinking · `paused` blue · `failed` orange · `done` green · `idle` muted), a light 20px elapsed clock, the turn count against its limit, where the agent is (`◆ lead → run_pytest tests/parser`), the model with an `● escalated` tag when it is not the local default, and on the right the controls that apply to this state (Pause/Resume, Stop, Summary) with their keycaps. When waiting, the question and the keys that answer it sit here too.
+
+Consumer provides: `state`, `elapsed` (seconds, ticked by the consumer from `run_start`), `turn`/`maxTurns`, `agent`/`tool`/`target` from the latest `tool.call`, `model`/`escalated`, `waitFor`/`keys` when waiting, and the control Buttons as children. It sits directly under the Trail on every level of the Run view and never scrolls away. The dot is the only thing in the system allowed to animate continuously.

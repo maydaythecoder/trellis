@@ -29,7 +29,7 @@ fn abstain<T>(rule: &'static str, reason: impl Into<String>) -> Outcome<T> {
 /// and the owner's mapping of this repository's other crates onto the same
 /// twelve areas (#194, 2026-10-04: no new area values). Every other path
 /// maps to nothing, and a ticket naming one abstains.
-const AREA_PATHS: [(&str, Area); 25] = [
+const AREA_PATHS: [(&str, Area); 24] = [
     ("crates/trellis-context", Area::Context),
     ("crates/trellis-model", Area::Model),
     ("crates/trellis-checks", Area::Checks),
@@ -57,7 +57,6 @@ const AREA_PATHS: [(&str, Area); 25] = [
     // #282: the paths #194 left unmapped. A prefix matches the path itself,
     // so `CLAUDE.md` is the root file only (`desktop/CLAUDE.md` stays tui).
     ("CLAUDE.md", Area::Docs),
-    ("crates/tui-demo", Area::Tui),
     ("crates/trellis-tickets", Area::Build),
 ];
 
@@ -311,7 +310,7 @@ fn touches_persistence(f: &FileRef) -> bool {
 /// High triggers are checked on the files themselves, so a checks file
 /// makes the ticket high even when `area` abstained on another file.
 /// "Touches rollback, worktree teardown, or session persistence" is read
-/// from the owner's path table, [`PERSISTENCE_PATHS`]. `unsafe` cannot enter this workspace
+/// from the owner's path table, `PERSISTENCE_PATHS`. `unsafe` cannot enter this workspace
 /// without a `Cargo.toml` edit (`unsafe_code = "forbid"`), so a manifest in
 /// the files abstains instead. An on-disk format change is expected to carry
 /// `!breaking`.

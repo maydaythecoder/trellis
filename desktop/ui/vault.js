@@ -17,23 +17,17 @@
 // the vault: rpc has no vault write, and every write stays a `trellis vault`
 // command the person runs (#70, ADR 0049).
 //
+// The hit count is the Search panel's meta and a note's depth a Stat (ds.js,
+// #910); the rest of a note is the vault's own text.
+//
 // index.html loads this as a module of its own.
 
+import { el, muted } from "./dom.js";
+import { panelMeta, stats } from "./ds.js";
+import { isCount, plural, str } from "./fmt.js";
+import { send, start } from "./rpc.js";
+
 let asked = 0;
-
-function el(doc, tag, text) {
-  const e = doc.createElement(tag);
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
-
-function str(v) {
-  return typeof v === "string" ? v : null;
-}
-
-function isCount(v) {
-  return typeof v === "number" && Number.isFinite(v);
-}
 
 function status(doc, text) {
   doc.getElementById("vt-status").textContent = text;
@@ -90,21 +84,17 @@ function reference(doc, tauri, r) {
   return li;
 }
 
-// Says whether the line was sent: a refusal is drawn as the status.
-async function send(doc, tauri, line, waiting) {
+// Sends one line through the core (rpc.js's send), saying `waiting` in
+// the status line until the answer comes; a refusal is drawn as the status.
+// Says whether the line was sent.
+function forward(doc, tauri, line, waiting) {
   status(doc, waiting);
-  try {
-    await tauri.core.invoke("rpc_send", { line });
-    return true;
-  } catch (err) {
-    status(doc, `Open a repository to read its vault. ${err}`);
-    return false;
-  }
+  return send(tauri, line, (why) => status(doc, `Open a repository to read its vault. ${why}`));
 }
 
 function askNote(doc, tauri, path) {
   asked += 1;
-  send(doc, tauri, { id: `desktop-vault-graph-${asked}`, type: "vault_graph", note: path }, `Reading ${path}.`);
+  forward(doc, tauri, { id: `desktop-vault-graph-${asked}`, type: "vault_graph", note: path }, `Reading ${path}.`);
 }
 
 // Asks for what `trellis vault check` prints (#632), never `--fix`: rpc
@@ -113,13 +103,9 @@ function askNote(doc, tauri, path) {
 async function askCheck(doc, tauri) {
   asked += 1;
   const pane = doc.getElementById("vt-check");
-  try {
-    await tauri.core.invoke("rpc_send", { line: { id: `desktop-vault-check-${asked}`, type: "vault_check" } });
-  } catch (err) {
-    const p = el(doc, "p", `Open a repository to check its vault. ${err}`);
-    p.className = "empty";
-    pane.replaceChildren(p);
-  }
+  await send(tauri, { id: `desktop-vault-check-${asked}`, type: "vault_check" }, (why) => {
+    pane.replaceChildren(el(doc, "p", `Open a repository to check its vault. ${why}`, "empty"));
+  });
 }
 
 // The report `trellis vault check` prints, line for line as the core gives
@@ -196,7 +182,7 @@ function drawHits(doc, tauri, v) {
 // search box does on focus. Read-only, through the same path as a search.
 function browse(doc, tauri) {
   asked += 1;
-  send(doc, tauri, { id: `desktop-vault-search-${asked}`, type: "vault_search", query: "" }, "Listing the vault's notes.");
+  forward(doc, tauri, { id: `desktop-vault-search-${asked}`, type: "vault_search", query: "" }, "Listing the vault's notes.");
 }
 
 function section(doc, heading, body) {
@@ -227,11 +213,15 @@ function drawNote(doc, tauri, g) {
   }
   const list = (xs, each) => (Array.isArray(xs) ? xs : []).map((x) => each(doc, tauri, x));
   const issues = (Array.isArray(g.issues) ? g.issues : []).map((i) => el(doc, "li", str(i) ?? "issue not reported"));
+  // A depth is a Stat where trellis printed a count; where it printed why
+  // the note has none, its words are kept as it wrote them.
+  const depth = str(g.depth) ?? "not reported";
+  const depthDrawn = /^\d+$/.test(depth) ? stats(doc, [{ label: "depth", value: depth }]) : section(doc, "depth", muted(doc, "p", depth));
 
   pane.replaceChildren(
     head,
     path,
-    section(doc, "depth", el(doc, "p", str(g.depth) ?? "not reported")),
+    depthDrawn,
     section(doc, "lineage", lineage),
     section(doc, "unresolved parent", el(doc, "p", str(g.unresolved_parent) ?? "none")),
     section(doc, "children", rows(doc, list(g.children, named), "none")),
@@ -252,12 +242,22 @@ function searching(doc, on) {
 export function drawVault(doc, tauri, v) {
   if (v === null || typeof v !== "object") return;
   if (str(v.error) !== null || Array.isArray(v.hits)) searching(doc, false);
-  if (str(v.error) !== null) status(doc, v.error);
-  else if (Array.isArray(v.hits)) {
+  if (str(v.error) !== null) {
+    status(doc, v.error);
+    panelMeta(doc, "vt-search-meta");
+  } else if (Array.isArray(v.hits)) {
     const n = v.hits.length;
-    if (v.browse === true) status(doc, `${n} note${n === 1 ? "" : "s"} in the vault, listed by title; type a query to rank them.`);
-    else status(doc, `${n} note${n === 1 ? "" : "s"} matched, in the order trellis vault search ranks them.`);
-  } else status(doc, "Read-only: a note is changed with trellis vault or an editor, never from here.");
+    if (v.browse === true) {
+      status(doc, "Listed by title: type a query to rank them.");
+      panelMeta(doc, "vt-search-meta", plural(n, "note", "notes"));
+    } else {
+      status(doc, "In the order trellis vault search ranks them.");
+      panelMeta(doc, "vt-search-meta", `${n} matched`);
+    }
+  } else {
+    status(doc, "Read-only: a note is changed with trellis vault or an editor, never from here.");
+    panelMeta(doc, "vt-search-meta");
+  }
   drawHits(doc, tauri, v);
   drawNote(doc, tauri, v.graph);
   drawCheck(doc, v.check);
@@ -270,7 +270,7 @@ export async function wireVault(doc, tauri) {
     const query = doc.getElementById("vt-query").value.trim();
     asked += 1;
     searching(doc, true);
-    const sent = await send(doc, tauri, { id: `desktop-vault-search-${asked}`, type: "vault_search", query }, query === "" ? "Listing the vault's notes." : `Searching the vault for ${query}.`);
+    const sent = await forward(doc, tauri, { id: `desktop-vault-search-${asked}`, type: "vault_search", query }, query === "" ? "Listing the vault's notes." : `Searching the vault for ${query}.`);
     if (!sent) searching(doc, false);
   });
   doc.getElementById("vt-check-ask").addEventListener("click", () => askCheck(doc, tauri));
@@ -290,11 +290,6 @@ export async function wireVault(doc, tauri) {
   await tauri.event.listen("rpc-exited", () => searching(doc, false));
 }
 
-function start() {
-  wireVault(document, window.__TAURI__).catch((err) => console.error("trellis desktop vault:", err));
-}
-
 if (typeof window !== "undefined" && window.__TAURI__) {
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
-  else start();
+  start("the vault view", () => wireVault(document, window.__TAURI__));
 }

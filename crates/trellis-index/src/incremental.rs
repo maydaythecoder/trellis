@@ -43,7 +43,7 @@ impl Session {
     /// Opens a repository, doing the full build once.
     #[tracing::instrument(skip_all, fields(root = %root.display()))]
     pub fn open(root: &Path) -> Self {
-        Self::from_sources(crate::resolve::read_sources(root))
+        Self::from_sources(crate::discover::read_sources(root))
     }
 
     pub fn from_sources(sources: Vec<(String, String)>) -> Self {

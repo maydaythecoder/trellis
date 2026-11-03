@@ -1,11 +1,13 @@
 package model
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/maydaythecoder/trellis/tui/internal/frames"
+	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
 // ModalPage is how far PgUp and PgDn move the approval modal's diff: the
@@ -24,16 +26,26 @@ type Approval struct {
 	Question string
 	// Diff is the request's detail, line breaks kept.
 	Diff string
-	// Scroll is the first line of Diff in view. It is held below the line
-	// count here; the view stops short of it once the rest fits, since how
-	// much fits is layout (as ScrollBack is for the transcript).
+	// Scroll is the first line of Diff in view, held between the first line
+	// and the start of the last full page at the current size, the view's
+	// own limit (view.AskingLastFrom, #843).
 	Scroll int
+	// For names the prompt or follow-up whose run asks (#954), from the
+	// request's request_id, plain text.
+	For string
+	// Reviewing is set while the question is set aside for its file's diff
+	// at the code level, where y and n answer it in place (#853). The
+	// question stays the one on screen, waiting, and goes with it.
+	Reviewing bool
 }
 
 // approvalRequested shows the question, or queues it behind the one on
 // screen: one question at a time, as the gate asks them. Once leaving has
 // been asked for, a question is not shown: the run is stopping, trellis
 // drops the question once it has, and a dropped question is a no (#634).
+// With ApprovalsCap already waiting, the question is declined at once and
+// the transcript says so (#848): dropped unanswered, it would hold the run
+// forever, and a no changes nothing in the tree.
 func (m *Model) approvalRequested(a frames.ApprovalFields) {
 	if m.Quitting {
 		return
@@ -45,19 +57,68 @@ func (m *Model) approvalRequested(a frames.ApprovalFields) {
 	if a.Detail != nil {
 		d = *a.Detail
 	}
-	ap := Approval{ID: a.ID, Question: Plain(q), Diff: plainLines(strings.TrimRight(d, " \t\r\n"))}
+	ap := Approval{ID: a.ID, Question: view.Plain(q), Diff: plainLines(strings.TrimRight(d, " \t\r\n")), For: m.askedFor(a.RequestID)}
+	// The gate names an ask_human call `ask_human "<question>"`
+	// (trellis-loop gate.rs), and no custom tool may take a built-in's
+	// name, so the prefix is the call's. The question is the model's, in
+	// the log as well as the box, whether it is shown, queued or declined.
+	if asked, ok := strings.CutPrefix(q, "ask_human "); ok {
+		m.pushRow(view.Row{Text: "? model asks you  " + view.Plain(asked), Role: view.RoleYou, Ask: true})
+	}
 	if m.Modal == nil {
-		m.Modal = &ap
+		m.showModal(&ap)
+		return
+	}
+	if len(m.approvals) >= ApprovalsCap {
+		m.send("approve", map[string]any{"id": ap.ID, "yes": false})
+		m.push(view.RoleNote, fmt.Sprintf("· %s declined unseen: %d questions were already waiting", ap.Question, len(m.approvals)+1))
 		return
 	}
 	m.approvals = append(m.approvals, ap)
 }
 
+// askedFor is what an approval belongs to (#954), in the desktop's words:
+// the prompt or follow-up its request_id names, with the task the run's
+// start carried when it is the run in flight's, and said to have no id
+// when it had none.
+func (m *Model) askedFor(requestID *string) string {
+	if requestID == nil {
+		return "a prompt or follow-up sent with no id"
+	}
+	id := *requestID
+	followUp := false
+	for _, q := range m.queue {
+		if q.item.Kind == kindFollowUp && q.id == id {
+			followUp = true
+		}
+	}
+	shown := view.Plain(id)
+	if r := m.runRequest; r != nil && r.id == id {
+		kind := "prompt"
+		if followUp {
+			kind = "follow-up"
+		}
+		if r.hasTask {
+			return "the " + kind + ": " + r.task
+		}
+		return "the " + kind + " sent as " + shown
+	}
+	if followUp {
+		return "the follow-up sent as " + shown
+	}
+	return "the prompt or follow-up sent as " + shown
+}
+
 // modalKey is a key while the modal is up. y and n answer it; the arrows
 // and PgUp and PgDn scroll its diff, so a long one is read whole before it
-// is answered (#640). Every other key, a paste among them, is ignored: the
-// keys on screen are the modal's.
+// is answered (#640); c sets it aside for its file's diff at the code
+// level, where it is answered in place (#853). Every other key, a paste
+// among them, is ignored: the keys on screen are the modal's.
 func (m *Model) modalKey(k tea.KeyMsg) {
+	if m.Modal.Reviewing {
+		m.reviewKey(k)
+		return
+	}
 	switch k.Type {
 	case tea.KeyRunes:
 		if k.Paste || len(k.Runes) != 1 {
@@ -68,6 +129,8 @@ func (m *Model) modalKey(k tea.KeyMsg) {
 			m.answer(true)
 		case 'n':
 			m.answer(false)
+		case 'c':
+			m.review()
 		}
 	case tea.KeyUp:
 		m.scrollModal(-1)
@@ -80,18 +143,51 @@ func (m *Model) modalKey(k tea.KeyMsg) {
 	}
 }
 
-// scrollModal moves the modal's first line by d, within the diff: never
-// above its first line, never past its last.
+// review sets the question on screen aside for the diff of the file it
+// asks to write, the desktop's Review in Code (#831): the edits pane gone
+// into, at that file's diff. A question that names no file, a bash command
+// or ask_human, has no diff level and stays in the box.
+func (m *Model) review() {
+	path, _, ok := view.ApprovalFile(m.Modal.Question, m.Modal.Diff)
+	if !ok {
+		return
+	}
+	m.Modal.Reviewing = true
+	m.nav = view.Nav{Open: view.PanelEdits, Selected: view.PanelEdits, File: path, Diff: true}
+}
+
+// reviewKey is a key while the question is set aside at its file's diff.
+// y and n answer it through answer, the one path an answer takes; ESC puts
+// it back in its box unanswered; the arrows and PgUp and PgDn scroll the
+// diff. Every other key is ignored, as the box ignores it: the question is
+// still waiting, and nothing else is answered or sent until it is.
+func (m *Model) reviewKey(k tea.KeyMsg) {
+	switch k.Type {
+	case tea.KeyRunes:
+		if k.Paste || len(k.Runes) != 1 {
+			return
+		}
+		switch k.Runes[0] {
+		case 'y':
+			m.answer(true)
+		case 'n':
+			m.answer(false)
+		}
+	case tea.KeyEsc:
+		m.Modal.Reviewing = false
+	default:
+		m.scrollLevelKey(k.Type)
+	}
+}
+
+// scrollModal moves the modal's first line by d, never above the diff's
+// first line and never past the start of its last full page, the view's
+// own limit. Stopped at the diff's last line instead, the offset ran a page
+// past what the view shows, and the first Up after the end moved nothing
+// (#843).
 func (m *Model) scrollModal(d int) {
-	last := len(strings.Split(m.Modal.Diff, "\n")) - 1
-	s := m.Modal.Scroll + d
-	if s > last {
-		s = last
-	}
-	if s < 0 {
-		s = 0
-	}
-	m.Modal.Scroll = s
+	w, h := m.size()
+	m.Modal.Scroll = max(min(m.Modal.Scroll+d, view.AskingLastFrom(m.Modal.Diff, w, h)), 0)
 }
 
 // answer sends approve {id, yes} for the question on screen, says which,
@@ -105,12 +201,12 @@ func (m *Model) answer(yes bool) {
 	if yes {
 		word = "approved"
 	}
-	m.pushLine("· " + a.Question + " " + word)
-	m.Modal = nil
+	m.push(view.RoleNote, "· "+a.Question+" "+word)
+	m.closeModal()
 	if len(m.approvals) > 0 {
 		next := m.approvals[0]
 		m.approvals = m.approvals[1:]
-		m.Modal = &next
+		m.showModal(&next)
 	}
 }
 
@@ -119,7 +215,7 @@ func (m *Model) answer(yes bool) {
 func plainLines(s string) string {
 	lines := strings.Split(s, "\n")
 	for i, l := range lines {
-		lines[i] = Plain(l)
+		lines[i] = view.Plain(l)
 	}
 	return strings.Join(lines, "\n")
 }

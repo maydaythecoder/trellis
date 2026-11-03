@@ -1,0 +1,22 @@
+crates/trellis-cli/src/vault_cmd.rs:272:5: replace search_hits -> Result<(Mode, Vec<Ranked>)> with Ok((Default::default(), vec![]))
+crates/trellis-cli/src/vault_cmd.rs:272:5: replace search_hits -> Result<(Mode, Vec<Ranked>)> with Ok((Default::default(), vec![Default::default()]))
+crates/trellis-cli/src/vault_cmd.rs:346:5: replace graph_view -> Result<GraphView> with Ok(Default::default())
+crates/trellis-cli/src/vault_cmd.rs:486:5: replace compile_for_run -> Result<(trellis_vault::Compiled, Option<String>)> with Ok((Default::default(), None))
+crates/trellis-cli/src/vault_cmd.rs:486:5: replace compile_for_run -> Result<(trellis_vault::Compiled, Option<String>)> with Ok((Default::default(), Some(String::new())))
+crates/trellis-cli/src/vault_cmd.rs:486:5: replace compile_for_run -> Result<(trellis_vault::Compiled, Option<String>)> with Ok((Default::default(), Some("xyzzy".into())))
+crates/trellis-cli/src/work.rs:403:17: replace && with || in queue
+crates/trellis-cli/src/work.rs:835:5: replace cancel_task -> std::result::Result<Option<State>, QueueError> with Ok(Some(Default::default()))
+crates/trellis-cli/src/work.rs:1000:9: replace && with || in list_line
+crates/trellis-cli/src/work.rs:1084:5: replace with_claimant -> Queue with Default::default()
+crates/trellis-cli/src/work.rs:1206:13: replace && with || in CliRunner<'_>::text
+crates/trellis-cli/src/work.rs:1315:5: replace task_worktree -> std::result::Result<trellis_vcs::TaskWorktree, String> with Ok(Default::default())
+crates/trellis-cli/src/work.rs:1391:5: replace with_run_id -> (T, Option<String>) with (Default::default(), None)
+crates/trellis-cli/src/work.rs:1391:5: replace with_run_id -> (T, Option<String>) with (Default::default(), Some(String::new()))
+crates/trellis-cli/src/work.rs:1391:5: replace with_run_id -> (T, Option<String>) with (Default::default(), Some("xyzzy".into()))
+crates/trellis-cli/src/work.rs:1541:9: replace <impl Runner for CliRunner<'_>>::prepare -> std::result::Result<Option<trellis_queue::Workspace>, String> with Ok(Some(Default::default()))
+crates/trellis-cli/src/work.rs:1557:9: replace <impl Runner for CliRunner<'_>>::remove_workspace -> trellis_queue::Left with Default::default()
+crates/trellis-cli/src/work.rs:1596:9: replace <impl Runner for CliRunner<'_>>::liveness -> Option<&dyn trellis_queue::Liveness> with Some(Box::leak(Box::new(Default::default())))
+crates/trellis-cli/src/work.rs:1603:9: replace <impl Runner for CliRunner<'_>>::profiles -> Option<&BTreeMap<String, Profile>> with Some(Box::leak(Box::new(BTreeMap::from_iter([(String::new(), Default::default())]))))
+crates/trellis-cli/src/work.rs:1603:9: replace <impl Runner for CliRunner<'_>>::profiles -> Option<&BTreeMap<String, Profile>> with Some(Box::leak(Box::new(BTreeMap::from_iter([("xyzzy".into(), Default::default())]))))
+crates/trellis-cli/src/work.rs:1607:9: replace <impl Runner for CliRunner<'_>>::run -> RunEnd with Default::default()
+crates/trellis-cli/src/work.rs:1783:36: replace + with * in <impl Runner for CliRunner<'_>>::idle

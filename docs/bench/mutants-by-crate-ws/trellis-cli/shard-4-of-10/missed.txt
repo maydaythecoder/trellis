@@ -1,0 +1,25 @@
+crates/trellis-cli/src/launch.rs:221:5: replace open_in_browser -> Result<()> with Ok(())
+crates/trellis-cli/src/launch.rs:232:8: delete ! in open_in_browser
+crates/trellis-cli/src/launch.rs:282:5: replace ctrl_c_presses with ()
+crates/trellis-cli/src/launch.rs:439:29: replace match guard status.success() with true in launch_web
+crates/trellis-cli/src/launch.rs:439:29: replace match guard status.success() with false in launch_web
+crates/trellis-cli/src/liveness.rs:59:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in probe_proc
+crates/trellis-cli/src/liveness.rs:123:28: replace match guard !out.trim().is_empty() with true in probe_ps
+crates/trellis-cli/src/liveness.rs:123:28: replace match guard !out.trim().is_empty() with false in probe_ps
+crates/trellis-cli/src/liveness.rs:126:29: replace match guard out.trim().is_empty() with true in probe_ps
+crates/trellis-cli/src/liveness.rs:126:29: replace match guard out.trim().is_empty() with false in probe_ps
+crates/trellis-cli/src/liveness.rs:123:28: delete ! in probe_ps
+crates/trellis-cli/src/liveness.rs:137:5: replace bounded -> Result<(bool, String), String> with Ok((true, String::new()))
+crates/trellis-cli/src/liveness.rs:137:5: replace bounded -> Result<(bool, String), String> with Ok((true, "xyzzy".into()))
+crates/trellis-cli/src/liveness.rs:137:5: replace bounded -> Result<(bool, String), String> with Ok((false, String::new()))
+crates/trellis-cli/src/liveness.rs:137:5: replace bounded -> Result<(bool, String), String> with Ok((false, "xyzzy".into()))
+crates/trellis-cli/src/liveness.rs:146:25: replace match guard started.elapsed() >= PROBE_BOUND with true in bounded
+crates/trellis-cli/src/liveness.rs:146:25: replace match guard started.elapsed() >= PROBE_BOUND with false in bounded
+crates/trellis-cli/src/liveness.rs:146:43: replace >= with < in bounded
+crates/trellis-cli/src/log_cmd.rs:239:21: replace match guard m.task_mentions with true in cmd_why
+crates/trellis-cli/src/output.rs:52:5: replace human_colour -> bool with false
+crates/trellis-cli/src/overview.rs:344:32: replace || with && in gh_list
+crates/trellis-cli/src/overview.rs:348:64: delete ! in gh_list
+crates/trellis-cli/src/overview.rs:409:43: replace < with <= in bounded
+crates/trellis-cli/src/overview.rs:419:21: delete match arm Err(e) in bounded
+crates/trellis-cli/src/process_agent.rs:542:18: replace match guard ignored_unread.is_some() with false in run

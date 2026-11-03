@@ -12,7 +12,7 @@ cargo fmt --all
 cargo run -p trellis-cli -- index          # full index: parse, resolve, coverage
 cargo run -p trellis-cli -- radius <sym>   # blast radius with confidence breakdown
 cargo run -p trellis-cli -- check          # run the grounded checks
-cargo run -p trellis-cli -- doctor         # probe tier, batching, tooling
+cargo run -p trellis-cli -- doctor         # probe tier, batching, tooling; a `lockfile:` line when the root has a Cargo.lock (ADR 0057)
 
 # owner-directed growth beyond brief 4.12, each recorded in its ADR
 cargo run -p trellis-cli -- run "<task>" --focus <stem>    # vault note as context (ADR 0017)

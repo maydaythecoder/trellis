@@ -111,11 +111,11 @@ pub struct Dispatched {
     /// symbols, which only this side can do: the index and the files are
     /// here. Empty for every other result. Carried beside `result` rather
     /// than inside it, so what a `post_tool` hook receives is unchanged.
-    pub radius_sites: Vec<crate::agent::RadiusSite>,
+    pub radius_sites: Vec<crate::radius_listing::RadiusSite>,
     /// `Some` only when a person was asked about this call.
     pub human: Option<HumanDecision>,
     /// Whether this call may have changed the working tree. See
-    /// [`may_change_tree`] for the tool's part; a `pre_tool` or `post_tool`
+    /// `may_change_tree` for the tool's part; a `pre_tool` or `post_tool`
     /// hook that changed the worktree (or whose effect could not be
     /// compared) also sets it, because a hook runs around every call — the
     /// passing check included — and would otherwise leave bytes behind that
@@ -183,6 +183,8 @@ pub(crate) fn may_change_tree(call: &ToolCall, wrote: bool) -> bool {
         // Nothing is written: the question travels back to the loop in the
         // call itself, and the binary records it on the task.
         ToolCall::AskHuman { .. } => false,
+        // A record of the model's intent; nothing on disk changes.
+        ToolCall::Plan { .. } => false,
     }
 }
 
@@ -883,12 +885,17 @@ impl Orchestrator {
                  waits for a person's answer"
                     .into(),
             ),
+            // `Output`, never `Checks` (rule 2): a plan is the model's
+            // account of its own progress, and its `done` steps are words.
+            ToolCall::Plan { steps } => {
+                ToolResult::Output(crate::tools::keep_plan(steps).observation())
+            }
         };
         // Read now, before `post_tool` runs: a hook that rewrites a file would
         // otherwise shift the bytes the line numbers are counted from.
         let radius_sites = match &result {
             ToolResult::Radius(report) => {
-                crate::agent::radius_sites(self.session.index(), &self.root, report)
+                crate::radius_listing::radius_sites(self.session.index(), &self.root, report)
             }
             _ => Vec::new(),
         };
@@ -1420,6 +1427,9 @@ impl Orchestrator {
         }
         let at = src.find(old.as_str()).expect("occurrence counted");
         let updated = format!("{}{}{}", &src[..at], new, &src[at + old.len()..]);
+        // From the two texts this function matched and wrote, never from a
+        // second read of the file: what the turn reports is this write.
+        let change = crate::gate::edit_diff(path, src, &updated, at, old.len(), new.len());
         // Written back in the file's own convention, not the model's.
         let updated = if crlf {
             updated.replace('\n', "\r\n")
@@ -1467,6 +1477,7 @@ impl Orchestrator {
             path: path.to_string(),
             applied: true,
             span,
+            change,
         })
     }
 

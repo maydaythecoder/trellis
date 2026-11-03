@@ -25,8 +25,7 @@ const EVENTS = [
   "radius",
   "rpc-exited",
   "rpc-frame",
-  "rpc-human",
-  "rpc-unparsed",
+  "taken-back",
   "view",
 ];
 const KEPT_PER_EVENT = 64;

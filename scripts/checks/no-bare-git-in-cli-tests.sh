@@ -31,7 +31,7 @@ BARE='Command::new\([[:space:]]*"([^"]*[/\\])?[Gg][Ii][Tt](\.([Ee][Xx][Ee]|[Cc][
 
 # path|count|why
 ALLOWED=(
-  'crates/trellis-cli/tests/cli.rs|1|the control in a_core_fsmonitor_bash_sets_is_never_run_by_trellis_during_or_after_the_run: it shows plain git runs the planted fsmonitor, which trellis_vcs would switch off'
+  'crates/trellis-cli/tests/cli/ignored_files.rs|1|the control in a_core_fsmonitor_bash_sets_is_never_run_by_trellis_during_or_after_the_run: it shows plain git runs the planted fsmonitor, which trellis_vcs would switch off'
 )
 
 # Lines of `git grep -n` output (file:line:text) that are spawns: drops a

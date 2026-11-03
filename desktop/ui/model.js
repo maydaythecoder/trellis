@@ -24,29 +24,23 @@
 // with the core's reason, instead of a list it is still "asking" for, and
 // does not open itself to ask for a choice nobody can take (#638).
 //
+// The pane is the status bar's last cell (#909): its summary is a
+// design-system Status naming the model, and it opens as a popover over
+// the stage; ESC, a click outside or the summary again closes it. Each
+// runtime trellis probed is a Status, with trellis's own words for why it
+// did not answer as the row's title rather than its text.
+//
 // Every spec, address, error and provider name is trellis- or
 // configuration-supplied text, so it reaches the DOM through textContent
 // only (ADR 0007, S10).
 
+import { el } from "./dom.js";
+import { dsStatus } from "./ds.js";
+import { str } from "./fmt.js";
+import { onEscape } from "./keys.js";
+import { lineId, send } from "./rpc.js";
 import { modelChoices } from "./settings.js";
 import { exitText } from "./status.js";
-
-function el(doc, tag, text) {
-  const e = doc.createElement(tag);
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
-
-function str(v) {
-  return typeof v === "string" ? v : null;
-}
-
-let nextId = 0;
-
-function lineId(kind) {
-  nextId += 1;
-  return `desktop-model-${kind}-${nextId}`;
-}
 
 // The two view keys the choices come from, as last sent.
 let available = null;
@@ -143,10 +137,11 @@ function drawFound(doc) {
       const said = str(t && t.error);
       const li = el(doc, "li");
       li.append(
-        el(doc, "span", `${str(t && t.runtime) ?? "?"} `),
+        said === null ? dsStatus(doc, "ok", "answered") : dsStatus(doc, "idle", "no answer", { title: said }),
+        el(doc, "span", str(t && t.runtime) ?? "?"),
         el(doc, "code", str(t && t.address) ?? "?"),
-        el(doc, "span", said === null ? ": answered" : `: ${said}`),
       );
+      if (said !== null) li.title = said;
       probed.push(li);
     }
     for (const v of Array.isArray(models.providers) ? models.providers : []) {
@@ -159,9 +154,8 @@ function drawFound(doc) {
         el(
           doc,
           "span",
-          variable === null
-            ? ": a protocol trellis does not know"
-            : `: its key is read from ${variable} in trellis's environment`,
+          variable === null ? "a protocol trellis does not know" : `key from ${variable} in trellis's environment`,
+          "muted",
         ),
       );
       providers.push(li);
@@ -171,30 +165,37 @@ function drawFound(doc) {
   p.providers.replaceChildren(...providers);
 }
 
-// The session's model as the child last confirmed it. The pane stays open
-// until one is chosen, and closes on the first choice. With no child there
-// is no session, which the pane says without opening.
+// The summary: a Status in `tone` naming `word`, cut to the bar with the
+// whole of it, and `title`, on hover.
+function drawChip(doc, p, tone, word, title) {
+  p.summary.replaceChildren(dsStatus(doc, tone, el(doc, "span", word, "cut"), { title }));
+}
+
+// The session's model as the child last confirmed it, and where it came
+// from (`repository`, `user` or `session`, the view's `model.source`, null
+// when the core cannot tell, and then said so, never guessed). The pane
+// stays open until one is chosen, and closes on the first choice. With no
+// child there is no session, which the pane says without opening.
 function drawModel(doc, model) {
   const p = parts(doc);
   const spec = model && str(model.spec);
   const was = chosen;
   chosen = spec !== null && spec !== undefined;
   if (!chosen && stopped !== null) {
-    p.summary.textContent = "Model: trellis rpc is not running";
+    drawChip(doc, p, "idle", "no model", `trellis rpc is not running: ${stopped}`);
     p.current.textContent = `trellis rpc is not running: ${stopped}`;
     return;
   }
   if (!chosen) {
-    p.summary.textContent = "Model: none chosen yet";
-    p.current.textContent =
-      "No model is chosen for this window yet, so prompt input stays disabled until you choose one.";
+    drawChip(doc, p, "signal", "no model", "No model is chosen for this window yet.");
+    p.current.textContent = "Prompt input stays off until trellis takes a model.";
     p.pane.open = true;
     return;
   }
   const saved = str(model.saved_to);
-  p.summary.textContent = `Model: ${spec}`;
-  p.current.textContent =
-    `Prompts in this window run on ${spec}.` + (saved === null ? "" : ` Saved to ${saved}.`);
+  const source = str(model.source);
+  drawChip(doc, p, "ok", spec, source === null ? `${spec} (source not known)` : `${spec} (from ${source})`);
+  p.current.textContent = `Prompts run on ${spec}.` + (saved === null ? "" : ` Saved to ${saved}.`);
   if (!was) p.pane.open = false;
 }
 
@@ -223,20 +224,18 @@ export function modelPaneStopped(doc, why) {
   drawModel(doc, lastModel);
 }
 
-async function send(tauri, p, line) {
-  try {
-    await tauri.core.invoke("rpc_send", { line });
-    return true;
-  } catch (err) {
-    p.note.textContent = String(err);
-    return false;
-  }
+// Sends one line through the core (rpc.js's send); the note says why when
+// it is refused.
+function forward(tauri, p, line) {
+  return send(tauri, line, (why) => {
+    p.note.textContent = why;
+  });
 }
 
 // Asks the child what there is to choose from.
 export function askModels(doc, tauri) {
   const p = parts(doc);
-  return send(tauri, p, { id: lineId("list"), type: "list_models" });
+  return forward(tauri, p, { id: lineId("model", "list"), type: "list_models" });
 }
 
 // Wires the pane once, and listens for the child's events: `child-started`
@@ -262,6 +261,14 @@ export async function wireModelPane(doc, tauri) {
     drawSave(p);
   });
   p.refresh.addEventListener("click", () => askModels(doc, tauri));
+  // ESC closes the chooser before it goes out a level (keys.js asks this
+  // first).
+  onEscape(() => {
+    if (!p.pane.open) return false;
+    p.pane.open = false;
+    p.summary.focus();
+    return true;
+  });
   p.form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const c = selected(p);
@@ -274,7 +281,7 @@ export async function wireModelPane(doc, tauri) {
       p.note.textContent = "Type a model spec first.";
       return;
     }
-    if (await send(tauri, p, line)) {
+    if (await forward(tauri, p, line)) {
       p.note.textContent = "Sent; prompt input opens once trellis has taken it.";
     }
   });

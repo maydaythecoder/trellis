@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
@@ -22,13 +24,13 @@ func TestPanesCheckRowsComeOnlyFromASomeVerdict(t *testing.T) {
 	feed(m, turn(3, "run_checks", map[string]any{"verdict": "Some(false)", "check_kind": ""}))
 	feed(m, turn(4, "edit a.py", map[string]any{"verdict": "None"}))
 	feed(m, turn(5, "read_file a.py", map[string]any{"verdict": "true"}))
-	want := []view.Check{{Name: "pytest", Passed: true}, {Name: "mypy", Passed: false}, {Name: "check", Passed: false}}
-	if len(m.Checks) != len(want) {
-		t.Fatalf("checks %+v", m.Checks)
+	want := []view.Check{{Name: "pytest", Passed: true, Turn: 1}, {Name: "mypy", Passed: false, Turn: 2}, {Name: "check", Passed: false, Turn: 3}}
+	if m.Checks.Len() != len(want) {
+		t.Fatalf("checks %+v", m.Checks.Slice())
 	}
 	for i := range want {
-		if m.Checks[i] != want[i] {
-			t.Fatalf("check %d: %+v, want %+v", i, m.Checks[i], want[i])
+		if m.Checks.Slice()[i] != want[i] {
+			t.Fatalf("check %d: %+v, want %+v", i, m.Checks.Slice()[i], want[i])
 		}
 	}
 	m.Update(windowSize(120, 40))
@@ -38,31 +40,65 @@ func TestPanesCheckRowsComeOnlyFromASomeVerdict(t *testing.T) {
 	}
 }
 
-// An edit whose observation has applied: true, and a write_file that
-// created its file, are writes and pending edits; a refused edit is an
-// action and not an edit, so the panes never contradict each other.
+// An edit that applied, and a write_file that created its file, are writes
+// and pending edits; a refused edit is an action and not an edit, so the
+// panes never contradict each other.
 func TestPanesOnlyAnAppliedWriteIsAPendingEdit(t *testing.T) {
 	m := running(t)
-	feed(m, turn(1, "edit app/calc.py", map[string]any{"observation": "error: old text not found"}))
-	feed(m, turn(2, "edit app/calc.py", map[string]any{"observation": "applied: false"}))
-	feed(m, turn(3, "edit app/calc.py", map[string]any{"observation": "applied: true\n1 line changed"}))
-	feed(m, turn(4, "write_file app/new.py", map[string]any{"observation": "created app/new.py"}))
-	feed(m, turn(5, "write_file app/x.py", map[string]any{"observation": "error: exists"}))
-	if len(m.Actions) != 5 {
-		t.Fatalf("%d actions, want every turn", len(m.Actions))
+	feed(m, turn(1, "edit app/calc.py", map[string]any{"observation": "error: old text not found", "tool": "edit", "target": "app/calc.py", "wrote": false}))
+	feed(m, turn(2, "edit app/calc.py", map[string]any{"observation": "applied: false", "tool": "edit", "target": "app/calc.py", "wrote": false}))
+	feed(m, turn(3, "edit app/calc.py", map[string]any{"observation": "applied: true\n1 line changed", "tool": "edit", "target": "app/calc.py", "wrote": true}))
+	feed(m, turn(4, "write_file app/new.py", map[string]any{"observation": "created app/new.py", "tool": "write_file", "target": "app/new.py", "wrote": true}))
+	feed(m, turn(5, "write_file app/x.py", map[string]any{"observation": "error: exists", "tool": "write_file", "target": "app/x.py", "wrote": false}))
+	if m.Actions.Len() != 5 {
+		t.Fatalf("%d actions, want every turn", m.Actions.Len())
 	}
 	wrote := 0
-	for _, a := range m.Actions {
+	for _, a := range m.Actions.Slice() {
 		if a.Wrote {
 			wrote++
 		}
 	}
-	if wrote != 2 || len(m.Edits) != 2 || m.Edits[0].Path != "app/calc.py" || m.Edits[1].Path != "app/new.py" {
-		t.Fatalf("wrote %d, edits %+v", wrote, m.Edits)
+	if wrote != 2 || m.Edits.Len() != 2 || m.Edits.Slice()[0].Path != "app/calc.py" || m.Edits.Slice()[1].Path != "app/new.py" {
+		t.Fatalf("wrote %d, edits %+v", wrote, m.Edits.Slice())
 	}
 	m.Update(windowSize(120, 40))
-	if v := m.View(); !strings.Contains(v, "2 edit(s) pending") || !strings.Contains(v, "~ app/calc.py") {
+	if v := m.View(); !strings.Contains(v, "● 2 pending") || !strings.Contains(v, "~ app/calc.py") {
 		t.Fatalf("%s", v)
+	}
+}
+
+// The risk (#856): the TUI reads what a turn touched from its call label and
+// observation text while the trail reads it from wrote (#800), so the edits
+// pane lists a file the trail says no turn wrote, or misses one it did. A
+// file the model read can hold the text applied: true; an edit's
+// observation need not say it.
+func TestPanesATurnsEditsComeFromWroteNotFromItsObservation(t *testing.T) {
+	m := running(t)
+	feed(m, turn(1, "read_file notes.txt", map[string]any{
+		"observation": "edit notes.txt\napplied: true (+1 -1)",
+		"tool":        "read_file", "target": "notes.txt", "wrote": false,
+	}))
+	if m.Edits.Len() != 0 || m.Actions.Slice()[0].Wrote {
+		t.Fatalf("a read whose text says applied: true was an edit: %+v %+v", m.Edits.Slice(), m.Actions.Slice())
+	}
+
+	// An applied edit whose observation does not say so.
+	feed(m, turn(2, "edit a.py", map[string]any{
+		"observation": "    return 2", "tool": "edit", "target": "a.py", "wrote": true,
+	}))
+	if m.Edits.Len() != 1 || m.Edits.Slice()[0].Path != "a.py" {
+		t.Fatalf("an applied edit is not pending: %+v", m.Edits.Slice())
+	}
+	if a := m.Actions.Slice()[1]; a != (view.Action{Tool: "edit", Target: "a.py", Wrote: true}) {
+		t.Fatalf("the action is not the event's: %+v", a)
+	}
+
+	// A turn whose event carried no wrote is not counted as an edit,
+	// whatever its call and observation say.
+	feed(m, turn(3, "edit b.py", map[string]any{"observation": "applied: true (+1 -1)"}))
+	if m.Edits.Len() != 1 || m.Actions.Slice()[2].Wrote {
+		t.Fatalf("a turn with no wrote was an edit: %+v %+v", m.Edits.Slice(), m.Actions.Slice())
 	}
 }
 
@@ -79,11 +115,11 @@ func TestPanesAnApprovalAnswerKeepsTheEditsAsReported(t *testing.T) {
 		said string
 	}{{'y', true, "approved"}, {'n', false, "declined"}} {
 		m := running(t)
-		feed(m, turn(1, "edit a.py", map[string]any{"observation": "applied: true"}))
+		feed(m, turn(1, "edit a.py", map[string]any{"observation": "applied: true", "tool": "edit", "target": "a.py", "wrote": true}))
 		feed(m, approval("a1", "edit a.py (+1 -1)", "apply the edit?"))
 		key(m, c.key)
-		if len(m.Edits) != 1 || m.Edits[0] != (view.Edit{Path: "a.py", Status: view.Proposed}) {
-			t.Fatalf("%c: %+v", c.key, m.Edits)
+		if m.Edits.Len() != 1 || m.Edits.Slice()[0] != (view.Edit{Path: "a.py", Status: view.Proposed, Turn: 1}) {
+			t.Fatalf("%c: %+v", c.key, m.Edits.Slice())
 		}
 		out := m.TakeOutbox()
 		if len(out) != 1 || out[0].Cmd["yes"] != c.yes {
@@ -133,11 +169,12 @@ func TestPanesBudgetCarriesTheCeilingTheTurnsFiguresAndElapsed(t *testing.T) {
 	}
 	m.Update(windowSize(140, 30))
 	v := m.View()
-	if !strings.Contains(v, "iteration 2/40  ·  8400 B prompt  ·  0:18 elapsed  ·  30 tok, 2.0 tok/s  ·  queued 10.0 s") {
+	if !strings.Contains(v, "TURNS        █░░░░░░░░░░░░░░░ 2/40") || !strings.Contains(v, "last turn 30 tok, 2.0 tok/s  ·  queued 10.0 s") ||
+		!strings.Contains(v, "WALL CLOCK   0:18*/—") || !strings.Contains(v, "LAST PROMPT  8.4 kB/—") {
 		t.Fatalf("%s", v)
 	}
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
-	if m.Budget.Iteration != 2 || len(m.Actions) != 1 {
+	if m.Budget.Iteration != 2 || m.Actions.Len() != 1 {
 		t.Fatal("the run's end cleared what it did")
 	}
 }
@@ -148,8 +185,8 @@ func TestPanesAWarningIsALineAndNotATurn(t *testing.T) {
 	m := running(t)
 	feed(m, warn("no progress; stopping"))
 	feed(m, jsonLine(map[string]any{"level": "INFO", "fields": map[string]any{"message": "resolving imports", "call": "Edit"}}))
-	if last(m) != "no progress; stopping" || len(m.Actions) != 0 || m.Budget.Iteration != 0 {
-		t.Fatalf("last %q actions %d budget %+v", last(m), len(m.Actions), m.Budget)
+	if last(m) != "no progress; stopping" || m.Actions.Len() != 0 || m.Budget.Iteration != 0 {
+		t.Fatalf("last %q actions %d budget %+v", last(m), m.Actions.Len(), m.Budget)
 	}
 }
 
@@ -158,7 +195,7 @@ func TestPanesAWarningIsALineAndNotATurn(t *testing.T) {
 func TestPanesObservationLinesFollowTheTurn(t *testing.T) {
 	m := running(t)
 	feed(m, turn(1, "read_file a.py", map[string]any{"observation": "1\n2\n3\n4\n5\n6\n7\x1b[2J"}))
-	tail := m.Transcript[len(m.Transcript)-7:]
+	tail := texts(m)[len(m.Transcript)-7:]
 	if tail[0] != "· read_file a.py" || tail[1] != "    1" || tail[6] != "    6" {
 		t.Fatalf("%q", tail)
 	}
@@ -167,7 +204,7 @@ func TestPanesObservationLinesFollowTheTurn(t *testing.T) {
 // Up scrolls back, Down returns and saturates at the end, and a new run is
 // followed from its start.
 func TestPanesScrollingBackStopsAtTheEndAndResumesFollowing(t *testing.T) {
-	m := fresh(t)
+	m := numbered(t, 200)
 	m.Update(keyType(keyDown))
 	if m.ScrollBack != 0 {
 		t.Fatal("down at the end did not saturate")
@@ -183,16 +220,73 @@ func TestPanesScrollingBackStopsAtTheEndAndResumesFollowing(t *testing.T) {
 	}
 }
 
+// #843: Home stopped at the total row count instead of the count less the
+// pane's height, so PgDn after Home first spent itself on rows above the
+// first and the view did not move: the first press at 80x24, the first
+// three at 120x40.
+func TestPanesPageDownMovesAtOnceAfterHome(t *testing.T) {
+	for _, size := range [][2]int{{80, 24}, {120, 40}} {
+		m := numbered(t, 200)
+		m.Update(windowSize(size[0], size[1]))
+		m.Update(keyType(tea.KeyHome))
+		top := m.View()
+		if !strings.Contains(top, "line 000") {
+			t.Fatalf("%dx%d: home does not show the first line:\n%s", size[0], size[1], top)
+		}
+		m.Update(keyType(tea.KeyPgDown))
+		if moved := m.View(); moved == top || strings.Contains(moved, "line 000") {
+			t.Fatalf("%dx%d: the first PgDn after Home did not move the view:\n%s", size[0], size[1], moved)
+		}
+	}
+}
+
+// #843: Up had no top. Each press past it raised the offset, and as many
+// Downs went by before the view moved again. Up now stops where Home does,
+// and the first Down from there moves.
+func TestPanesUpStopsAtTheTop(t *testing.T) {
+	m := numbered(t, 200)
+	m.Update(keyType(tea.KeyHome))
+	top := m.ScrollBack
+	for i := 0; i < 5; i++ {
+		m.Update(keyType(keyUp))
+	}
+	if m.ScrollBack != top {
+		t.Fatalf("scroll back %d after Up at the top %d", m.ScrollBack, top)
+	}
+	at := m.View()
+	m.Update(keyType(keyDown))
+	if m.ScrollBack != top-1 || m.View() == at {
+		t.Fatalf("the first Down from the top did not move: scroll back %d, top %d", m.ScrollBack, top)
+	}
+	// A short transcript has no rows above its first page, so Up holds.
+	short := numbered(t, 3)
+	short.Update(keyType(keyUp))
+	if short.ScrollBack != 0 {
+		t.Fatalf("scroll back %d over a transcript that fits", short.ScrollBack)
+	}
+}
+
+// #843: a window made taller lowers the top; an offset set at the shorter
+// size is brought down to it, so the next key moves the view at once.
+func TestPanesAResizeKeepsTheOffsetWithinTheTop(t *testing.T) {
+	m := numbered(t, 200)
+	m.Update(keyType(tea.KeyHome))
+	m.Update(windowSize(80, 60))
+	if top := view.TranscriptTop(m.viewState(), 80, 60); m.ScrollBack != top {
+		t.Fatalf("scroll back %d after growing, top %d", m.ScrollBack, top)
+	}
+}
+
 // The next run starts with empty panes; the last run's stay until then.
 func TestPanesANewRunStartsClean(t *testing.T) {
 	m := running(t)
-	feed(m, turn(1, "edit a.py", map[string]any{"observation": "applied: true", "verdict": "Some(true)"}))
+	feed(m, turn(1, "edit a.py", map[string]any{"observation": "applied: true", "verdict": "Some(true)", "tool": "edit", "target": "a.py", "wrote": true}))
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
-	if len(m.Edits) != 1 || len(m.Checks) != 1 {
+	if m.Edits.Len() != 1 || m.Checks.Len() != 1 {
 		t.Fatal("the panes were cleared at the run's end")
 	}
 	submit(m, "next")
-	if len(m.Edits)+len(m.Checks)+len(m.Actions) != 0 || m.Radius != nil {
+	if m.Edits.Len()+m.Checks.Len()+m.Actions.Len() != 0 || m.Radius != nil {
 		t.Fatal("the last run's panes were carried into this one")
 	}
 }

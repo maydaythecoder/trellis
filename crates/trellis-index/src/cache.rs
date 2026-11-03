@@ -243,6 +243,43 @@ pub fn load(path: &Path, expected: u64) -> Option<Index> {
 mod tests {
     use super::*;
 
+    /// `trellis-cache-<name>-<pid>` under the temp dir, emptied when made
+    /// and removed when dropped, so a test leaves nothing behind whether it
+    /// passes or fails (#979). Local, not `tempfile`: this crate has no
+    /// dev-dependency on it, and one directory per test does not need one.
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("trellis-cache-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            Scratch(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            // Never a panic here: one while unwinding would abort the whole
+            // test binary. A directory that will not go is a leak, not a
+            // failure.
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    impl std::ops::Deref for Scratch {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<Path> for Scratch {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+
     fn sources() -> Vec<(String, String)> {
         vec![
             (
@@ -258,8 +295,7 @@ mod tests {
 
     #[test]
     fn roundtrips_and_preserves_the_graph() {
-        let dir =
-            std::env::temp_dir().join(format!("trellis-cache-roundtrip-{}", std::process::id()));
+        let dir = Scratch::new("roundtrip");
         let path = dir.join("index.bin");
         let _ = std::fs::remove_file(&path);
 
@@ -296,9 +332,7 @@ mod tests {
         // untracked cache makes `git status` dirty, and a dirty worktree
         // blocks the next run (ADR 0009) — a tool that writes a cache and
         // then refuses to start because of it has built its own wall.
-        let dir =
-            std::env::temp_dir().join(format!("trellis-cache-gitignore-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = Scratch::new("gitignore");
         let path = dir.join("index.bin");
 
         let index = crate::build_from_sources(&sources());
@@ -353,8 +387,7 @@ mod tests {
 
     #[test]
     fn a_changed_file_set_invalidates_the_blob() {
-        let dir =
-            std::env::temp_dir().join(format!("trellis-cache-invalidate-{}", std::process::id()));
+        let dir = Scratch::new("invalidate");
         let path = dir.join("index.bin");
         let _ = std::fs::remove_file(&path);
 
@@ -386,7 +419,7 @@ mod tests {
         // The blob below is *well-formed under the current layout* and
         // carries the *correct* fingerprint. Only the version is old. If
         // `load` returned it, the constant would be decoration.
-        let dir = std::env::temp_dir().join(format!("trellis-cache-oldver-{}", std::process::id()));
+        let dir = Scratch::new("oldver");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("index.bin");
 
@@ -423,7 +456,7 @@ mod tests {
     fn a_truncated_blob_is_a_miss_rather_than_a_panic() {
         // Half a file is what a crash mid-write leaves behind, and the
         // caller's only correct response to any of it is to rebuild.
-        let dir = std::env::temp_dir().join(format!("trellis-cache-trunc-{}", std::process::id()));
+        let dir = Scratch::new("trunc");
         let path = dir.join("index.bin");
         let src = sources();
         save(&crate::build_from_sources(&src), &path).expect("save");
@@ -439,18 +472,15 @@ mod tests {
     }
 
     /// A fresh directory for one `cache_symlink_*` test: `repo/` and
-    /// `outside/` side by side, as the reproduction in #721 lays them out.
-    fn link_scratch(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-        let base = std::env::temp_dir().join(format!(
-            "trellis-cache-symlink-{name}-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&base);
+    /// `outside/` side by side, as the reproduction in #721 lays them out,
+    /// with the guard that removes both.
+    fn link_scratch(name: &str) -> (Scratch, std::path::PathBuf, std::path::PathBuf) {
+        let base = Scratch::new(&format!("symlink-{name}"));
         let repo = base.join("repo");
         let outside = base.join("outside");
         std::fs::create_dir_all(&repo).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
-        (repo, outside)
+        (base, repo, outside)
     }
 
     /// Makes `link` a link to the file `target`; false (and the test skips)
@@ -505,7 +535,7 @@ mod tests {
         // #721's reproduction: a repository commits `.trellis/index.bin` as a
         // link to a file beside the clone, and indexing overwrote that file
         // with a blob a crafted file name makes runnable as a script.
-        let (repo, outside) = link_scratch("outside-file");
+        let (_base, repo, outside) = link_scratch("outside-file");
         let target = outside.join("rc.sh");
         std::fs::write(&target, "echo original\n").unwrap();
         let dot = repo.join(".trellis");
@@ -538,7 +568,7 @@ mod tests {
     fn cache_symlink_dangling_index_bin_creates_nothing() {
         // A dangling link reads as absent to `exists()` and `fs::write`
         // creates its target. Nothing may appear at the target.
-        let (repo, outside) = link_scratch("dangling-bin");
+        let (_base, repo, outside) = link_scratch("dangling-bin");
         let target = outside.join("planted");
         let dot = repo.join(".trellis");
         std::fs::create_dir_all(&dot).unwrap();
@@ -563,7 +593,7 @@ mod tests {
         // `ignore_the_blob` checked `.gitignore` with `exists()`, so a
         // dangling link there created a file at its target. Refused before
         // anything is written, the blob included.
-        let (repo, outside) = link_scratch("dangling-ignore");
+        let (_base, repo, outside) = link_scratch("dangling-ignore");
         let target = outside.join("planted");
         let dot = repo.join(".trellis");
         std::fs::create_dir_all(&dot).unwrap();
@@ -589,7 +619,7 @@ mod tests {
         // A live link is not overwritten (it never was), but writing the
         // blob beside a `.gitignore` that is someone else's file would leave
         // the blob unignored on the strength of rules trellis cannot see.
-        let (repo, outside) = link_scratch("outside-ignore");
+        let (_base, repo, outside) = link_scratch("outside-ignore");
         let target = outside.join("rules");
         std::fs::write(&target, "theirs\n").unwrap();
         let dot = repo.join(".trellis");
@@ -613,7 +643,7 @@ mod tests {
     #[test]
     fn cache_symlink_dot_trellis_to_an_outside_directory_is_refused() {
         // A linked `.trellis` puts both files wherever it points.
-        let (repo, outside) = link_scratch("dot-dir");
+        let (_base, repo, outside) = link_scratch("dot-dir");
         let dot = repo.join(".trellis");
         if !link_dir(&outside, &dot) {
             return;
@@ -635,7 +665,7 @@ mod tests {
         // the plain path: a temporary file left beside the blob is untracked
         // and not ignored, so it would dirty the worktree and block the next
         // run (ADR 0009).
-        let (repo, _) = link_scratch("plain");
+        let (_base, repo, _) = link_scratch("plain");
         let dot = repo.join(".trellis");
         let path = dot.join("index.bin");
         let src = sources();
@@ -669,7 +699,7 @@ mod tests {
         // The repositories that matter most here are the ones whose
         // .gitignore predates the line above: for them the leftover is the
         // only thing that dirties the tree, so the save itself must clear it.
-        let (repo, _) = link_scratch("tmp-leftover");
+        let (_base, repo, _) = link_scratch("tmp-leftover");
         let dot = repo.join(".trellis");
         std::fs::create_dir_all(&dot).unwrap();
         std::fs::write(dot.join(".gitignore"), EARLIER_IGNORES[0]).unwrap();
@@ -706,7 +736,7 @@ mod tests {
     fn cache_tmp_leftover_named_like_a_temporary_file_but_a_link_is_removed_not_followed() {
         // The risk: clearing leftovers becomes a new way to reach outside
         // the repository. `remove_file` on a link removes the link.
-        let (repo, outside) = link_scratch("tmp-link");
+        let (_base, repo, outside) = link_scratch("tmp-link");
         let dot = repo.join(".trellis");
         std::fs::create_dir_all(&dot).unwrap();
         let target = outside.join("keep.txt");
@@ -729,7 +759,7 @@ mod tests {
         // Never rewritten: the file is in the user's repository. It stays
         // trellis's own to the trust digest instead (see
         // `is_trellis_gitignore`).
-        let (repo, _) = link_scratch("tmp-old-ignore");
+        let (_base, repo, _) = link_scratch("tmp-old-ignore");
         let dot = repo.join(".trellis");
         std::fs::create_dir_all(&dot).unwrap();
         std::fs::write(dot.join(".gitignore"), EARLIER_IGNORES[0]).unwrap();

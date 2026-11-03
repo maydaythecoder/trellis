@@ -1,7 +1,3 @@
-// Package view draws the Go TUI. It holds no state and changes none: each
-// function takes what it draws and returns the text, so a test reads the
-// screen as a string. It imports nothing of the TUI's own, so the model can
-// use it without a cycle.
 package view
 
 import (
@@ -9,7 +5,61 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/maydaythecoder/trellis/tui/internal/theme"
 )
+
+// modalBox is the modal's size at width by height, and its inside width.
+func modalBox(width, height int) (boxW, boxH, inner int) {
+	boxW = clamp(width*6/10, 40, width)
+	boxH = clamp(height*6/10, 5, height)
+	return boxW, boxH, boxW - 2
+}
+
+// modalPage is the diff's lines, the rows the body shows, whether the diff
+// scrolls (a row then says which lines are in view), and lastFrom: the
+// furthest down a view can start and still fill the box, so the last page
+// is a full one. A last line taller than the box is its own last page.
+func modalPage(diff string, width, height int) (lines []string, bodyH int, scrolls bool, lastFrom int) {
+	_, boxH, inner := modalBox(width, height)
+	innerH := boxH - 2
+	// Each line is made plain here as well as by the model: the diff is
+	// served text, and the view draws no character it did not check.
+	lines = strings.Split(diff, "\n")
+	for i, l := range lines {
+		lines[i] = Plain(l)
+	}
+	rows := func(l string) int { return len(WrapHard(l, inner)) }
+	total := 0
+	for _, l := range lines {
+		total += rows(l)
+	}
+	scrolls = total > innerH
+	bodyH = innerH
+	if scrolls {
+		bodyH--
+	}
+	lastFrom, used := len(lines), 0
+	for lastFrom > 0 && used+rows(lines[lastFrom-1]) <= bodyH {
+		used += rows(lines[lastFrom-1])
+		lastFrom--
+	}
+	// When the last line alone wraps past the box, nothing fits from the
+	// end and the loop stops at len(lines), a start past every line: one
+	// Down on a long bash command emptied the box and read "lines 2–2 of
+	// 1". The view starts at that line instead and shows what fits of it.
+	lastFrom = min(lastFrom, len(lines)-1)
+	return lines, bodyH, scrolls, lastFrom
+}
+
+// ModalLastFrom is the furthest line the modal's view can start from at
+// width by height and still fill its box: the most the model scrolls to.
+// The model stopped at the diff's last line while the view stopped here,
+// so the first Up after the end moved nothing (#843).
+func ModalLastFrom(diff string, width, height int) int {
+	_, _, _, lastFrom := modalPage(diff, width, height)
+	return lastFrom
+}
 
 // Modal draws the approval question in a bordered box at the centre of a
 // width by height screen, and nothing else: what was under it is covered,
@@ -20,11 +70,10 @@ import (
 // The question used to come after the diff, and a long diff pushed it out
 // of the box with its own tail, so a change was answered unseen; on the
 // border it is drawn whatever the diff's length. When the diff does not
-// fit, a row of its own says which lines are in view.
-func Modal(question, diff string, scroll, width, height int) string {
-	boxW := clamp(width*6/10, 40, width)
-	boxH := clamp(height*6/10, 5, height)
-	inner, innerH := boxW-2, boxH-2
+// fit, a row of its own says which lines are in view. th paints it as Box
+// paints a pane; the diff's lines are text here, and coloured by line
+// role at the code level, where c sets the question aside (#853).
+func Modal(th theme.Theme, question, diff string, scroll, width, height int) string {
 
 	// edit and write_file change the tree; anything else the gate asks
 	// about (bash, ask_human, a custom tool) is a call.
@@ -32,25 +81,15 @@ func Modal(question, diff string, scroll, width, height int) string {
 	if strings.HasPrefix(question, "edit ") || strings.HasPrefix(question, "write_file ") {
 		what = "change"
 	}
+	return modalWith(th, question+"?", keyRow(key{"y", "accept this " + what}, key{"n", "reject"}), diff, scroll, width, height)
+}
 
-	lines := strings.Split(diff, "\n")
-	rows := func(l string) int { return len(wrap(l, inner)) }
-	total := 0
-	for _, l := range lines {
-		total += rows(l)
-	}
-	scrolls := total > innerH
-	bodyH := innerH
-	if scrolls {
-		bodyH--
-	}
-	// The furthest down a view can start and still fill the box, so the
-	// last page is a full one and a scroll past it shows that page.
-	lastFrom, used := len(lines), 0
-	for lastFrom > 0 && used+rows(lines[lastFrom-1]) <= bodyH {
-		used += rows(lines[lastFrom-1])
-		lastFrom--
-	}
+// modalWith is the modal's box with title on its top border and bottom on
+// its bottom one, text between them from line scroll: the approval box's,
+// and ^O's call box (log.go, #948).
+func modalWith(th theme.Theme, title, bottom, diff string, scroll, width, height int) string {
+	boxW, boxH, inner := modalBox(width, height)
+	lines, bodyH, scrolls, lastFrom := modalPage(diff, width, height)
 	from := scroll
 	if from > lastFrom {
 		from = lastFrom
@@ -58,34 +97,31 @@ func Modal(question, diff string, scroll, width, height int) string {
 	if from < 0 {
 		from = 0
 	}
-	var body []string
+	var body []Row
 	to := from
 	for i := from; i < len(lines) && len(body) < bodyH; i++ {
-		r := wrap(lines[i], inner)
+		r := WrapHard(lines[i], inner)
 		if len(body)+len(r) <= bodyH {
 			to = i + 1
 		}
-		body = append(body, r...)
+		body = append(body, rowsOf(RoleText, r...)...)
 	}
 	if len(body) > bodyH {
 		body = body[:bodyH]
 	}
 	for len(body) < bodyH {
-		body = append(body, "")
+		body = append(body, Row{})
 	}
 	if scrolls {
 		shown := to
 		if shown < from+1 {
 			shown = from + 1
 		}
-		body = append(body, fmt.Sprintf("lines %d–%d of %d · ↑↓ PgUp PgDn", from+1, shown, len(lines)))
+		scrollKeys := Keycap("↑") + Keycap("↓") + " " + Keycap("PGUP") + Keycap("PGDN")
+		body = append(body, Row{Text: fmt.Sprintf("lines %d–%d of %d · %s", from+1, shown, len(lines), scrollKeys), Role: RoleLabel})
 	}
 
-	out := []string{modalEdge("┌", "┐", question+"?", inner)}
-	for _, l := range body {
-		out = append(out, "│"+modalPad(cut(l, inner), inner)+"│")
-	}
-	out = append(out, modalEdge("└", "┘", "[y] accept this "+what+"  [n] reject", inner))
+	out := Box(th, title, bottom, body, boxW, boxH)
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, strings.Join(out, "\n"))
 }
 
@@ -97,43 +133,4 @@ func clamp(v, lo, hi int) int {
 		v = hi
 	}
 	return v
-}
-
-// modalEdge is a border with a label in it, cut to fit.
-func modalEdge(left, right, label string, inner int) string {
-	t := cut(" "+label+" ", inner)
-	return left + t + strings.Repeat("─", inner-len([]rune(t))) + right
-}
-
-func modalPad(s string, w int) string {
-	if n := len([]rune(s)); n < w {
-		return s + strings.Repeat(" ", w-n)
-	}
-	return s
-}
-
-// cut keeps at most w runes, so a long line is cut rather than wrapped.
-func cut(s string, w int) string {
-	r := []rune(s)
-	if len(r) <= w {
-		return s
-	}
-	if w <= 1 {
-		return string(r[:w])
-	}
-	return string(r[:w-1]) + "…"
-}
-
-// wrap breaks a line into rows of at most w runes.
-func wrap(s string, w int) []string {
-	r := []rune(s)
-	if len(r) == 0 {
-		return []string{""}
-	}
-	var out []string
-	for len(r) > w {
-		out = append(out, string(r[:w]))
-		r = r[w:]
-	}
-	return append(out, string(r))
 }

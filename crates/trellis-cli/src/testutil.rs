@@ -6,25 +6,62 @@
 //! during that same audit. Duplication is cheaper than the wrong abstraction
 //! right up until a copy drifts, and this one had.
 //!
-//! It unifies five of the seven. `tests/cli.rs` is a separate crate and
+//! It unifies five of the seven. `tests/cli/` is a separate crate and
 //! `trellis-vcs` another, so both keep their own; a helper that reached them
 //! would need a shared dev-dependency crate, which is more structure than two
 //! fixtures are worth.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// A temporary directory unique to this process.
+/// A fresh directory under the system temp dir, removed when it is dropped.
 ///
-/// The process id is not decoration. These fixtures `remove_dir_all` then
-/// `create_dir_all` a fixed location, and two test processes running at once
-/// — which is exactly what `cargo mutants -j N` does — delete each other's
-/// repository mid-test and fail for a reason that has nothing to do with the
-/// code under test. That cost one mutation run before it was found.
-pub(crate) fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("trellis-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+/// It reads as the `Path` it holds. Hold it for as long as the test uses the
+/// directory, and past any child process that runs in it: on Windows a
+/// directory a running child still has open cannot be removed.
+///
+/// The name ends in a random suffix rather than the process id. A fixed name
+/// that each fixture deleted and re-created let two test processes running
+/// at once (`cargo mutants -j N`) delete each other's repository mid-test,
+/// and, since nothing removed it afterwards, every run left its fixtures
+/// behind: about 84,000 of them had filled a host's disk (#979).
+pub(crate) struct Scratch {
+    dir: tempfile::TempDir,
+    held: Vec<Scratch>,
+}
+
+impl Scratch {
+    /// Keeps `other` until this one is dropped: for a fixture that returns
+    /// its repository and only a path into a second directory (a script
+    /// kept outside the repository so the worktree stays clean). Dropped
+    /// with the fixture function's other locals, that second directory
+    /// would be gone before the test read it.
+    pub(crate) fn hold(&mut self, other: Scratch) {
+        self.held.push(other);
+    }
+}
+
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        self.dir.path()
+    }
+}
+
+impl AsRef<Path> for Scratch {
+    fn as_ref(&self) -> &Path {
+        self.dir.path()
+    }
+}
+
+/// A [`Scratch`] directory named `trellis-<name>-<random>`.
+pub(crate) fn scratch(name: &str) -> Scratch {
+    Scratch {
+        dir: tempfile::Builder::new()
+            .prefix(&format!("trellis-{name}-"))
+            .tempdir()
+            .expect("the system temp dir must be writable to run these tests"),
+        held: Vec::new(),
+    }
 }
 
 /// A shell argv for `script`, as TOML, with literal strings so a Windows
@@ -154,9 +191,10 @@ pub(crate) struct Figures {
     requested: Vec<trellis_loop::RequestedCompaction>,
 }
 
-/// [`Figures`]: 7 tokens, 4,321 prompt bytes, one compaction eliding 50 B,
+/// [`Figures`]: 7 tokens, 4,321 prompt bytes against a 9,000-byte context
+/// budget, one compaction eliding 50 B,
 /// one requested compaction eliding 60 B, and a last step of 13 output
-/// tokens queued 250 ms.
+/// tokens queued 250 ms; 1,234 prompt tokens, and a few words said.
 pub(crate) fn figures() -> Figures {
     Figures {
         compactions: vec![trellis_loop::Compacted {
@@ -185,11 +223,17 @@ impl trellis_loop::Model for Figures {
     ) -> Result<trellis_loop::Step, String> {
         Err("not driven".into())
     }
-    fn tokens_used(&self) -> u64 {
-        7
+    fn tokens_used(&self) -> Option<u64> {
+        Some(7)
+    }
+    fn prompt_tokens(&self) -> Option<u64> {
+        Some(1_234)
     }
     fn prompt_bytes(&self) -> Option<usize> {
         Some(4321)
+    }
+    fn context_bytes(&self) -> Option<usize> {
+        Some(9_000)
     }
     fn compactions(&self) -> &[trellis_loop::Compacted] {
         &self.compactions
@@ -202,5 +246,8 @@ impl trellis_loop::Model for Figures {
             completion_tokens: Some(13),
             queue_wait_ms: Some(250),
         }
+    }
+    fn said(&self) -> Option<&str> {
+        Some("looking at the caller first")
     }
 }

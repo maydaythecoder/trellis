@@ -1,0 +1,24 @@
+ Run ⟩ edits                                         L2 / 4  [ESC] out  TRELLIS 
+ ● RUNNING  1:23*  █░░░░░░░ 3/40  [^P] pause  running edit → src/parser.py      
+ w ┌ edits ────────────────────────────────────────────────────────────────────┐
+   │› src/parser.py                                    +3 −1  ● in the worktree│
+ a │  tests/test_parser.py                                 —  ● in the worktree│
+   │  src/lexer.py                              +1 −1  ● awaiting your approval│
+ e │                                                                           │
+   │                                                                           │
+ c │                                                                           │
+   │                                                                           │
+ r │                                                                           │
+   │                                                                           │
+   │                                                                           │
+   └───────────────────────────────────────────────────────────────────────────┘
+┌ budget  [^R] raise ──────────────────────────────────────────────────────────┐
+│   TURNS        █░░░░░░░░░░░░░░░ 3/40                                         │
+│   WALL CLOCK   1:23*/—                                                       │
+│   COMPLETION   —/— tokens                                                    │
+│   LAST PROMPT  24.1 kB/—                                                     │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ steer  [⏎] queue for the next turn ──────────────────────────────────────────┐
+│█                                                                             │
+└──────────────────────────────────────────────────────────────────────────────┘
+ [^C] stop  ● 3 pending  model ollama:qwen2.5-coder…  tier 2, native tool calls 

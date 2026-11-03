@@ -1,9 +1,21 @@
+// Package view draws the Go TUI. It holds no state and changes none: each
+// function takes what it draws and returns the text, so a test reads the
+// screen as a string. It imports nothing of the TUI's own but the theme it
+// paints with, so the model can use it without a cycle.
+//
+// A frame starts at Render, below, which the model's View calls with the
+// State that model/panes.go builds; while an approval question is up, View
+// draws Modal (modal.go) instead. Both draw their regions with Box
+// (frame.go), from text that the helpers in text.go make plain, cut, pad
+// and wrap, measuring every width in terminal cells, and paint each row by
+// its role last (paint.go).
 package view
 
 import (
 	"fmt"
 	"strings"
-	"unicode"
+
+	"github.com/maydaythecoder/trellis/tui/internal/theme"
 )
 
 // Below this the six-region layout has no room to be legible; the ratatui
@@ -18,6 +30,14 @@ const (
 // actions pane's widest row is measured per frame and can raise it (#655,
 // the ratatui TUI's RIGHT_MIN_WIDTH).
 const RightMinWidth = 36
+
+// MinTranscriptWidth is the transcript's floor: the right column never
+// takes more than the width less this, so a custom tool's long name is cut
+// in its node instead of pushing the column off the screen (#875). It is
+// two fifths of MinWidth: at 80 columns the four built-in tools' rows need
+// up to 48 cells in a run of under a hundred actions, and every built-in
+// label stays whole there.
+const MinTranscriptWidth = MinWidth * 2 / 5
 
 // TranscriptPage is how many rows PgUp and PgDn move the transcript
 // (#660): the arrows move one, and the start of a long run was hundreds of
@@ -41,9 +61,19 @@ const (
 	Proposed EditStatus = iota
 )
 
+// Edit is one write trellis reported, from its turn event: the path the
+// turn targeted and, for an edit that applied, its line counts, where its
+// hunk starts and the hunk itself (#802). Each is nil where the turn
+// carried none: a file write_file created has no counts and no diff.
 type Edit struct {
 	Path   string
 	Status EditStatus
+	Turn   uint64
+	// Added and Removed are the whole lines the edit added and removed.
+	Added, Removed *uint64
+	// Diff is trellis's unified diff of the hunk, kept as sent: repository
+	// text and model output, made plain line by line when it is drawn.
+	Diff *string
 }
 
 // Check is a check trellis reported running, and what it said. There is no
@@ -51,6 +81,10 @@ type Edit struct {
 type Check struct {
 	Name   string
 	Passed bool
+	// Turn is the turn that ran it, and TookMs that turn's tool call time
+	// (duration_ms), nil when the turn carried none (#854).
+	Turn   uint64
+	TookMs *uint64
 }
 
 // Action is one thing the agent did, and whether it changed the tree. No
@@ -78,22 +112,46 @@ type Budget struct {
 	CompletionTokens *uint64
 	ModelMs          *uint64
 	QueueWaitMs      *uint64
+	// The run's other ceilings, from run budget, and the completion tokens
+	// spent against MaxCompletionTokens, from the last turn (#854). The wall clock's
+	// ceiling is in milliseconds, as trellis sends it.
+	MaxWallClockMs      *uint64
+	MaxCompletionTokens *uint64
+	MaxContextBytes     *uint64
+	TokensUsed          *uint64
+}
+
+// Dropped is how many of a run pane's oldest rows the model no longer
+// holds: it keeps the newest of each, and the pane says how many went
+// (#848).
+type Dropped struct {
+	Actions, Edits, Checks int
 }
 
 // State is everything the screen draws. Every string in it is served text
 // and is made plain again here before it is drawn.
 type State struct {
 	Model, Tier string
-	Transcript  []string
-	ScrollBack  int
-	Outcome     string
-	Running     bool
-	Input       string
+	// Transcript is the transcript's rows, oldest first, each with the
+	// role its writer gave it (model/rows.go).
+	Transcript []Row
+	// Filter and Quiet choose which transcript rows are drawn, and
+	// CallOpen is set while ^O's call box is up (log.go, #948).
+	Filter     LogFilter
+	Quiet      bool
+	CallOpen   bool
+	ScrollBack int
+	Outcome    string
+	Running    bool
+	Input      string
 	// Offered are the @ completions to draw under the input line.
 	Offered []string
 	Edits   []Edit
 	Checks  []Check
 	Actions []Action
+	// Dropped counts the rows of Edits, Checks and Actions the model no
+	// longer holds.
+	Dropped Dropped
 	Radius  *Radius
 	Budget  Budget
 	// Stderr is trellis's stderr, the newest last, for the capped messages
@@ -102,37 +160,126 @@ type State struct {
 	// Restored is the last run's run_end restored, nil when it did not say
 	// or no run has ended since the current one started.
 	Restored *bool
+	// Theme is the colours each row is painted in, built once from the
+	// terminal (cmd/trellis-tui). The zero Theme paints nothing.
+	Theme theme.Theme
+	// Now is what the Now strip and Where it is draw (now.go, #850).
+	Now Now
+	// Nav is where the person is in the run view (shell.go, #851).
+	Nav Nav
+	// Asked is every approval question waiting on the person, the one on
+	// screen first, for the code level's state words and its in-place
+	// answer (diff.go, #853).
+	Asked []Asked
+	// Reviewing is set while the question on screen has been set aside to
+	// read its file's diff at the code level, where it is answered.
+	Reviewing bool
+	// Compose is the verb, the held line and the queue the task box draws
+	// (compose.go, #852).
+	Compose Compose
+	// Summary is what the summary level draws that the panes do not hold
+	// (summary.go, #854).
+	Summary Summary
+	// Playful is the register dial at playful (#857): one Ascii face on
+	// the Now strip where it has no run to show (now.go). It changes no
+	// figure, state word, check, outcome or key.
+	Playful bool
+	// Raise is the budget row a raise is being typed for, "" when none
+	// (#857).
+	Raise Limit
+	// Plan is the plan level's (plan.go, #857).
+	Plan Plan
 }
+
+// radiusH is the radius pane's height: its three counts, the line that
+// says what they are a floor on, and two borders.
+const radiusH = 6
+
+// MinBodyRows is the fewest rows the body between the status bar and the
+// budget keeps, whatever the task box below it holds: the radius pane's,
+// so its three counts are never cut, and the transcript keeps four rows.
+// The @ completion list takes what is left above it, and no more (#842):
+// sixteen completions at 80x24 left the body one row, and the transcript
+// sliced past its own end.
+const MinBodyRows = radiusH
 
 // Render draws the whole screen at width by height.
 func Render(s State, w, h int) string {
-	if w < MinWidth || h < MinHeight {
+	if !fits(w, h) {
 		return tooSmall(w, h)
 	}
-	entry := entryLines(s, w)
-	bodyH := h - 1 - 3 - len(entry)
-	leftW, rightW := columns(s, w)
-	const radiusH = 6
-	rest := bodyH - radiusH
-	actionsH := rest / 2
-	editsH := rest / 4
-	checksH := rest - actionsH - editsH
-
-	left := transcript(s, leftW, bodyH)
-	var right []string
-	right = append(right, actions(s, rightW, actionsH)...)
-	right = append(right, edits(s, rightW, editsH)...)
-	right = append(right, checks(s, rightW, checksH)...)
-	right = append(right, radius(s, rightW, radiusH)...)
-
+	entry, bodyH := layout(s, w, h)
 	var out []string
-	out = append(out, pad(status(s, w), w))
-	for i := 0; i < bodyH; i++ {
-		out = append(out, left[i]+right[i])
+	out = append(out, line(s.Theme, trail(s, w), w))
+	now := nowStrip(s, w)
+	if !folded(w, h) && s.Nav.Open == "" {
+		way := levelWays(s)
+		now = spread(withFace(s, now, spansWidth(way), w), way, w)
+	} else {
+		now = withFace(s, now, 0, w)
 	}
-	out = append(out, box("budget", "", []string{budgetLabel(s, w-2)}, w, 3)...)
+	out = append(out, line(s.Theme, now, w))
+	out = append(out, stage(s, folded(w, h), w, bodyH)...)
+	if m := messages(s, w); m != "" {
+		out = append(out, m)
+	}
+	out = append(out, budgetBox(s, w)...)
 	out = append(out, entry...)
+	out = append(out, line(s.Theme, statusBar(s, w), w))
 	return strings.Join(out, "\n")
+}
+
+// layout is the task box's rows and the stage's height at w by h, for
+// Render and for the scroll limits the model keeps (TranscriptTop), so
+// the two cannot disagree about how tall the transcript is (#843). The
+// Trail, the Now strip, the budget box, the status bar, and the task
+// box's two borders and its input row are always drawn, and the messages
+// row once trellis has written to stderr; the completions get what is
+// left of the rest once the stage has its floor.
+func layout(s State, w, h int) (entry []string, bodyH int) {
+	entry = entryLines(s, w, completionRoom(s, h))
+	return entry, h - fixedRows(s) - len(entry)
+}
+
+// fixedRows is every row but the stage's and the task box's: the Trail,
+// the Now strip, the budget box and the status bar, and the messages row
+// once trellis has written to stderr.
+func fixedRows(s State) int {
+	n := 1 + 1 + budgetH + 1
+	if len(s.Stderr) > 0 {
+		n++
+	}
+	return n
+}
+
+// completionRoom is the most rows the @ completions take at height h: what
+// is left once the fixed rows, the task box's borders and input row, and
+// the body's floor are drawn.
+func completionRoom(s State, h int) int {
+	return h - fixedRows(s) - 3 - MinBodyRows
+}
+
+// minPaneRows is the most the actions, edits and checks panes give up to
+// Where it is: below it, the actions graph loses its own node rows.
+const minPaneRows = 12
+
+// nowRole is the Now strip's colour: what needs the person in signal,
+// a stop on its way in warn, a run in flight in cool, the engine's own
+// activity, and an idle or ended view as a label. An ended run is never
+// ok or down: those colours come only from a check's verdict.
+func nowRole(s State) Role {
+	switch {
+	case s.Running && s.Now.Stopping:
+		return RoleNote
+	case s.Running && s.Now.Waiting:
+		return RoleYou
+	case s.Running && s.Now.Paused:
+		// Held: waiting on the person's resume, in warn as a stop is.
+		return RoleNote
+	case s.Running:
+		return RoleTool
+	}
+	return RoleLabel
 }
 
 // columns splits the width between the transcript and the right column.
@@ -143,128 +290,197 @@ func Render(s State, w, h int) string {
 // worse than a narrower transcript that wraps.
 func columns(s State, w int) (left, right int) {
 	right = max(w*2/5, RightMinWidth, actionsWidth(s)+2)
+	right = min(right, w-MinTranscriptWidth)
 	return w - right, right
 }
 
-// TranscriptRows is how many rows the transcript wraps to in the layout
-// drawn at width w: the scroll back that shows its first row (Home, #660).
-func TranscriptRows(s State, w int) int {
-	if w < MinWidth {
-		w = MinWidth
+// transcriptW is the transcript pane's width at the top level of a w by h
+// screen: the whole stage once the right column folds (#851), and what the
+// column leaves otherwise.
+func transcriptW(s State, w, h int) int {
+	if folded(w, h) {
+		return w
 	}
 	left, _ := columns(s, w)
+	return left
+}
+
+// TranscriptRows is how many rows the transcript wraps to in the layout
+// drawn at w by h: the scroll back that shows its first row (Home, #660).
+// It counts only the rows the filter and quiet mode draw (#948).
+func TranscriptRows(s State, w, h int) int {
+	w, h = max(w, MinWidth), max(h, MinHeight)
+	inner := transcriptW(s, w, h) - 2
 	n := 0
-	for _, l := range s.Transcript {
-		n += len(wrapWords(plain(l), left-2))
+	for _, r := range shownRows(s) {
+		n += len(transcriptLines(r, inner))
 	}
 	return n
 }
+
+// YouBar is the left bar the person's own entries are drawn under.
+const YouBar = "▎ "
+
+// transcriptLines is one transcript row wrapped to inner cells: under
+// YouBar on each line when the row is the person's. TranscriptRows and
+// transcript both count through it, so the scroll limits are the rows
+// drawn; counted apart, they drifted once before (#843).
+func transcriptLines(r Row, inner int) []string {
+	if !r.Bar {
+		return WrapWords(Plain(r.Text), inner)
+	}
+	lines := WrapWords(Plain(r.Text), max(inner-Width(YouBar), 1))
+	for i, l := range lines {
+		lines[i] = YouBar + l
+	}
+	return lines
+}
+
+// TurnDivider is the rule a turn's rows start under: its number, the
+// model call's time, the completion tokens and the prompt's size, each in
+// its unit. A figure the turn event did not carry is Dash with its unit
+// beside it, never 0 (rule 2), and the prompt, measured in bytes, and the
+// completion, in tokens, are two figures, never one sum (rule 5).
+func TurnDivider(turn uint64, modelMs, completionTokens, promptBytes *uint64) string {
+	fig := func(n *uint64) string {
+		if n == nil {
+			return Dash
+		}
+		return fmt.Sprintf("%d", *n)
+	}
+	return fmt.Sprintf("─ turn %d · model %s ms · %s tok out · %s B prompt", turn, fig(modelMs), fig(completionTokens), fig(promptBytes))
+}
+
+// TranscriptTop is the scroll back that shows the transcript's first row
+// at the top of its pane, in the layout drawn at w by h: the most Home, PgUp
+// and Up go to. The pane shows a page of rows, so the top is the rows less
+// that page; counted as all the rows, as it was, the first PgDn after Home
+// spent itself on rows above the first and moved nothing (#843). Folded,
+// the panes' row under the pane takes one of the stage's rows.
+func TranscriptTop(s State, w, h int) int {
+	w, h = max(w, MinWidth), max(h, MinHeight)
+	_, bodyH := layout(s, w, h)
+	if folded(w, h) {
+		bodyH--
+	}
+	return max(TranscriptRows(s, w, h)-max(bodyH-2, 0), 0)
+}
+
+// fits reports whether w by h is room for the whole screen. Below it
+// Render draws tooSmall, and Asking the approval box alone.
+func fits(w, h int) bool { return w >= MinWidth && h >= MinHeight }
 
 func tooSmall(w, h int) string {
 	return fmt.Sprintf("terminal too small\n%dx%d — need at least %dx%d", w, h, MinWidth, MinHeight)
 }
 
-// status is the one-line bar: TRELLIS, the worktree's state, the model and
-// the tier. The worktree comes before the model, and the model is the span
-// cut, with "…", to the room left: drawn last, the worktree was pushed past
-// column 80 by a long spec and read "work" (#636).
-func status(s State, w int) string {
-	model := plain(s.Model)
+// barRight is the status bar's right side, w cells at most: the
+// worktree's state as a Status, the model and the tier. The worktree comes
+// before the model, and the model is the span cut, with "…", to the room
+// left: drawn last, the worktree was pushed past column 80 by a long spec
+// and read "work" (#636).
+func barRight(s State, w int) []Span {
+	head := statusSpan(worktree(s))
+	model := Plain(s.Model)
 	if model == "" {
 		model = "none"
 	}
-	tier := plain(s.Tier)
+	tier := Plain(s.Tier)
 	if tier == "" {
 		tier = "probing…"
 	}
-	head := " TRELLIS   worktree " + WorktreeState(s) + "  model "
 	tail := "  tier " + tier
-	room := max(w-len([]rune(head))-len([]rune(tail)), 1)
-	return head + cut(model, room) + tail
+	room := max(w-Width(head.Text)-Width("  model ")-Width(tail), 1)
+	return []Span{head, {Text: "  model " + Cut(model, room) + tail, Role: RoleLabel}}
 }
 
-// WorktreeState is what the bar says about the worktree (#636), from this
-// task's writes and how its run ended. The edits pane holds one row per
-// write trellis reported, so a run in flight counts writes and a finished
-// one counts the files they touched. A run that rolled back has left
-// nothing, and one that did not say so (a converged run, or an ending that
-// did not report it) has left its files for the person to review.
-func WorktreeState(s State) string {
+// worktree is the worktree's state as the status bar's Status, its word
+// and its tone (#636, #911), from this task's writes and how its run
+// ended. The edits pane holds one row per write trellis reported, so a run
+// in flight counts writes, pending in the engine's colour, and a finished
+// one counts the files they touched, left for the person to review in
+// theirs. A run that rolled back has left nothing, and one that did not
+// say so (a converged run, or an ending that did not report it) has left
+// its files for review. Once the oldest writes are no longer held (#848),
+// their files cannot all be counted, and the count ends in "+".
+func worktree(s State) (word string, tone Role) {
 	if s.Running {
-		if n := len(s.Edits); n > 0 {
-			return fmt.Sprintf("%d edit(s) pending", n)
+		if n := len(s.Edits) + s.Dropped.Edits; n > 0 {
+			return fmt.Sprintf("%d pending", n), RoleTool
 		}
-		return "clean"
+		return "clean", RoleLabel
 	}
 	if s.Restored != nil && *s.Restored {
-		return "restored"
+		return "restored", RoleLabel
 	}
 	files := map[string]bool{}
 	for _, e := range s.Edits {
 		files[e.Path] = true
 	}
-	if len(files) > 0 {
-		return fmt.Sprintf("%d file(s) left for review", len(files))
+	switch {
+	case s.Dropped.Edits > 0:
+		return fmt.Sprintf("%d+ to review", len(files)), RoleYou
+	case len(files) > 0:
+		return fmt.Sprintf("%d to review", len(files)), RoleYou
 	}
-	return "clean"
+	return "clean", RoleLabel
+}
+
+// notKept is the row a pane draws first when the model no longer holds
+// its n oldest rows, or nothing when it holds them all.
+func notKept(n int, what string) []Row {
+	if n == 0 {
+		return nil
+	}
+	return []Row{{Text: fmt.Sprintf("… %d earlier %s not kept", n, what), Role: RoleLabel}}
 }
 
 // transcript draws the transcript, following its end unless scrolled
 // back, with the last run's outcome on the bottom border, which does not
 // scroll: a run that ended is visible however long its transcript is.
+//
+// Each row is painted in the role its writer gave it (model/rows.go, #849),
+// and every row it wraps to takes the same role. The view never reads a
+// role from a row's words: the model's words could then pass for the
+// person's or for a verdict.
 func transcript(s State, w, h int) []string {
-	inner := w - 2
-	var rows []string
-	for _, l := range s.Transcript {
-		rows = append(rows, wrapWords(plain(l), inner)...)
-	}
-	innerH := h - 2
-	// Scrolled back past the first row, the first page is shown: the view
-	// stops at the top rather than drawing an empty pane.
-	end := max(len(rows)-s.ScrollBack, min(innerH, len(rows)))
-	start := end - innerH
-	if start < 0 {
-		start = 0
-	}
-	title := "transcript"
+	// The rows the filter and quiet mode draw (log.go, #948), the page
+	// the scroll back shows of them.
+	rows, _ := pageRows(s, w, h)
+	title := logTitle(s)
 	if s.ScrollBack > 0 {
-		title = "transcript · scrolled back · ↓ to follow"
+		title += " · scrolled back · ↓ to follow"
 	}
 	bottom := ""
 	if s.Outcome != "" {
-		bottom = "last run: " + plain(s.Outcome)
+		bottom = "last run: " + Plain(s.Outcome)
 	}
-	return box(title, bottom, rows[start:end], w, h)
+	return Box(s.Theme, title, bottom, rows, w, h)
 }
 
-func edits(s State, w, h int) []string {
-	var lines []string
-	for _, e := range s.Edits {
-		lines = append(lines, "~ "+plain(e.Path))
-	}
-	return box("edits", "", lines, w, h)
-}
-
+// checks draws a row per check trellis reported, in ok or down from its
+// verdict: Check.Passed is set only from one (model/panes.go), and a row is
+// never coloured from what its words say.
 func checks(s State, w, h int) []string {
-	var lines []string
+	rows := notKept(s.Dropped.Checks, "checks")
 	for _, c := range s.Checks {
-		word := "failed"
+		r := Row{Text: Plain(c.Name) + " failed", Role: RoleFailed}
 		if c.Passed {
-			word = "passed"
+			r = Row{Text: Plain(c.Name) + " passed", Role: RolePassed}
 		}
-		lines = append(lines, plain(c.Name)+" "+word)
+		rows = append(rows, r)
 	}
-	return box("checks", "", lines, w, h)
+	return paneBox(s, PanelChecks, "checks", "", rows, w, h)
 }
 
 // radius draws the three counts as three rows meeting at one focus, never
 // as a ratio, a percentage or a total, and says what they are a floor on.
 func radius(s State, w, h int) []string {
 	if w-2 < 24 {
-		return box("radius", "", nil, w, h)
+		return paneBox(s, PanelRadius, "radius", "", nil, w, h)
 	}
 	if s.Radius == nil {
-		return box("radius", "", []string{"  no blast_radius call yet"}, w, h)
+		return paneBox(s, PanelRadius, "radius", "", rowsOf(RoleLabel, "  no blast_radius call yet"), w, h)
 	}
 	r := s.Radius
 	rows := []struct {
@@ -277,16 +493,16 @@ func radius(s State, w, h int) []string {
 		{"candidates", r.Candidates, "◐", "┤"},
 		{"unresolved", r.Unresolved, "○", "┘"},
 	}
-	var lines []string
+	var lines []Row
 	for i, row := range rows {
 		l := fmt.Sprintf("  %-11s%5d %s─%s", row.label, row.n, row.glyph, row.join)
 		if i == 1 {
 			l += "──◆ reach"
 		}
-		lines = append(lines, l)
+		lines = append(lines, Row{Text: l})
 	}
-	lines = append(lines, "  a floor on reach, not a boundary")
-	return box("radius", "", lines, w, h)
+	lines = append(lines, Row{Text: "  a floor on reach, not a boundary", Role: RoleLabel})
+	return paneBox(s, PanelRadius, "radius", "", lines, w, h)
 }
 
 // node is one node of the action graph: a tool and its count as its row
@@ -320,7 +536,7 @@ func nodes(s State) []node {
 				}
 			}
 		}
-		n := node{name: plain(name), calls: calls}
+		n := node{name: Plain(name), calls: calls}
 		switch {
 		case calls == 0:
 		case wrote == 0:
@@ -343,21 +559,28 @@ func focus(s State) string {
 	return fmt.Sprintf("──◆ %d action%s", n, plural)
 }
 
-// widths is the widest label and the widest count among the nodes.
+// widths is the widest label and the widest count among the nodes, in
+// cells.
 func widths(ns []node) (labelW, countW int) {
 	for _, n := range ns {
-		labelW = max(labelW, len([]rune(n.name)))
-		countW = max(countW, len([]rune(n.count)))
+		labelW = max(labelW, Width(n.name))
+		countW = max(countW, Width(n.count))
 	}
 	return labelW, countW
 }
 
-// actionsWidth is the columns the graph's widest row takes, so the layout
-// can give the pane that much (#655): indent, label, the count between two
-// spaces, glyph, edge, and the focus.
+// actionsWidth is the cells the graph's widest row takes, so the layout
+// can give the pane that much (#655).
 func actionsWidth(s State) int {
 	labelW, countW := widths(nodes(s))
-	return 2 + labelW + 1 + countW + 1 + 1 + 2 + len([]rune(focus(s)))
+	return labelW + besideLabel(s, countW)
+}
+
+// besideLabel is the cells a node's row takes besides its label: the
+// indent, the count between two spaces, glyph, edge, and the focus that
+// the middle row carries.
+func besideLabel(s State, countW int) int {
+	return 2 + 1 + countW + 1 + 1 + 2 + Width(focus(s))
 }
 
 // actions draws the action graph: every tool a node, filled once called,
@@ -368,12 +591,16 @@ func actionsWidth(s State) int {
 func actions(s State, w, h int) []string {
 	inner := w - 2
 	if inner < 24 {
-		return box("actions", "", nil, w, h)
+		return paneBox(s, PanelActions, "actions", "", nil, w, h)
 	}
 	ns := nodes(s)
 	labelW, countW := widths(ns)
+	// A label that does not fit is cut, so a long name costs its own tail
+	// and the counts, the edge column and the focus keep their places
+	// (#875).
+	labelW = min(labelW, max(1, inner-besideLabel(s, countW)))
 	mid := len(ns) / 2
-	var lines []string
+	var lines []Row
 	for i, n := range ns {
 		join := "┤"
 		if i == 0 {
@@ -385,11 +612,11 @@ func actions(s State, w, h int) []string {
 		if n.calls > 0 {
 			glyph = "●"
 		}
-		l := "  " + padRunes(n.name, labelW) + " " + strings.Repeat(" ", countW-len([]rune(n.count))) + n.count + " " + glyph + "─" + join
+		l := "  " + Pad(Cut(n.name, labelW), labelW) + " " + strings.Repeat(" ", countW-Width(n.count)) + n.count + " " + glyph + "─" + join
 		if i == mid {
 			l += focus(s)
 		}
-		lines = append(lines, cut(l, inner))
+		lines = append(lines, Row{Text: Cut(l, inner), Role: RoleTool})
 	}
 	wroteN := 0
 	for _, a := range s.Actions {
@@ -397,13 +624,17 @@ func actions(s State, w, h int) []string {
 			wroteN++
 		}
 	}
-	switch {
-	case len(s.Actions) == 0:
-		lines = append(lines, "  nothing yet")
-	case wroteN == 0:
-		lines = append(lines, "  nothing written to the tree")
-	default:
-		lines = append(lines, fmt.Sprintf("  %d wrote to the tree", wroteN))
+	// ✎ n is how many of the actions held wrote to the tree (#911), as the
+	// recent actions below mark each one that did; /help says so.
+	if len(s.Actions) == 0 {
+		lines = append(lines, Row{Text: "  nothing yet", Role: RoleLabel})
+	} else {
+		lines = append(lines, Row{Text: fmt.Sprintf("  ✎ %d", wroteN), Role: RoleLabel})
+	}
+	// The graph counts the actions held; the ones before them are said,
+	// not counted, so every figure in the pane is of the same actions.
+	if n := s.Dropped.Actions; n > 0 {
+		lines = append(lines, Row{Text: fmt.Sprintf("  %d earlier actions not kept", n), Role: RoleLabel})
 	}
 	room := h - 2 - len(lines)
 	if room > 0 && len(s.Actions) > 0 {
@@ -414,78 +645,145 @@ func actions(s State, w, h int) []string {
 		for _, a := range s.Actions[from:] {
 			mark := "·"
 			if a.Wrote {
-				mark = "*"
+				mark = "✎"
 			}
-			lines = append(lines, cut("  "+mark+" "+plain(a.Tool)+" "+plain(a.Target), inner))
+			lines = append(lines, Row{Text: Cut("  "+mark+" "+Plain(a.Tool)+" "+Plain(a.Target), inner), Role: RoleTool})
 		}
 	}
-	return box("actions", "", lines, w, h)
+	return paneBox(s, PanelActions, "actions", "", lines, w, h)
 }
 
-// budgetSegments are the budget line's figures, in order: the iteration
-// against the run's own ceiling, the prompt's size, the time elapsed, and
-// #257's rate and queue wait (nil when not drawn at all). A figure trellis
-// did not report is named as unreported, never drawn as 0 (#641): at
-// launch the line used to read "iteration 0 · 0 B prompt · 0s elapsed",
-// three figures nothing had measured.
-func budgetSegments(s State) (iteration, prompt, elapsed string, rate, queued *string) {
+// Limit is a budget row a person may raise (#857): one of the three
+// ceilings set_budget takes, never the context, which the driver fixes for
+// the run (#807).
+type Limit string
+
+const (
+	LimitTurns     Limit = "turns"
+	LimitWallClock Limit = "wall clock"
+	LimitTokens    Limit = "completion tokens"
+)
+
+// Limits is every row a raise may be typed for, in the order ^R visits
+// them.
+var Limits = []Limit{LimitTurns, LimitWallClock, LimitTokens}
+
+// Unit is what a raise for l is typed in: the wall clock in whole seconds,
+// sent in the milliseconds run budget carries (the desktop's #837).
+func (l Limit) Unit() string {
+	switch l {
+	case LimitWallClock:
+		return "seconds"
+	case LimitTokens:
+		return "tokens"
+	}
+	return "turns"
+}
+
+// limitFigures is l's row as the budget draws it: what was used, the
+// ceiling in force, both in the units the cells compare, and the readout.
+// The ceiling is only ever the latest run budget's.
+func limitFigures(s State, l Limit) (label string, used, ceiling *uint64, readout string) {
 	b := s.Budget
-	// Turns count from 1: a 0 is a run that has not reported a turn.
-	switch {
-	case b.Iteration == 0 && b.MaxIterations == nil:
-		iteration = "no iteration yet"
-	case b.Iteration == 0:
-		iteration = fmt.Sprintf("no iteration yet of %d", *b.MaxIterations)
-	case b.MaxIterations == nil:
-		iteration = fmt.Sprintf("iteration %d", b.Iteration)
-	default:
-		iteration = fmt.Sprintf("iteration %d/%d", b.Iteration, *b.MaxIterations)
+	switch l {
+	case LimitWallClock:
+		// Both in milliseconds for the cells, and in m:ss for the readout:
+		// the elapsed figure is held in seconds, the ceiling as trellis sent it.
+		var usedMs *uint64
+		if b.ElapsedSecs != nil {
+			ms := *b.ElapsedSecs * 1000
+			usedMs = &ms
+		}
+		c := Dash
+		if b.MaxWallClockMs != nil {
+			c = Clock(*b.MaxWallClockMs / 1000)
+		}
+		return "WALL CLOCK", usedMs, b.MaxWallClockMs, clockText(s) + "/" + c
+	case LimitTokens:
+		return "COMPLETION", b.TokensUsed, b.MaxCompletionTokens, figure(b.TokensUsed) + "/" + figure(b.MaxCompletionTokens) + " tokens"
 	}
-	// A finished run does not keep presenting an iteration in progress.
-	if !s.Running && s.Outcome != "" {
-		iteration = "finished · " + iteration
-	}
-	prompt = "prompt not reported"
-	if b.PromptBytes != nil {
-		prompt = fmt.Sprintf("%d B prompt", *b.PromptBytes)
-	}
-	elapsed = "not started"
-	if b.ElapsedSecs != nil {
-		elapsed = Clock(*b.ElapsedSecs) + " elapsed"
-	}
-	rate, queued = turnRate(b)
-	return iteration, prompt, elapsed, rate, queued
+	return "TURNS", turnUsed(s), b.MaxIterations, figure(turnUsed(s)) + "/" + figure(b.MaxIterations)
 }
 
-// BudgetLine is the budget's whole line, every segment kept.
-func BudgetLine(s State) string { return budgetLabel(s, -1) }
+// budgetBox is the budget box (#951): one row per ceiling run budget
+// carries, the turns, the wall clock, the completion tokens and the last
+// prompt's bytes, each a Meter of meterCells cells and its two figures,
+// as the summary level and the desktop's budget rows draw them (#829,
+// #854). A figure trellis did not report is Dash and its row has no
+// cells (#641): at launch the line used to read "iteration 0 · 0 B prompt
+// · 0s elapsed", three figures nothing had measured. The rows are always
+// four, so the box's height, and with it the transcript's scroll limits
+// (#843), never moves with what has been reported. While a raise is typed
+// its row is marked, so the person sees the ceiling they are raising as
+// trellis last sent it beside the others. Its title offers ^R while a run
+// in flight can take a raise.
+func budgetBox(s State, w int) []string {
+	title := "budget"
+	switch {
+	case s.Raise != "":
+		title = "budget · raise " + string(s.Raise)
+	case s.Running && !s.Now.Stopping:
+		title = "budget  " + keyRow(key{"^R", "raise"})
+	}
+	var rows []Row
+	for _, l := range Limits {
+		label, used, ceiling, readout := limitFigures(s, l)
+		row := limitRow(label, used, ceiling, readout, "", w-2)[0]
+		if l == s.Raise {
+			row.Spans[0] = Span{Text: " › " + Pad(label, 13), Role: RoleYou}
+		}
+		rows = append(rows, row)
+	}
+	b := s.Budget
+	rows = append(rows, limitRow("LAST PROMPT", b.PromptBytes, b.MaxContextBytes, kB(b.PromptBytes)+"/"+kB(b.MaxContextBytes), "", w-2)[0])
+	rows[0].Spans = withLastTurn(b, rows[0].Spans, w-2)
+	return Box(s.Theme, title, "", rows, w, budgetH)
+}
 
-// budgetLabel is the budget line joined with "  ·  ", dropping whole
-// segments until it fits width (#655); a negative width keeps them all. A
-// line cut by the box ended mid-word ("· queu"), so a segment that does not
-// fit is left out rather than cut, in this order: the token rate first,
-// since it is the one figure derived from the others; then the queue wait;
-// then the prompt size. The iteration and the elapsed time are never
-// dropped: they are what says the run is moving.
-func budgetLabel(s State, width int) string {
-	iteration, prompt, elapsed, rate, queued := budgetSegments(s)
-	segs := []*string{&iteration, &prompt, &elapsed, rate, queued}
-	join := func() string {
-		var parts []string
-		for _, p := range segs {
-			if p != nil {
-				parts = append(parts, *p)
+// budgetH is the budget box's height: its four rows and two borders.
+const budgetH = 4 + 2
+
+// withLastTurn puts #257's rate and queue wait for the last turn at the
+// right of the turns row, the desktop's Stats under its rows (#829): the
+// turn's own output, never summed with the prompt or the completion tokens
+// counted against their ceiling. A Stat that does not fit width is left
+// out whole rather than cut mid-word (#655's "· queu"), the rate first,
+// since it is the one figure derived from the others.
+func withLastTurn(b Budget, row []Span, width int) []Span {
+	rate, queued := turnRate(b)
+	for {
+		var stats []string
+		for _, st := range []*string{rate, queued} {
+			if st != nil {
+				stats = append(stats, *st)
 			}
 		}
-		return strings.Join(parts, "  ·  ")
-	}
-	for _, drop := range []int{3, 4, 1} {
-		if width < 0 || len([]rune(join())) <= width {
-			break
+		if len(stats) == 0 {
+			return row
 		}
-		segs[drop] = nil
+		right := []Span{{Text: "last turn ", Role: RoleLabel}, {Text: strings.Join(stats, "  ·  ")}}
+		if spansWidth(row)+2+spansWidth(right) <= width {
+			return spread(row, right, width)
+		}
+		if rate != nil {
+			rate = nil
+		} else {
+			queued = nil
+		}
 	}
-	return join()
+}
+
+// kB is a byte count in kilobytes to one place, the unit after a space as
+// the design system sets a figure; under 1 kB it stays in bytes, where a
+// rounded 0.0 kB would read as nothing. Dash when trellis did not report it.
+func kB(n *uint64) string {
+	switch {
+	case n == nil:
+		return Dash
+	case *n < 1000:
+		return fmt.Sprintf("%d B", *n)
+	}
+	return fmt.Sprintf("%.1f kB", float64(*n)/1000)
 }
 
 // Clock is seconds as m:ss, so a minutes-long model call reads as time
@@ -522,75 +820,46 @@ func turnRate(b Budget) (rate, queued *string) {
 	return rate, queued
 }
 
-// entryLines is the task entry: the typed line with a block cursor, the @
-// candidates under it (none while a run holds the input: what is typed then
-// is a steer), and what Enter does now.
-func entryLines(s State, w int) []string {
-	lines := []string{plain(s.Input) + "█"}
-	title := "task  ·  enter to run  ·  /help  ·  esc to clear, esc again to quit"
-	if s.Running {
-		title = "running — enter queues a steer for its next turn  ·  ^c stops it"
-	} else {
-		for i, p := range s.Offered {
-			mark := "    "
+// entryLines is the task box: the typed line with a block cursor, the @
+// candidates under it (none while a run holds the input: what is typed
+// then is sent under the verb), then the queue (compose.go), together in at
+// most room rows; what ⏎ does now on its top border, and the verb Tab
+// changes to on its bottom one.
+//
+// The line keeps its end in view, where the cursor is: wider than the box,
+// it was cut at the right and the cursor went with it (#842). What scrolled
+// off the left is marked "…".
+//
+// The completions take at most room rows. When there are more, the last
+// row says how many are not shown, so a short list is never read as all
+// there is. The queue takes what they leave, and says the same.
+func entryLines(s State, w, room int) []string {
+	lines := []Row{{Text: CutLeft(Plain(s.Input)+"█", w-2), Role: RoleYou}}
+	if !s.Running {
+		offered := s.Offered
+		hidden := 0
+		if len(offered) > room {
+			shown := max(room-1, 0)
+			hidden = len(offered) - shown
+			offered = offered[:shown]
+		}
+		// Tab inserts the first path: its keycap marks it, and the rest
+		// line up under it.
+		first := Keycap("TAB") + " "
+		indent := strings.Repeat(" ", Width(first))
+		for i, p := range offered {
+			mark := indent
 			if i == 0 {
-				mark = "tab "
+				mark = first
 			}
-			lines = append(lines, mark+plain(p))
+			lines = append(lines, Row{Text: mark + Plain(p), Role: RoleLabel})
+		}
+		if hidden > 0 && room > 0 {
+			lines = append(lines, Row{Text: fmt.Sprintf("%s… %d more", indent, hidden), Role: RoleLabel})
 		}
 	}
-	return box(title, "", lines, w, 2+len(lines))
-}
-
-// box draws lines in a w by h bordered box, the title in the top border and
-// bottom in the bottom one. Lines are cut, never wrapped, so a long one
-// cannot break the border; a box too small for its lines keeps the first.
-func box(title, bottom string, lines []string, w, h int) []string {
-	if h < 2 || w < 2 {
-		return make([]string, max(h, 0))
-	}
-	inner := w - 2
-	out := []string{edge("┌", "┐", title, inner)}
-	for i := 0; i < h-2; i++ {
-		l := ""
-		if i < len(lines) {
-			l = lines[i]
-		}
-		out = append(out, "│"+padRunes(cut(l, inner), inner)+"│")
-	}
-	return append(out, edge("└", "┘", bottom, inner))
-}
-
-func edge(left, right, title string, inner int) string {
-	if title == "" {
-		return left + strings.Repeat("─", inner) + right
-	}
-	t := cut(" "+plain(title)+" ", inner)
-	return left + t + strings.Repeat("─", inner-len([]rune(t))) + right
-}
-
-// plain removes control characters (C0, DEL, C1), so served text drawn in a
-// pane can never move the cursor or start an escape sequence.
-func plain(s string) string {
-	if strings.IndexFunc(s, unicode.IsControl) < 0 {
-		return s
-	}
-	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return -1
-		}
-		return r
-	}, s)
-}
-
-func pad(s string, w int) string { return padRunes(cut(s, w), w) }
-
-func padRunes(s string, w int) string {
-	n := len([]rune(s))
-	if n >= w {
-		return s
-	}
-	return s + strings.Repeat(" ", w-n)
+	lines = append(lines, queueRows(s.Compose.Queue, room-(len(lines)-1))...)
+	return Box(s.Theme, composeTitle(s), composeBottom(s), lines, w, 2+len(lines))
 }
 
 func contains(xs []string, x string) bool {
@@ -600,38 +869,4 @@ func contains(xs []string, x string) bool {
 		}
 	}
 	return false
-}
-
-// wrapWords breaks a transcript line into rows of at most w runes at word
-// boundaries, as the ratatui paragraph does: a row cut inside a word reads
-// as a different word (#655). A word longer than the row is broken across
-// rows.
-func wrapWords(s string, w int) []string {
-	if w < 1 {
-		w = 1
-	}
-	var out []string
-	row := []rune{}
-	for i, word := range strings.Split(s, " ") {
-		r := []rune(word)
-		if i > 0 {
-			if len(row)+1+len(r) <= w {
-				row = append(row, ' ')
-				row = append(row, r...)
-				continue
-			}
-			out = append(out, string(row))
-			row = row[:0:0]
-		}
-		for len(r) > w {
-			if len(row) > 0 {
-				out = append(out, string(row))
-				row = row[:0:0]
-			}
-			out = append(out, string(r[:w]))
-			r = r[w:]
-		}
-		row = append(row, r...)
-	}
-	return append(out, string(row))
 }
