@@ -64,6 +64,9 @@ pub struct HostedModel {
     /// The words the reply behind the last `next_step`'s call carried
     /// beside it, cut to [`SAID_CAP`]; `None` when it carried none.
     said: Option<String>,
+    /// The run's wall-clock budget left, from [`Model::budget_left`], for
+    /// the next call's deadline; taken by it, so a figure is never reused.
+    budget_left: Option<std::time::Duration>,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +93,7 @@ impl HostedModel {
             images: Vec::new(),
             step: None,
             said: None,
+            budget_left: None,
         }
     }
 
@@ -324,6 +328,21 @@ impl Model for HostedModel {
         self.record_pending(t);
         self.step = None;
         self.said = None;
+        // One deadline for the whole call, every request in it (format,
+        // overflow and transport retries) ending by it, for a client that
+        // streams; one that does not ignores it (#280). The larger of the
+        // budget left and `[model] timeout_s`: a call that starts inside the
+        // budget then outlasts it by at most what one whole-reply request
+        // can, and the one extra turn the loop grants once the budget is
+        // spent, which starts with none left, still gets `timeout_s`. Not
+        // told the budget (a caller outside the loop), the call gets the
+        // whole-reply bound alone.
+        let span = self
+            .budget_left
+            .take()
+            .unwrap_or_default()
+            .max(self.client.timeout());
+        let deadline = trellis_model::deadline_after(span);
         let tools = native_tools(t);
         let protocol = self.client.protocol();
         let mut last = String::new();
@@ -382,7 +401,7 @@ impl Model for HostedModel {
             // The key is not in the body; it is added by the transport. An
             // image's bytes are, and a log is not where they go (ADR 0041).
             tracing::trace!(request = %trellis_model::redact_images(&body), "request as sent");
-            let reply = match self.client.send(&body).await {
+            let reply = match self.client.send_within(&body, Some(deadline)).await {
                 Ok(r) => r,
                 Err(RuntimeError::ContextOverflow(why)) if overflows < MAX_OVERFLOW_RETRIES => {
                     // The provider's refusal is the only measurement of its
@@ -501,6 +520,10 @@ impl Model for HostedModel {
 
     fn requested_compactions(&self) -> &[RequestedCompaction] {
         &self.compaction.requested
+    }
+
+    fn budget_left(&mut self, left: std::time::Duration) {
+        self.budget_left = Some(left);
     }
 
     fn said(&self) -> Option<&str> {

@@ -93,6 +93,10 @@ impl<M: trellis_loop::Model + Send> trellis_loop::Model for Observed<'_, M> {
         self.model.step_usage()
     }
 
+    fn budget_left(&mut self, left: std::time::Duration) {
+        self.model.budget_left(left);
+    }
+
     fn said(&self) -> Option<&str> {
         self.model.said()
     }
