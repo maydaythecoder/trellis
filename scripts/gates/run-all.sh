@@ -74,7 +74,7 @@ for g in "${gates[@]}"; do
   echo "GATE: $id"
   echo "COMMAND: scripts/gates/$script ${args[*]:-}"
   log="$logdir/$id.log"
-  bash "$here/$script" "${args[@]}" >"$log" 2>&1; code=$?
+  bash "$here/$script" ${args[@]+"${args[@]}"} >"$log" 2>&1; code=$?
   echo "EXIT: $code"
   echo "LOG: $log"
   echo "OUTPUT:"; tail -40 "$log"
