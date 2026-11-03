@@ -30,7 +30,7 @@ pub use catalog::{CATALOG, CatalogEntry, DEFAULT};
 pub use grammar::{GrammarError, ToolGrammar};
 pub use hosted::{
     Conversation, Exchange, HostedClient, NativeCall, NativeTool, Protocol, Reply, Thinking,
-    every_turn_replayed, parse_reply, request_body, thinking_sent,
+    deadline_after, every_turn_replayed, parse_reply, request_body, thinking_sent,
 };
 pub use image::{Image, ImageError, MAX_IMAGE_BYTES, redact_images};
 pub use pull::{PullError, Pulled};
