@@ -1601,7 +1601,9 @@ it never reached are 33 in `run_cmd.rs` and 12 in `rpc.rs`; the
 finished the 33, and the 7 of them that are missed are this shard's
 (`file-run_cmd/README.md`'s `comm`), with the 10 missed and 11 timed-out
 lines of its own files: 28 lines in all. The 12 `rpc.rs`
-mutants have no outcome in any run (#248, 2026-11-01). This first batch
+mutants have no outcome in any run (#248, 2026-11-01), and by the owner's
+decision of 2026-11-03 (#995) they stay recorded as "no outcome at
+6b804cb": no `file=rpc.rs` dispatch is spent on them. This first batch
 (#1031) dispositions the 7 `file-run_cmd/` lines, each kill shown by hand
 on base `bd269fcc`: the mutant applied, the named test run with `cargo test
 -p trellis-cli --test prompt_tokens` and seen to fail, the source restored.
