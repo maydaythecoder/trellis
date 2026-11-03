@@ -1,0 +1,23 @@
+crates/trellis-cli/src/first_run.rs:204:75: replace && with || in offers
+crates/trellis-cli/src/first_run.rs:206:77: replace && with || in offers
+crates/trellis-cli/src/first_run.rs:206:29: replace && with || in offers
+crates/trellis-cli/src/first_run.rs:386:5: replace offer_model_choice -> Result<Option<String>> with Ok(None)
+crates/trellis-cli/src/first_run.rs:386:5: replace offer_model_choice -> Result<Option<String>> with Ok(Some(String::new()))
+crates/trellis-cli/src/first_run.rs:386:5: replace offer_model_choice -> Result<Option<String>> with Ok(Some("xyzzy".into()))
+crates/trellis-cli/src/first_run.rs:459:20: replace match guard matches!( e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut ) with true in get
+crates/trellis-cli/src/first_run.rs:459:20: replace match guard matches!( e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut ) with false in get
+crates/trellis-cli/src/first_run.rs:468:22: replace > with == in get
+crates/trellis-cli/src/first_run.rs:468:22: replace > with >= in get
+crates/trellis-cli/src/first_run.rs:489:17: replace && with || in get
+crates/trellis-cli/src/floor.rs:241:19: replace && with || in wrap
+crates/trellis-cli/src/floor.rs:241:36: replace > with < in wrap
+crates/trellis-cli/src/floor.rs:241:36: replace > with >= in wrap
+crates/trellis-cli/src/floor.rs:241:30: replace + with * in wrap
+crates/trellis-cli/src/floor.rs:241:26: replace + with - in wrap
+crates/trellis-cli/src/floor.rs:241:26: replace + with * in wrap
+crates/trellis-cli/src/floor.rs:250:13: replace += with *= in wrap
+crates/trellis-cli/src/hosted.rs:679:5: replace card_list -> String with String::new()
+crates/trellis-cli/src/hosted.rs:679:5: replace card_list -> String with "xyzzy".into()
+crates/trellis-cli/src/hosted.rs:686:13: replace > with == in card_list
+crates/trellis-cli/src/hosted.rs:686:13: replace > with < in card_list
+crates/trellis-cli/src/hosted.rs:686:13: replace > with >= in card_list

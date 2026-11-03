@@ -1,0 +1,6 @@
+crates/trellis-cli/src/session.rs:127:9: replace Session::open -> Result<Self> with Ok(Default::default())
+crates/trellis-cli/src/session.rs:354:21: replace && with || in Session::dispatch
+crates/trellis-cli/src/session_extra.rs:49:5: replace shell_command -> std::process::Command with Default::default()
+crates/trellis-cli/src/session_extra.rs:205:5: replace tokens_by_model -> Vec<ModelTokens> with vec![Default::default()]
+crates/trellis-cli/src/session_extra.rs:301:5: replace clipboard_command -> std::process::Command with Default::default()
+crates/trellis-cli/src/session_extra.rs:345:9: replace Reader::spawn -> Result<Self> with Ok(Default::default())
