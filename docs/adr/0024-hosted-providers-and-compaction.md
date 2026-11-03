@@ -784,6 +784,12 @@ pull request.
   streams is still COL-18's answer under ADR 0047's tenth decision, from
   the colibri floor run's model-call time (#277, #278); until then this
   entry stands for every run.
+  *Amended 2026-11-03 (#278), by ADR 0047 decision 10:* #151 is lifted for loopback colibri only,
+  by the owner's decision of 2026-11-03, taken with no measurement. A
+  stream is opt-in, over openai-chat to a loopback base, under the 32 MiB
+  cap; every other endpoint, and every path that carries a key to a
+  hosted provider, stays as this entry and §1 describe. The colibri floor
+  run's `model_ms_p90` is pending and may reverse it by a dated line.
 - `Retry-After` given as an obsolete HTTP date (RFC 850 or asctime form);
   it falls back to the fixed backoff. IMF-fixdate is honoured (§4).
 - OAuth, Bedrock, Vertex and Azure request signing.
