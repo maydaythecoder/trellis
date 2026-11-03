@@ -106,11 +106,63 @@ fn is_probe(raw: &str) -> bool {
             .is_some_and(|v| v["max_tokens"] == 1)
 }
 
+/// A call with a line of text before it, so a streamed reply carries
+/// content deltas as well as the call.
 fn openai_call(id: &str, name: &str, args: &str) -> String {
-    serde_json::json!({"choices":[{"message":{"role":"assistant","content":null,
+    serde_json::json!({"choices":[{"message":{"role":"assistant",
+        "content":format!("Calling {name} now."),
         "tool_calls":[{"id":id,"type":"function","function":{"name":name,"arguments":args}}]}}],
         "usage":{"completion_tokens":3}})
     .to_string()
+}
+
+/// Whether a request's body asks for an event stream, as a client `build`
+/// made for colibri does (#281).
+fn asks_stream(raw: &str) -> bool {
+    raw.split_once("\r\n\r\n")
+        .and_then(|(_, b)| serde_json::from_str::<serde_json::Value>(b).ok())
+        .is_some_and(|v| v["stream"] == true)
+}
+
+/// `whole`, a `chat.completion`, as colibri streams it (ce370e8,
+/// c/openai_server.py:4940-5150): the content in deltas, each tool call in
+/// one delta, the finish chunk, the usage chunk `include_usage` asks for,
+/// and `data: [DONE]`.
+fn sse(whole: &str) -> String {
+    use serde_json::{Value, json};
+    let v: Value = serde_json::from_str(whole).unwrap();
+    let m = &v["choices"][0]["message"];
+    let chunk = |delta: Value, finish: Value| {
+        json!({"object": "chat.completion.chunk",
+               "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]})
+    };
+    let mut events = vec![chunk(json!({"role": "assistant"}), Value::Null)];
+    for word in m["content"]
+        .as_str()
+        .unwrap_or_default()
+        .split_inclusive(' ')
+    {
+        events.push(chunk(json!({"content": word}), Value::Null));
+    }
+    for (i, c) in m["tool_calls"].as_array().into_iter().flatten().enumerate() {
+        events.push(chunk(
+            json!({"tool_calls": [{"index": i, "id": c["id"], "type": "function",
+                                   "function": c["function"]}]}),
+            Value::Null,
+        ));
+    }
+    let finish = if m["tool_calls"].is_array() {
+        "tool_calls"
+    } else {
+        "stop"
+    };
+    events.push(chunk(json!({}), json!(finish)));
+    events.push(json!({"object": "chat.completion.chunk", "choices": [], "usage": v["usage"]}));
+    events
+        .iter()
+        .map(|e| format!("data: {e}\n\n"))
+        .chain(["data: [DONE]\n\n".to_string()])
+        .collect()
 }
 
 /// A loopback stub on its own thread, one thread per connection so a held
@@ -171,6 +223,9 @@ fn serve(mut s: TcpStream, answers: [&Answer; 3], log: &Log, chats: &Mutex<usize
             },
         )
     };
+    // A run's chat request, streamed when it asks, as colibri answers it.
+    let streamed =
+        !is_models_get(&raw) && !is_health_get(&raw) && !is_probe(&raw) && asks_stream(&raw);
     let index = {
         let mut l = log.lock().unwrap();
         l.push(Seen {
@@ -180,6 +235,9 @@ fn serve(mut s: TcpStream, answers: [&Answer; 3], log: &Log, chats: &Mutex<usize
         l.len() - 1
     };
     match answer {
+        Answer::Reply(status, body) if streamed => {
+            respond_as(&mut s, status, "text/event-stream", &sse(&body))
+        }
         Answer::Reply(status, body) => respond(&mut s, status, &body),
         Answer::Hang => {
             // Held until the client gives up: a read of 0 bytes, or an error,
@@ -197,9 +255,13 @@ fn serve(mut s: TcpStream, answers: [&Answer; 3], log: &Log, chats: &Mutex<usize
 }
 
 fn respond(s: &mut TcpStream, status: &str, body: &str) {
+    respond_as(s, status, "application/json", body);
+}
+
+fn respond_as(s: &mut TcpStream, status: &str, kind: &str, body: &str) {
     let _ = s.write_all(
         format!(
-            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
         )
         .as_bytes(),
@@ -391,6 +453,7 @@ fn continued_as_today(log: &Log, r: &Ran) {
     for b in bodies {
         assert!(b.get("temperature").is_none(), "{b}");
         assert!(b.get("enable_thinking").is_none(), "{b}");
+        assert!(b.get("stream").is_none(), "read whole (#281): {b}");
     }
 }
 
@@ -765,6 +828,44 @@ fn colibri_profile_a_run_against_a_vllm_owned_list_sends_neither_key() {
     assert!(!bodies.is_empty(), "{}", r.all);
     for b in &bodies {
         assert!(has_neither(b), "{b}");
+    }
+}
+
+#[test]
+fn colibri_stream_on_only_a_run_against_colibri_asks_for_a_stream_and_reads_it() {
+    // The risk (#281): an identified colibri sent whole-reply requests, so
+    // a prefill of minutes is cut at `[model] timeout_s` rather than bounded
+    // by its keepalives; or a stream asked for and then misread, so the run
+    // that went ahead whole no longer converges.
+    let (base, log) = stub(
+        reply("200 OK", &models_colibri("glm-5.2")),
+        reply("200 OK", TOOLS_ACCEPTED),
+    );
+    let (_d, r) = chat_run("stream-on", &base, "glm-5.2");
+    went_ahead(&r);
+    let bodies = chat_bodies(&log);
+    assert!(bodies.len() >= 2, "the run's own requests: {}", r.all);
+    for b in &bodies {
+        assert_eq!(b["stream"], true, "{b}");
+        assert_eq!(
+            b["stream_options"],
+            serde_json::json!({"include_usage": true}),
+            "{b}"
+        );
+    }
+}
+
+#[test]
+fn colibri_stream_on_only_a_run_against_a_vllm_owned_list_is_read_whole() {
+    // The risk (#281): a loopback server that is not colibri asked for a
+    // stream, read through a parser built against colibri's alone.
+    let (base, log) = stub(reply("200 OK", MODELS_VLLM), Answer::Hang);
+    let (_d, r) = chat_run("stream-vllm", &base, "glm-5.2");
+    went_ahead(&r);
+    let bodies = chat_bodies(&log);
+    assert!(!bodies.is_empty(), "{}", r.all);
+    for b in &bodies {
+        assert!(b.get("stream").is_none(), "{b}");
     }
 }
 

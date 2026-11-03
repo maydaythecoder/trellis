@@ -393,8 +393,22 @@ pub(crate) fn build(r: &Resolved, cfg: &RepoConfig, colibri: bool) -> Result<Hos
         })?
         .with_thinking(cfg.thinking()?)
         .with_colibri_profile(colibri)
-        // ADR 0047 decision 9: `[model] timeout_s` bounds each request.
-        .with_timeout(cfg.model_timeout());
+        // ADR 0047 decision 9: `[model] timeout_s` bounds each request, or
+        // a streamed request's silence.
+        .with_timeout(cfg.model_timeout())
+        // ADR 0047 decision 10 (#281): streamed for colibri over openai-chat
+        // alone, so a prefill of minutes is bounded by colibri's keepalives
+        // rather than cut at a fixed timeout. `colibri` is true only for a
+        // loopback endpoint, which `with_streaming` holds again; an anthropic
+        // spec served by colibri keeps the whole-reply path, the only one
+        // built for that protocol.
+        .with_streaming(colibri && r.protocol == Protocol::OpenAiChat)
+        .map_err(|e| {
+            anyhow!(
+                "{}\n\nNothing was snapshotted: the run did not start.",
+                plain(&e.to_string())
+            )
+        })?;
     let budget = hosted_context_bytes(r, cfg, colibri)?;
     Ok(HostedModel::new(client).with_context_bytes(Some(budget)))
 }
@@ -1220,6 +1234,63 @@ mod tests {
         assert!(e.contains("Nothing was snapshotted"), "{e}");
     }
 
+    // ---- ADR 0047 decision 10 (#281): only colibri over openai-chat streams ----
+
+    /// A loopback endpoint, with no key set, speaking `protocol`.
+    fn loopback_spec(protocol: Protocol) -> Resolved {
+        Resolved {
+            protocol,
+            base: "http://127.0.0.1:9/v1".into(),
+            model: "m".into(),
+            key_env: "TRELLIS_TEST_KEY_THAT_IS_NEVER_SET".into(),
+            provider: None,
+        }
+    }
+
+    #[test]
+    fn colibri_stream_on_only_for_an_identified_colibri_over_openai_chat() {
+        // The risk: streaming left off for colibri, so a prefill of minutes
+        // is cut at `[model] timeout_s` instead of bounded by its keepalives.
+        let m = build(
+            &loopback_spec(Protocol::OpenAiChat),
+            &RepoConfig::default(),
+            true,
+        )
+        .unwrap();
+        assert!(m.client().streaming());
+    }
+
+    #[test]
+    fn colibri_stream_on_only_never_for_an_anthropic_spec() {
+        // The risk: an anthropic spec served by colibri sent `stream: true`,
+        // whose event stream no parser here reads, so every turn fails.
+        let r = loopback_spec(Protocol::Anthropic);
+        for colibri in [true, false] {
+            let m = build(&r, &RepoConfig::default(), colibri).unwrap();
+            assert!(!m.client().streaming(), "colibri: {colibri}");
+        }
+    }
+
+    #[test]
+    fn colibri_stream_on_only_never_for_a_loopback_endpoint_not_identified_as_colibri() {
+        // The risk: a vLLM or llama.cpp server on this machine, which
+        // `preflight` did not identify, sent `stream: true` and read through
+        // a parser built against colibri's event stream alone.
+        let m = build(
+            &loopback_spec(Protocol::OpenAiChat),
+            &RepoConfig::default(),
+            false,
+        )
+        .unwrap();
+        assert!(!m.client().streaming());
+        assert!(
+            m.client()
+                .body(&Default::default(), &[], 64)
+                .get("stream")
+                .is_none()
+        );
+    }
+
     #[test]
     fn a_compaction_is_a_factual_action_under_its_turn() {
         let a = compaction_action(&Compacted {
@@ -1343,8 +1414,19 @@ mod tests {
                         break;
                     }
                 }
+                // Streamed when the request asks, as colibri answers it: a
+                // client `build` made for colibri reads nothing else (#281).
+                let asked = bodies.last().is_some_and(|b| {
+                    serde_json::from_str::<serde_json::Value>(b)
+                        .is_ok_and(|v| v["stream"] == serde_json::json!(true))
+                });
+                let (kind, r) = if asked {
+                    ("text/event-stream", sse(&r))
+                } else {
+                    ("application/json", r)
+                };
                 let out = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{r}",
+                    "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\r\n{r}",
                     r.len()
                 );
                 s.write_all(out.as_bytes()).ok();
@@ -1352,6 +1434,47 @@ mod tests {
             Served { accepted, bodies }
         });
         (format!("http://{addr}/v1"), h)
+    }
+
+    /// `whole`, a `chat.completion`, as colibri streams it when the request
+    /// asks (ce370e8, c/openai_server.py:4940-5150): the content in deltas,
+    /// each tool call in one delta, the finish chunk, the usage chunk
+    /// `include_usage` asks for, and `data: [DONE]`.
+    fn sse(whole: &str) -> String {
+        use serde_json::{Value, json};
+        let v: Value = serde_json::from_str(whole).unwrap();
+        let m = &v["choices"][0]["message"];
+        let chunk = |delta: Value, finish: Value| {
+            json!({"object": "chat.completion.chunk",
+                   "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]})
+        };
+        let mut events = vec![chunk(json!({"role": "assistant"}), Value::Null)];
+        for word in m["content"]
+            .as_str()
+            .unwrap_or_default()
+            .split_inclusive(' ')
+        {
+            events.push(chunk(json!({"content": word}), Value::Null));
+        }
+        for (i, c) in m["tool_calls"].as_array().into_iter().flatten().enumerate() {
+            events.push(chunk(
+                json!({"tool_calls": [{"index": i, "id": c["id"], "type": "function",
+                                       "function": c["function"]}]}),
+                Value::Null,
+            ));
+        }
+        let finish = if m["tool_calls"].is_array() {
+            "tool_calls"
+        } else {
+            "stop"
+        };
+        events.push(chunk(json!({}), json!(finish)));
+        events.push(json!({"object": "chat.completion.chunk", "choices": [], "usage": v["usage"]}));
+        events
+            .iter()
+            .map(|e| format!("data: {e}\n\n"))
+            .chain(["data: [DONE]\n\n".to_string()])
+            .collect()
     }
 
     /// One hosted run with the driver `build` makes from `cfg`, as `trellis
@@ -1436,6 +1559,17 @@ mod tests {
             served.bodies.len(),
             t.turns.len(),
         );
+        // Streamed for colibri alone, so the colibri runs above read every
+        // reply from the stub's event stream (#281).
+        for b in &served.bodies {
+            let v: serde_json::Value = serde_json::from_str(b).unwrap();
+            assert_eq!(
+                v.get("stream").is_some(),
+                colibri,
+                "stream: {:?}",
+                v.get("stream")
+            );
+        }
         let observed = t.turns.iter().map(|x| x.observation.len()).sum();
         (served.bodies, events, observed)
     }

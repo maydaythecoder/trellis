@@ -4981,23 +4981,28 @@ fn colibri_health_stub(health: &'static str) -> String {
             let Ok(mut s) = s else { break };
             let (raw, body) = read_request(&mut s);
             let first = raw.lines().next().unwrap_or_default();
-            let reply = if is_models_get(&raw) {
-                r#"{"object":"list","data":[{"id":"glm-5.2","object":"model","created":1758800000,"owned_by":"colibri"}]}"#.to_string()
+            let request = serde_json::from_str::<Value>(&body).unwrap_or(Value::Null);
+            let (kind, reply) = if is_models_get(&raw) {
+                ("application/json", r#"{"object":"list","data":[{"id":"glm-5.2","object":"model","created":1758800000,"owned_by":"colibri"}]}"#.to_string())
             } else if first.starts_with("GET ") && first.contains("/health ") {
-                health.to_string()
-            } else if serde_json::from_str::<Value>(&body).is_ok_and(|v| v["max_tokens"] == 1) {
+                ("application/json", health.to_string())
+            } else if request["max_tokens"] == 1 {
                 // The tools probe (ADR 0047 decision 4): accepted.
-                r#"{"id":"chatcmpl-1","object":"chat.completion","created":1758800000,"model":"glm-5.2","choices":[{"index":0,"message":{"role":"assistant","content":"I"},"finish_reason":"length"}],"usage":{"prompt_tokens":40,"completion_tokens":1,"total_tokens":41}}"#.to_string()
+                ("application/json", r#"{"id":"chatcmpl-1","object":"chat.completion","created":1758800000,"model":"glm-5.2","choices":[{"index":0,"message":{"role":"assistant","content":"I"},"finish_reason":"length"}],"usage":{"prompt_tokens":40,"completion_tokens":1,"total_tokens":41}}"#.to_string())
             } else {
-                openai_call(
+                // The run's request, answered as a stream whatever it asked:
+                // a client `build` made for colibri reads nothing else, and a
+                // client that did not ask cannot read this (#281).
+                let whole = openai_call(
                     "c1",
                     "done",
                     serde_json::json!({"summary": "nothing to do"}),
-                )
+                );
+                ("text/event-stream", sse(&whole))
             };
             let _ = s.write_all(
                 format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{reply}",
+                    "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\r\n{reply}",
                     reply.len()
                 )
                 .as_bytes(),
@@ -5005,6 +5010,47 @@ fn colibri_health_stub(health: &'static str) -> String {
         }
     });
     format!("http://{addr}")
+}
+
+/// `whole`, a `chat.completion`, as colibri streams it when the request
+/// asks (ce370e8, c/openai_server.py:4940-5150): the content in deltas,
+/// each tool call in one delta, the finish chunk, the usage chunk
+/// `include_usage` asks for, and `data: [DONE]`.
+fn sse(whole: &str) -> String {
+    use serde_json::json;
+    let v: Value = serde_json::from_str(whole).unwrap();
+    let m = &v["choices"][0]["message"];
+    let chunk = |delta: Value, finish: Value| {
+        json!({"object": "chat.completion.chunk",
+               "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]})
+    };
+    let mut events = vec![chunk(json!({"role": "assistant"}), Value::Null)];
+    for word in m["content"]
+        .as_str()
+        .unwrap_or_default()
+        .split_inclusive(' ')
+    {
+        events.push(chunk(json!({"content": word}), Value::Null));
+    }
+    for (i, c) in m["tool_calls"].as_array().into_iter().flatten().enumerate() {
+        events.push(chunk(
+            json!({"tool_calls": [{"index": i, "id": c["id"], "type": "function",
+                                   "function": c["function"]}]}),
+            Value::Null,
+        ));
+    }
+    let finish = if m["tool_calls"].is_array() {
+        "tool_calls"
+    } else {
+        "stop"
+    };
+    events.push(chunk(json!({}), json!(finish)));
+    events.push(json!({"object": "chat.completion.chunk", "choices": [], "usage": v["usage"]}));
+    events
+        .iter()
+        .map(|e| format!("data: {e}\n\n"))
+        .chain(["data: [DONE]\n\n".to_string()])
+        .collect()
 }
 
 /// One rpc run against [`colibri_health_stub`] answering `health`: the
