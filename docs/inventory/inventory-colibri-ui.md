@@ -288,7 +288,7 @@ The gateway also serves endpoints the UI never calls: `/v1/completions`, `/v1/me
 
 | ID | Feature | What | Upstream evidence | Status | TRELLIS evidence | Disposition |
 |---|---|---|---|---|---|---|
-| COL-UI-106 | Dashboard docs and screenshots | README "See it running" (5 shots), docs/api.md "Web dashboard" plus a mobile shot; four engine diagrams that are not UI | README.md:49-85, 505-506; docs/api.md:399-445; docs/media/*.png | partial | ui_examples/preview*.webp exist but README does not use them | port |
+| COL-UI-106 | Dashboard docs and screenshots | README "See it running" (5 shots), docs/api.md "Web dashboard" plus a mobile shot; four engine diagrams that are not UI | README.md:49-85, 505-506; docs/api.md:399-445; docs/media/*.png | partial | ui_examples/preview*.webp were removed in #993 and README never used them | port |
 
 ## Totals
 
