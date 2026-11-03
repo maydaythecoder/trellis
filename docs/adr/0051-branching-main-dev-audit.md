@@ -82,3 +82,9 @@ branches are now deleted; reversing means re-creating `v0.1-resolver` at
   `docs/BUILD_SYSTEM.md` and the hook's self-test say which.
 - ADR 0027's decision log keeps its name; its rows now record merges into
   `audit`.
+
+*Amended 2026-11-03 (#1051):* by the owner's decision of that day, ADR 0061
+adds a step at the start of a branch's life: it is pushed as soon as it is
+cut and a draft pull request into `audit` is opened for it, marked ready
+only once its Verify lines and gates pass. The flow above is otherwise
+unchanged.

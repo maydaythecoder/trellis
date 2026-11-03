@@ -314,6 +314,27 @@ fn run_warning_from(table: &[Measured], spec: &ModelSpec) -> Option<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn wrap_fills_a_line_to_exactly_92_columns_and_never_past_it() {
+        // The risk (#248): doctor's floor line running past the 92 columns
+        // its other lines keep, or wrapping before a word that fits. Line
+        // one ends on column 92 exactly; on line two the next word would
+        // end on column 93, so it starts line three.
+        let a10 = "a".repeat(10);
+        let a9 = "a".repeat(9);
+        let b9 = "b".repeat(9);
+        let mut words = vec![a10.as_str()];
+        words.extend([a9.as_str(); 7]);
+        words.extend([b9.as_str(); 8]);
+        words.push("c");
+        let got = wrap("floor:", &words.join(" "));
+        let indent = " ".repeat(12);
+        let one = format!("floor:      {a10}{}", format!(" {a9}").repeat(7));
+        let two = format!("{indent}{b9}{}", format!(" {b9}").repeat(7));
+        assert_eq!((one.len(), two.len()), (92, 91));
+        assert_eq!(got, format!("{one}\n{two}\n{indent}c"));
+    }
+
     fn entry(spec_model: &'static str, repaired: u32, tier: AdapterTier) -> Measured {
         Measured {
             spec_model: Some(spec_model),
