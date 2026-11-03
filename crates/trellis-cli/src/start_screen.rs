@@ -309,6 +309,33 @@ pub(crate) fn offer_start_screen() -> Result<Option<PathBuf>> {
 mod tests {
     use super::*;
 
+    /// What a screen wrote, refused past [`CAP`] bytes. A screen that never
+    /// stops asking (an `answer` that never reports end of input) then fails
+    /// its test at once, instead of allocating until the job is killed.
+    #[derive(Default)]
+    struct Capped(Vec<u8>);
+
+    const CAP: usize = 1 << 20;
+
+    impl Write for Capped {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.0.len() + buf.len() > CAP {
+                return Err(std::io::Error::other("the screen wrote past 1 MiB"));
+            }
+            self.0.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Capped {
+        fn text(self) -> String {
+            String::from_utf8(self.0).unwrap()
+        }
+    }
+
     /// A directory that `listed` counts as a repository: it has a `.git`.
     fn repo_at(base: &Path, name: &str) -> PathBuf {
         let p = base.join(name);
@@ -346,7 +373,7 @@ mod tests {
         assert_eq!(listed(&file).unwrap().0, gone);
 
         // The screen numbers them in that order, and a number opens one.
-        let mut shown = Vec::new();
+        let mut shown = Capped::default();
         let chosen = screen(
             &gone,
             true,
@@ -357,7 +384,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(chosen, Some(repos[10].clone()));
-        let shown = String::from_utf8(shown).unwrap();
+        let shown = shown.text();
         assert!(
             shown.contains(&format!("  1. {}", repos[3].display())),
             "{shown}"
@@ -370,7 +397,7 @@ mod tests {
         // person pressed Enter, or answered anything but yes.
         for input in ["i\n\n", "i\nn\n", "i\nyes please\n", "i\n", "q\n", ""] {
             let cwd = tempfile::tempdir().unwrap();
-            let mut shown = Vec::new();
+            let mut shown = Capped::default();
             let got = screen(
                 &[],
                 false,
@@ -384,7 +411,7 @@ mod tests {
             assert!(
                 !cwd.path().join(".git").exists(),
                 "{input:?} created a repository: {}",
-                String::from_utf8_lossy(&shown)
+                String::from_utf8_lossy(&shown.0)
             );
         }
         let cwd = tempfile::tempdir().unwrap();
@@ -394,7 +421,7 @@ mod tests {
             cwd.path(),
             None,
             &mut "i\ny\n".as_bytes(),
-            &mut Vec::new(),
+            &mut Capped::default(),
         )
         .unwrap();
         assert_eq!(got.as_deref(), Some(cwd.path()));
@@ -448,7 +475,7 @@ mod tests {
         std::fs::create_dir_all(&outside).unwrap();
 
         let input = format!("{}\n{}\n", outside.display(), deep.display());
-        let mut shown = Vec::new();
+        let mut shown = Capped::default();
         let got = screen(
             &[],
             false,
@@ -459,7 +486,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(got, Some(repo));
-        let shown = String::from_utf8(shown).unwrap();
+        let shown = shown.text();
         assert!(
             shown.contains("or type the path of a repository"),
             "{shown}"
@@ -495,7 +522,7 @@ mod tests {
         // directory offers `git init` there, and one `i`, `y` makes every
         // file under it part of a repository.
         let home = tempfile::tempdir().unwrap();
-        let mut shown = Vec::new();
+        let mut shown = Capped::default();
         let got = screen(
             &[],
             false,
@@ -508,7 +535,7 @@ y
             &mut shown,
         )
         .unwrap();
-        let shown = String::from_utf8(shown).unwrap();
+        let shown = shown.text();
         assert_eq!(got, None, "{shown}");
         assert!(!home.path().join(".git").exists(), "{shown}");
         assert!(!shown.contains("i. run `git init`"), "{shown}");
@@ -520,7 +547,7 @@ y
 
         // Anywhere else, the offer stands.
         let cwd = tempfile::tempdir().unwrap();
-        let mut shown = Vec::new();
+        let mut shown = Capped::default();
         screen(
             &[],
             false,
@@ -532,7 +559,7 @@ y
             &mut shown,
         )
         .unwrap();
-        let shown = String::from_utf8(shown).unwrap();
+        let shown = shown.text();
         assert!(shown.contains("i. run `git init`"), "{shown}");
     }
 
@@ -543,7 +570,7 @@ y
         // was there.
         let cwd = tempfile::tempdir().unwrap();
         let said = |recorded: bool| {
-            let mut shown = Vec::new();
+            let mut shown = Capped::default();
             screen(
                 &[],
                 recorded,
@@ -555,7 +582,7 @@ y
                 &mut shown,
             )
             .unwrap();
-            String::from_utf8(shown).unwrap()
+            shown.text()
         };
         let gone = said(true);
         assert!(
@@ -582,5 +609,119 @@ y
         assert!(format!("{err:#}").contains("recent.json"), "{err:#}");
         assert!(record(&file, user.path()).is_err());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "not json");
+    }
+
+    #[test]
+    fn start_screen_a_list_that_cannot_be_read_is_an_error_and_a_missing_one_is_empty() {
+        // The risk: every read error taken for "no file yet", so a list
+        // trellis cannot read is shown as empty rather than said.
+        let user = tempfile::tempdir().unwrap();
+        let dir = user.path().join("recent.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        let err = listed(&dir).unwrap_err();
+        assert!(format!("{err:#}").contains("recent.json"), "{err:#}");
+        let missing = user.path().join("none.json");
+        assert_eq!(listed(&missing).unwrap(), (Vec::new(), false));
+    }
+
+    #[test]
+    fn start_screen_listed_says_whether_the_file_named_any_repository() {
+        // The risk: the flag inverted, so a person whose repositories are
+        // all gone is told trellis never opened one, and one who never
+        // opened any is told they are all gone.
+        let user = tempfile::tempdir().unwrap();
+        let file = user.path().join("recent.json");
+        let base = tempfile::tempdir().unwrap();
+        let r = repo_at(base.path(), "r");
+        record(&file, &r).unwrap();
+        assert_eq!(listed(&file).unwrap(), (vec![r.clone()], true));
+        std::fs::remove_dir_all(&r).unwrap();
+        assert_eq!(listed(&file).unwrap(), (Vec::new(), true));
+    }
+
+    #[test]
+    fn start_screen_is_temporary_matches_a_root_named_either_way() {
+        // The risk: a scratch checkout under the temporary directory, named
+        // through another spelling of it, is recorded and fills the list
+        // with entries that are soon gone. `t/../t` stands in for a link:
+        // it is the same directory, and only resolving it says so.
+        let base = tempfile::tempdir().unwrap();
+        let t = base.path().join("t");
+        std::fs::create_dir_all(t.join("r")).unwrap();
+        let spelled = t.join("..").join("t");
+        // Under it only as given: the root does not exist to resolve.
+        assert!(is_temporary(&spelled.join("gone"), &spelled));
+        // Under it only once resolved.
+        assert!(is_temporary(&t.join("r"), &spelled));
+        assert!(!is_temporary(base.path(), &t));
+    }
+
+    #[test]
+    fn start_screen_a_number_out_of_range_or_an_empty_line_asks_again() {
+        // The risk: `0` or a number past the list indexing outside it, or an
+        // empty line taken as a path, which is the working directory.
+        let base = tempfile::tempdir().unwrap();
+        let r = repo_at(base.path(), "r");
+        let cwd = tempfile::tempdir().unwrap();
+        let mut shown = Capped::default();
+        let got = screen(
+            &[r],
+            true,
+            cwd.path(),
+            None,
+            &mut "0\n2\n\nq\n".as_bytes(),
+            &mut shown,
+        )
+        .unwrap();
+        let shown = shown.text();
+        assert_eq!(got, None, "{shown}");
+        assert_eq!(
+            shown.matches("That is not one of the choices.").count(),
+            3,
+            "{shown}"
+        );
+        assert_eq!(shown.matches("or q to quit: ").count(), 4, "{shown}");
+    }
+
+    #[test]
+    fn start_screen_home_named_another_way_is_still_the_home_directory() {
+        // The risk: a home directory reached through `..` or a link is not
+        // recognised, and `git init` is offered over everything under it.
+        let base = tempfile::tempdir().unwrap();
+        let h = base.path().join("h");
+        std::fs::create_dir_all(&h).unwrap();
+        let spelled = h.join("..").join("h");
+        let mut shown = Capped::default();
+        screen(
+            &[],
+            false,
+            &h,
+            Some(&spelled),
+            &mut "q\n".as_bytes(),
+            &mut shown,
+        )
+        .unwrap();
+        let shown = shown.text();
+        assert!(
+            shown.contains("This is your home directory, so `git init` is not offered"),
+            "{shown}"
+        );
+        assert!(!shown.contains("i. run `git init`"), "{shown}");
+    }
+
+    #[test]
+    fn start_screen_home_is_the_directory_the_environment_names() {
+        // The risk: `home` losing the home directory, so bare `trellis`
+        // there offers `git init` over every file under it. Read, not set:
+        // the suite runs with the variable its platform names.
+        let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
+        let want = if cfg!(windows) {
+            var("USERPROFILE").or_else(|| var("HOME"))
+        } else {
+            var("HOME")
+        }
+        .map(PathBuf::from);
+        assert!(want.is_some(), "the suite runs with a home directory set");
+        assert_eq!(home(), want);
     }
 }

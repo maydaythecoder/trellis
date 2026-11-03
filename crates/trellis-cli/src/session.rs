@@ -2726,6 +2726,23 @@ def other():
     }
 
     #[test]
+    fn session_status_tokens_a_trail_that_will_not_read_is_counted_not_dropped() {
+        // The risk: a run whose trail did not read back vanishing from
+        // `/status`, so the totals look whole with a run missing from them,
+        // or the count of such runs going down or staying at nought.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        s.keep_trail("no-such-run-1049-a");
+        assert_eq!(s.trails_unread, 1);
+        s.keep_trail("no-such-run-1049-b");
+        assert_eq!(s.trails_unread, 2);
+        assert_eq!(
+            tokens_lines(&s),
+            vec!["tokens   2 run(s) not counted: the trail did not read back".to_string()]
+        );
+    }
+
+    #[test]
     fn session_status_tokens_count_the_trail_a_session_run_wrote() {
         // The risk: the totals reading nothing a real run wrote, so every
         // other test here passes on trails no run ever hands the session.
