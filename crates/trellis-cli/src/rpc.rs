@@ -2640,6 +2640,227 @@ mod tests {
         s.join_waiters();
     }
 
+    /// A server with no run, no classify and no model, for a test that
+    /// calls one of its methods directly rather than through `serve`; and
+    /// what it writes.
+    fn idle_server() -> (Server, Arc<Mutex<Vec<u8>>>) {
+        let out: Arc<Mutex<Vec<u8>>> = Arc::default();
+        let sink: Sink = out.clone();
+        let s = Server {
+            root: PathBuf::new(),
+            sink,
+            mode: Mode::Quiet,
+            model: None,
+            confirmed: None,
+            running: None,
+            classifying: None,
+            last: Arc::default(),
+            ran: Arc::default(),
+            done: output::DoneSlot::default(),
+            tier: output::TierSlot::default(),
+            approvals: Arc::default(),
+            next_approval: Arc::default(),
+            input_closed: Arc::default(),
+            waiters: Vec::new(),
+            sources: ModelSources {
+                runtimes: Vec::new(),
+                user_file: None,
+            },
+            colibri_offers: Arc::default(),
+        };
+        (s, out)
+    }
+
+    /// A run whose thread is still going until the sender is used or
+    /// dropped.
+    fn held_run() -> (Running, mpsc::Sender<()>) {
+        let (release, wait) = mpsc::channel::<()>();
+        let thread = std::thread::spawn(move || {
+            let _ = wait.recv();
+        });
+        let run = Running {
+            thread,
+            abort: Arc::default(),
+            done: Arc::default(),
+            ended: Arc::default(),
+            current: Arc::new(Mutex::new(Current::new(None))),
+            queue: Arc::default(),
+            leftover: Arc::default(),
+        };
+        (run, release)
+    }
+
+    /// `f`'s result, given `secs` to return. Code that blocks where it
+    /// should not fails here, in seconds, instead of hanging the suite past
+    /// cargo-mutants' 300 s limit, where it reads as a timeout and not a
+    /// kill (ADR 0060 §4).
+    fn within<T: Send + 'static>(
+        secs: u64,
+        what: &str,
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> T {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(Duration::from_secs(secs))
+            .unwrap_or_else(|_| panic!("{what} did not return within {secs} s"))
+    }
+
+    #[test]
+    fn in_flight_says_a_run_still_going_is_in_flight_without_waiting_for_it() {
+        // The risk: the guard dropped or inverted, so `in_flight` joins a
+        // run that is still going. `get_state`, `prompt` and `classify` then
+        // block the reader until the run ends, and a run waiting on an
+        // `approve` the reader can no longer read never does.
+        let (mut s, _) = idle_server();
+        let (run, release) = held_run();
+        s.running = Some(run);
+        let (mut s, running) = within(10, "in_flight on a run still going", move || {
+            let running = s.in_flight();
+            (s, running)
+        });
+        assert!(running, "a run still going is in flight");
+        assert!(s.running.is_some(), "and is kept");
+        release.send(()).unwrap();
+        while !s.running.as_ref().unwrap().thread.is_finished() {
+            std::thread::yield_now();
+        }
+        assert!(!s.in_flight(), "a run whose thread has finished is not");
+        assert!(s.running.is_none(), "and has been joined");
+    }
+
+    #[test]
+    fn classify_pending_frees_the_slot_once_the_model_has_answered() {
+        // The risk: a `prompt` sent on reading `classify`'s response was
+        // refused as one at a time, because the classify thread had not yet
+        // returned from writing that response. Once `answered` is set the
+        // slot is free, whether or not the thread has returned.
+        let (mut s, _) = idle_server();
+        let (release, wait) = mpsc::channel::<()>();
+        let thread = std::thread::spawn(move || {
+            let _ = wait.recv();
+        });
+        let (cancel, _cancelled) = tokio::sync::oneshot::channel::<()>();
+        let answered = Arc::new(AtomicBool::new(false));
+        s.classifying = Some(Classifying {
+            thread,
+            answered: answered.clone(),
+            cancel,
+        });
+        assert!(
+            s.classify_pending(),
+            "waiting on its model, it holds the slot"
+        );
+        answered.store(true, Ordering::SeqCst);
+        // The thread is let go only after the check below has begun, so it
+        // is still going when that check reads it; the join that follows a
+        // free slot then waits these 300 ms out.
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            let _ = release.send(());
+        });
+        assert!(
+            !s.classify_pending(),
+            "answered, it does not, though its thread has not returned"
+        );
+        assert!(s.classifying.is_none(), "and it has been joined");
+    }
+
+    #[test]
+    fn abort_run_drops_an_open_question_once_the_run_has_taken_the_abort_path() {
+        // The risk: the drop waited for the run to have finished as well as
+        // to have seen the abort. On its abort path the run asks the
+        // orchestrator what it touched, which waits on the open question, so
+        // the run never finishes and the question is never dropped.
+        let (mut s, _) = idle_server();
+        let (run, release) = held_run();
+        let abort = run.abort.clone();
+        s.running = Some(run);
+        let (reply, asked) = tokio::sync::oneshot::channel::<bool>();
+        s.approvals
+            .lock()
+            .unwrap()
+            .insert("approval-1".into(), reply);
+        s.abort_run();
+        assert!(abort.requested(), "the run is asked to stop");
+        // The run's own abort arm, which sees the request and marks it
+        // observed; the run's thread is still going.
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(output::aborted(Some(abort)));
+        let answer = within(10, "dropping the open question", move || {
+            asked.blocking_recv()
+        });
+        assert!(answer.is_err(), "dropped unanswered, which reads as a no");
+        release.send(()).unwrap();
+    }
+
+    #[test]
+    fn dispatch_command_answers_a_command_and_stops_serving_only_on_quit() {
+        // The risk: `serve` stopping at the first command, never stopping
+        // at `quit`, or handling a command and writing no response. Through
+        // a `Client` each shows only as a wait that runs out at 60 s.
+        let (mut s, out) = idle_server();
+        assert!(
+            s.dispatch_command(&json!({"id": "t", "type": "get_last_assistant_text"})),
+            "a command other than quit keeps the server serving"
+        );
+        let text = String::from_utf8(out.lock().unwrap().clone()).unwrap();
+        let r: Value =
+            serde_json::from_str(text.lines().next().expect("a response was written")).unwrap();
+        assert_eq!(r["type"], "response", "{r}");
+        assert_eq!(r["id"], "t", "{r}");
+        assert_eq!(r["success"], true, "{r}");
+        assert!(
+            !s.dispatch_command(&json!({"id": "q", "type": "quit"})),
+            "quit stops it"
+        );
+    }
+
+    #[test]
+    fn a_question_asked_after_input_ends_is_declined_and_the_server_exits() {
+        // The risk: the forwarder dropped a question only when the run had
+        // taken the abort path and input had ended both. Asked after end of
+        // input with no abort, a question was then recorded and framed for
+        // a client that is gone, the run waited on it, and the server's join
+        // on the run never returned. The script's second edit is that
+        // question: the first is declined by end of input itself.
+        let (dir, spec) = fixture("eof-second-question", "[control]\nmode = \"approve\"\n");
+        let script = spec.strip_prefix("scripted:").unwrap();
+        std::fs::write(
+            script,
+            r#"{"steps":[
+                {"tool":"edit","path":"a.py","old":"return 1","new":"return 2"},
+                {"tool":"edit","path":"a.py","old":"return 1","new":"return 3"},
+                {"tool":"done","summary":"changed it"}
+            ]}"#,
+        )
+        .unwrap();
+        let mut c = Client::chosen(&dir, &spec);
+        c.send(json!({"id": "p", "type": "prompt", "task": "change f", "model": spec}));
+        c.wait_for(|r| r["type"] == "approval_request");
+        drop(c.tx.take());
+        let server = c.server.take().unwrap();
+        within(60, "the server at end of input", move || server.join())
+            .unwrap()
+            .unwrap();
+        let rs = c.records();
+        assert_eq!(
+            of_type(&rs, "approval_request").len(),
+            1,
+            "the question asked after end of input was not put to the client: {rs:?}"
+        );
+        let end = of_type(&rs, "run_end")[0];
+        assert_eq!(end["outcome"], "not_converged", "{rs:?}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.py")).unwrap(),
+            "def f():\n    return 1\n"
+        );
+    }
+
     #[test]
     fn abort_interrupts_the_run_and_it_rolls_back() {
         let (dir, spec) = fixture("abort", "[control]\nmode = \"approve\"\n");

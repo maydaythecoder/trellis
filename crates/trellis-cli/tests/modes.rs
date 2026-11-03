@@ -714,7 +714,9 @@ fn provider_stub_with_headers(
         let mut got = Vec::new();
         let mut replies = replies.into_iter().peekable();
         while let Some(r) = replies.peek() {
-            let Ok((mut s, _)) = l.accept() else { break };
+            let Some(mut s) = accept_within(&l) else {
+                break;
+            };
             let (raw, body) = read_request(&mut s);
             // A runtime driver opens one connection and sends nothing on it
             // to see that something listens (`reachable`), before its first
@@ -737,6 +739,34 @@ fn provider_stub_with_headers(
         got
     });
     (format!("http://{addr}"), h)
+}
+
+/// The next connection to `l`, or None once 30 s pass with none. A stub
+/// waiting on `accept` for a request the code under test never sent (it
+/// refused the command, or answered without asking) blocked the test's
+/// `join` on it forever, and the suite with it, where the test should go on
+/// and fail on what the stub got: `cargo mutants` read such a mutant as a
+/// timeout, not a kill (#1031; `rpc::tests::accept_one` is the same bound).
+fn accept_within(l: &std::net::TcpListener) -> Option<std::net::TcpStream> {
+    const NO_REQUEST: std::time::Duration = std::time::Duration::from_secs(30);
+    l.set_nonblocking(true).ok()?;
+    let deadline = std::time::Instant::now() + NO_REQUEST;
+    loop {
+        match l.accept() {
+            Ok((s, _)) => {
+                // An accepted socket can inherit the listener's mode.
+                s.set_nonblocking(false).ok()?;
+                return Some(s);
+            }
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(_) => return None,
+        }
+    }
 }
 
 fn openai_call(id: &str, name: &str, args: Value) -> String {
@@ -1242,12 +1272,24 @@ fn rpc_a_prompt_right_after_run_end_is_accepted_and_runs() {
                                 "model": f.spec}),
     );
     rpc.next(|v| v["type"] == "run_end" && v["id"] == "p");
+    let ended = std::time::Instant::now();
     rpc.send(
         serde_json::json!({"id": "q", "type": "prompt", "task": "change f again",
                                 "model": f.spec}),
     );
     let q = rpc.next(|v| v["type"] == "response" && v["id"] == "q");
     assert_eq!(q["success"], true, "{q}");
+    // The second risk: the prompt is taken only once p's thread has
+    // finished its tail, so it waited out the seam's 1500 ms. Answered
+    // sooner, either the seam no longer holds the tail open (and this test
+    // no longer reaches the window it is about) or the server took the
+    // prompt while p's thread was still running. 1000 ms leaves the reader
+    // thread's latency in hand.
+    let waited = ended.elapsed();
+    assert!(
+        waited >= std::time::Duration::from_millis(1000),
+        "q was answered {waited:?} after p's run_end, inside the 1500 ms tail"
+    );
     let end = rpc.next(|v| v["type"] == "run_end" && v["id"] == "q");
     assert_eq!(end["outcome"], "not_converged", "{end}");
     let rs = rpc.finish();
