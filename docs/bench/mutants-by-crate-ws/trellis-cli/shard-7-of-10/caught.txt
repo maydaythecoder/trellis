@@ -1,0 +1,227 @@
+crates/trellis-cli/src/session.rs:39:9: replace <impl std::io::Write for Stdout>::write -> std::io::Result<usize> with Ok(1)
+crates/trellis-cli/src/session.rs:96:5: replace audit_mode_note -> String with String::new()
+crates/trellis-cli/src/session.rs:96:5: replace audit_mode_note -> String with "xyzzy".into()
+crates/trellis-cli/src/session.rs:96:29: replace && with || in audit_mode_note
+crates/trellis-cli/src/session.rs:96:24: replace == with != in audit_mode_note
+crates/trellis-cli/src/session.rs:96:48: replace == with != in audit_mode_note
+crates/trellis-cli/src/session.rs:167:9: replace Session::banner with ()
+crates/trellis-cli/src/session.rs:210:9: replace Session::run -> Result<()> with Ok(())
+crates/trellis-cli/src/session.rs:280:34: replace == with != in Session::run
+crates/trellis-cli/src/session.rs:299:9: replace Session::dispatch -> Result<()> with Ok(())
+crates/trellis-cli/src/session.rs:308:13: delete match arm "/exit" | "/quit" | "/q" in Session::dispatch
+crates/trellis-cli/src/session.rs:309:13: delete match arm "/help" | "/?" in Session::dispatch
+crates/trellis-cli/src/session.rs:313:13: delete match arm "/status" in Session::dispatch
+crates/trellis-cli/src/session.rs:317:13: delete match arm "/index" in Session::dispatch
+crates/trellis-cli/src/session.rs:321:13: delete match arm "/radius" in Session::dispatch
+crates/trellis-cli/src/session.rs:322:13: delete match arm "/check" in Session::dispatch
+crates/trellis-cli/src/session.rs:326:13: delete match arm "/doctor" in Session::dispatch
+crates/trellis-cli/src/session.rs:330:13: delete match arm "/resume" in Session::dispatch
+crates/trellis-cli/src/session.rs:331:13: delete match arm "/diff" in Session::dispatch
+crates/trellis-cli/src/session.rs:332:13: delete match arm "/accept" in Session::dispatch
+crates/trellis-cli/src/session.rs:333:13: delete match arm "/revert" in Session::dispatch
+crates/trellis-cli/src/session.rs:341:13: delete match arm "/model" in Session::dispatch
+crates/trellis-cli/src/session.rs:369:13: delete match arm "/name" in Session::dispatch
+crates/trellis-cli/src/session.rs:376:13: delete match arm "/copy" in Session::dispatch
+crates/trellis-cli/src/session.rs:377:13: delete match arm "/unconstrained" in Session::dispatch
+crates/trellis-cli/src/session.rs:391:13: delete match arm "/prompts" in Session::dispatch
+crates/trellis-cli/src/session.rs:395:13: delete match arm "/models" in Session::dispatch
+crates/trellis-cli/src/session.rs:400:13: delete match arm "/skill" in Session::dispatch
+crates/trellis-cli/src/session.rs:318:26: replace match guard rest.is_empty() with true in Session::dispatch
+crates/trellis-cli/src/session.rs:318:26: replace match guard rest.is_empty() with false in Session::dispatch
+crates/trellis-cli/src/session.rs:334:25: replace match guard rest.is_empty() with true in Session::dispatch
+crates/trellis-cli/src/session.rs:334:25: replace match guard rest.is_empty() with false in Session::dispatch
+crates/trellis-cli/src/session.rs:365:24: replace match guard rest.is_empty() with true in Session::dispatch
+crates/trellis-cli/src/session.rs:365:24: replace match guard rest.is_empty() with false in Session::dispatch
+crates/trellis-cli/src/session.rs:411:22: replace match guard other.starts_with('/') with true in Session::dispatch
+crates/trellis-cli/src/session.rs:411:22: replace match guard other.starts_with('/') with false in Session::dispatch
+crates/trellis-cli/src/session.rs:330:57: delete ! in Session::dispatch
+crates/trellis-cli/src/session.rs:354:24: delete ! in Session::dispatch
+crates/trellis-cli/src/session.rs:378:38: delete ! in Session::dispatch
+crates/trellis-cli/src/session.rs:401:39: replace match guard !task.trim().is_empty() with false in Session::dispatch
+crates/trellis-cli/src/session.rs:401:39: delete ! in Session::dispatch
+crates/trellis-cli/src/session.rs:414:21: replace || with && in Session::dispatch
+crates/trellis-cli/src/session.rs:414:24: delete ! in Session::dispatch
+crates/trellis-cli/src/session.rs:416:41: replace == with != in Session::dispatch
+crates/trellis-cli/src/session.rs:420:29: delete ! in Session::dispatch
+crates/trellis-cli/src/session.rs:439:9: replace Session::warn_if_unreachable with ()
+crates/trellis-cli/src/session.rs:484:9: replace Session::probe_model with ()
+crates/trellis-cli/src/session.rs:528:9: replace Session::reindex -> Result<()> with Ok(())
+crates/trellis-cli/src/session.rs:543:9: replace Session::task -> Result<()> with Ok(())
+crates/trellis-cli/src/session.rs:604:9: replace Session::run_task -> Result<()> with Ok(())
+crates/trellis-cli/src/session.rs:623:17: delete field skills from struct crate::output::RunExtras expression in Session::run_task
+crates/trellis-cli/src/session.rs:640:9: replace Session::run_steered -> Result<()> with Ok(())
+crates/trellis-cli/src/session.rs:671:17: delete field skills from struct crate::output::RunExtras expression in Session::run_steered
+crates/trellis-cli/src/session.rs:682:34: replace || with && in Session::run_steered
+crates/trellis-cli/src/session.rs:695:9: replace Session::run_with -> Result<()> with Ok(())
+crates/trellis-cli/src/session.rs:701:24: replace += with -= in Session::run_with
+crates/trellis-cli/src/session.rs:701:24: replace += with *= in Session::run_with
+crates/trellis-cli/src/session.rs:717:21: delete field model_from_user from struct crate::RunSeeding expression in Session::run_with
+crates/trellis-cli/src/session.rs:729:21: delete field label from struct crate::output::RunExtras expression in Session::run_with
+crates/trellis-cli/src/session.rs:730:21: delete field done from struct crate::output::RunExtras expression in Session::run_with
+crates/trellis-cli/src/session.rs:764:9: replace Session::show_pending -> Result<()> with Ok(())
+crates/trellis-cli/src/session.rs:776:22: replace match guard !d.trim().is_empty() with true in Session::show_pending
+crates/trellis-cli/src/session.rs:776:22: replace match guard !d.trim().is_empty() with false in Session::show_pending
+crates/trellis-cli/src/session.rs:776:22: delete ! in Session::show_pending
+crates/trellis-cli/src/session.rs:782:32: replace > with == in Session::show_pending
+crates/trellis-cli/src/session.rs:782:32: replace > with < in Session::show_pending
+crates/trellis-cli/src/session.rs:782:32: replace > with >= in Session::show_pending
+crates/trellis-cli/src/session.rs:804:9: replace Session::accept -> Result<()> with Ok(())
+crates/trellis-cli/src/session.rs:818:9: replace Session::accept_with -> Result<()> with Ok(())
+crates/trellis-cli/src/session.rs:841:30: replace || with && in Session::accept_with
+crates/trellis-cli/src/session.rs:841:26: replace > with == in Session::accept_with
+crates/trellis-cli/src/session.rs:841:26: replace > with < in Session::accept_with
+crates/trellis-cli/src/session.rs:841:26: replace > with >= in Session::accept_with
+crates/trellis-cli/src/session.rs:841:52: replace > with == in Session::accept_with
+crates/trellis-cli/src/session.rs:841:52: replace > with < in Session::accept_with
+crates/trellis-cli/src/session.rs:841:52: replace > with >= in Session::accept_with
+crates/trellis-cli/src/session.rs:845:21: delete match arm Some('a') in Session::accept_with
+crates/trellis-cli/src/session.rs:846:21: delete match arm Some('i') in Session::accept_with
+crates/trellis-cli/src/session.rs:850:21: delete match arm Some('t') in Session::accept_with
+crates/trellis-cli/src/session.rs:875:41: replace && with || in Session::accept_with
+crates/trellis-cli/src/session.rs:875:36: replace == with != in Session::accept_with
+crates/trellis-cli/src/session.rs:875:63: replace == with != in Session::accept_with
+crates/trellis-cli/src/session.rs:890:30: replace || with && in Session::accept_with
+crates/trellis-cli/src/session.rs:890:26: replace > with == in Session::accept_with
+crates/trellis-cli/src/session.rs:890:26: replace > with < in Session::accept_with
+crates/trellis-cli/src/session.rs:890:26: replace > with >= in Session::accept_with
+crates/trellis-cli/src/session.rs:890:52: replace > with == in Session::accept_with
+crates/trellis-cli/src/session.rs:890:52: replace > with < in Session::accept_with
+crates/trellis-cli/src/session.rs:890:52: replace > with >= in Session::accept_with
+crates/trellis-cli/src/session.rs:908:9: replace Session::print_coverage with ()
+crates/trellis-cli/src/session.rs:910:27: replace > with == in Session::print_coverage
+crates/trellis-cli/src/session.rs:910:27: replace > with < in Session::print_coverage
+crates/trellis-cli/src/session.rs:910:27: replace > with >= in Session::print_coverage
+crates/trellis-cli/src/session.rs:922:22: replace > with == in Session::print_coverage
+crates/trellis-cli/src/session.rs:922:22: replace > with < in Session::print_coverage
+crates/trellis-cli/src/session.rs:922:22: replace > with >= in Session::print_coverage
+crates/trellis-cli/src/session.rs:947:9: replace Session::print_audit_mode with ()
+crates/trellis-cli/src/session.rs:955:9: replace Session::print_choices with ()
+crates/trellis-cli/src/session.rs:963:9: replace Session::ask_stdin -> Option<char> with None
+crates/trellis-cli/src/session.rs:963:9: replace Session::ask_stdin -> Option<char> with Some(Default::default())
+crates/trellis-cli/src/session.rs:967:56: replace == with != in Session::ask_stdin
+crates/trellis-cli/src/session.rs:985:9: replace Session::inspect_doubt with ()
+crates/trellis-cli/src/session.rs:997:26: replace > with == in Session::inspect_doubt
+crates/trellis-cli/src/session.rs:997:26: replace > with < in Session::inspect_doubt
+crates/trellis-cli/src/session.rs:997:26: replace > with >= in Session::inspect_doubt
+crates/trellis-cli/src/session.rs:1019:9: replace Session::what_to_test with ()
+crates/trellis-cli/src/session.rs:1023:74: replace += with -= in Session::what_to_test
+crates/trellis-cli/src/session.rs:1023:74: replace += with *= in Session::what_to_test
+crates/trellis-cli/src/session.rs:1062:9: replace Session::label_line -> String with String::new()
+crates/trellis-cli/src/session.rs:1062:9: replace Session::label_line -> String with "xyzzy".into()
+crates/trellis-cli/src/session.rs:1070:9: replace Session::copy_to -> Result<()> with Ok(())
+crates/trellis-cli/src/session.rs:1074:9: replace Session::revert -> Result<()> with Ok(())
+crates/trellis-cli/src/session.rs:1089:9: replace Session::keep_trail with ()
+crates/trellis-cli/src/session.rs:1109:9: replace Session::status with ()
+crates/trellis-cli/src/session.rs:1114:9: replace Session::status_to with ()
+crates/trellis-cli/src/session.rs:1145:30: replace && with || in Session::status_to
+crates/trellis-cli/src/session.rs:1145:52: replace == with != in Session::status_to
+crates/trellis-cli/src/session.rs:1158:31: replace > with == in Session::status_to
+crates/trellis-cli/src/session.rs:1158:31: replace > with >= in Session::status_to
+crates/trellis-cli/src/session.rs:1181:5: replace history_path -> Option<PathBuf> with None
+crates/trellis-cli/src/session.rs:1181:5: replace history_path -> Option<PathBuf> with Some(Default::default())
+crates/trellis-cli/src/session.rs:1204:60: replace || with && in history_path
+crates/trellis-cli/src/session.rs:1204:47: replace || with && in history_path
+crates/trellis-cli/src/session.rs:1204:53: replace == with != in history_path
+crates/trellis-cli/src/session.rs:1204:66: replace == with != in history_path
+crates/trellis-cli/src/session.rs:1285:5: replace help with ()
+crates/trellis-cli/src/session_extra.rs:24:5: replace shell -> Result<()> with Ok(())
+crates/trellis-cli/src/session_extra.rs:30:18: replace match guard s.success() with true in shell
+crates/trellis-cli/src/session_extra.rs:30:18: replace match guard s.success() with false in shell
+crates/trellis-cli/src/session_extra.rs:68:5: replace print_prompts with ()
+crates/trellis-cli/src/session_extra.rs:82:12: delete ! in print_prompts
+crates/trellis-cli/src/session_extra.rs:97:5: replace models_json -> Value with Default::default()
+crates/trellis-cli/src/session_extra.rs:124:5: replace print_models with ()
+crates/trellis-cli/src/session_extra.rs:163:5: replace check_label -> Result<String, String> with Ok(String::new())
+crates/trellis-cli/src/session_extra.rs:163:5: replace check_label -> Result<String, String> with Ok("xyzzy".into())
+crates/trellis-cli/src/session_extra.rs:164:10: replace > with == in check_label
+crates/trellis-cli/src/session_extra.rs:164:10: replace > with < in check_label
+crates/trellis-cli/src/session_extra.rs:164:10: replace > with >= in check_label
+crates/trellis-cli/src/session_extra.rs:205:5: replace tokens_by_model -> Vec<ModelTokens> with vec![]
+crates/trellis-cli/src/session_extra.rs:212:59: replace == with != in tokens_by_model
+crates/trellis-cli/src/session_extra.rs:220:30: replace - with + in tokens_by_model
+crates/trellis-cli/src/session_extra.rs:220:30: replace - with / in tokens_by_model
+crates/trellis-cli/src/session_extra.rs:264:5: replace copy -> Result<()> with Ok(())
+crates/trellis-cli/src/session_extra.rs:313:5: replace feed -> bool with true
+crates/trellis-cli/src/session_extra.rs:313:5: replace feed -> bool with false
+crates/trellis-cli/src/session_extra.rs:320:13: replace && with || in feed
+crates/trellis-cli/src/session_extra.rs:355:54: replace || with && in Reader::spawn
+crates/trellis-cli/src/session_extra.rs:355:47: replace || with && in Reader::spawn
+crates/trellis-cli/src/session_extra.rs:365:9: replace Reader::stop with ()
+crates/trellis-cli/src/session_extra.rs:373:9: replace Reader::drain_late -> bool with true
+crates/trellis-cli/src/session_extra.rs:373:9: replace Reader::drain_late -> bool with false
+crates/trellis-cli/src/session_extra.rs:376:28: replace match guard !l.trim().is_empty() with true in Reader::drain_late
+crates/trellis-cli/src/session_extra.rs:376:28: replace match guard !l.trim().is_empty() with false in Reader::drain_late
+crates/trellis-cli/src/session_extra.rs:376:28: delete ! in Reader::drain_late
+crates/trellis-cli/src/session_extra.rs:389:9: replace Reader::next_line -> Option<String> with None
+crates/trellis-cli/src/session_extra.rs:389:9: replace Reader::next_line -> Option<String> with Some(String::new())
+crates/trellis-cli/src/session_extra.rs:389:9: replace Reader::next_line -> Option<String> with Some("xyzzy".into())
+crates/trellis-cli/src/session_extra.rs:411:5: replace route -> bool with true
+crates/trellis-cli/src/session_extra.rs:411:5: replace route -> bool with false
+crates/trellis-cli/src/session_extra.rs:448:5: replace steer -> bool with true
+crates/trellis-cli/src/session_extra.rs:448:5: replace steer -> bool with false
+crates/trellis-cli/src/start_screen.rs:43:5: replace recent_dirs_file -> Option<PathBuf> with None
+crates/trellis-cli/src/start_screen.rs:43:5: replace recent_dirs_file -> Option<PathBuf> with Some(Default::default())
+crates/trellis-cli/src/start_screen.rs:49:5: replace read -> Result<Vec<String>> with Ok(vec![])
+crates/trellis-cli/src/start_screen.rs:49:5: replace read -> Result<Vec<String>> with Ok(vec![String::new()])
+crates/trellis-cli/src/start_screen.rs:49:5: replace read -> Result<Vec<String>> with Ok(vec!["xyzzy".into()])
+crates/trellis-cli/src/start_screen.rs:51:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in read
+crates/trellis-cli/src/start_screen.rs:51:28: replace == with != in read
+crates/trellis-cli/src/start_screen.rs:56:18: replace != with == in read
+crates/trellis-cli/src/start_screen.rs:76:5: replace record -> Result<()> with Ok(())
+crates/trellis-cli/src/start_screen.rs:82:32: replace && with || in record
+crates/trellis-cli/src/start_screen.rs:82:24: replace != with == in record
+crates/trellis-cli/src/start_screen.rs:105:5: replace listed -> Result<(Vec<PathBuf>, bool)> with Ok((vec![], true))
+crates/trellis-cli/src/start_screen.rs:105:5: replace listed -> Result<(Vec<PathBuf>, bool)> with Ok((vec![], false))
+crates/trellis-cli/src/start_screen.rs:105:5: replace listed -> Result<(Vec<PathBuf>, bool)> with Ok((vec![Default::default()], true))
+crates/trellis-cli/src/start_screen.rs:105:5: replace listed -> Result<(Vec<PathBuf>, bool)> with Ok((vec![Default::default()], false))
+crates/trellis-cli/src/start_screen.rs:121:5: replace is_temporary -> bool with true
+crates/trellis-cli/src/start_screen.rs:121:5: replace is_temporary -> bool with false
+crates/trellis-cli/src/start_screen.rs:127:5: replace is_repository -> bool with true
+crates/trellis-cli/src/start_screen.rs:127:5: replace is_repository -> bool with false
+crates/trellis-cli/src/start_screen.rs:127:21: replace && with || in is_repository
+crates/trellis-cli/src/start_screen.rs:147:5: replace screen -> Result<Option<PathBuf>> with Ok(None)
+crates/trellis-cli/src/start_screen.rs:147:5: replace screen -> Result<Option<PathBuf>> with Ok(Some(Default::default()))
+crates/trellis-cli/src/start_screen.rs:150:26: replace && with || in screen
+crates/trellis-cli/src/start_screen.rs:187:40: replace && with || in screen
+crates/trellis-cli/src/start_screen.rs:194:16: delete ! in screen
+crates/trellis-cli/src/start_screen.rs:203:22: replace match guard (1..=recent.len()).contains(&n) with false in screen
+crates/trellis-cli/src/start_screen.rs:205:23: replace match guard t.is_empty() with true in screen
+crates/trellis-cli/src/start_screen.rs:203:81: replace - with + in screen
+crates/trellis-cli/src/start_screen.rs:203:81: replace - with / in screen
+crates/trellis-cli/src/start_screen.rs:209:20: delete ! in screen
+crates/trellis-cli/src/start_screen.rs:227:5: replace typed -> PathBuf with Default::default()
+crates/trellis-cli/src/start_screen.rs:227:21: replace == with != in typed
+crates/trellis-cli/src/start_screen.rs:233:9: delete match arm (Some(rest), Some(h)) in typed
+crates/trellis-cli/src/start_screen.rs:255:5: replace same_dir -> bool with true
+crates/trellis-cli/src/start_screen.rs:255:5: replace same_dir -> bool with false
+crates/trellis-cli/src/start_screen.rs:256:7: replace == with != in same_dir
+crates/trellis-cli/src/start_screen.rs:256:27: replace == with != in same_dir
+crates/trellis-cli/src/start_screen.rs:261:5: replace answer -> Result<Option<String>> with Ok(None)
+crates/trellis-cli/src/start_screen.rs:261:5: replace answer -> Result<Option<String>> with Ok(Some(String::new()))
+crates/trellis-cli/src/start_screen.rs:262:36: replace == with != in answer
+crates/trellis-cli/src/start_screen.rs:270:5: replace init -> Result<()> with Ok(())
+crates/trellis-cli/src/start_screen.rs:275:8: delete ! in init
+crates/trellis-cli/src/start_screen.rs:289:5: replace offer_start_screen -> Result<Option<PathBuf>> with Ok(None)
+crates/trellis-cli/src/start_screen.rs:289:5: replace offer_start_screen -> Result<Option<PathBuf>> with Ok(Some(Default::default()))
+crates/trellis-cli/src/templates.rs:40:5: replace parse -> Parsed<'_> with Default::default()
+crates/trellis-cli/src/templates.rs:46:13: delete field body from struct Parsed expression in parse
+crates/trellis-cli/src/templates.rs:54:48: replace == with != in parse
+crates/trellis-cli/src/templates.rs:55:42: replace + with - in parse
+crates/trellis-cli/src/templates.rs:55:42: replace + with * in parse
+crates/trellis-cli/src/templates.rs:58:16: replace += with -= in parse
+crates/trellis-cli/src/templates.rs:58:16: replace += with *= in parse
+crates/trellis-cli/src/templates.rs:64:13: delete field body from struct Parsed expression in parse
+crates/trellis-cli/src/templates.rs:69:9: delete field has_frontmatter from struct Parsed expression in parse
+crates/trellis-cli/src/templates.rs:70:9: delete field body from struct Parsed expression in parse
+crates/trellis-cli/src/templates.rs:85:30: replace match guard !v.is_empty() with true in parse
+crates/trellis-cli/src/templates.rs:85:30: replace match guard !v.is_empty() with false in parse
+crates/trellis-cli/src/templates.rs:86:32: replace match guard !v.is_empty() with true in parse
+crates/trellis-cli/src/templates.rs:86:32: replace match guard !v.is_empty() with false in parse
+crates/trellis-cli/src/templates.rs:85:30: delete ! in parse
+crates/trellis-cli/src/templates.rs:86:32: delete ! in parse
+crates/trellis-cli/src/templates.rs:101:5: replace render_text -> String with String::new()
+crates/trellis-cli/src/templates.rs:101:5: replace render_text -> String with "xyzzy".into()
+crates/trellis-cli/src/templates.rs:103:27: replace && with || in render_text
+crates/trellis-cli/src/templates.rs:103:8: delete ! in render_text
+crates/trellis-cli/src/templates.rs:108:14: replace && with || in render_text
+crates/trellis-cli/src/templates.rs:108:8: delete ! in render_text
