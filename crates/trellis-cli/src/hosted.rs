@@ -870,6 +870,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn card_list_shows_eight_entries_cut_to_40_and_counts_the_rest() {
+        // The risk (#248): an error about a colibri card printing nothing
+        // of the list it refused, or "and 0 more" under a short one, or
+        // never saying that entries were left out.
+        assert_eq!(card_list(None), "[]");
+        let two = ["tools".to_string(), "x".repeat(50)];
+        assert_eq!(
+            card_list(Some(&two)),
+            format!("[tools, {}]", "x".repeat(40))
+        );
+        let ten: Vec<String> = (0..10).map(|i| format!("e{i}")).collect();
+        assert_eq!(
+            card_list(Some(&ten)),
+            "[e0, e1, e2, e3, e4, e5, e6, e7, and 2 more]"
+        );
+    }
+
+    #[test]
     fn a_provider_spec_resolves_to_its_protocol_base_and_key_variable() {
         let cfg: RepoConfig = toml::from_str(
             "[[providers]]\nname = \"local\"\nprotocol = \"anthropic\"\n\

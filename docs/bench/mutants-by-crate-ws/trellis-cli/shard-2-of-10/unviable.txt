@@ -1,0 +1,26 @@
+crates/trellis-cli/src/doctor_supply.rs:259:5: replace drain -> std::sync::mpsc::Receiver<String> with Receiver::new(String::new())
+crates/trellis-cli/src/doctor_supply.rs:259:5: replace drain -> std::sync::mpsc::Receiver<String> with Receiver::from(String::new())
+crates/trellis-cli/src/doctor_supply.rs:259:5: replace drain -> std::sync::mpsc::Receiver<String> with Receiver::from_iter(["xyzzy".into()])
+crates/trellis-cli/src/doctor_supply.rs:259:5: replace drain -> std::sync::mpsc::Receiver<String> with Receiver::new("xyzzy".into())
+crates/trellis-cli/src/doctor_supply.rs:259:5: replace drain -> std::sync::mpsc::Receiver<String> with Receiver::from("xyzzy".into())
+crates/trellis-cli/src/doctor_supply.rs:302:5: replace parse -> Result<Parsed, String> with Ok(Default::default())
+crates/trellis-cli/src/first_run.rs:91:5: replace defaults -> [Runtime; 3] with [Default::default(); 3]
+crates/trellis-cli/src/first_run.rs:121:5: replace probe -> Vec<Probed> with vec![Default::default()]
+crates/trellis-cli/src/first_run.rs:185:5: replace offers -> Vec<Offer> with vec![Default::default()]
+crates/trellis-cli/src/first_run.rs:368:9: replace && with || in choose
+crates/trellis-cli/src/first_run.rs:428:35: replace + with * in get
+crates/trellis-cli/src/floor.rs:277:5: replace measured_for -> Option<&'t Measured> with Some(Box::leak(Box::new(Default::default())))
+crates/trellis-cli/src/hosted.rs:82:5: replace resolve -> Result<Option<Resolved>> with Ok(Some(Default::default()))
+crates/trellis-cli/src/hosted.rs:95:5: replace resolve_from -> Result<Option<Resolved>> with Ok(Some(Default::default()))
+crates/trellis-cli/src/hosted.rs:110:5: replace resolve_with -> Result<Option<Resolved>> with Ok(Some(Default::default()))
+crates/trellis-cli/src/hosted.rs:385:5: replace build -> Result<HostedModel> with Ok(Default::default())
+crates/trellis-cli/src/hosted.rs:496:5: replace colibri_key -> Option<ApiKey> with Some(Default::default())
+crates/trellis-cli/src/hosted.rs:503:5: replace probed -> &'static Mutex<HashMap<(String, String), ToolsProbe>> with Box::leak(Box::new(Mutex::new(HashMap::from_iter([((String::new(), String::new()), Default::default())]))))
+crates/trellis-cli/src/hosted.rs:503:5: replace probed -> &'static Mutex<HashMap<(String, String), ToolsProbe>> with Box::leak(Box::new(Mutex::new(HashMap::from_iter([((String::new(), "xyzzy".into()), Default::default())]))))
+crates/trellis-cli/src/hosted.rs:503:5: replace probed -> &'static Mutex<HashMap<(String, String), ToolsProbe>> with Box::leak(Box::new(Mutex::new(HashMap::from_iter([(("xyzzy".into(), String::new()), Default::default())]))))
+crates/trellis-cli/src/hosted.rs:503:5: replace probed -> &'static Mutex<HashMap<(String, String), ToolsProbe>> with Box::leak(Box::new(Mutex::new(HashMap::from_iter([(("xyzzy".into(), "xyzzy".into()), Default::default())]))))
+crates/trellis-cli/src/hosted.rs:513:5: replace tools_probe -> Result<ToolsProbe> with Ok(Default::default())
+crates/trellis-cli/src/hosted.rs:588:5: replace colibri_tier -> Result<ColibriTier> with Ok(Default::default())
+crates/trellis-cli/src/hosted.rs:697:5: replace probed_tier -> Result<ColibriTier> with Ok(Default::default())
+crates/trellis-cli/src/hosted.rs:826:5: replace compaction_action -> trellis_trail::Action with Default::default()
+crates/trellis-cli/src/hosted.rs:857:5: replace requested_compaction_action -> trellis_trail::Action with Default::default()
