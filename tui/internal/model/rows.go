@@ -9,22 +9,39 @@ import (
 // The transcript is rows typed by role (#849), not strings: every place
 // that writes it says what the row is, through push or pushRow below, and
 // the view paints the role (view/paint.go). The markers stay in the text
-// ("> " the person, "· " a note or a call, "! " a refusal), since they
-// still read on a terminal with no colour.
+// ("you" and a bar for the person's line, task and steer, "> " a /command
+// they typed, "─ turn" a divider, "· " a note or a call, "✓"/"✗" a check,
+// "! " a refusal), since they still read on a terminal with no colour.
 //
 // The role a row takes:
-//   - RoleYou: what the person typed, echoed;
-//   - RoleTool: a turn's call; RolePassed or RoleFailed instead when the
-//     turn carried a verdict, and only then (ADR 0004);
+//   - RoleYou: what the person typed, echoed, and what needs them (`model
+//     asks you`); a task and a steer also carry their label, `you · task`
+//     or `you · steer`, and the left bar (Row.Bar, pushYou), as the
+//     Transcript card draws the person's entries;
+//   - RoleLabel: a turn's divider, its number and figures (view.TurnDivider);
+//   - RoleTool: a turn's call, whatever the call says;
+//   - RolePassed or RoleFailed: a check row, `✓`/`✗ <kind> passed/failed ·
+//     trellis-checks verdict`, written only when the turn carried a
+//     verdict trellis-checks produced (ADR 0004);
 //   - RoleOutput: what the call returned, under it;
 //   - RoleText: the model's words, and this view's answers to a /command;
 //   - RoleNote: what this view or trellis says about the run or the line:
 //     queued, delivered, finished, stopping, a WARN line;
 //   - RoleRefusal: an error or a refusal.
+//
+// Two flags say what the role does not, for the log's filters and quiet
+// mode (view/log.go, #948): Row.Wrote on a call that wrote to the tree,
+// and Row.Ask on `model asks you`; a turn's rows also carry its call and
+// observation in full for ^O (Row.Raw, log.go).
 
 // push adds one row of role r.
 func (m *Model) push(r view.Role, text string) {
 	m.pushRow(view.Row{Text: text, Role: r})
+}
+
+// pushYou adds one of the person's own entries: in signal, under the bar.
+func (m *Model) pushYou(text string) {
+	m.pushRow(view.Row{Text: text, Role: view.RoleYou, Bar: true})
 }
 
 // pushRow adds one whole row, its text cut past LineCap bytes (caps.go),
@@ -34,6 +51,8 @@ func (m *Model) pushRow(row view.Row) {
 	m.Transcript = append(m.Transcript, row)
 	if over := len(m.Transcript) - TranscriptCap; over > 0 {
 		m.Transcript = append([]view.Row(nil), m.Transcript[over:]...)
+		// The echo awaiting classify's answer moved up, or left the cap.
+		m.echoAt = max(m.echoAt-over, 0)
 	}
 }
 

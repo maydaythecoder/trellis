@@ -56,6 +56,16 @@ const (
 	RoleMeterOver
 	// RoleMeterEmpty is a Meter's empty cells: line-strong.
 	RoleMeterEmpty
+	// RoleDiffAdd, RoleDiffDel and RoleDiffHunk are a diff's added and
+	// removed lines' text and its @@ header (the Diff card, #853):
+	// diff-add, diff-del and diff-hunk. They say what a line is in the
+	// diff trellis sent, never whether the change is right.
+	RoleDiffAdd
+	RoleDiffDel
+	RoleDiffHunk
+	// RolePlay is the playful register's one Ascii face and its copy
+	// (#857): play. Never a status, an action or a figure.
+	RolePlay
 
 	// roles is how many roles there are; every one below it has a colour.
 	roles
@@ -76,6 +86,19 @@ type Row struct {
 	// Turn is the turn a transcript row came from, for the rows a turn
 	// wrote (its call and what the call returned); 0 for every other row.
 	Turn int
+	// Bar marks the person's own entries, `you · task` and `you · steer`:
+	// the Transcript card draws them under a left bar in signal, the one
+	// mark that says "you wrote this" (#947). The transcript draws the bar
+	// on every row the entry wraps to, so a long task is barred whole.
+	Bar bool
+	// Wrote marks a call's row when the call wrote to the tree, Ask the
+	// row saying the model asks the person something, and Raw the rows a
+	// turn event wrote, carrying its call and observation in full: the
+	// filters and quiet mode choose rows by them and by Role, never by the
+	// words (log.go, #948), and ^O opens Raw.
+	Wrote bool
+	Ask   bool
+	Raw   *RawCall
 	// Spans, when set, are the row in more than one role, drawn in order
 	// in place of Text and Role. Only rows the view builds carry them (the
 	// budget's Meters); a transcript row is one role.
@@ -129,6 +152,14 @@ func style(th theme.Theme, r Role) lipgloss.Style {
 		return th.Down
 	case RoleMeterEmpty:
 		return th.LineStrong
+	case RoleDiffAdd:
+		return th.DiffAdd
+	case RoleDiffDel:
+		return th.DiffDel
+	case RoleDiffHunk:
+		return th.DiffHunk
+	case RolePlay:
+		return th.Play
 	default:
 		return th.Ink
 	}

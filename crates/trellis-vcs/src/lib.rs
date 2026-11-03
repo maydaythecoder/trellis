@@ -259,7 +259,7 @@ fn run_git(root: &Path, args: &[&str]) -> Result<String, VcsError> {
 ///   `NUL` on Windows): a hook runs on any index write
 ///   (`post-index-change`), `git add` into a copied index included.
 ///
-/// Clean filters are neutralised separately ([`filters_off`]) and only
+/// Clean filters are neutralised separately (`filters_off`) and only
 /// where a digest is taken, since a filter is named per driver and a
 /// rollback's checkout needs the user's own (Git LFS's smudge).
 pub const OVERRIDES: [&str; 4] = ["-c", "core.fsmonitor=", "-c", NO_HOOKS];
@@ -270,7 +270,7 @@ const NO_HOOKS: &str = "core.hooksPath=NUL";
 const NO_HOOKS: &str = "core.hooksPath=/dev/null";
 
 /// Environment every `git` trellis runs is given beside [`OVERRIDES`], for
-/// what no `-c` turns off (security finding F1, AUDIT-2026-10-11):
+/// what no `-c` turns off (security finding F1, AUDIT-2026-10-11 at 5f6de094):
 /// - `GIT_NO_LAZY_FETCH=1`: in a partial clone, git fetches an object it
 ///   is asked to read and lacks (`cat-file` for the Atlas, `diff HEAD`,
 ///   the rollback's `reset --hard`), and the fetch runs the transport the
@@ -295,7 +295,7 @@ pub const ENV: [(&str, &str); 1] = [("GIT_NO_LAZY_FETCH", "1")];
 /// `git` with [`OVERRIDES`] and [`ENV`], its environment scrubbed of keys.
 ///
 /// Every `git` the workspace starts outside tests comes from here,
-/// [`command_with_hooks`] or [`git_argv`] (review round 10: `grep` and
+/// `command_with_hooks` or [`git_argv`] (review round 10: `grep` and
 /// `find` started plain `git` and ran a planted `core.fsmonitor`).
 /// `every_git_spawn_goes_through_trellis_vcs` in `trellis-cli`'s
 /// `tests/hygiene.rs` fails on one that does not. For a tokio command,
@@ -1281,7 +1281,7 @@ impl Snapshot {
     /// Read by content, not stat, so it holds under a clock that steps
     /// back, which `git status` (and so [`is_restored`](Self::is_restored))
     /// does not. Hashing runs with the repository's filter drivers off
-    /// ([`filters_off`]): a driver is repository code, and trellis does not
+    /// (`filters_off`): a driver is repository code, and trellis does not
     /// run it. Built-in end-of-line conversion still applies, so a CRLF
     /// checkout hashes to the committed blob. A repository that depends on
     /// a filter driver (LFS, say) reads as differing: a false alarm, never
@@ -1615,6 +1615,45 @@ impl TaskWorktree {
 mod tests {
     use super::*;
 
+    /// A fresh directory, `<temp>/trellis-vcs-<name>-<random>/<leaf>`,
+    /// removed with everything beside it when dropped, whether the test
+    /// passed or failed (#979). One level down so a path a test derives
+    /// beside it (`with_file_name`) is removed with it.
+    pub(crate) struct Scratch {
+        _guard: tempfile::TempDir,
+        path: PathBuf,
+    }
+
+    impl std::ops::Deref for Scratch {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl AsRef<Path> for Scratch {
+        fn as_ref(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    /// A [`Scratch`] named after `name`. The random suffix keeps two test
+    /// processes at once (`cargo mutants -j N`) apart, as the process id
+    /// in the fixed name it replaced did.
+    pub(crate) fn scratch(name: &str) -> Scratch {
+        let prefix = format!("trellis-vcs-{name}");
+        let guard = tempfile::Builder::new()
+            .prefix(&format!("{prefix}-"))
+            .tempdir()
+            .expect("the system temp dir must be writable to run these tests");
+        let path = guard.path().join(prefix);
+        std::fs::create_dir(&path).expect("a fresh temp dir takes a subdirectory");
+        Scratch {
+            _guard: guard,
+            path,
+        }
+    }
+
     #[test]
     fn a_renamed_submodule_record_consumes_its_orig_path() {
         // The risk: a `2` record for a submodule (`S...`) fell through to
@@ -1658,16 +1697,8 @@ mod tests {
         assert!(p.verbatim.is_empty());
     }
 
-    fn temp_repo(name: &str) -> PathBuf {
-        // Process id in the path, because these fixtures `remove_dir_all` then
-        // `create_dir_all` a fixed location. Two test processes running at once
-        // — which is exactly what `cargo mutants -j N` does — delete each
-        // other's repository mid-test and fail for a reason that has nothing
-        // to do with the code under test.
-        let dir =
-            std::env::temp_dir().join(format!("trellis-vcs-test-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+    fn temp_repo(name: &str) -> Scratch {
+        let dir = scratch(&format!("test-{name}"));
         run_git(&dir, &["init", "-q"]).unwrap();
         run_git(&dir, &["config", "user.email", "t@example.invalid"]).unwrap();
         run_git(&dir, &["config", "user.name", "t"]).unwrap();
@@ -1716,7 +1747,7 @@ mod tests {
     /// to every `*.py` (`required`, so a filter that is merely skipped
     /// fails loudly), with a tracked file edited and an untracked one
     /// added. What `bash` could plant a call before a digest runs.
-    fn planted_repo(name: &str) -> (PathBuf, PathBuf) {
+    fn planted_repo(name: &str) -> (Scratch, PathBuf) {
         let dir = temp_repo(name);
         let marks = dir.with_file_name(format!("{}-marks", dir.file_name().unwrap().display()));
         let _ = std::fs::remove_dir_all(&marks);
@@ -1817,7 +1848,7 @@ mod tests {
     /// Makes `dir` a partial clone whose promisor remote writes `marker`
     /// and then fails, as a remote holding nothing would: what an
     /// attacker-supplied `.git/` (an archive, a shared folder) can carry
-    /// (security finding F1, AUDIT-2026-10-11). The transport's
+    /// (security finding F1, AUDIT-2026-10-11 at 5f6de094). The transport's
     /// `protocol.<name>.allow=always` is planted too, since that beats a
     /// `-c protocol.allow=never` on the command line. Shell builtins only,
     /// so Git for Windows' `sh` runs it as well.
@@ -1882,7 +1913,7 @@ mod tests {
     /// those bytes in the worktree and the index, so the tree is clean and
     /// any read of the blob's content goes to the planted remote. Returns
     /// the repository, the marker's path, `HEAD` and the missing blob's id.
-    fn lazy_repo(name: &str, via: Transport) -> (PathBuf, PathBuf, String, String) {
+    fn lazy_repo(name: &str, via: Transport) -> (Scratch, PathBuf, String, String) {
         let dir = temp_repo(&format!("{name}-{via:?}"));
         let marker = dir.with_file_name(format!("{}-ran", dir.file_name().unwrap().display()));
         let _ = std::fs::remove_file(&marker);
@@ -1940,7 +1971,7 @@ mod tests {
 
     #[test]
     fn a_planted_partial_clone_remote_never_runs_from_a_read() {
-        // The risk (security finding F1, AUDIT-2026-10-11): in a partial
+        // The risk (security finding F1, AUDIT-2026-10-11 at 5f6de094): in a partial
         // clone, git fetches an object it is asked to read and lacks, and
         // the fetch runs the transport `.git/config` names. The Atlas's
         // `get_codebase {ref}` reads every blob of a tagged commit through
@@ -1953,7 +1984,7 @@ mod tests {
 
             let mut batch = command();
             batch.args(["cat-file", "--batch"]);
-            let (d, r) = (dir.clone(), request.clone());
+            let (d, r) = (dir.to_path_buf(), request.clone());
             let out = within("cat-file", move || with_stdin(batch, &d, r.as_bytes()));
             assert!(
                 !marker.exists(),
@@ -1965,7 +1996,7 @@ mod tests {
                 "{via:?}"
             );
 
-            let (d, h) = (dir.clone(), head.clone());
+            let (d, h) = (dir.to_path_buf(), head.clone());
             let copy = within("tree_copy", move || history::tree_copy(&d, &h, |_| true));
             assert!(
                 !marker.exists(),
@@ -2001,7 +2032,7 @@ mod tests {
             let snap = snapshot(&dir).unwrap();
             std::fs::write(dir.join("b.py"), "Y = 3\n").unwrap();
 
-            let d = dir.clone();
+            let d = dir.to_path_buf();
             let shown = within("diff", move || diff(&d));
             assert!(
                 !marker.exists(),
@@ -2656,7 +2687,7 @@ mod tests {
         let snap = snapshot(&dir).unwrap();
 
         let result = std::panic::catch_unwind({
-            let dir = dir.clone();
+            let dir = dir.to_path_buf();
             move || {
                 std::fs::write(dir.join("a.py"), "half-written").unwrap();
                 std::fs::write(dir.join("stray.py"), "x").unwrap();
@@ -2992,7 +3023,7 @@ mod tests {
     /// A repository as `trellis index` leaves it: `.trellis/.gitignore`
     /// ignoring itself and `work/` (C-010), and a second commit so the base
     /// a task is given can differ from `HEAD`.
-    fn task_repo(name: &str) -> (PathBuf, String) {
+    fn task_repo(name: &str) -> (Scratch, String) {
         let dir = temp_repo(name);
         std::fs::create_dir_all(dir.join(".trellis")).unwrap();
         std::fs::write(dir.join(".trellis/.gitignore"), ".gitignore\nwork/\n").unwrap();

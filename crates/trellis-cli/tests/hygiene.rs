@@ -205,7 +205,7 @@ const GIT_ALLOWED: &[(&str, usize, &str)] = &[
          `\"git hash-object ...\"`), which the shell-line rule reads as a spawn",
     ),
     (
-        "trellis-cli/src/doctor_cmd.rs",
+        "trellis-cli/src/init_cmd.rs",
         1,
         "`trellis init`'s refusal prints `git init && ...` for the person to type",
     ),

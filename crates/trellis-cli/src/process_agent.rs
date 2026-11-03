@@ -847,6 +847,10 @@ fn write_trail(root: &Path, t: TrailInput<'_>, out: &mut dyn Write) -> Option<St
                 changed: Vec::new(),
                 changed_count: 0,
                 duration_ms: None,
+                // Nothing diffed what the process did: no line counts
+                // (ADR 0007, #811).
+                lines_added: None,
+                lines_removed: None,
             }))
             // What it did to files git ignores: not `proposed`, which is what
             // a commit would carry, but recorded, since a converged run keeps
@@ -860,6 +864,10 @@ fn write_trail(root: &Path, t: TrailInput<'_>, out: &mut dyn Write) -> Option<St
                 changed: Vec::new(),
                 changed_count: 0,
                 duration_ms: None,
+                // Nothing diffed what the process did: no line counts
+                // (ADR 0007, #811).
+                lines_added: None,
+                lines_removed: None,
             }))
             .collect(),
         control: Some("auto (process agent)".into()),
@@ -875,6 +883,9 @@ fn write_trail(root: &Path, t: TrailInput<'_>, out: &mut dyn Write) -> Option<St
         // Nothing reaches a process agent after it starts, so nothing
         // typed mid-run can be recorded for it.
         steering: Vec::new(),
+        // Nor can it be paused, raised or withdrawn from: it is seeded no
+        // hold, live budget or steering fates.
+        controls: Vec::new(),
         // One process, one tree: no partitions to collide (ADR 0042).
         suspected_recall_gaps: Vec::new(),
     };
@@ -898,22 +909,19 @@ fn write_trail(root: &Path, t: TrailInput<'_>, out: &mut dyn Write) -> Option<St
         factual,
         judgment: Judgment::default(),
     };
-    match trellis_trail::write(root, &trail, &timestamp, &slug) {
-        Ok(p) => {
-            let rel = Trail::path(&timestamp, &slug);
-            if let Err(e) =
-                trellis_vcs::commit_paths(root, &[&rel], &format!("trellis: trail for {}", t.task))
-            {
-                let _ = writeln!(out, "trail written but not committed: {e}");
-            }
-            let _ = writeln!(out, "trail:    {}", p.display());
-            Some(trail.run_id)
+    let written = trellis_trail::write(root, &trail, &timestamp, &slug).inspect(|_| {
+        let rel = Trail::path(&timestamp, &slug);
+        if let Err(e) =
+            trellis_vcs::commit_paths(root, &[&rel], &format!("trellis: trail for {}", t.task))
+        {
+            let _ = writeln!(out, "trail written but not committed: {e}");
         }
-        Err(e) => {
-            let _ = writeln!(out, "could not write the trail: {e}");
-            None
-        }
-    }
+    });
+    let recorded = written.is_ok();
+    // anyhow's `{}` prints the io error's own message, so the line reads as
+    // it did when this site formatted the io error itself.
+    crate::run_cmd::report_trail(out, written.map_err(anyhow::Error::from), None);
+    recorded.then_some(trail.run_id)
 }
 
 /// #248: the reasons and records a process run gives, driven directly
@@ -927,7 +935,7 @@ mod tests {
 
     /// A committed, trusted repository whose checks pass, with `extra`
     /// files beside the config.
-    fn repo(name: &str, config: &str, extra: &[(&str, &str)]) -> PathBuf {
+    fn repo(name: &str, config: &str, extra: &[(&str, &str)]) -> crate::testutil::Scratch {
         let root = crate::testutil::scratch(name);
         crate::testutil::git_init(&root);
         std::fs::create_dir_all(root.join(".trellis")).unwrap();
@@ -1209,7 +1217,7 @@ mod tests {
     // through it. They were `orchestration.rs` tests before.
 
     /// A repository ignoring `*.cfg`, with `config`, committed and trusted.
-    fn ignoring(name: &str, config: &str) -> PathBuf {
+    fn ignoring(name: &str, config: &str) -> crate::testutil::Scratch {
         repo(name, config, &[(".gitignore", "*.cfg\n")])
     }
 

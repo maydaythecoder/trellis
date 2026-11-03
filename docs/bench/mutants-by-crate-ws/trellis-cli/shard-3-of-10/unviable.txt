@@ -1,0 +1,14 @@
+crates/trellis-cli/src/image_input.rs:90:5: replace refused -> anyhow::Error with Default::default()
+crates/trellis-cli/src/index_cmd.rs:80:5: replace resolve_symbol -> Result<trellis_core::SymbolId> with Ok(Default::default())
+crates/trellis-cli/src/install.rs:28:31: replace << with >>
+crates/trellis-cli/src/install.rs:104:5: replace check_digest -> DigestCheck with Default::default()
+crates/trellis-cli/src/install.rs:209:5: replace install -> Result<Entry> with Ok(Default::default())
+crates/trellis-cli/src/install.rs:320:5: replace prepare -> Result<Prepared> with Ok(Default::default())
+crates/trellis-cli/src/install.rs:674:9: replace && with || in split_spec
+crates/trellis-cli/src/install.rs:697:13: replace && with || in unacceptable_source
+crates/trellis-cli/src/install.rs:915:5: replace git -> std::process::Command with Default::default()
+crates/trellis-cli/src/install.rs:983:5: replace ls_tree -> Result<Vec<TreeEntry>> with Ok(vec![Default::default()])
+crates/trellis-cli/src/install.rs:1033:5: replace read_ls_tree -> Result<Vec<TreeEntry>> with Ok(vec![Default::default()])
+crates/trellis-cli/src/install.rs:1079:5: replace parse_ls_tree_record -> Result<TreeEntry> with Ok(Default::default())
+crates/trellis-cli/src/launch.rs:119:5: replace desktop_command -> Command with Default::default()
+crates/trellis-cli/src/launch.rs:165:5: replace spawn_web -> Result<tokio::process::Child> with Ok(Default::default())

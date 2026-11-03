@@ -11,7 +11,13 @@ import (
 // stripOf is the Now strip's row as the screen draws it at 120x40.
 func stripOf(t *testing.T, m *Model) string {
 	t.Helper()
-	m.Update(windowSize(120, 40))
+	return stripAt(t, m, 120, 40)
+}
+
+// stripAt is the Now strip's row as the screen draws it at w by h.
+func stripAt(t *testing.T, m *Model, w, h int) string {
+	t.Helper()
+	m.Update(windowSize(w, h))
 	rows := strings.Split(m.View(), "\n")
 	if len(rows) < 2 {
 		t.Fatalf("no strip:\n%s", m.View())
@@ -24,8 +30,8 @@ func modelCall(turn int) string {
 }
 
 // #850: the Now strip says what is happening now: the state word, the
-// turn against the run's ceiling, and what the run is on, in the words the
-// desktop uses; a question waiting on the person, and how to answer it; an
+// turn against the run's ceiling, and what the run is on, in -ing form
+// (#950); a question waiting on the person, and how to answer it; an
 // ended run in run_end's own words and exit code, never "done" or
 // "failed"; and IDLE before any run.
 func TestNowStripShowsStateTurnAndActivity(t *testing.T) {
@@ -39,8 +45,8 @@ func TestNowStripShowsStateTurnAndActivity(t *testing.T) {
 	if s := stripOf(t, m); !strings.Contains(s, "● RUNNING") || !strings.Contains(s, "█░░░░░░░ 1/40") || !strings.Contains(s, "calling the model, turn 1") {
 		t.Fatalf("calling the model: %q", s)
 	}
-	feed(m, turn(1, "edit app/calc.py", map[string]any{"observation": "applied: true"}))
-	if s := stripOf(t, m); !strings.Contains(s, "█░░░░░░░ 1/40") || !strings.Contains(s, "ran edit, turn 1 → app/calc.py") {
+	feed(m, turn(1, "edit app/calc.py", map[string]any{"observation": "applied: true", "tool": "edit", "target": "app/calc.py", "wrote": true}))
+	if s := stripOf(t, m); !strings.Contains(s, "█░░░░░░░ 1/40") || !strings.Contains(s, "running edit → app/calc.py") {
 		t.Fatalf("after the turn: %q", s)
 	}
 	feed(m, approval("a1", "edit app/calc.py", "+x"))
@@ -60,14 +66,13 @@ func TestNowStripShowsStateTurnAndActivity(t *testing.T) {
 	}
 }
 
-// #850: Where it is names the runtime as it identified itself, the
-// repository trellis serves, and the control mode as not reported, Dash
-// (#911), since trellis sends a client no control mode; before the runtime
-// says what it is, it too is Dash.
+// #850: Where it is names the runtime as it identified itself and the
+// repository trellis serves; before the runtime says what it is, it is
+// Dash (#911). The control mode is the one the prompt named (#952).
 func TestWhereItIsShowsTheRuntime(t *testing.T) {
 	m := running(t)
 	m.Update(windowSize(120, 40))
-	if v := m.View(); !strings.Contains(v, "runtime  —") || !strings.Contains(v, "control  —") || strings.Contains(v, "not reported") {
+	if v := m.View(); !strings.Contains(v, "runtime  —") || !strings.Contains(v, "· control approve") || strings.Contains(v, "not reported") {
 		t.Fatalf("before the runtime said what it is:\n%s", v)
 	}
 	feed(m, jsonLine(map[string]any{"level": "INFO", "fields": map[string]any{
@@ -81,7 +86,7 @@ func TestWhereItIsShowsTheRuntime(t *testing.T) {
 	}
 	respond(m, asked, "get_state", map[string]any{"model": "ollama:qwen2.5-coder:32b", "root": "/work/trellis-demo"})
 	v := m.View()
-	for _, want := range []string{"┌ where", "runtime  ollama · qwen2.5-coder:32b", "root     trellis-demo", "control  —"} {
+	for _, want := range []string{"┌ where", "runtime  ollama · qwen2.5-coder:32b", "root     trellis-demo", "· control approve"} {
 		if !strings.Contains(v, want) {
 			t.Fatalf("%q is not in Where it is:\n%s", want, v)
 		}
@@ -108,11 +113,12 @@ func TestViewDrawsTheNewestStderrLine(t *testing.T) {
 	}
 }
 
-// #850: trellis does not report its own elapsed time yet (#906), so the
-// strip's clock is this view's and says so, marked * (#911, which /help
-// explains), and it leaves out the time a question waited on the person,
-// as trellis's budget does: 10 s of run, 30 s waiting on a question, then
-// 5 s more read 0:15, while the wait is on and after it.
+// #850: for a run whose events carry no elapsed_ms the strip's clock is
+// this view's and says so, marked * (#911, which /help explains), and it
+// leaves out the time a question waited on the person, as trellis's budget
+// does: 10 s of run, 30 s waiting on a question, then 5 s more read 0:15,
+// while the wait is on and after it. With elapsed_ms the clock is
+// trellis's (TestNowClockIsTheEnginesWhenReported).
 func TestNowClockIsLabelledAndSkipsApprovalWaits(t *testing.T) {
 	m := fresh(t)
 	clock := time.Date(2026, 10, 26, 7, 0, 0, 0, time.UTC)
@@ -132,7 +138,7 @@ func TestNowClockIsLabelledAndSkipsApprovalWaits(t *testing.T) {
 	if s := stripOf(t, m); !strings.Contains(s, "0:15*") {
 		t.Fatalf("after the answer: %q", s)
 	}
-	if v := m.View(); !strings.Contains(v, "TIME 0:15*") {
+	if v := m.View(); !strings.Contains(v, "WALL CLOCK   0:15*/—") {
 		t.Fatalf("the budget line's figure is not the strip's:\n%s", v)
 	}
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
@@ -179,13 +185,13 @@ func TestNowStripDrawsTheTurnAsAMeter(t *testing.T) {
 // #911: a figure trellis did not report is —, never 0. Before the run's
 // budget and its first turn the strip and the budget row read —/— and draw
 // no Meter cells, which with no share to show would read as 0; the prompt
-// is —; and Where it is names no runtime, control or repository. /help
+// is —; and Where it is names no runtime, model, tier or repository. /help
 // says what — means, and what the clock's * means.
 func TestUnreportedFigureIsADash(t *testing.T) {
 	m := running(t)
 	m.Update(windowSize(120, 40))
 	v := m.View()
-	for _, want := range []string{" ● RUNNING  0:00*  —/—", "TURNS —/—", "PROMPT —", "runtime  —", "control  —", "root     —"} {
+	for _, want := range []string{" ● RUNNING  0:00*  —/—", "TURNS        —/—", "WALL CLOCK   0:00*/—", "COMPLETION   —/— tokens", "LAST PROMPT  —/—", "runtime  —", "model    — · tier —", "root     —"} {
 		if !strings.Contains(v, want) {
 			t.Fatalf("%q is not on screen:\n%s", want, v)
 		}
@@ -203,5 +209,180 @@ func TestUnreportedFigureIsADash(t *testing.T) {
 		if !strings.Contains(help, want) {
 			t.Fatalf("/help does not say %q:\n%s", want, help)
 		}
+	}
+}
+
+// #906: the risk is a strip whose time is not the one the wall-clock budget
+// checks, so a run seems to end early against it, or a figure drawn as
+// trellis's that trellis never sent. Once a model call or turn carries
+// elapsed_ms the strip shows that figure, unmarked, and counts on from it
+// with this view's tick, holding while a question waits on the person; the
+// next event's figure replaces the count, and run_end's is the run's
+// total. A run whose events carry none keeps the own clock, marked *; and
+// a run_end without one (a run the loop did not finish) does not keep the
+// last figure counted on as if trellis had given it, but falls back to the
+// own clock, marked.
+func TestNowClockIsTheEnginesWhenReported(t *testing.T) {
+	m := fresh(t)
+	clock := time.Date(2026, 10, 26, 7, 0, 0, 0, time.UTC)
+	m.now = func() time.Time { return clock }
+	call := func(turn, ms int) string {
+		return jsonLine(map[string]any{"level": "INFO", "fields": map[string]any{"message": "model call", "turn": turn, "elapsed_ms": ms}})
+	}
+	// The strip draws its clock between two-space gaps; the own clock's *
+	// would sit against the figure.
+	shows := func(when, want string) {
+		t.Helper()
+		if s := stripOf(t, m); !strings.Contains(s, "  "+want+"  ") {
+			t.Fatalf("%s: the strip does not show %s unmarked: %q", when, want, s)
+		}
+	}
+
+	submit(m, "t")
+	feed(m, jsonLine(map[string]any{"type": "run_start", "id": "tui-3"}))
+	clock = clock.Add(3 * time.Second)
+	feed(m, call(1, 125_000))
+	shows("at the model call", "2:05")
+	clock = clock.Add(4 * time.Second)
+	m.Update(TickMsg{})
+	shows("4 s after it", "2:09")
+	feed(m, approval("a1", "edit a.py", "+x"))
+	clock = clock.Add(30 * time.Second)
+	m.Update(TickMsg{})
+	shows("while the question waits", "2:09")
+	key(m, 'y')
+	clock = clock.Add(2 * time.Second)
+	m.Update(TickMsg{})
+	shows("2 s after the answer", "2:11")
+	feed(m, turn(1, "edit a.py", map[string]any{"tool": "edit", "target": "a.py", "wrote": true, "elapsed_ms": 200_000}))
+	shows("at the turn, whose figure replaces the count", "3:20")
+	if v := m.View(); !strings.Contains(v, "WALL CLOCK   3:20/—") || strings.Contains(v, "3:20*") {
+		t.Fatalf("the budget line's figure is not the strip's:\n%s", v)
+	}
+	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0, "elapsed_ms": 201_999}))
+	clock = clock.Add(20 * time.Second)
+	m.Update(TickMsg{})
+	if s := stripOf(t, m); !strings.Contains(s, "  3:21  ") || !strings.Contains(s, "ENDED · converged") {
+		t.Fatalf("an ended run keeps run_end's figure: %q", s)
+	}
+
+	// A run whose events carry no elapsed_ms: the own clock, marked.
+	submit(m, "u")
+	feed(m, jsonLine(map[string]any{"type": "run_start", "id": "tui-6"}))
+	clock = clock.Add(10 * time.Second)
+	feed(m, turn(1, "read_file a.py", map[string]any{"tool": "read_file", "target": "a.py", "wrote": false}))
+	m.Update(TickMsg{})
+	if s := stripOf(t, m); !strings.Contains(s, "0:10*") {
+		t.Fatalf("no elapsed_ms, and the clock is not the own one, marked: %q", s)
+	}
+
+	// trellis's figures, then a run_end without one.
+	submit(m, "v")
+	feed(m, jsonLine(map[string]any{"type": "run_start", "id": "tui-9"}))
+	feed(m, call(1, 50_000))
+	clock = clock.Add(7 * time.Second)
+	m.Update(TickMsg{})
+	shows("counting on in the third run", "0:57")
+	feed(m, runEnd(map[string]any{"outcome": "interrupted", "exit": 130, "restored": true}))
+	s := stripOf(t, m)
+	if !strings.Contains(s, "0:07*") || strings.Contains(s, "0:57") {
+		t.Fatalf("a run_end without elapsed_ms kept a figure trellis did not give: %q", s)
+	}
+}
+
+// The risk (#950): a steer sent and not yet in a model request looking
+// lost, or the strip's figure disagreeing with the queue the task box
+// lists. The strip says how many items get_state's pending listed are
+// still queued, the same items the queue draws as queued, and says
+// nothing at 0, never "0 queued": before get_state has listed the steer,
+// and once its delivered event has settled it.
+func TestNowStripShowsTheQueuedCount(t *testing.T) {
+	m := running(t)
+	feed(m, modelCall(1))
+	for _, line := range []string{"keep tokens.py", "and the comments"} {
+		typeLine(m, line)
+		enter(m)
+	}
+	out := m.TakeOutbox()
+	if s := stripOf(t, m); strings.Contains(s, "queued") {
+		t.Fatalf("counted before get_state listed anything: %q", s)
+	}
+	var pending []any
+	for _, o := range out {
+		if o.Cmd["type"] == "steer" {
+			pending = append(pending, map[string]any{"id": o.Cmd["id"], "type": "steer", "message": o.Cmd["message"]})
+		}
+	}
+	pendingAnswer(t, m, out, pending)
+	if s := stripOf(t, m); !strings.Contains(s, "  2 queued  ") {
+		t.Fatalf("two steers listed as pending: %q", s)
+	}
+	feed(m, steerDelivered(1))
+	if s := stripAt(t, m, 80, 24); !strings.Contains(s, "  1 queued  ") {
+		t.Fatalf("one steer delivered, one still queued, at 80 columns: %q", s)
+	}
+	feed(m, steerDelivered(1))
+	if s := stripOf(t, m); strings.Contains(s, "queued") {
+		t.Fatalf("both delivered: %q", s)
+	}
+}
+
+// The risk (#950): the strip saying what the run did, "ran edit", as
+// though it were the run's state now. What the run is on reads in -ing
+// form from the last event, the turn's figure being the meter's beside
+// it; before the first model call it says nothing, never "none"; and
+// Where it is keeps the sentence the desktop's Where it is also says.
+func TestNowStripActivityIsAnIngLine(t *testing.T) {
+	m := running(t)
+	feed(m, jsonLine(map[string]any{"level": "INFO", "fields": map[string]any{"message": "run budget", "max_iterations": 40}}))
+	if s := stripOf(t, m); strings.Contains(s, "none") || strings.Contains(s, "calling") || strings.Contains(s, "running") {
+		t.Fatalf("before the first call: %q", s)
+	}
+	feed(m, modelCall(3))
+	if s := stripAt(t, m, 80, 24); !strings.Contains(s, "calling the model, turn 3") {
+		t.Fatalf("calling the model, at 80 columns: %q", s)
+	}
+	feed(m, turn(3, "edit src/a.py", map[string]any{"observation": "applied: true", "tool": "edit", "target": "src/a.py", "wrote": true}))
+	s := stripAt(t, m, 80, 24)
+	if !strings.Contains(s, "running edit → src/a.py") || strings.Contains(s, "ran edit") {
+		t.Fatalf("after the turn, at 80 columns: %q", s)
+	}
+	m.Update(windowSize(120, 40))
+	if v := m.View(); !strings.Contains(v, "phase    ran edit, turn 3") {
+		t.Fatalf("Where it is changed its sentence:\n%s", v)
+	}
+}
+
+// The risk (#950): WAITING ON YOU with nothing to say what is waited on,
+// or a long question pushing the keys that answer it off the row. The
+// strip names the question in the place what the run is on takes, cut
+// with "…" to the room the keys leave, and the keys are the row's end at
+// 80 columns as at 120.
+func TestNowStripWaitingNamesTheQuestion(t *testing.T) {
+	m := running(t)
+	feed(m, modelCall(1))
+	feed(m, approval("a1", "edit app/calc.py", "+x"))
+	s := stripOf(t, m)
+	if !strings.Contains(s, "● WAITING ON YOU") || !strings.Contains(s, "  edit app/calc.py  [y] accept  [n] reject") {
+		t.Fatalf("the question waiting: %q", s)
+	}
+	if strings.Contains(s, "calling the model") {
+		t.Fatalf("the call the run made, beside the question it waits on: %q", s)
+	}
+	key(m, 'y')
+	long := "bash " + strings.Repeat("python -m pytest tests/test_parser.py ", 4)
+	feed(m, approval("a2", long, ""))
+	for _, w := range []int{80, 120} {
+		s := strings.TrimRight(stripAt(t, m, w, 40), " ")
+		if !strings.HasSuffix(s, "  [y] accept  [n] reject") {
+			t.Fatalf("at %d columns the keys are not the row's end: %q", w, s)
+		}
+		if !strings.Contains(s, "  bash python -m") || !strings.Contains(s, "…  [y] accept") {
+			t.Fatalf("at %d columns the question is not there, cut: %q", w, s)
+		}
+	}
+	key(m, 'n')
+	if s := stripOf(t, m); strings.Contains(s, "bash python") || strings.Contains(s, "WAITING") {
+		t.Fatalf("answered, the question stays: %q", s)
 	}
 }

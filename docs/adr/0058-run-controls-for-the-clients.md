@@ -1,8 +1,7 @@
 # ADR 0058 — Run controls for the clients: pause and resume, raising a limit, withdrawing a queued message, `read_file`, and a plan tool
 
-**Status:** Accepted (owner-directed). Not built: #806, #807, #808, #809 and
-#810 build sections 1 to 5; #868 records the controls in the trail
-(section 6).
+**Status:** Accepted (owner-directed). Built: sections 1 to 5 (#806, #807,
+#808, #809, #810) and section 6, the trail's record of the controls (#868).
 **Date:** 2026-10-26
 **Issue:** #798 (story S20, #790).
 **Decided by:** the owner, 2026-10-25 about 22:50 New York time, in the
@@ -58,6 +57,8 @@ What the engine has to build on, on `dev` at e51f277:
   `crates/trellis-cli/src/rpc.rs`). The loop's drain delivers a steer and
   sets a follow-up aside; when the run ends, the port hands back what was
   not delivered, and the `Chain` runs each follow-up in the order received.
+  *Note 2026-10-27 (#981):* `SteeringPort` is now in
+  `crates/trellis-cli/src/rpc/steering.rs`, moved out of `rpc.rs` by #935.
 - `list_paths` answers from `git ls-files --cached --others
   --exclude-standard` (`at_file_paths`), so an ignored `.env` or build
   directory is never offered, and refuses an absolute prefix, a `..`
@@ -150,7 +151,11 @@ What the engine has to build on, on `dev` at e51f277:
   `clear_queue`, which drops everything queued, stays excluded, and `abort`
   still hands back everything undelivered.
 - Held by `rpc_withdraw_refuses_a_delivered_steer` and
-  `rpc_withdraw_removes_an_undelivered_follow_up` (#808).
+  `rpc_withdraw_removes_an_undelivered_follow_up` (#808), and by
+  `a_withdrawn_steer_never_reaches_the_model_and_a_delivered_one_cannot_be_withdrawn`
+  in trellis-loop. The lock is `trellis_loop::SteeringFates`, given to the
+  loop with its seed (`Seed::fates`), as the hold and the live budget are;
+  the `id` is the command's own, as `approve`'s is (#808).
 
 ### 4. `read_file {path}`
 
@@ -209,7 +214,10 @@ held, a raise with the ceiling and its old and new values, a withdrawal
 with the message's kind and its text cut as a steer's text is
 (`STEER_TEXT_MAX_CHARS`). The list is omitted when empty, so a trail with no
 control keeps its shape and its digest, and a trail written before it reads
-back with no list.
+back with no list. *Note 2026-10-27 (#868):* the owner decided that a
+withdrawal records its kind and length only, never its text, because a
+later run's model can read the trail through `read_file` or `bash`; ADR
+0007's amendment of that date records it.
 
 That changes the trail format, so it is a ticket of its own, risk:high,
 merged only with the owner's G7 approval (#868). Until it lands, #806, #807
@@ -272,7 +280,7 @@ each new command, and DESIGN.md §2.1's rows for these controls change from
 
 ## Status
 
-Accepted (owner-directed), 2026-10-25. Not built.
+Accepted (owner-directed), 2026-10-25. Sections 1 to 5 built (#806, #807, #808, #809, #810); section 6 built (#868), as ADR 0007's amendment of 2026-10-27 says.
 
 ## Reversibility
 

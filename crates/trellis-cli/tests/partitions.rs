@@ -12,11 +12,11 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("trellis-partitions-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+mod common;
+use common::Scratch;
+
+fn scratch(name: &str) -> Scratch {
+    common::scratch_dir(&format!("trellis-partitions-{name}"))
 }
 
 fn git(root: &Path, args: &[&str]) -> String {
@@ -33,7 +33,7 @@ fn git(root: &Path, args: &[&str]) -> String {
 /// calls, so each is its own partition; a user config directory; and a
 /// script outside the repository (inside, it would dirty the worktree).
 struct Fixture {
-    root: PathBuf,
+    root: Scratch,
     user: PathBuf,
     spec: String,
     head: String,
@@ -68,8 +68,11 @@ fn fixture_with(name: &str, config: Option<&str>, script_json: &str) -> Fixture 
     git(&root, &["add", "-A"]);
     git(&root, &["commit", "-qm", "fixture"]);
     let head = git(&root, &["rev-parse", "HEAD"]);
-    let user = scratch(&format!("{name}-user"));
-    let script = scratch(&format!("{name}-script")).join("s.json");
+    let user = root.with_extension("user");
+    std::fs::create_dir(&user).unwrap();
+    let scripts = root.with_extension("script");
+    std::fs::create_dir(&scripts).unwrap();
+    let script = scripts.join("s.json");
     std::fs::write(&script, script_json).unwrap();
     Fixture {
         root,
@@ -321,7 +324,7 @@ fn read_request(s: &mut std::net::TcpStream) -> String {
 /// probe `--agents` makes (#483) measures continuous batching, and plays
 /// `steps[target]` to the agent whose task names `target`, one step per
 /// completion. A partition's prompt carries `Yours works on: <targets>.`
-/// (`run_cmd::partition_task`), which is how a request is told apart. A
+/// (`run_partitioned::partition_task`), which is how a request is told apart. A
 /// `GET` of `/models` is answered 404 as by a server that is not colibri
 /// (ADR 0047 decision 3). Each connection is served on its own thread, so
 /// agents running at once are answered at once.
@@ -434,6 +437,15 @@ fn three_partition_run_converges_with_every_partitions_edit() {
         out.contains("CONVERGED") && !out.contains("NOT CONVERGED"),
         "{out}"
     );
+    // Each partition's own outcome is reported, not the "did not finish"
+    // a partition with no report gets (#248).
+    for id in 0..3 {
+        assert!(
+            out.contains(&format!("partition {id}: converged in its worktree")),
+            "{out}"
+        );
+    }
+    assert!(!out.contains("did not finish"), "{out}");
     // At width 3, measured, not degraded to one at a time.
     assert!(
         out.contains("up to 3 at once (--agents is 3; the runtime reports 3 slots)"),
@@ -710,6 +722,16 @@ fn induced_collision_fails_the_integrated_check_rolls_back_and_records_a_gap() {
     let out = said(&o);
     assert_eq!(o.status.code(), Some(1), "not converged, restored:\n{out}");
     assert!(out.contains("NOT CONVERGED"), "{out}");
+    // What the failed integrated check wrote is shown under it, indented;
+    // a passing check's output is not (#248).
+    // The Windows typecheck is a `cmd` echo, which leaves a space before
+    // its `&`, so the lines are matched up to `error` and not past it.
+    assert!(
+        out.contains("integrated Typecheck: FAILED\n  a.py:1: error"),
+        "{out}"
+    );
+    assert!(out.contains("\n  b.py:1: error"), "{out}");
+    assert!(!out.contains("\n  git version"), "{out}");
     // Every file as HEAD has it; the only new commit is the trail's.
     assert_eq!(git(&f.root, &["rev-parse", "HEAD~1"]), f.head, "{out}");
     assert_eq!(git(&f.root, &["status", "--porcelain"]), "", "{out}");
@@ -783,11 +805,53 @@ fn agents_above_one_in_approve_mode_is_refused_before_the_snapshot() {
 }
 
 #[test]
+fn one_agent_at_a_time_in_approve_mode_is_not_refused_for_the_width() {
+    // #248. The risk: the width check reading `>= 1` rather than `> 1`, so
+    // a scripted model with targets, which runs its partitions one at a
+    // time (the comment above), is refused as if its agents asked at once.
+    let f = fixture_with(
+        "approve-one",
+        Some(CHECKS_PASS),
+        r#"{"steps":[{"tool":"done","summary":"x"}]}"#,
+    );
+    let o = run(
+        &f,
+        &[
+            "run",
+            "change fa and fb",
+            "--model",
+            &f.spec,
+            "--agents",
+            "2",
+            "--target",
+            "fa",
+            "--target",
+            "fb",
+            "--approve",
+        ],
+    );
+    let err = said(&o);
+    assert!(
+        !err.contains("agents asking at once"),
+        "refused for a width of one:\n{err}"
+    );
+    // The width check was reached and passed: the next refusal, for the
+    // terminal approve mode needs and a test has not, is the one given.
+    assert!(err.contains("interactive terminal"), "{err}");
+}
+
+#[test]
 fn agents_above_one_with_trusted_repository_code_is_refused_before_the_snapshot() {
     // The trust guard and the writer guards watch the repository root
     // (tooling.rs), not a partition's worktree, so trusted code running in
     // one would go unwatched. Refused rather than run unguarded (#466).
-    let config = format!("{CHECKS_PASS}\n[tools]\nbash = true\nbash_unattended = true\n");
+    // A custom tool beside bash, so the refusal has to name both kinds of
+    // trusted code it found, not only the first (#248).
+    let config = format!(
+        "{CHECKS_PASS}\n[tools]\nbash = true\nbash_unattended = true\n\n\
+         [[tools.custom]]\nname = \"lister\"\ndescription = \"Lists.\"\n\
+         command = ['ls']\nschema = {{ type = \"object\", properties = {{}} }}\n"
+    );
     let f = fixture_with(
         "trusted",
         Some(&config),
@@ -822,6 +886,10 @@ fn agents_above_one_with_trusted_repository_code_is_refused_before_the_snapshot(
     assert_refused_before_snapshot(&f, &o);
     let err = said(&o);
     assert!(err.contains("bash") && err.contains("--agents 1"), "{err}");
+    assert!(
+        err.contains("custom tools (lister)"),
+        "the custom tool the trust covers is not named:\n{err}"
+    );
 }
 
 #[test]

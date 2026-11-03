@@ -6,7 +6,7 @@
 //! caller hands in the key ADR 0024 §3 resolves, or none.
 //!
 //! Everything a server returns is untrusted. Both reads go through
-//! [`transport::get`], which caps the response at `MAX_RESPONSE`, bounds the
+//! `transport::get`, which caps the response at `MAX_RESPONSE`, bounds the
 //! whole request by [`READ_TIMEOUT`] and follows no redirect; the bodies are
 //! parsed into exact types, and one that does not fit is an error.
 //!
@@ -14,7 +14,7 @@
 //! `/v1`, so both reads go to the base's origin, whatever its path.
 //!
 //! [`probe_tools`] sends the one tools probe of ADR 0047 decision 4 through
-//! [`transport::post`] under the same cap, bound and origin rule.
+//! `transport::post` under the same cap, bound and origin rule.
 
 use crate::runtime::RuntimeError;
 use crate::secret::ApiKey;

@@ -33,9 +33,9 @@
 //!   an issue whose labels change, and only on the lines that record what
 //!   was changed. Every other byte, line endings included, is kept.
 //! - **An issue that changed after it was read is not written.** It is read
-//!   again before its edit; `--body-file` replaces the whole body, so a
-//!   write over a newer body (a `sync-ready.py` run, a person's edit) would
-//!   silently undo it.
+//!   again before its edit; the REST `PATCH` replaces the whole body and the
+//!   whole label list, so a write over a newer one (a `sync-ready.py` run, a
+//!   person's edit) would silently undo it.
 
 use std::collections::BTreeMap;
 
@@ -45,22 +45,21 @@ use crate::parse::{TRIAGE_END, TRIAGE_START};
 use crate::report::{Line, Value, printable, report, ticket_from_gh_json};
 use crate::{State, TRIAGE_VERSION, Ticket};
 
-/// How many open issues `sweep` asks `gh` for. A list this long may have
-/// been cut short, and a sweep that silently missed issues would report
-/// "no drift" for ones it never read, so it is refused.
+/// The most open issues one sweep or index acts on. The list is read with
+/// `--paginate`, so `gh` no longer stops at a count it was given; the
+/// ceiling stays from when it did (`gh issue list --limit`), and a list
+/// this long is still refused rather than read (#957).
 pub const SWEEP_LIST_LIMIT: usize = 1000;
 
-/// The `gh` argv that lists every open issue with the fields the rules read.
+/// The `gh` argv that lists every open issue through REST. `--paginate`
+/// follows every page: without it the endpoint returns the first 30 and a
+/// sweep would report "no drift" for issues it never read. The list holds
+/// pull requests too; [`plan_sweep`] drops them.
 pub fn gh_list_args() -> Vec<String> {
     [
-        "issue",
-        "list",
-        "--state",
-        "open",
-        "--limit",
-        &SWEEP_LIST_LIMIT.to_string(),
-        "--json",
-        crate::GH_VIEW_FIELDS,
+        "api",
+        "--paginate",
+        "repos/{owner}/{repo}/issues?state=open&per_page=100",
     ]
     .into_iter()
     .map(str::to_string)
@@ -75,7 +74,7 @@ pub enum SweepError {
     #[error("the issue list is not the JSON sweep reads: {0}")]
     ListJson(#[source] serde_json::Error),
     #[error(
-        "the list holds {limit} issues, the most asked for, so it may have been cut short; nothing was swept"
+        "the list holds {limit} or more open issues, the most one sweep acts on; nothing was swept"
     )]
     Truncated { limit: usize },
     #[error("#{number} appears twice in the issue list")]
@@ -147,25 +146,29 @@ impl IssuePlan {
         !self.changes.is_empty() || self.new_body.is_some()
     }
 
-    /// The `gh issue edit` argv for this plan. The body, when there is one,
-    /// goes on stdin.
+    /// The `gh api` argv (a REST `PATCH`) that writes this plan. The body,
+    /// when there is one, goes on stdin (`-F body=@-`). REST sets the whole
+    /// label list, so every label the issue keeps is named, not only the
+    /// changes; an issue left with none gets `labels[]`, gh's empty array.
     pub fn gh_edit_args(&self) -> Vec<String> {
         let mut args = vec![
-            "issue".to_string(),
-            "edit".to_string(),
-            self.number.to_string(),
+            "api".to_string(),
+            "-X".to_string(),
+            "PATCH".to_string(),
+            format!("repos/{{owner}}/{{repo}}/issues/{}", self.number),
         ];
-        for l in self.added() {
-            args.push("--add-label".to_string());
-            args.push(l.to_string());
+        let labels = after(&self.read_labels, &self.changes);
+        if labels.is_empty() {
+            args.push("-f".to_string());
+            args.push("labels[]".to_string());
         }
-        for l in self.removed() {
-            args.push("--remove-label".to_string());
-            args.push(l.to_string());
+        for l in labels {
+            args.push("-f".to_string());
+            args.push(format!("labels[]={l}"));
         }
         if self.new_body.is_some() {
-            args.push("--body-file".to_string());
-            args.push("-".to_string());
+            args.push("-F".to_string());
+            args.push("body=@-".to_string());
         }
         args
     }
@@ -719,19 +722,12 @@ pub fn sweep_with(
 
 /// `secs` after the Unix epoch as `YYYY-MM-DDTHH:MM:SSZ`, the form
 /// `triaged_at` is written in. The calendar arithmetic is Howard Hinnant's
-/// `civil_from_days`, so no date crate is needed.
+/// `civil_from_days` in trellis-core, so no date crate is needed.
 pub fn utc_timestamp(secs: u64) -> String {
-    let days = secs / 86_400;
+    // `u64::MAX / 86_400` is about 2.1e14, so the day count fits an `i64`.
+    let days = (secs / 86_400) as i64;
     let rem = secs % 86_400;
-    let z = days + 719_468;
-    let era = z / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + u64::from(month <= 2);
+    let (year, month, day) = trellis_core::time::civil_from_days(days);
     format!(
         "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
         rem / 3_600,

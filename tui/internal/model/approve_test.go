@@ -289,3 +289,71 @@ func TestApproveModalNamesACallThatIsNotAnEdit(t *testing.T) {
 		t.Fatalf("a diff that fits says a position:\n%s", v)
 	}
 }
+
+// #853: c sets the question on screen aside for its file's diff at the
+// code level, the desktop's Review in Code (#831), and y and n there answer
+// it through the same answer the box gives: approve {id, yes} for the id
+// trellis sent, once, and the next question waiting comes up in its box.
+// ESC puts the question back in its box unanswered. The risks: a second
+// approval path that sends a different command or answers a question
+// nobody saw; setting the question aside dropping it, so the run waits
+// forever; and a key at the diff (a Tab, a typed line) acting while the
+// question is still waiting.
+func TestApproveReviewInCodeAnswersInPlace(t *testing.T) {
+	for _, c := range []struct {
+		key rune
+		yes bool
+		say string
+	}{{'y', true, "approved"}, {'n', false, "declined"}} {
+		m := running(t)
+		m.Update(windowSize(120, 40))
+		feed(m, turn(1, "edit a.py", map[string]any{"tool": "edit", "target": "a.py", "wrote": true,
+			"lines_added": 1, "lines_removed": 1, "diff": "--- a.py\n+++ a.py\n@@ -1,1 +1,1 @@\n-x = 1\n+x = 2\n"}))
+		feed(m, approval("q7", "edit a.py (+1 -1)", "--- a.py\n+++ a.py\n  def f():\n-     return 1\n+     return 2\n"))
+		feed(m, approval("q8", "bash", "pytest -q"))
+		// The way to the diff is on screen at 80 columns too, where the
+		// status bar keeps one key.
+		m.Update(windowSize(80, 24))
+		if v := m.View(); !strings.Contains(v, "[c] review in code") {
+			t.Fatalf("at 80x24 the box's question does not say c reaches its diff:\n%s", v)
+		}
+		m.Update(windowSize(120, 40))
+		key(m, 'c')
+		v := m.View()
+		if !strings.HasPrefix(v, " Run ⟩ edits ⟩ a.py") || !strings.Contains(v, "L3 / 4") ||
+			!strings.Contains(v, "awaiting your approval") || !strings.Contains(v, "return 2") || !strings.Contains(v, "x = 2") {
+			t.Fatalf("c did not show the question's file at its diff:\n%s", v)
+		}
+		if !strings.Contains(v, "+2 −2") {
+			t.Fatalf("the file's counts are not the applied edit's and the question's summed:\n%s", v)
+		}
+		for _, k := range []tea.KeyType{tea.KeyTab, tea.KeyEnter, tea.KeyBackspace} {
+			m.Update(tea.KeyMsg{Type: k})
+		}
+		typeLine(m, "x z")
+		if out := m.TakeOutbox(); len(out) != 0 || m.Input != "" || m.Modal == nil || !m.Modal.Reviewing || !m.nav.Diff {
+			t.Fatalf("a key at the diff acted while the question waited: out %v input %q nav %+v", kinds(out), m.Input, m.nav)
+		}
+		escKey(m)
+		if m.Modal == nil || m.Modal.Reviewing || !strings.Contains(m.View(), "edit a.py (+1 -1)?") {
+			t.Fatalf("ESC did not put the question back in its box:\n%s", m.View())
+		}
+		key(m, 'c')
+		key(m, c.key)
+		out := m.TakeOutbox()
+		if len(out) != 1 || out[0].Cmd["type"] != "approve" || out[0].Cmd["id"] != "q7" || out[0].Cmd["yes"] != c.yes {
+			t.Fatalf("%c at the diff sent %+v", c.key, out)
+		}
+		if m.Modal == nil || m.Modal.ID != "q8" || m.Modal.Reviewing {
+			t.Fatalf("%c: the next question is not up in its box: %+v", c.key, m.Modal)
+		}
+		if !strings.Contains(strings.Join(texts(m), "\n"), "· edit a.py (+1 -1) "+c.say) {
+			t.Fatalf("%c: the answer is not said in the transcript: %q", c.key, texts(m))
+		}
+		// A question that names no file has no diff to set it aside for.
+		key(m, 'c')
+		if m.Modal.Reviewing || len(m.TakeOutbox()) != 0 {
+			t.Fatalf("c set aside a bash question: %+v", m.Modal)
+		}
+	}
+}

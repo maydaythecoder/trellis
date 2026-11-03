@@ -46,7 +46,7 @@ impl Stamp {
     }
 }
 
-/// Every untracked file git ignores, with its [`Stamp`], taken just before
+/// Every untracked file git ignores, with its `Stamp`, taken just before
 /// the command starts and again just after it ends.
 ///
 /// `git status` does not list ignored files, so without this a command

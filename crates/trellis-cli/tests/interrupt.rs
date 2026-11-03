@@ -14,16 +14,16 @@
 
 use serde_json::Value;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("trellis-interrupt-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+mod common;
+use common::Scratch;
+
+fn scratch(name: &str) -> Scratch {
+    common::scratch_dir(&format!("trellis-interrupt-{name}"))
 }
 
 fn git(root: &Path, args: &[&str]) {
@@ -40,13 +40,13 @@ fn git(root: &Path, args: &[&str]) {
 const KEY_ENV: &str = "TRELLIS_TEST_INTERRUPT_KEY";
 
 struct Fixture {
-    root: PathBuf,
-    home: PathBuf,
+    root: Scratch,
+    home: Scratch,
 }
 
 /// A committed repository whose `[hooks]` are `hooks`, and a user
 /// configuration naming the provider stub at `base`.
-fn fixture(root: PathBuf, hooks: &str, base: &str) -> Fixture {
+fn fixture(root: Scratch, hooks: &str, base: &str) -> Fixture {
     git(&root, &["init", "-q"]);
     git(&root, &["config", "user.email", "t@example.invalid"]);
     git(&root, &["config", "user.name", "t"]);
@@ -244,7 +244,8 @@ fn after_run_interrupted_by_sigint_runs_before_the_rollback_with_reason_interrup
     // path; its stdin goes outside the repository.
     let root = scratch("sigint");
     let hooked = root.join("hooked.py");
-    let payload = scratch("sigint-payload").join("payload.json");
+    let payload_dir = scratch("sigint-payload");
+    let payload = payload_dir.join("payload.json");
     let hooks = format!(
         "[hooks]\nafter_run = ['sh', '-c', 'cat > {}; echo hooked > {}']\n",
         payload.display(),
@@ -283,6 +284,29 @@ fn after_run_interrupted_by_sigint_runs_before_the_rollback_with_reason_interrup
 }
 
 #[test]
+fn hooks_without_after_run_are_not_announced_as_running_on_an_interrupt() {
+    // #248. The risk: the interrupt path reading "hooks are configured" as
+    // "after_run is configured", so a repository with only a pre_tool hook
+    // is told `after_run` is running and that Ctrl-C again stops it, when
+    // there is nothing to run or to stop.
+    let root = scratch("sigint-no-after-run");
+    let hooks = "[hooks]\npre_tool = ['sh', '-c', 'exit 0']\n";
+    let (base, held) = provider_stub();
+    let f = fixture(root, hooks, &base);
+    let child = start_run(&f, &held);
+
+    sigint(&child);
+    let o = wait(child, Duration::from_secs(60));
+    let said = combined(&o);
+    assert_eq!(o.status.code(), Some(130), "{said}");
+    assert!(said.contains("INTERRUPTED"), "{said}");
+    assert!(
+        !said.contains("after_run (reason: interrupted)"),
+        "no after_run is configured, so none is announced:\n{said}"
+    );
+}
+
+#[test]
 fn after_run_interrupted_a_second_sigint_stops_the_hook_and_the_rollback_proceeds() {
     // The risk: a hook that hangs holds the person's Ctrl-C hostage for its
     // whole timeout. A second Ctrl-C stops it, and the rollback still runs.
@@ -291,7 +315,8 @@ fn after_run_interrupted_a_second_sigint_stops_the_hook_and_the_rollback_proceed
     // sleep itself.
     let root = scratch("sigint-twice");
     let hooked = root.join("hooked.py");
-    let started = scratch("sigint-twice-marker").join("started");
+    let started_dir = scratch("sigint-twice-marker");
+    let started = started_dir.join("started");
     let hooks = format!(
         "[hooks]\ntimeout_s = 120\nafter_run = ['sh', '-c', 'echo hooked > {}; echo > {}; exec sleep 60']\n",
         hooked.display(),

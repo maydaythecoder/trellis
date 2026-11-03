@@ -1,0 +1,11 @@
+crates/trellis-cli/src/rpc.rs:492:24: replace += with -= in SteeringPort::close
+crates/trellis-cli/src/rpc.rs:801:9: replace Server::respond with ()
+crates/trellis-cli/src/rpc.rs:1221:24: replace match guard !c.thread.is_finished() && !c.answered.load(Ordering::SeqCst) with true in Server::classify_pending
+crates/trellis-cli/src/rpc.rs:1244:24: replace match guard !r.thread.is_finished() with false in Server::in_flight
+crates/trellis-cli/src/rpc.rs:1244:24: delete ! in Server::in_flight
+crates/trellis-cli/src/rpc.rs:1257:9: replace Server::dispatch_command -> bool with true
+crates/trellis-cli/src/rpc.rs:1257:9: replace Server::dispatch_command -> bool with false
+crates/trellis-cli/src/rpc.rs:1417:37: replace && with || in Server::abort_run
+crates/trellis-cli/src/rpc.rs:1647:24: replace match guard !t.trim().is_empty() with false in Server::classify
+crates/trellis-cli/src/rpc.rs:1647:24: delete ! in Server::classify
+crates/trellis-cli/src/rpc.rs:1952:47: replace || with && in Chain::run_one_task

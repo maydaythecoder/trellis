@@ -9,7 +9,7 @@ use trellis_core::{CallSiteId, FileId, SymbolId};
 /// denominated facts, with no ratio between them and no way to compute one.
 ///
 /// This type exists because there was one. `RadiusReport` used to carry the
-/// repository-wide [`Coverage`], whose `resolved_fraction` divides `resolved`
+/// repository-wide [`Coverage`](crate::Coverage), whose `resolved_fraction` divides `resolved`
 /// by `resolved + candidates + unresolved`. That is correct for the index,
 /// where all three count the same population: every non-excluded call site in
 /// the repository. That population includes unknown-receiver calls whose
@@ -141,7 +141,7 @@ pub struct RadiusReport {
     pub ambiguous: Vec<RadiusEntry>,
     /// Symbols transitively reached.
     pub symbols: Vec<SymbolId>,
-    /// Deliberately **not** a [`Coverage`]. See [`RadiusCoverage`].
+    /// Deliberately **not** a [`Coverage`](crate::Coverage). See [`RadiusCoverage`].
     pub coverage: RadiusCoverage,
     /// True when every edge involved was `Resolved`, so the radius may be
     /// used for partitioning (S19).

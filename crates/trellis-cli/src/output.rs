@@ -83,6 +83,26 @@ pub(crate) fn frame(sink: &Sink, record: &Value) {
     }
 }
 
+/// A string from a trail, made safe to print to a terminal.
+///
+/// A trail is read back as untrusted data (S10) and then printed straight to a
+/// terminal, which interprets what it is given. An escape sequence in a task
+/// description or a file path can move the cursor, repaint a line, or clear
+/// the screen — so a run that did not converge can be made to *look* like one
+/// that did, in the one command a user reads to find out which.
+///
+/// That matters more here than in most tools. The claim this project makes is
+/// that work comes back verified rather than merely written, and a forged
+/// terminal defeats the reading of the evidence rather than the evidence
+/// itself.
+///
+/// Control characters become their escaped form rather than vanishing: a path
+/// that contains one is worth seeing, and silently dropping it would print a
+/// name that does not match the file.
+pub(crate) fn plain(s: &str) -> String {
+    trellis_core::text::escape_controls(s)
+}
+
 /// serde_json escapes C0 controls but writes DEL and the C1 range
 /// (U+007F–U+009F) as they are, and some terminals act on C1 controls.
 /// Those characters can only occur inside JSON strings, where a `\u` escape
@@ -137,7 +157,7 @@ pub(crate) struct RunExtras {
     pub steer_watch: Option<Arc<crate::rpc::SteeringPort>>,
     /// `trellis run --agents N --target ...` with N above 1: the plan its
     /// agents run, one per partition (#466). `None` for every other run.
-    pub fanout: Option<crate::run_cmd::Fanout>,
+    pub fanout: Option<crate::run_partitioned::Fanout>,
     /// RPC's record of the trails its runs wrote, for `get_session_stats`
     /// (#319). `framed` pushes the run's id before it writes `run_end`, so
     /// a client that has read `run_end` and asks finds the run counted.
@@ -160,6 +180,14 @@ pub(crate) struct RunExtras {
     /// (each partition keeps its own clock) leave it empty, and `run_end`
     /// then carries none, never a 0.
     pub elapsed_ms: OnceLock<u64>,
+    /// rpc's `pause` and `resume` (ADR 0058 §1), honoured by the agent loop
+    /// at the top of each iteration; its caller closes it when the run ends.
+    /// `None` everywhere but rpc.
+    pub hold: Option<Arc<trellis_loop::Hold>>,
+    /// rpc's `set_budget` (ADR 0058 §2): the run's whole ceiling, adopted
+    /// by the agent loop and raised from rpc's thread; `None` everywhere
+    /// but rpc.
+    pub budget: Option<Arc<trellis_loop::LiveBudget>>,
 }
 
 /// The shared cell `RunExtras::done` writes into. `Arc<Mutex<_>>` because
@@ -186,6 +214,8 @@ impl Default for RunExtras {
             run_ended: None,
             tier: None,
             elapsed_ms: OnceLock::new(),
+            hold: None,
+            budget: None,
         }
     }
 }

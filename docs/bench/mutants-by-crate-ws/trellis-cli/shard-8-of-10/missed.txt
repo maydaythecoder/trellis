@@ -1,0 +1,12 @@
+crates/trellis-cli/src/tooling.rs:209:29: delete ! in prepare_as
+crates/trellis-cli/src/user_config.rs:480:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in set_model_spec
+crates/trellis-cli/src/user_config.rs:594:27: replace - with / in replace_value
+crates/trellis-cli/src/user_config.rs:609:32: replace || with && in one_line_string_len
+crates/trellis-cli/src/user_config.rs:613:9: delete match arm '\'' in one_line_string_len
+crates/trellis-cli/src/user_config.rs:615:30: replace + with - in one_line_string_len
+crates/trellis-cli/src/user_config.rs:615:30: replace + with * in one_line_string_len
+crates/trellis-cli/src/user_config.rs:616:24: replace + with - in one_line_string_len
+crates/trellis-cli/src/user_config.rs:616:24: replace + with * in one_line_string_len
+crates/trellis-cli/src/user_config.rs:621:21: delete match arm '\n' in one_line_string_len
+crates/trellis-cli/src/user_config.rs:623:21: delete match arm '\\' in one_line_string_len
+crates/trellis-cli/src/user_config.rs:622:26: replace match guard escaped with false in one_line_string_len

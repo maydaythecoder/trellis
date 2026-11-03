@@ -30,6 +30,13 @@ type Approval struct {
 	// and the start of the last full page at the current size, the view's
 	// own limit (view.AskingLastFrom, #843).
 	Scroll int
+	// For names the prompt or follow-up whose run asks (#954), from the
+	// request's request_id, plain text.
+	For string
+	// Reviewing is set while the question is set aside for its file's diff
+	// at the code level, where y and n answer it in place (#853). The
+	// question stays the one on screen, waiting, and goes with it.
+	Reviewing bool
 }
 
 // approvalRequested shows the question, or queues it behind the one on
@@ -50,7 +57,14 @@ func (m *Model) approvalRequested(a frames.ApprovalFields) {
 	if a.Detail != nil {
 		d = *a.Detail
 	}
-	ap := Approval{ID: a.ID, Question: view.Plain(q), Diff: plainLines(strings.TrimRight(d, " \t\r\n"))}
+	ap := Approval{ID: a.ID, Question: view.Plain(q), Diff: plainLines(strings.TrimRight(d, " \t\r\n")), For: m.askedFor(a.RequestID)}
+	// The gate names an ask_human call `ask_human "<question>"`
+	// (trellis-loop gate.rs), and no custom tool may take a built-in's
+	// name, so the prefix is the call's. The question is the model's, in
+	// the log as well as the box, whether it is shown, queued or declined.
+	if asked, ok := strings.CutPrefix(q, "ask_human "); ok {
+		m.pushRow(view.Row{Text: "? model asks you  " + view.Plain(asked), Role: view.RoleYou, Ask: true})
+	}
 	if m.Modal == nil {
 		m.showModal(&ap)
 		return
@@ -63,11 +77,91 @@ func (m *Model) approvalRequested(a frames.ApprovalFields) {
 	m.approvals = append(m.approvals, ap)
 }
 
+// askedFor is what an approval belongs to (#954), in the desktop's words:
+// the prompt or follow-up its request_id names, with the task the run's
+// start carried when it is the run in flight's, and said to have no id
+// when it had none.
+func (m *Model) askedFor(requestID *string) string {
+	if requestID == nil {
+		return "a prompt or follow-up sent with no id"
+	}
+	id := *requestID
+	followUp := false
+	for _, q := range m.queue {
+		if q.item.Kind == kindFollowUp && q.id == id {
+			followUp = true
+		}
+	}
+	shown := view.Plain(id)
+	if r := m.runRequest; r != nil && r.id == id {
+		kind := "prompt"
+		if followUp {
+			kind = "follow-up"
+		}
+		if r.hasTask {
+			return "the " + kind + ": " + r.task
+		}
+		return "the " + kind + " sent as " + shown
+	}
+	if followUp {
+		return "the follow-up sent as " + shown
+	}
+	return "the prompt or follow-up sent as " + shown
+}
+
 // modalKey is a key while the modal is up. y and n answer it; the arrows
 // and PgUp and PgDn scroll its diff, so a long one is read whole before it
-// is answered (#640). Every other key, a paste among them, is ignored: the
-// keys on screen are the modal's.
+// is answered (#640); c sets it aside for its file's diff at the code
+// level, where it is answered in place (#853). Every other key, a paste
+// among them, is ignored: the keys on screen are the modal's.
 func (m *Model) modalKey(k tea.KeyMsg) {
+	if m.Modal.Reviewing {
+		m.reviewKey(k)
+		return
+	}
+	switch k.Type {
+	case tea.KeyRunes:
+		if k.Paste || len(k.Runes) != 1 {
+			return
+		}
+		switch k.Runes[0] {
+		case 'y':
+			m.answer(true)
+		case 'n':
+			m.answer(false)
+		case 'c':
+			m.review()
+		}
+	case tea.KeyUp:
+		m.scrollModal(-1)
+	case tea.KeyDown:
+		m.scrollModal(1)
+	case tea.KeyPgUp:
+		m.scrollModal(-ModalPage)
+	case tea.KeyPgDown:
+		m.scrollModal(ModalPage)
+	}
+}
+
+// review sets the question on screen aside for the diff of the file it
+// asks to write, the desktop's Review in Code (#831): the edits pane gone
+// into, at that file's diff. A question that names no file, a bash command
+// or ask_human, has no diff level and stays in the box.
+func (m *Model) review() {
+	path, _, ok := view.ApprovalFile(m.Modal.Question, m.Modal.Diff)
+	if !ok {
+		return
+	}
+	m.Modal.Reviewing = true
+	m.nav = view.Nav{Open: view.PanelEdits, Selected: view.PanelEdits, File: path, Diff: true}
+}
+
+// reviewKey is a key while the question is set aside at its file's diff.
+// y and n answer it through answer, the one path an answer takes; ESC puts
+// it back in its box unanswered; the arrows and PgUp and PgDn scroll the
+// diff. Every other key is ignored, as the box ignores it: the question is
+// still waiting, and nothing else is answered or sent until it is.
+func (m *Model) reviewKey(k tea.KeyMsg) {
 	switch k.Type {
 	case tea.KeyRunes:
 		if k.Paste || len(k.Runes) != 1 {
@@ -79,14 +173,10 @@ func (m *Model) modalKey(k tea.KeyMsg) {
 		case 'n':
 			m.answer(false)
 		}
-	case tea.KeyUp:
-		m.scrollModal(-1)
-	case tea.KeyDown:
-		m.scrollModal(1)
-	case tea.KeyPgUp:
-		m.scrollModal(-ModalPage)
-	case tea.KeyPgDown:
-		m.scrollModal(ModalPage)
+	case tea.KeyEsc:
+		m.Modal.Reviewing = false
+	default:
+		m.scrollLevelKey(k.Type)
 	}
 }
 

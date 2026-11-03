@@ -26,13 +26,17 @@
 // unreported: a dash with the reason as its title, never 0.
 
 import { atEnd, drawFeed, el, fill, muted } from "./dom.js";
-import { dsStatus, figure, railRows, stats, txEntry, txTurn, unreported } from "./ds.js";
+import { budgetRows, dsStatus, figure, railRows, stats, txEntry, unreported } from "./ds.js";
 import { isCount, str } from "./fmt.js";
 import { drawGraph } from "./graph.js";
+import { drawNow, drawWhere } from "./now.js";
+import { drawPlan } from "./plan.js";
+import { lineId, send } from "./rpc.js";
 
 // The actions log: the transcript as the design system's Transcript
-// (#827), one entry per row the core sent, typed by what it came from, a
-// rule ahead of each turn's first row. The core sends each row once, and
+// (#827), one entry per row the core sent, typed by what it came from, the
+// reducer's turn entry the rule ahead of each turn's rows (#949). The core
+// sends each row once, and
 // again only when it changes, and dom.js's drawFeed appends or replaces
 // rows rather than redrawing the log. It follows its end only while the
 // reader is there (#643, as the TUI has since #244); otherwise their place
@@ -42,8 +46,6 @@ import { drawGraph } from "./graph.js";
 function transcript(doc, pane, feed) {
   const { followed, drawn, missing } = drawFeed(doc, pane, feed, {
     draw: (row) => txEntry(doc, row),
-    divider: (row, before) =>
-      isCount(row.turn) && (before === null || before.dataset.turn !== String(row.turn)) ? txTurn(doc, row.turn) : null,
     empty: "Nothing has run yet.",
   });
   const jump = doc.getElementById("log-jump");
@@ -54,8 +56,14 @@ function transcript(doc, pane, feed) {
 
 // Wires the actions log once: the jump button takes the reader to the end,
 // scrolling there by hand puts the button away, since what it offered is
-// done, and a click or Enter on a tool row opens or closes its raw call and
-// observation. One listener each for the whole log, so its rows add none.
+// done, and the filter bar's buttons set what the log shows. A tool row's
+// raw call and observation is a <details> (ds.js's txEntry), which opens
+// with no listener, so the log's rows add none.
+//
+// A filter or quiet mode only marks the log (#949): its data-filter and its
+// log-quiet class, which style.css hides rows by. No row is removed or
+// redrawn, so turning a filter off shows every row again, and the feed
+// goes on appending under it.
 export function wireLog(doc) {
   const pane = doc.getElementById("pane-transcript");
   const jump = doc.getElementById("log-jump");
@@ -67,18 +75,22 @@ export function wireLog(doc) {
   pane.addEventListener("scroll", () => {
     if (atEnd(pane)) jump.hidden = true;
   });
-  const toggle = (e) => {
-    const row = e.target.closest(".cd-tx-tool");
-    if (row === null || !pane.contains(row)) return;
-    const raw = row.querySelector(".cd-tx-raw");
-    raw.hidden = !raw.hidden;
-    row.setAttribute("aria-expanded", String(!raw.hidden));
-  };
-  pane.addEventListener("click", toggle);
-  pane.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter") return;
-    e.preventDefault();
-    toggle(e);
+  const bar = pane.parentElement.querySelector(".log-filters");
+  bar.addEventListener("click", (e) => {
+    const button = e.target.closest("button");
+    if (button === null || !bar.contains(button)) return;
+    if (button.dataset.quiet !== undefined) {
+      const quiet = pane.classList.toggle("log-quiet");
+      button.classList.toggle("cd-q-opt-on", quiet);
+      button.setAttribute("aria-pressed", String(quiet));
+      return;
+    }
+    pane.dataset.filter = button.dataset.filter;
+    for (const option of bar.querySelectorAll("button[data-filter]")) {
+      const on = option === button;
+      option.classList.toggle("cd-q-opt-on", on);
+      option.setAttribute("aria-pressed", String(on));
+    }
   });
 }
 
@@ -140,28 +152,115 @@ function radius(doc, pane, r) {
   );
 }
 
-// The budget as Stats: the turn against its ceiling, the last turn's prompt
-// in bytes and its reply in tokens (#312), never joined. The view carries no
-// elapsed time (DESK-08's budget has none) and the page draws no clock of
-// its own, so elapsed is drawn unreported rather than as one the core did
-// not send; a turn not reported is not turn 0.
+// The budget (#829): one row per ceiling the run enforces, as the reducer
+// built it (`budget.limits`): turns, wall clock, completion tokens and the
+// prompt against the context ceiling, each two figures and a Meter, the
+// wall clock trellis's own elapsed_ms. Below them, the last turn's reply in
+// tokens and its rate and queue wait as Stats; the prompt is in bytes and
+// the reply in tokens (#312), never joined. A figure trellis did not report
+// is a dash with its reason, never 0.
+//
+// Each row the reducer's `raise` names carries ds.js's input and Raise
+// (#837), which send set_budget through wireBudget's listener. The row's
+// ceiling is redrawn only from the next view, the latest run budget's,
+// never from the number typed or set_budget's answer. The pane is drawn
+// afresh at each turn, so what the person has typed, and where they were
+// typing, is put back.
 function budget(doc, pane, b) {
   const v = b !== null && typeof b === "object" ? b : {};
-  const list = [
-    {
-      label: "turn",
-      value: figure(doc, v.turn, "no turn has started"),
-      unit: isCount(v.max_turns) ? `/ ${v.max_turns}` : null,
-    },
-    { label: "prompt", value: figure(doc, v.prompt_bytes, "the last turn sent no prompt size"), unit: "B" },
-    { label: "out", value: figure(doc, v.completion_tokens, "the last turn sent no token count"), unit: "tok" },
-    { label: "elapsed", value: unreported(doc, "trellis sends no elapsed time yet, and the desktop keeps no clock of its own") },
-  ];
+  const list = [{ label: "last turn out", value: figure(doc, v.completion_tokens, "the last turn sent no token count"), unit: "tok" }];
   const rate = str(v.tokens_per_second);
   if (rate !== null) list.push({ label: "rate", value: rate, unit: "tok/s" });
   const queued = str(v.queued_seconds);
   if (queued !== null) list.push({ label: "queued", value: queued, unit: "s" });
-  pane.replaceChildren(stats(doc, list));
+  if (v.raise === null || typeof v.raise !== "object") {
+    typed.clear();
+    raiseSaid = null;
+  }
+  const focused = doc.activeElement && pane.contains(doc.activeElement) ? doc.activeElement.dataset.raise : undefined;
+  const out = [budgetRows(doc, Array.isArray(v.limits) ? v.limits : [], v.raise), stats(doc, list)];
+  if (raiseSaid !== null) out.push(saidLine(doc));
+  pane.replaceChildren(...out);
+  for (const input of pane.querySelectorAll("input[data-raise]")) {
+    input.value = typed.get(input.dataset.raise) ?? "";
+    if (input.dataset.raise === focused) input.focus();
+  }
+}
+
+// What the person has typed in each raise input, by set_budget field, and
+// what the page last said about a raise: kept across the budget's redraws
+// and dropped once nothing may be raised.
+const typed = new Map();
+let raiseSaid = null;
+
+// The page's last word on a raise, as a line marked for raiseLimit to find.
+function saidLine(doc) {
+  const line = el(doc, "p", raiseSaid.text, raiseSaid.refused ? "failed" : "muted");
+  line.dataset.raiseSaid = "";
+  return line;
+}
+
+// Sends one raise (#837) from the row of `control`, a raise input or its
+// button. The number is a whole one above 0 in the row's unit, sent in the
+// field's unit (the wall clock: seconds typed, milliseconds sent), and
+// above the ceiling drawn, since rpc refuses a lower one and changes
+// nothing for an equal one. rpc answers with every ceiling after the raise;
+// the row is not drawn from that answer but from the run budget the loop
+// sends again when the raise takes effect, and a refusal reaches the log.
+async function raiseLimit(doc, tauri, control) {
+  const pane = doc.getElementById("pane-budget");
+  const say = (text, refused) => {
+    raiseSaid = { text, refused };
+    const old = pane.querySelector("p[data-raise-said]");
+    if (old) old.replaceWith(saidLine(doc));
+    else pane.append(saidLine(doc));
+  };
+  const { raise: field, unit, label } = control.dataset;
+  const perUnit = Number(control.dataset.perUnit);
+  const raw = (typed.get(field) ?? "").trim();
+  if (!/^[1-9][0-9]*$/.test(raw)) {
+    say(`Type the new ${label} ceiling as a whole number above 0, in ${unit}.`, true);
+    return;
+  }
+  const value = Number(raw) * perUnit;
+  if (!Number.isSafeInteger(value)) {
+    say(`${raw} ${unit} is past the largest ceiling the page can send.`, true);
+    return;
+  }
+  const ceiling = control.dataset.ceiling === undefined ? null : Number(control.dataset.ceiling);
+  if (ceiling !== null && value <= ceiling) {
+    say(`A ceiling is raised, never lowered: type more than the ${label} ceiling shown.`, true);
+    return;
+  }
+  const line = { id: lineId("budget", "raise"), type: "set_budget", [field]: value };
+  if (await send(tauri, line, (why) => say(why, true))) {
+    typed.delete(field);
+    for (const input of pane.querySelectorAll("input[data-raise]")) {
+      if (input.dataset.raise === field) input.value = "";
+    }
+    say(`Sent: ${label} to ${raw} ${unit}. The row shows it once trellis sends run budget at its next budget check.`, false);
+  }
+}
+
+// Wires the budget's raises once (#837): one listener each on the pane for
+// what is typed, the Raise buttons and Enter in an input, so the rows drawn
+// add none.
+export function wireBudget(doc, tauri) {
+  const pane = doc.getElementById("pane-budget");
+  pane.addEventListener("input", (e) => {
+    const input = e.target.closest("input[data-raise]");
+    if (input !== null) typed.set(input.dataset.raise, input.value);
+  });
+  pane.addEventListener("click", (e) => {
+    const button = e.target.closest("button[data-raise]");
+    if (button !== null) raiseLimit(doc, tauri, button);
+  });
+  pane.addEventListener("keydown", (e) => {
+    const input = e.target.closest("input[data-raise]");
+    if (input === null || e.key !== "Enter") return;
+    e.preventDefault();
+    raiseLimit(doc, tauri, input);
+  });
 }
 
 // The session's prompt and completion tokens per model, as trellis's
@@ -239,7 +338,8 @@ function running(doc, pane, r) {
 
 // The tone each `run_end` outcome word is drawn in: an outcome is not a
 // check, so a converged run is ok and the rest are not, each with its word.
-const OUTCOME_TONES = { converged: "ok", "not converged": "down", interrupted: "warn", error: "down" };
+// The summary level (summary.js, #832) draws the outcome in the same.
+export const OUTCOME_TONES = { converged: "ok", not_converged: "down", interrupted: "warn", error: "down" };
 
 // The last run's `run_end`, field by field as trellis sent it.
 function outcome(doc, pane, o) {
@@ -265,6 +365,7 @@ function outcome(doc, pane, o) {
 // `undelivered` by composer.js; `model`, `models` and `available` by
 // model.js; `available` by settings.js; `model`, `running` and `phase` by
 // status.js; `vault` by vault.js; `queue` by queue.js; `atlas` by atlas.js.
+// `now` and `where` are drawn here by now.js's functions (#828).
 // The view_renders_ tests in src/lockdown.rs fail when a key the reducer
 // sends is read by none of them, or when a pane in the run section is one
 // this table never names.
@@ -282,6 +383,10 @@ const PANES = {
   session_tokens: ["pane-session-tokens", sessionTokens],
   // The action graph's layout, computed by the core (`graph.rs`).
   graph: ["graph", drawGraph],
+  now: ["pane-now", drawNow],
+  where: ["pane-where", drawWhere],
+  // The model's latest plan and its Edit (#838).
+  plan: ["pane-plan", drawPlan],
 };
 
 // Draws every pane the event carries; a key this page does not know is

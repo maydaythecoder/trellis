@@ -1,0 +1,24 @@
+ Run ⟩ plan                                          L2 / 4  [ESC] out  TRELLIS 
+ ● RUNNING  1:23*  █░░░░░░░ 3/40  [^P] pause  running edit → src/parser.py      
+ w ┌ plan ─────────────────────────────────────────────────────────────────────┐
+   │ [x] find where parse_expr drops the last token                            │
+ a │ [>] keep the token when the input ends in a comment                       │
+   │ [ ] add a test for the comment case                                       │
+ e │ [ ] run the type checker and the tests[2J                                 │
+   │                                                                           │
+ c │ the model's own account of its plan from turn 4, not a check's            │
+   │ trellis cut 2 step(s) past the eighth: a plan that long is a sign the task│
+ r │ should have been split                                                    │
+   │ [^E] edit it: your version goes to the model as a steer                   │
+   │                                                                           │
+   └───────────────────────────────────────────────────────────────────────────┘
+┌ budget  [^R] raise ──────────────────────────────────────────────────────────┐
+│   TURNS        █░░░░░░░░░░░░░░░ 3/40                                         │
+│   WALL CLOCK   1:23*/—                                                       │
+│   COMPLETION   —/— tokens                                                    │
+│   LAST PROMPT  24.1 kB/—                                                     │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ steer  [⏎] queue for the next turn ──────────────────────────────────────────┐
+│█                                                                             │
+└──────────────────────────────────────────────────────────────────────────────┘
+ [^C] stop  ● 1 pending  model ollama:qwen2.5-coder…  tier 2, native tool calls 

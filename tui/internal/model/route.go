@@ -16,9 +16,17 @@ import (
 
 const forClassify = "classify"
 
+// echoWords is the echo of a line classify has not answered: the
+// person's, and not yet a task, since it may be a question.
+func echoWords(text string) string { return "you  " + view.Plain(text) }
+
+// taskWords is the person's line once trellis has taken it as a task.
+func taskWords(text string) string { return "you · task  " + view.Plain(text) }
+
 // route asks trellis what a line is before anything runs.
 func (m *Model) route(text string) {
-	m.push(view.RoleYou, "> "+view.Plain(text))
+	m.pushYou(echoWords(text))
+	m.echoAt = len(m.Transcript)
 	m.classifying = true
 	m.classifyText = text
 	m.ask("classify", forClassify, map[string]any{"text": text})
@@ -28,8 +36,10 @@ func (m *Model) route(text string) {
 // text and nothing runs; a task becomes prompt with the same text.
 func (m *Model) classified(r *frames.ResponseFields, ok bool) {
 	text := m.classifyText
+	echo := m.echoAt
 	m.classifying = false
 	m.classifyText = ""
+	m.echoAt = 0
 	if m.Quitting {
 		return
 	}
@@ -65,6 +75,11 @@ func (m *Model) classified(r *frames.ResponseFields, ok bool) {
 		}
 		m.pushText(view.RoleText, answer)
 	case "task":
+		// Labelled a task only on trellis's word; an echo the cap dropped
+		// meanwhile has nothing left to relabel.
+		if echo > 0 {
+			m.Transcript[echo-1].Text = capLine(taskWords(text))
+		}
 		m.startRun(text)
 	default:
 		m.push(view.RoleRefusal, "! trellis answered classify with no intent this view knows; nothing was run")

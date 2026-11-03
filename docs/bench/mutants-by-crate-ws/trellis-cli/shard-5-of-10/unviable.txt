@@ -1,0 +1,24 @@
+crates/trellis-cli/src/process_agent.rs:668:9: replace Running::spawn -> std::io::Result<Running> with Ok(Default::default())
+crates/trellis-cli/src/process_agent.rs:672:9: replace Running::take_stdin -> Option<std::process::ChildStdin> with Some(Default::default())
+crates/trellis-cli/src/replay.rs:119:32: replace + with - in write
+crates/trellis-cli/src/replay.rs:119:32: replace + with * in write
+crates/trellis-cli/src/rpc.rs:325:13: replace && with || in <impl Layer<S> for TurnCapture>::on_event
+crates/trellis-cli/src/rpc.rs:324:13: replace && with || in <impl Layer<S> for TurnCapture>::on_event
+crates/trellis-cli/src/rpc.rs:323:13: replace && with || in <impl Layer<S> for TurnCapture>::on_event
+crates/trellis-cli/src/rpc.rs:409:9: replace SteeringPort::state -> std::sync::MutexGuard<'_, PortState> with MutexGuard::new()
+crates/trellis-cli/src/rpc.rs:409:9: replace SteeringPort::state -> std::sync::MutexGuard<'_, PortState> with MutexGuard::from_iter([Default::default()])
+crates/trellis-cli/src/rpc.rs:409:9: replace SteeringPort::state -> std::sync::MutexGuard<'_, PortState> with MutexGuard::new(Default::default())
+crates/trellis-cli/src/rpc.rs:409:9: replace SteeringPort::state -> std::sync::MutexGuard<'_, PortState> with MutexGuard::from(Default::default())
+crates/trellis-cli/src/rpc.rs:414:9: replace SteeringPort::take_receiver -> Option<trellis_loop::SteeringRx> with Some(Default::default())
+crates/trellis-cli/src/rpc.rs:427:9: replace SteeringPort::send -> Result<Option<tokio::sync::oneshot::Receiver<SteerAnswer>>, String> with Ok(Some(Receiver::new()))
+crates/trellis-cli/src/rpc.rs:427:9: replace SteeringPort::send -> Result<Option<tokio::sync::oneshot::Receiver<SteerAnswer>>, String> with Ok(Some(Receiver::from_iter([Default::default()])))
+crates/trellis-cli/src/rpc.rs:427:9: replace SteeringPort::send -> Result<Option<tokio::sync::oneshot::Receiver<SteerAnswer>>, String> with Ok(Some(Receiver::new(Default::default())))
+crates/trellis-cli/src/rpc.rs:427:9: replace SteeringPort::send -> Result<Option<tokio::sync::oneshot::Receiver<SteerAnswer>>, String> with Ok(Some(Receiver::from(Default::default())))
+crates/trellis-cli/src/rpc.rs:485:9: replace SteeringPort::close -> Vec<Unsent> with vec![Default::default()]
+crates/trellis-cli/src/rpc.rs:550:9: replace <impl trellis_loop::Model for Watched<'_, M>>::compactions -> &[trellis_loop::Compacted] with Vec::leak(vec![Default::default()])
+crates/trellis-cli/src/rpc.rs:554:9: replace <impl trellis_loop::Model for Watched<'_, M>>::requested_compactions -> &[trellis_loop::RequestedCompaction] with Vec::leak(vec![Default::default()])
+crates/trellis-cli/src/rpc.rs:600:9: replace Running::current -> Current with Default::default()
+crates/trellis-cli/src/rpc.rs:676:9: replace ModelSources::user -> Self with Default::default()
+crates/trellis-cli/src/rpc.rs:781:18: replace && with || in serve_with
+crates/trellis-cli/src/rpc.rs:1156:13: replace && with || in Server::abort
+crates/trellis-cli/src/rpc.rs:1919:9: replace Chain::current -> Current with Default::default()

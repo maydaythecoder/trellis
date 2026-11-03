@@ -434,13 +434,21 @@ impl Layout {
     }
 }
 
-/// For the page tests: how many rules in `ui/style.css` sit under a
-/// selector containing `word` (an `@media` block's rules count under it),
-/// and those of them that declare a `transition` or an `animation`.
+/// For the page tests: how many rules in the page's own stylesheets sit
+/// under a selector containing `word` (an `@media` block's rules count
+/// under it), and those of them that declare a `transition` or an
+/// `animation`. The sheets are every `.css` the page is served but the
+/// design system's `ds.css`, so a rule split out of `style.css` (#978) is
+/// still read.
 #[cfg(test)]
 pub(crate) fn motion_in_rules_naming(word: &str) -> (usize, Vec<String>) {
-    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/style.css");
-    let css = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    let css: String = crate::web::PAGE
+        .iter()
+        .filter(|(name, _)| name.ends_with(".css") && *name != "ds.css")
+        .map(|(name, bytes)| {
+            std::str::from_utf8(bytes).unwrap_or_else(|e| panic!("ui/{name}: {e}"))
+        })
+        .collect();
     let mut text = String::new();
     let mut rest = css.as_str();
     while let Some(i) = rest.find("/*") {
@@ -704,7 +712,7 @@ mod tests {
 
     #[test]
     fn edit_counts_applied_writes_apart_from_calls() {
-        // The risk (tui_bridge.rs): a refused edit counted as a write, or
+        // The risk: a refused edit counted as a write, or
         // writes folded into calls, so the graph says the run changed the
         // tree more (or less) than it did.
         let l = layout([
@@ -843,7 +851,7 @@ mod tests {
         // The risk: an animated graph, which a user who asked for reduced
         // motion still sees moving; nothing in it needs to move.
         let (rules, moving) = motion_in_rules_naming("graph");
-        assert!(rules > 0, "style.css has no rule naming the graph");
+        assert!(rules > 0, "no page stylesheet has a rule naming the graph");
         assert!(moving.is_empty(), "graph rules that move: {moving:?}");
     }
 }
