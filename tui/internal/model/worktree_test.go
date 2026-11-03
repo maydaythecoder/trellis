@@ -5,15 +5,17 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
 // worked feeds three writes to two files, and a check, a radius and a
 // read: the four panes each get something.
 func worked(m *Model) {
 	feed(m, turn(1, "blast_radius f", map[string]any{"resolved": 4, "candidates": 1, "unresolved": 0}))
-	feed(m, turn(2, "edit a.py", map[string]any{"observation": "applied: true"}))
-	feed(m, turn(3, "edit a.py", map[string]any{"observation": "applied: true"}))
-	feed(m, turn(4, "write_file b.py", map[string]any{"observation": "created b.py"}))
+	feed(m, turn(2, "edit a.py", map[string]any{"observation": "applied: true", "tool": "edit", "target": "a.py", "wrote": true}))
+	feed(m, turn(3, "edit a.py", map[string]any{"observation": "applied: true", "tool": "edit", "target": "a.py", "wrote": true}))
+	feed(m, turn(4, "write_file b.py", map[string]any{"observation": "created b.py", "tool": "write_file", "target": "b.py", "wrote": true}))
 	feed(m, turn(5, "run_checks", map[string]any{"verdict": "Some(false)", "check_kind": "pytest"}))
 }
 
@@ -25,18 +27,18 @@ func worked(m *Model) {
 func TestStatusWorktreeFollowsHowTheRunEnded(t *testing.T) {
 	m := running(t)
 	worked(m)
-	if bar := barOf(m); !strings.Contains(bar, "worktree 3 edit(s) pending") {
+	if bar := barOf(m); !strings.Contains(bar, "● 3 pending") {
 		t.Fatalf("%q", bar)
 	}
 	feed(m, runEnd(map[string]any{"outcome": "not_converged", "exit": 2, "restored": true}))
-	if bar := barOf(m); !strings.Contains(bar, "worktree restored") || strings.Contains(bar, "pending") {
+	if bar := barOf(m); !strings.Contains(bar, "● restored") || strings.Contains(bar, "pending") {
 		t.Fatalf("after a rollback: %q", bar)
 	}
 
 	submit(m, "change it again")
 	worked(m)
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
-	if bar := barOf(m); !strings.Contains(bar, "worktree 2 file(s) left for review") {
+	if bar := barOf(m); !strings.Contains(bar, "● 2 to review") {
 		t.Fatalf("after a converged run: %q", bar)
 	}
 
@@ -47,12 +49,12 @@ func TestStatusWorktreeFollowsHowTheRunEnded(t *testing.T) {
 		{"outcome": "not_converged", "exit": 2, "restored": false},
 	} {
 		m := running(t)
-		if feed(m, runEnd(end)); !strings.Contains(barOf(m), "worktree clean") {
+		if feed(m, runEnd(end)); !strings.Contains(barOf(m), "● clean") {
 			t.Fatalf("%v with no edits: %q", end, barOf(m))
 		}
 		m = running(t)
 		worked(m)
-		if feed(m, runEnd(end)); !strings.Contains(barOf(m), "worktree 2 file(s) left for review") {
+		if feed(m, runEnd(end)); !strings.Contains(barOf(m), "● 2 to review") {
 			t.Fatalf("%v: %q", end, barOf(m))
 		}
 	}
@@ -67,13 +69,13 @@ func TestStatusWorktreeASecondTaskClearsTheFourPanes(t *testing.T) {
 	worked(m)
 	feed(m, runEnd(map[string]any{"outcome": "not_converged", "exit": 2, "restored": true}))
 	submit(m, "second")
-	if len(m.Actions) != 0 || len(m.Edits) != 0 || len(m.Checks) != 0 || m.Radius != nil {
-		t.Fatalf("actions %v edits %v checks %v radius %v", m.Actions, m.Edits, m.Checks, m.Radius)
+	if m.Actions.Len() != 0 || m.Edits.Len() != 0 || m.Checks.Len() != 0 || m.Radius != nil {
+		t.Fatalf("actions %v edits %v checks %v radius %v", m.Actions.Slice(), m.Edits.Slice(), m.Checks.Slice(), m.Radius)
 	}
 	if m.restored != nil {
 		t.Fatal("the last run's ending is kept for this one")
 	}
-	if bar := barOf(m); !strings.Contains(bar, "worktree clean") {
+	if bar := barOf(m); !strings.Contains(bar, "● clean") {
 		t.Fatalf("%q", bar)
 	}
 }
@@ -88,22 +90,23 @@ func TestStatusWorktreeIsWholeAtEightyColumnsWithALongSpec(t *testing.T) {
 	respond(m, stateID, "get_state", map[string]any{"model": spec, "tier": "unknown, probing…"})
 	bar80 := func() string {
 		m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-		return strings.SplitN(m.View(), "\n", 2)[0]
+		rows := strings.Split(m.View(), "\n")
+		return rows[len(rows)-1]
 	}
 	bar := bar80()
-	if !strings.Contains(bar, "worktree clean") || !strings.Contains(bar, "tier unknown, probing…") {
+	if !strings.Contains(bar, "● clean") || !strings.Contains(bar, "tier unknown, probing…") {
 		t.Fatalf("%q", bar)
 	}
-	if !strings.Contains(bar, "…") || strings.Contains(bar, spec) || len([]rune(bar)) > 80 {
+	if !strings.Contains(bar, "…") || strings.Contains(bar, spec) || view.Width(bar) > 80 {
 		t.Fatalf("the model is not the span cut: %q", bar)
 	}
 	// The longest state the bar can say, after a converged run.
 	submit(m, "t")
 	for _, f := range []string{"a.py", "b.py", "c.py"} {
-		feed(m, turn(1, "edit "+f, map[string]any{"observation": "applied: true"}))
+		feed(m, turn(1, "edit "+f, map[string]any{"observation": "applied: true", "tool": "edit", "target": f, "wrote": true}))
 	}
 	feed(m, runEnd(map[string]any{"outcome": "converged", "exit": 0}))
-	if bar := bar80(); !strings.Contains(bar, "worktree 3 file(s) left for review") {
+	if bar := bar80(); !strings.Contains(bar, "● 3 to review") {
 		t.Fatalf("%q", bar)
 	}
 }
@@ -117,8 +120,8 @@ func TestSlashHelpListsThePageKeysAndTheStop(t *testing.T) {
 	enter(m)
 	help := lines(m)
 	for _, want := range []string{
-		"PgUp PgDn        ten lines at a time; Home to the start, End back to following",
-		"^c               leave; a run in flight is stopped and rolled back first",
+		"[PGUP][PGDN]", "ten lines at a time; [HOME] to the start, [END] back to following",
+		"[^C]", "leave; a run in flight is stopped and rolled back first",
 	} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("%q not in help:\n%s", want, help)
@@ -148,10 +151,17 @@ func TestSlashHelpHasNoRowEndingMidWord(t *testing.T) {
 	// 0, to its bottom border.
 	var pane []string
 	rows := strings.Split(m.View(), "\n")
-	if !strings.HasPrefix(rows[1], "┌ transcript") {
-		t.Fatalf("no transcript pane at row 1:\n%s", m.View())
+	top := -1
+	for i, row := range rows {
+		if strings.HasPrefix(row, "┌ transcript") {
+			top = i
+			break
+		}
 	}
-	for _, row := range rows[2:] {
+	if top < 0 {
+		t.Fatalf("no transcript pane:\n%s", m.View())
+	}
+	for _, row := range rows[top+1:] {
 		r := []rune(row)
 		if r[0] != '│' {
 			break

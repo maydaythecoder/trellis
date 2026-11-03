@@ -18,6 +18,10 @@ That session *is* the orchestrator. Tell it what to do ("work the queue",
 "do #14", "why is #2 not ready"). It stops on its own after 5 tickets, three
 failures on one gate, or a ticket that needs a person (G7), and reports.
 
+Unattended, an hourly scheduled cloud session follows `docs/RUNNER.md`
+instead: it sets itself up with `scripts/cloud-setup.sh`, works the queue
+through the same gates, promotes `audit` into `dev`, and reports on #925.
+
 ## Parts
 
 | Part | Where | Does | Cannot |
@@ -54,8 +58,8 @@ and never inside the repository). A G2 failure also prints every
 | G0 | `ticket-ready.sh <n>` | the issue is open, has `## Done when` and a fenced `## Verify`, is not blocked, needs-human, or split |
 | G1 | `build.sh` | workspace builds, all targets; `trellis-cli --no-default-features` builds. Go branch (#504): `go build ./...` in `tui/` |
 | G2 | `test.sh` | full workspace suite, and the local-only CLI suite; each `cargo test` fails after `GATE_TEST_TIMEOUT_S` seconds (default 2400) rather than hanging (#173); tests run at most 4 at a time (`RUST_TEST_THREADS=4`) so the gate's own load does not fail timing tests (#226). Go branch (#504): `go test -count=1 ./...` in `tui/`, under the same time limit |
-| G2b | `guards.sh` | `qa/run-guards.py` holds every guard against the fresh debug binary, and fails unless `trellis` resolves to it; needs Ollama at 127.0.0.1:11434. Before #158, on Windows, it ran whatever `trellis` was installed instead |
-| G3 | `lint.sh` | `cargo fmt --check`, `clippy -D warnings`, and no `#[allow(` added by this change; ADR numbers unique and held, also against the base (`scripts/checks/adr-numbers.sh`, #284), and the exit-gate check's self-test (`gate-checked.sh`); CI runs both, the tree half in the `guards` job and the base half in `supply-chain` (#532). Go branch (#504): `gofmt -l` prints nothing, `go vet ./...`, and no `//nolint` added |
+| G2b | `guards.sh` | `qa/run-guards.py` holds every guard against the fresh debug binary, and fails unless `trellis` resolves to it; needs a listener at 127.0.0.1:11434 (Ollama on the host; `scripts/cloud-setup.sh` starts a plain one in a cloud session, as `ci.yml` does). Before #158, on Windows, it ran whatever `trellis` was installed instead |
+| G3 | `lint.sh` | `cargo fmt --check`, `clippy -D warnings`, `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` (#980: a broken or private intra-doc link fails the gate; CI's `test` job runs the same `Doc` step), and no `#[allow(` added by this change; ADR numbers unique and held, also against the base (`scripts/checks/adr-numbers.sh`, #284), and the exit-gate check's self-test (`gate-checked.sh`); CI runs both, the tree half in the `guards` job and the base half in `supply-chain` (#532). Go branch (#504): `gofmt -l` prints nothing, `go vet ./...`, and no `//nolint` added |
 | G4 | `no-stubs.sh` | no `TODO`/`FIXME`/`todo!`/`unimplemented!`/mock markers in production lines this change added (test modules, `tests/`, `examples/` excluded). Go branch (#504): the same markers, and `panic("not `, in added non-test `*.go` lines under `tui/` |
 | G5 | `security.sh` | `cargo deny --locked check` and `cargo audit` over the root, `fuzz/` and `desktop/` locks, the desktop's under `desktop/deny.toml` (ADR 0048 §7); `fuzz/Cargo.lock` is current (`scripts/checks/fuzz-lock-current.sh`, #197); Tauri stays out of the root lock, `desktop/Cargo.lock` is current, `desktop/deny.toml` is the root policy plus its `desktop-only` lines, no `audit.toml` exists, and the desktop's code stays inside ADR 0048's lines (`scripts/checks/desktop-guards.sh`, after its self-test, #290); `zizmor --min-severity medium .github/workflows/` is clean and every workflow cargo build/test/clippy/run passes `--locked` (`scripts/checks/workflows-locked.sh`, #215); trellis-cli's test fixtures spawn no bare `git` (`scripts/checks/no-bare-git-in-cli-tests.sh`, #240/#241); gitleaks finds nothing in `$GATE_BASE..HEAD` and fails when absent, after a self-test that plants a token built at run time in a throwaway repository (`scripts/checks/gitleaks-range.sh`, #236; CI's supply-chain job runs it with a release pinned by version and SHA-256); no CI job dropped (`ci-jobs-unchanged.sh`) and the pre-push, pre-commit and ci-local self-tests pass; no key-shaped literal or basic-auth URL added (`key-pattern.sh`, `no-auth-urls.sh`). CI's `supply-chain` job runs the cargo deny and cargo audit lines, the fuzz and desktop checks, `workflows-locked.sh`, gitleaks and `ci-jobs-unchanged.sh`; its `guards` job runs `no-auth-urls.sh` over the whole tracked tree, the bare-git check and the pre-push and pre-commit self-tests (#532), and `zizmor --min-severity medium .github/workflows/` from a hash-pinned install (`.github/requirements-zizmor.txt`, #534). Not in CI: the ci-local self-test (it needs PyYAML, which CI's hashed `qa/requirements-ci.txt` does not pin) and the key-shape scan (G5 applies it to added lines only; gitleaks covers the change's commits in CI). Go branch (#504, ADR 0052): `scripts/checks/go-guards.sh --self-test` and then `go-guards.sh` (no `exec` outside `tui/internal/rpc/`, no `git` spawn, no environment change, no `replace` and a `toolchain` line in `tui/go.mod`); then `go mod verify`, `govulncheck ./...` and `go-licenses check` with `deny.toml`'s licence list, each tool absent failing the gate; `workflows-locked.sh` also holds every workflow `go build/test/vet/run/install` to `-mod=readonly` and every `go install` to an exact `@vX.Y.Z` |
 | G6 | `ticket-verify.sh <n>` | the ticket's own Verify command exits 0 |
@@ -475,7 +479,18 @@ a pull request. It runs on GitHub-hosted runners (`ubuntu-latest`,
 `mutants.out/` as the artifact `mutants-<crate>-<os>-<commit>[-shard-k-of-n][-file-<stem>]`,
 kept for 30 days. The job limit is 360 minutes, GitHub's limit for hosted
 runners. A shard that reaches the step's 345-minute limit still uploads the
-outcomes it has.
+outcomes it has. On Linux the `cargo mutants` step runs inside a cgroup
+capped at 12 GB with swap off (#1026), so a mutant whose test allocates
+without bound is killed there, where before it took the runner down ahead of
+`--timeout 300` and the shard's outcomes with it. The measured case is two
+mutants of `trellis-cli` at `6b804cb`, `first_run.rs:316:40: replace == with
+!= in pick` and `start_screen.rs:261:5: replace answer -> Result<Option<String>>
+with Ok(Some(String::new()))`, which ended shards 2 and 7 three times each
+(#995). Measured by the `file=crates/trellis-cli/src/start_screen.rs`
+dispatch at d32420a, run 41450435602: the `answer` mutant's test binary ended
+with `signal: 9, SIGKILL` after 65 s of its test phase and cargo-mutants
+recorded `CaughtMutant`; the step ran to its summary (54 tested, 43 caught, 9
+missed, 2 timeouts) and the artifact uploaded.
 
 GitHub dispatches a workflow by name only when the file is on the default
 branch (`main`), so the hosted `runs-on` takes effect once the change is

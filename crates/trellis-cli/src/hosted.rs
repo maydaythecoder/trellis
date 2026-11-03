@@ -1867,7 +1867,7 @@ context_bytes = {set}
         assert_eq!(stub.model_reads(), 3, "{:?}", stub.requests());
     }
 
-    /// The `runtime identified` event as the human layer prints it (main.rs
+    /// The `runtime identified` event as the human layer prints it (startup.rs
     /// builds it the same way, minus the filter).
     fn printed_self_report(id: &str) -> String {
         #[derive(Clone, Default)]
@@ -1920,7 +1920,7 @@ context_bytes = {set}
             "/tests/client_contract.json"
         )))
         .expect("the contract is JSON");
-        let shapes = &c["rpc"]["commands"]["get_state"]["data"]["tier_label"];
+        let shapes = &c["rpc"]["responses"]["get_state"]["tier_label"];
         let heads: Vec<&str> = shapes["heads"]
             .as_array()
             .expect("the contract lists the label heads")

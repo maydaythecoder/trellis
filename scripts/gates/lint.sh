@@ -5,6 +5,10 @@
 source "$(dirname "$0")/lib.sh"
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
+# The docs build with warnings as errors (#980): a doc link to an item that
+# moved or went private is a stale reference nothing else reads, and until
+# this line no gate built the docs, so they rotted unseen.
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 added=$(git diff -U0 "$GATE_BASE"...HEAD -- '*.rs' | grep -vE '^\+\+\+' | grep -E '^\+.*#!?\[allow\(' || true)
 if [ -n "$added" ]; then
   echo "FAIL: this change adds lint suppressions (against $GATE_BASE):"
@@ -16,6 +20,8 @@ fi
 bash scripts/checks/adr-numbers.sh --self-test > /dev/null || fail "adr-numbers.sh self-test failed"
 # The exit-gate check holds a ticked box to a test that exists (#467, #484).
 bash scripts/checks/gate-checked.sh --self-test > /dev/null || fail "gate-checked.sh self-test failed"
+# The Verify form for a file or function size limit (#926).
+bash scripts/checks/size-limit.sh --self-test > /dev/null || fail "size-limit.sh self-test failed"
 adr=$(bash scripts/checks/adr-numbers.sh "$GATE_BASE") || { printf '%s\n' "$adr"; fail "two ADRs share a number, or a held number is misused"; }
 # Go branch (ADR 0052, #504): gofmt clean, go vet clean, and no `//nolint`
 # added, Go's form of a lint suppression.
@@ -34,4 +40,4 @@ if go_module_present; then
 else
   gomsg="; Go branch skipped: tui/ is absent"
 fi
-echo "OK: fmt, clippy -D warnings, no #[allow] added; $adr$gomsg"
+echo "OK: fmt, clippy -D warnings, cargo doc -D warnings, no #[allow] added; $adr$gomsg"

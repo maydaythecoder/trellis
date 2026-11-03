@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 static JSON: AtomicBool = AtomicBool::new(false);
 
@@ -83,6 +83,26 @@ pub(crate) fn frame(sink: &Sink, record: &Value) {
     }
 }
 
+/// A string from a trail, made safe to print to a terminal.
+///
+/// A trail is read back as untrusted data (S10) and then printed straight to a
+/// terminal, which interprets what it is given. An escape sequence in a task
+/// description or a file path can move the cursor, repaint a line, or clear
+/// the screen — so a run that did not converge can be made to *look* like one
+/// that did, in the one command a user reads to find out which.
+///
+/// That matters more here than in most tools. The claim this project makes is
+/// that work comes back verified rather than merely written, and a forged
+/// terminal defeats the reading of the evidence rather than the evidence
+/// itself.
+///
+/// Control characters become their escaped form rather than vanishing: a path
+/// that contains one is worth seeing, and silently dropping it would print a
+/// name that does not match the file.
+pub(crate) fn plain(s: &str) -> String {
+    trellis_core::text::escape_controls(s)
+}
+
 /// serde_json escapes C0 controls but writes DEL and the C1 range
 /// (U+007F–U+009F) as they are, and some terminals act on C1 controls.
 /// Those characters can only occur inside JSON strings, where a `\u` escape
@@ -137,7 +157,7 @@ pub(crate) struct RunExtras {
     pub steer_watch: Option<Arc<crate::rpc::SteeringPort>>,
     /// `trellis run --agents N --target ...` with N above 1: the plan its
     /// agents run, one per partition (#466). `None` for every other run.
-    pub fanout: Option<crate::run_cmd::Fanout>,
+    pub fanout: Option<crate::run_partitioned::Fanout>,
     /// RPC's record of the trails its runs wrote, for `get_session_stats`
     /// (#319). `framed` pushes the run's id before it writes `run_end`, so
     /// a client that has read `run_end` and asks finds the run counted.
@@ -153,6 +173,21 @@ pub(crate) struct RunExtras {
     /// schema probe for a runtime), and left as it was by a run that stopped
     /// before it did. `None` everywhere but rpc.
     pub tier: Option<TierSlot>,
+    /// The agent loop's budget spend when it returned, in whole
+    /// milliseconds (`trellis_loop::Seed::elapsed`), which `framed` puts
+    /// on `run_end` as `elapsed_ms`. Set only when the loop returned: a run
+    /// refused before its loop, an interrupted one and a multi-agent one
+    /// (each partition keeps its own clock) leave it empty, and `run_end`
+    /// then carries none, never a 0.
+    pub elapsed_ms: OnceLock<u64>,
+    /// rpc's `pause` and `resume` (ADR 0058 §1), honoured by the agent loop
+    /// at the top of each iteration; its caller closes it when the run ends.
+    /// `None` everywhere but rpc.
+    pub hold: Option<Arc<trellis_loop::Hold>>,
+    /// rpc's `set_budget` (ADR 0058 §2): the run's whole ceiling, adopted
+    /// by the agent loop and raised from rpc's thread; `None` everywhere
+    /// but rpc.
+    pub budget: Option<Arc<trellis_loop::LiveBudget>>,
 }
 
 /// The shared cell `RunExtras::done` writes into. `Arc<Mutex<_>>` because
@@ -178,6 +213,9 @@ impl Default for RunExtras {
             run_ids: None,
             run_ended: None,
             tier: None,
+            elapsed_ms: OnceLock::new(),
+            hold: None,
+            budget: None,
         }
     }
 }
@@ -216,7 +254,12 @@ pub(crate) fn framed(
     }
     frame(
         sink,
-        &run_end(&result, run_id, extras.request_id.as_deref()),
+        &run_end(
+            &result,
+            run_id,
+            extras.elapsed_ms.get().copied(),
+            extras.request_id.as_deref(),
+        ),
     );
     result
 }
@@ -225,6 +268,7 @@ pub(crate) fn framed(
 pub(crate) fn run_end(
     result: &Result<RunExit>,
     run_id: Option<String>,
+    elapsed_ms: Option<u64>,
     request_id: Option<&str>,
 ) -> Value {
     let mut v = match result {
@@ -252,6 +296,9 @@ pub(crate) fn run_end(
     };
     if let Some(id) = run_id {
         v["run_id"] = json!(id);
+    }
+    if let Some(ms) = elapsed_ms {
+        v["elapsed_ms"] = json!(ms);
     }
     if let Some(id) = request_id {
         v["id"] = json!(id);
@@ -367,6 +414,7 @@ mod tests {
         let v = run_end(
             &Ok(RunExit::NotConverged { restored: false }),
             Some("r1".into()),
+            Some(1234),
             Some("req"),
         );
         assert_eq!(v["outcome"], "not_converged");
@@ -376,10 +424,14 @@ mod tests {
         );
         assert_eq!(v["restored"], false);
         assert_eq!(v["run_id"], "r1");
+        assert_eq!(v["elapsed_ms"], 1234);
         assert_eq!(v["id"], "req");
-        let e = run_end(&Err(anyhow::anyhow!("dirty worktree")), None, None);
+        let e = run_end(&Err(anyhow::anyhow!("dirty worktree")), None, None, None);
         assert_eq!(e["outcome"], "error");
         assert!(e["error"].as_str().unwrap().contains("dirty worktree"));
+        // Refused before any loop ran: no spend was measured, so none is
+        // written, rather than a 0 that reads as an instant run.
+        assert!(e.get("elapsed_ms").is_none(), "{e}");
     }
 
     #[test]
@@ -392,7 +444,10 @@ mod tests {
             frames: Some(sink),
             ..RunExtras::default()
         };
+        // The body stands in for a run whose loop returned and left its
+        // spend, which `run_end` must carry.
         let r = framed(d.path(), "t", "scripted:x", &extras, || {
+            let _ = extras.elapsed_ms.set(42);
             Ok(RunExit::Converged)
         });
         assert!(r.is_ok());
@@ -406,5 +461,6 @@ mod tests {
         assert_eq!(lines[0]["id"], "7");
         assert_eq!(lines[1]["type"], "run_end");
         assert_eq!(lines[1]["outcome"], "converged");
+        assert_eq!(lines[1]["elapsed_ms"], 42);
     }
 }

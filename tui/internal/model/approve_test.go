@@ -46,7 +46,7 @@ func TestApproveYesAndNoSendTheirAnswer(t *testing.T) {
 		if m.Modal != nil {
 			t.Fatal("the modal stayed up after its answer")
 		}
-		if last := m.Transcript[len(m.Transcript)-1]; last != "· edit a.py "+c.say {
+		if last := texts(m)[len(m.Transcript)-1]; last != "· edit a.py "+c.say {
 			t.Fatalf("last line %q", last)
 		}
 	}
@@ -142,8 +142,9 @@ func asked(t *testing.T, question string, n int) *Model {
 func press(m *Model, k tea.KeyType) { m.Update(tea.KeyMsg{Type: k}) }
 
 // #640: the arrows and PgUp and PgDn scroll the diff while the modal is
-// up, never above its first line or past its last; q, Esc and Enter still
-// do nothing, and only y or n answers.
+// up, never above its first line or past its last page (#843: a diff that
+// fits has no page past its first, so it does not scroll); q, Esc and Enter
+// still do nothing, and only y or n answers.
 func TestApproveModalScrollStaysInsideTheDiff(t *testing.T) {
 	m := asked(t, "edit a.py (+3 -0)", 3)
 	press(m, tea.KeyUp)
@@ -153,14 +154,14 @@ func TestApproveModalScrollStaysInsideTheDiff(t *testing.T) {
 	}
 	press(m, tea.KeyPgDown)
 	press(m, tea.KeyDown)
-	if m.Modal.Scroll != 2 {
-		t.Fatalf("scroll %d, want 2: the last line is as far as it goes", m.Modal.Scroll)
+	if m.Modal.Scroll != 0 {
+		t.Fatalf("scroll %d, want 0: the diff fits, so its first page is its last", m.Modal.Scroll)
 	}
 	key(m, 'q')
 	press(m, tea.KeyEsc)
 	press(m, tea.KeyEnter)
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y"), Paste: true})
-	if out := m.TakeOutbox(); len(out) != 0 || m.Quitting || m.Modal == nil || m.Modal.Scroll != 2 {
+	if out := m.TakeOutbox(); len(out) != 0 || m.Quitting || m.Modal == nil || m.Modal.Scroll != 0 {
 		t.Fatalf("a key that is not the modal's acted: out %v quitting %v modal %+v", kinds(out), m.Quitting, m.Modal)
 	}
 }
@@ -196,6 +197,87 @@ func TestApproveModalKeepsTheQuestionDrawnWhileTheDiffScrolls(t *testing.T) {
 	}
 }
 
+// #843: the model let the offset run to the diff's last line while the
+// view stopped a page earlier, so after paging to the end the first Up
+// moved nothing. The offset now stops where the view does.
+func TestApproveModalUpMovesAtOnceAfterTheEnd(t *testing.T) {
+	m := asked(t, "edit a.py (+60 -0)", 60)
+	for i := 0; i < 10; i++ {
+		press(m, tea.KeyPgDown)
+	}
+	end := m.View()
+	if !strings.Contains(end, "–60 of 60") {
+		t.Fatalf("paging down did not reach the end:\n%s", end)
+	}
+	press(m, tea.KeyUp)
+	if up := m.View(); up == end || strings.Contains(up, "–60 of 60") {
+		t.Fatalf("the first Up after the end did not move the view:\n%s", up)
+	}
+}
+
+// A last line that wraps to more rows than the box shows is its own last
+// page: the offset stops at that line and the box shows what fits of it.
+// The limit ran one past the last line, and one Down on a long bash
+// command emptied the box and read "lines 2–2 of 1", leaving nothing of
+// the call being answered on screen.
+func TestApproveModalALineTallerThanTheBoxIsItsOwnLastPage(t *testing.T) {
+	for _, c := range []struct {
+		diff, shows string
+		last        int
+	}{
+		{strings.Repeat("x", 900), "xxxxxxxx", 0},
+		{"echo start\n" + strings.Repeat("y", 900), "yyyyyyyy", 1},
+	} {
+		m := running(t)
+		m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+		feed(m, approval("a1", "bash", c.diff))
+		for i := 0; i < 5; i++ {
+			press(m, tea.KeyPgDown)
+			press(m, tea.KeyDown)
+		}
+		if m.Modal.Scroll != c.last {
+			t.Fatalf("scroll %d, want %d: the last line is as far as it goes", m.Modal.Scroll, c.last)
+		}
+		n := c.last + 1
+		if v := m.View(); !strings.Contains(v, c.shows) || !strings.Contains(v, fmt.Sprintf("lines %d–%d of %d", n, n, n)) {
+			t.Fatalf("the box does not show the last line from its start:\n%s", v)
+		}
+	}
+}
+
+// Below the minimum size the rest of the screen is not drawn, but a
+// question is: the approval box alone, as it was before the strip stayed
+// above it (#850). "terminal too small" in its place left a question
+// waiting unseen while y and n still answered it. Paging stops at the
+// box's own last page, so the first Up after the end moves the view.
+func TestApproveQuestionIsDrawnBelowTheMinimumSize(t *testing.T) {
+	m := running(t)
+	m.Update(tea.WindowSizeMsg{Width: 60, Height: 20})
+	var diff []string
+	for i := 1; i <= 60; i++ {
+		diff = append(diff, fmt.Sprintf("+ line %02d", i))
+	}
+	feed(m, approval("a1", "edit a.py (+60 -0)", strings.Join(diff, "\n")))
+	v := m.View()
+	if strings.Contains(v, "too small") || !strings.Contains(v, " edit a.py (+60 -0)? ") || !strings.Contains(v, "[y] accept this change  [n] reject") {
+		t.Fatalf("the question is not drawn at 60x20:\n%s", v)
+	}
+	if rows := strings.Split(v, "\n"); len(rows) != 20 {
+		t.Fatalf("%d rows at 60x20, want 20", len(rows))
+	}
+	for i := 0; i < 20; i++ {
+		press(m, tea.KeyPgDown)
+	}
+	end := m.View()
+	if !strings.Contains(end, "+ line 60") || !strings.Contains(end, "–60 of 60") {
+		t.Fatalf("paging down did not reach the diff's last line:\n%s", end)
+	}
+	press(m, tea.KeyUp)
+	if m.View() == end {
+		t.Fatalf("the first Up after the end did not move the view:\n%s", end)
+	}
+}
+
 // A gated call that is not an edit is named a call, and a diff that fits
 // says no position.
 func TestApproveModalNamesACallThatIsNotAnEdit(t *testing.T) {
@@ -205,5 +287,73 @@ func TestApproveModalNamesACallThatIsNotAnEdit(t *testing.T) {
 	}
 	if strings.Contains(v, "lines 1–") {
 		t.Fatalf("a diff that fits says a position:\n%s", v)
+	}
+}
+
+// #853: c sets the question on screen aside for its file's diff at the
+// code level, the desktop's Review in Code (#831), and y and n there answer
+// it through the same answer the box gives: approve {id, yes} for the id
+// trellis sent, once, and the next question waiting comes up in its box.
+// ESC puts the question back in its box unanswered. The risks: a second
+// approval path that sends a different command or answers a question
+// nobody saw; setting the question aside dropping it, so the run waits
+// forever; and a key at the diff (a Tab, a typed line) acting while the
+// question is still waiting.
+func TestApproveReviewInCodeAnswersInPlace(t *testing.T) {
+	for _, c := range []struct {
+		key rune
+		yes bool
+		say string
+	}{{'y', true, "approved"}, {'n', false, "declined"}} {
+		m := running(t)
+		m.Update(windowSize(120, 40))
+		feed(m, turn(1, "edit a.py", map[string]any{"tool": "edit", "target": "a.py", "wrote": true,
+			"lines_added": 1, "lines_removed": 1, "diff": "--- a.py\n+++ a.py\n@@ -1,1 +1,1 @@\n-x = 1\n+x = 2\n"}))
+		feed(m, approval("q7", "edit a.py (+1 -1)", "--- a.py\n+++ a.py\n  def f():\n-     return 1\n+     return 2\n"))
+		feed(m, approval("q8", "bash", "pytest -q"))
+		// The way to the diff is on screen at 80 columns too, where the
+		// status bar keeps one key.
+		m.Update(windowSize(80, 24))
+		if v := m.View(); !strings.Contains(v, "[c] review in code") {
+			t.Fatalf("at 80x24 the box's question does not say c reaches its diff:\n%s", v)
+		}
+		m.Update(windowSize(120, 40))
+		key(m, 'c')
+		v := m.View()
+		if !strings.HasPrefix(v, " Run ⟩ edits ⟩ a.py") || !strings.Contains(v, "L3 / 4") ||
+			!strings.Contains(v, "awaiting your approval") || !strings.Contains(v, "return 2") || !strings.Contains(v, "x = 2") {
+			t.Fatalf("c did not show the question's file at its diff:\n%s", v)
+		}
+		if !strings.Contains(v, "+2 −2") {
+			t.Fatalf("the file's counts are not the applied edit's and the question's summed:\n%s", v)
+		}
+		for _, k := range []tea.KeyType{tea.KeyTab, tea.KeyEnter, tea.KeyBackspace} {
+			m.Update(tea.KeyMsg{Type: k})
+		}
+		typeLine(m, "x z")
+		if out := m.TakeOutbox(); len(out) != 0 || m.Input != "" || m.Modal == nil || !m.Modal.Reviewing || !m.nav.Diff {
+			t.Fatalf("a key at the diff acted while the question waited: out %v input %q nav %+v", kinds(out), m.Input, m.nav)
+		}
+		escKey(m)
+		if m.Modal == nil || m.Modal.Reviewing || !strings.Contains(m.View(), "edit a.py (+1 -1)?") {
+			t.Fatalf("ESC did not put the question back in its box:\n%s", m.View())
+		}
+		key(m, 'c')
+		key(m, c.key)
+		out := m.TakeOutbox()
+		if len(out) != 1 || out[0].Cmd["type"] != "approve" || out[0].Cmd["id"] != "q7" || out[0].Cmd["yes"] != c.yes {
+			t.Fatalf("%c at the diff sent %+v", c.key, out)
+		}
+		if m.Modal == nil || m.Modal.ID != "q8" || m.Modal.Reviewing {
+			t.Fatalf("%c: the next question is not up in its box: %+v", c.key, m.Modal)
+		}
+		if !strings.Contains(strings.Join(texts(m), "\n"), "· edit a.py (+1 -1) "+c.say) {
+			t.Fatalf("%c: the answer is not said in the transcript: %q", c.key, texts(m))
+		}
+		// A question that names no file has no diff to set it aside for.
+		key(m, 'c')
+		if m.Modal.Reviewing || len(m.TakeOutbox()) != 0 {
+			t.Fatalf("c set aside a bash question: %+v", m.Modal)
+		}
 	}
 }

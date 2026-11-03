@@ -23,9 +23,6 @@ pub(crate) struct RepoConfig {
     #[serde(default)]
     pub budget: Option<BudgetSection>,
     #[serde(default)]
-    #[allow(dead_code)]
-    pub agents: Option<AgentsSection>,
-    #[serde(default)]
     pub governance: Option<GovernanceSection>,
     #[serde(default)]
     pub model: Option<ModelSection>,
@@ -214,20 +211,6 @@ pub(crate) struct BudgetSection {
     pub max_wall_clock_s: Option<u64>,
     pub max_tokens: Option<u64>,
     pub regime: Option<String>,
-}
-
-/// Parsed but not yet consumed: multi-agent execution is v1.1.
-///
-/// It is read now so that a repository carrying an `[agents]` section does not
-/// fail to load on a version that cannot act on it — a config file that errors
-/// because of a section meant for a later release is a worse failure than one
-/// that is quietly inert.
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-pub(crate) struct AgentsSection {
-    /// `1`, or the string `"auto"`. Never derived from CPU count (S18).
-    pub count: Option<toml::Value>,
-    pub failure_policy: Option<String>,
 }
 
 impl RepoConfig {
@@ -593,8 +576,8 @@ mod tests {
         std::fs::create_dir_all(&deep).unwrap();
         std::fs::create_dir_all(repo.join(".git")).unwrap();
 
-        assert_eq!(crate::root_from(&deep), Some(repo.clone()));
-        assert_eq!(crate::root_from(&repo), Some(repo));
+        assert_eq!(crate::startup::root_from(&deep), Some(repo.clone()));
+        assert_eq!(crate::startup::root_from(&repo), Some(repo));
     }
 
     #[test]
@@ -611,7 +594,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let sub = d.path().join("a/b");
         std::fs::create_dir_all(&sub).unwrap();
-        assert_eq!(crate::root_from(&sub), None);
+        assert_eq!(crate::startup::root_from(&sub), None);
     }
 
     #[test]
@@ -627,7 +610,7 @@ mod tests {
         std::fs::create_dir_all(outer.join(".git")).unwrap();
         std::fs::create_dir_all(inner.join(".git")).unwrap();
 
-        assert_eq!(crate::root_from(&deep), Some(inner));
+        assert_eq!(crate::startup::root_from(&deep), Some(inner));
     }
 
     #[test]

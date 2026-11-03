@@ -256,7 +256,7 @@ impl Cron {
     /// eight years, which is what `0 0 31 2 *` (never) comes to.
     ///
     /// Candidates are walked in local wall-clock order and each is mapped to
-    /// an instant by [`Tz::instant`]. That mapping never decreases as the
+    /// an instant by `Tz::instant`. That mapping never decreases as the
     /// wall clock advances, so the first candidate past `t` is the earliest
     /// one. It can fall at or before `t`: after the first pass through a
     /// repeated hour, `t` lies in the second pass and the hour's candidates

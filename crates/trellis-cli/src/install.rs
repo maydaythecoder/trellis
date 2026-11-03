@@ -1792,6 +1792,36 @@ mod tests {
     }
 
     #[test]
+    fn install_upgrade_refuses_a_manifest_ref_that_is_not_a_ref_name_before_git_runs() {
+        // The risk: the manifest is a file the user can edit, and `--upgrade`
+        // hands its `ref` to git. A ref beginning with `-`, or holding a
+        // space or a control character, must be refused by the manifest
+        // check itself, not left for `rev-parse` to fail on after a clone
+        // (#248: either `||` of that check turned `&&` lets one of the three
+        // through).
+        let d = tempfile::tempdir().unwrap();
+        let src = source(d.path());
+        let cfg = d.path().join("cfg");
+        install(&cfg, &spec(&src, "v1"), &mut Vec::new()).unwrap();
+        let dir = cfg.join("packages");
+        for bad in ["-v1", "v 1", "v\u{7}1"] {
+            let mut m = load(&dir).unwrap();
+            m.packages[0].reference = bad.to_string();
+            save(&dir, &m).unwrap();
+            let mut out = Vec::new();
+            let e = upgrade_package(&cfg, "pkg-src", &mut out).unwrap_err();
+            let msg = format!("{e:#}");
+            assert!(msg.contains("is not a ref name"), "{bad:?}: {msg}");
+            assert!(
+                !msg.contains("could not resolve"),
+                "{bad:?} reached git: {msg}"
+            );
+            assert!(out.is_empty(), "{bad:?}: {}", String::from_utf8_lossy(&out));
+        }
+        assert!(cfg.join("packages/pkg-src/skills/alpha/SKILL.md").is_file());
+    }
+
+    #[test]
     fn install_upgrade_at_the_same_commit_is_a_no_op_that_says_so() {
         // The risk: a tag or commit ref re-resolves to what is installed,
         // and an "upgrade" to it rewrote the directory and manifest for

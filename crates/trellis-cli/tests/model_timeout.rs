@@ -21,11 +21,11 @@ const DELAY: Duration = Duration::from_secs(2);
 /// nothing about the key; its value is built at run time.
 const KEY_ENV: &str = "TRELLIS_TEST_PROVIDER_KEY";
 
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("trellis-mto-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+mod common;
+use common::Scratch;
+
+fn scratch(name: &str) -> Scratch {
+    common::scratch_dir(&format!("trellis-mto-{name}"))
 }
 
 fn git(root: &Path, args: &[&str]) {
@@ -48,7 +48,7 @@ fn user_dir(repo: &Path) -> PathBuf {
 /// A committed repository whose typecheck exits 0 and whose config sets
 /// `[model] timeout_s`, with a user config naming one openai-chat provider
 /// at `base`. Committed with the config, so the run starts on a clean tree.
-fn repo(name: &str, timeout_s: u64, base: &str) -> PathBuf {
+fn repo(name: &str, timeout_s: u64, base: &str) -> Scratch {
     let d = scratch(name);
     git(&d, &["init", "-q"]);
     git(&d, &["config", "user.email", "t@example.invalid"]);

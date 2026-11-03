@@ -9,11 +9,11 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("trellis-orch-it-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+mod common;
+use common::Scratch;
+
+fn scratch(name: &str) -> Scratch {
+    common::scratch_dir(&format!("trellis-orch-it-{name}"))
 }
 
 fn git(root: &Path, args: &[&str]) -> String {
@@ -75,7 +75,7 @@ fn ok(root: &Path, args: &[&str]) -> String {
 /// A repository whose checks always pass (`git --version`), with the
 /// scripts `converge.json` (edits and converges) and `stop.json` (stops at
 /// once, rolled back), and `extra` files committed alongside.
-fn fixture(name: &str, extra: &[(&str, &str)]) -> PathBuf {
+fn fixture(name: &str, extra: &[(&str, &str)]) -> Scratch {
     let d = scratch(name);
     git(&d, &["init", "-q"]);
     // CI has no global identity, and every run commits its trail.
@@ -739,7 +739,7 @@ fn a_bad_routine_or_profile_is_refused_before_anything_is_claimed() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-fn process_fixture(name: &str, command: &str, typecheck: &str) -> PathBuf {
+fn process_fixture(name: &str, command: &str, typecheck: &str) -> Scratch {
     let d = fixture(
         name,
         &[(
@@ -1763,7 +1763,7 @@ fn a_process_agent_that_switches_branch_is_refused_and_put_back_on_the_original(
 
 /// `process_fixture`, with `*.cfg` ignored by a committed `.gitignore`
 /// and `config` as `.trellis/config.toml`; trusted afterwards.
-fn ignored_fixture(name: &str, command: &str, config: &str) -> PathBuf {
+fn ignored_fixture(name: &str, command: &str, config: &str) -> Scratch {
     let d = process_fixture(name, command, PASSES);
     std::fs::write(d.join(".gitignore"), "*.cfg\n").unwrap();
     std::fs::write(d.join(".trellis/config.toml"), config).unwrap();
@@ -1967,7 +1967,7 @@ fn isolated_agent_writes_to_trellis_and_git_in_the_clone_never_reach_the_reposit
 /// A fixture whose agent edits `app/core.py`, creates `app/new.py`,
 /// deletes the tracked `app/old.py`, and records where it ran in
 /// `app/where.txt`, with `typecheck` as its typecheck command.
-fn edit_create_delete(name: &str, typecheck: &str) -> PathBuf {
+fn edit_create_delete(name: &str, typecheck: &str) -> Scratch {
     let d = process_fixture(
         name,
         &per_os(
@@ -2151,7 +2151,8 @@ fn export_then_import_with_dry_run_and_rename() {
         ],
     );
     ok(&d, &["queue", "add", "exported task", "--assignee", "rev"]);
-    let out = scratch("export-out").join("bundle");
+    let out_dir = scratch("export-out");
+    let out = out_dir.join("bundle");
     let s = ok(&d, &["queue", "export", out.to_str().unwrap()]);
     assert!(
         s.contains("1 agent(s)") && s.contains("1 task(s)") && s.contains("nothing secret"),
@@ -2267,6 +2268,92 @@ fn export_says_how_many_claimed_tasks_it_left_out_and_nothing_when_none() {
     assert!(s.contains("1 claimed task(s) not exported"), "{s}");
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
+fn export_names_this_checkout_s_runtime_state_only_when_there_is_some() {
+    // #248. The risk: a "0 activity log line(s) not exported" line on
+    // every export of a checkout with no runtime state, or no line at all
+    // for the state an export really left behind.
+    let d = fixture("export-runtime", &[]);
+    let out = scratch("export-runtime-out");
+    let s = ok(&d, &["queue", "export", out.join("a").to_str().unwrap()]);
+    assert!(!s.contains("runtime state of this checkout"), "{s}");
+    // The first queue write is the first activity log line.
+    ok(&d, &["queue", "add", "held"]);
+    let s = ok(&d, &["queue", "export", out.join("b").to_str().unwrap()]);
+    assert!(
+        s.contains("1 activity log line(s) not exported: runtime state of this checkout"),
+        "{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_approve_mode_agent_is_not_held_back_when_work_has_a_terminal() {
+    // #248, the other side of the test below: the terminal check answering
+    // "none" whatever stdin and stdout are, so an approve-mode agent was
+    // never run even by a person at a terminal. `work --once` runs under
+    // util-linux `script`, which gives it a pty for both; the claim then
+    // reaches the scripted run, whose first edit asks a person at that pty,
+    // is answered `n`, and however that run ends the task has left
+    // pending/ and the "no terminal" line was never printed.
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let d = fixture(
+        "approve-tty",
+        &[(
+            ".trellis/agents/rev.toml",
+            "model = \"scripted:{ROOT}/converge.json\"\n[control]\nmode = \"approve\"\n",
+        )],
+    );
+    ok(
+        &d,
+        &["queue", "add", "change the greeting", "--assignee", "rev"],
+    );
+    let home = d.with_extension("home");
+    let shown = home.join("terminal.txt");
+    std::fs::create_dir_all(&home).unwrap();
+    let cmd = format!("'{}' work --once", env!("CARGO_BIN_EXE_trellis"));
+    let mut child = Command::new("script")
+        .args(["-qfec", &cmd, "/dev/null"])
+        .current_dir(&d)
+        .env_remove("TRELLIS_RUN_ID")
+        .env_remove("TRELLIS_TASK_ID")
+        .env("TRELLIS_CONFIG_DIR", home.join("trellis"))
+        .env("APPDATA", &home)
+        .env("XDG_CONFIG_HOME", &home)
+        .env("NO_COLOR", "1")
+        .env("TERM", "dumb")
+        .env("SHELL", "/bin/sh")
+        .env_remove("RUST_LOG")
+        .stdin(Stdio::piped())
+        .stdout(std::fs::File::create(&shown).unwrap())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("util-linux `script` must be on PATH for the pty tests");
+    // One line, `n`: the edit the run asks about is declined, and nothing is
+    // left for `script` to turn into an end of input the question might miss.
+    child.stdin.take().unwrap().write_all(b"n\n").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "`{cmd}` did not exit within 60 s: {}",
+                std::fs::read_to_string(&shown).unwrap_or_default()
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let s = std::fs::read_to_string(&shown).unwrap();
+    assert!(!s.contains("has no terminal to ask on"), "{s}");
+    assert!(s.contains("? [y/N]"), "the run asked at the terminal: {s}");
+    assert!(ids(&d, "pending").is_empty(), "the task was claimed: {s}");
+    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]

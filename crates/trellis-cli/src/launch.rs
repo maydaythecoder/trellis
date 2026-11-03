@@ -599,7 +599,7 @@ mod tests {
 
     /// Runs the stub just written at `path`, told by `TRELLIS_STUB_PROBE` to
     /// exit at once, until the kernel stops refusing it as busy, and at most
-    /// for a few seconds, as `wait_until_executable` in tests/cli.rs does
+    /// for a few seconds, as `wait_until_executable` in tests/cli/main.rs does
     /// (#581).
     ///
     /// The risk: `ETXTBSY` failing a launch test that has nothing wrong with
@@ -897,12 +897,46 @@ mod tests {
             let said = format!("{:#}", web_url(bad).unwrap_err());
             assert!(said.contains("the web view printed"), "{bad}: {said}");
             assert!(!said.contains('\u{1b}'), "{bad}: {said}");
+            // The line itself follows, so the person can see what the
+            // desktop said instead of a URL (#248: a `printable` that
+            // returned nothing, or a fixed word, still passed the two
+            // asserts above).
+            assert!(said.contains(&format!("URL: {bad}")), "{bad}: {said}");
         }
         let said = format!("{:#}", web_url("\u{1b}[31mred\u{1b}[0m").unwrap_err());
         assert!(
             !said.contains('\u{1b}'),
             "a control sequence reached the terminal: {said}"
         );
+        assert!(said.contains("URL: [31mred[0m"), "{said}");
+    }
+
+    #[test]
+    fn launch_printable_keeps_ascii_text_and_spaces_and_cuts_at_200() {
+        // The risk: a line shown to the person losing its spaces (the
+        // filter asks for graphic *or* space), or growing without bound
+        // when the desktop prints a long one.
+        assert_eq!(printable("a b\tc\u{1b}[0m\u{e9}d"), "a bc[0md");
+        assert_eq!(printable(&"x".repeat(300)).len(), 200);
+    }
+
+    #[test]
+    fn launch_opener_is_the_platform_s_url_handler_taking_the_url_as_one_argument() {
+        // The risk: `open_in_browser` handing the URL to no program, or
+        // to one with the wrong leading arguments: on Windows `rundll32
+        // url.dll,FileProtocolHandler` takes it as one argument, where
+        // `cmd /c start` would read it as a command line (#248).
+        let (program, args) = opener();
+        if cfg!(windows) {
+            assert_eq!(
+                (program, args),
+                ("rundll32", &["url.dll,FileProtocolHandler"][..])
+            );
+        } else if cfg!(target_os = "macos") {
+            assert_eq!((program, args), ("open", &[][..]));
+        } else {
+            assert_eq!((program, args), ("xdg-open", &[][..]));
+        }
     }
 
     #[test]

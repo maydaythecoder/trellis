@@ -30,29 +30,16 @@
 // Recent repositories, not under the model pane, which folds after the
 // first choice (#645).
 //
+// The register dial (#836; the brand book's Principles, DESIGN.md §3.1) is
+// a page preference, kept in localStorage as the Atlas's pins are: serious
+// by default and whenever storage is refused or holds anything else.
+//
 // Every spec, name, licence and error is trellis- or configuration-supplied
 // text, so it reaches the DOM through textContent only (ADR 0007, S10).
 
-function el(doc, tag, text) {
-  const e = doc.createElement(tag);
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
-
-function str(v) {
-  return typeof v === "string" ? v : null;
-}
-
-function isCount(v) {
-  return typeof v === "number" && Number.isFinite(v);
-}
-
-let nextId = 0;
-
-function lineId() {
-  nextId += 1;
-  return `desktop-settings-set-${nextId}`;
-}
+import { el } from "./dom.js";
+import { isCount, str } from "./fmt.js";
+import { lineId } from "./rpc.js";
 
 // What the picker calls the configured spec trellis pins when asked to.
 export const REPOSITORY_DEFAULT = "repository default";
@@ -84,7 +71,7 @@ export function modelChoices(available, models) {
     spec: resolved ?? (listed ? "nothing configured" : "not reported yet"),
     preselect: user === null && resolved !== null,
     saves: false,
-    line: () => ({ id: lineId(), type: "set_model", configured: true }),
+    line: () => ({ id: lineId("settings", "set"), type: "set_model", configured: true }),
   });
   if (user !== null) {
     choices.push({
@@ -93,7 +80,7 @@ export function modelChoices(available, models) {
       spec: user,
       preselect: true,
       saves: false,
-      line: () => ({ id: lineId(), type: "set_model", model: user }),
+      line: () => ({ id: lineId("settings", "set"), type: "set_model", model: user }),
     });
   }
   const local = listed && Array.isArray(listed.local) ? listed.local : [];
@@ -109,7 +96,7 @@ export function modelChoices(available, models) {
       spec,
       preselect: false,
       saves: true,
-      line: (save) => withSave({ id: lineId(), type: "set_model", model: spec }, save),
+      line: (save) => withSave({ id: lineId("settings", "set"), type: "set_model", model: spec }, save),
     });
   }
   choices.push({
@@ -121,7 +108,7 @@ export function modelChoices(available, models) {
     line: (save, typed) => {
       const spec = str(typed) === null ? "" : typed.trim();
       if (spec === "") return null;
-      return withSave({ id: lineId(), type: "set_model", model: spec }, save);
+      return withSave({ id: lineId("settings", "set"), type: "set_model", model: spec }, save);
     },
   });
   return choices;
@@ -191,4 +178,53 @@ export function wireRepositorySwitch(doc, tauri) {
     }
   });
   drawCatalog(doc, null);
+}
+
+// The register dial's two positions; the first is the default.
+const REGISTERS = ["serious", "playful"];
+
+const REGISTER_KEY = "trellis-desktop.register.v1";
+
+// The dial's position this visit.
+let register = REGISTERS[0];
+
+// Where the register dial is set: what now.js draws the face for.
+export function currentRegister() {
+  return register;
+}
+
+// The stored position, or serious: a page where storage is refused, or
+// that holds a value this page does not know, is in the default register.
+function loadRegister(win) {
+  try {
+    const stored = win.localStorage.getItem(REGISTER_KEY);
+    return REGISTERS.includes(stored) ? stored : REGISTERS[0];
+  } catch {
+    return REGISTERS[0];
+  }
+}
+
+function saveRegister(win, value) {
+  try {
+    win.localStorage.setItem(REGISTER_KEY, value);
+  } catch {
+    // Storage refused: the position lasts this visit.
+  }
+}
+
+// The dial's two radios: set from storage, then enabled (the page serves
+// them disabled), and on a change kept and the screen that draws a face
+// redrawn (`redraw`), since no event comes.
+export function wireRegister(doc, win, redraw) {
+  register = loadRegister(win);
+  doc.getElementById("register-dial").disabled = false;
+  for (const input of [doc.getElementById("register-serious"), doc.getElementById("register-playful")]) {
+    input.checked = input.value === register;
+    input.addEventListener("change", () => {
+      if (!input.checked || !REGISTERS.includes(input.value)) return;
+      register = input.value;
+      saveRegister(win, register);
+      redraw();
+    });
+  }
 }

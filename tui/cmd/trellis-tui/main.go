@@ -1,12 +1,29 @@
 // Command trellis-tui is the Go TUI, a client of `trellis rpc` (ADR 0052).
 //
-//	trellis-tui --root <repo> [--trellis <path>] [--model <spec>] [task]
+//	trellis-tui --root <repo> [--trellis <path>] [--model <spec>] [--theme auto|dark|light] [--register serious|playful] [--control approve|auto] [task]
 //	trellis-tui --version
 //
 // It starts one `trellis --root <repo> rpc` child, using the trellis it is
 // given or, when none is given, the trellis beside its own executable; never
 // one found on PATH, which could be some other build. Every run, check and
 // rollback is that child's: this program sends commands and draws frames.
+//
+// Before the child starts it reads the terminal's colour depth and
+// background once, for the theme (internal/theme). --theme dark or light
+// replaces the terminal's answer, since Windows always answers dark.
+// --register is the brand book's register dial (#857): serious, the
+// default, or playful, which draws one Ascii face where the Now strip has no
+// run to show and changes nothing else. --control is the control mode every
+// prompt names (#952): approve, the default and the desktop's, asks before
+// each call the configuration lists; auto runs without asking. /control
+// changes it between runs.
+//
+// The flow: run parses the flags, starts the child (internal/rpc) and hands
+// it to the Bubble Tea program (internal/model's App, which feeds the
+// child's lines and the keys to the Model and draws with internal/view).
+// However the program ends, finish then sends the child quit and waits for
+// it unless it has exited, so a run in flight rolls back and writes its
+// trail, and says what ended the program.
 package main
 
 import (
@@ -18,11 +35,15 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/maydaythecoder/trellis/tui/internal/model"
 	"github.com/maydaythecoder/trellis/tui/internal/rpc"
+	"github.com/maydaythecoder/trellis/tui/internal/theme"
+	"github.com/maydaythecoder/trellis/tui/internal/view"
 )
 
 // version is set at build time with
@@ -39,6 +60,9 @@ type args struct {
 	root    string
 	trellis string
 	model   string
+	theme   string
+	reg     string
+	control string
 	task    string
 }
 
@@ -50,12 +74,30 @@ func parseArgs(argv []string, stderr io.Writer) (args, error) {
 	fs.StringVar(&a.root, "root", "", "the repository trellis works on (required)")
 	fs.StringVar(&a.trellis, "trellis", "", "the trellis binary (default: the one beside this executable)")
 	fs.StringVar(&a.model, "model", "", "the model spec for this session, sent as set_model")
+	fs.StringVar(&a.theme, "theme", "auto", "the background the colours are chosen for: auto (ask the terminal), dark or light")
+	fs.StringVar(&a.reg, "register", "serious", "the register dial: serious, or playful for one Ascii face where the screen has no run to show")
+	fs.StringVar(&a.control, "control", "approve", "the control mode every prompt names: approve (ask before each listed call) or auto")
 	if err := fs.Parse(argv); err != nil {
 		return a, err
 	}
 	a.task = strings.TrimSpace(strings.Join(fs.Args(), " "))
 	if a.version {
 		return a, nil
+	}
+	switch a.theme {
+	case "auto", "dark", "light":
+	default:
+		return a, fmt.Errorf("--theme is auto, dark or light, not %q", a.theme)
+	}
+	switch a.reg {
+	case "serious", "playful":
+	default:
+		return a, fmt.Errorf("--register is serious or playful, not %q", a.reg)
+	}
+	// rpc refuses any other word, but only once a prompt is sent: refused
+	// here, a mistyped mode never reaches a run.
+	if !model.ControlMode(a.control) {
+		return a, fmt.Errorf("--control is approve or auto, not %q", a.control)
 	}
 	if a.root == "" {
 		return a, errors.New("--root <repo> is required")
@@ -74,6 +116,22 @@ func siblingTrellis() (string, error) {
 		name += ".exe"
 	}
 	return filepath.Join(filepath.Dir(exe), name), nil
+}
+
+// setBackground sets the background r's colours are chosen for from
+// --theme: auto takes what the terminal answered, and dark or light answers
+// for it, since Windows always answers dark. The answer is then set on r,
+// so nothing asks the terminal again: asking is an OSC 11 query, and once
+// Bubble Tea is reading the terminal the reply would arrive as keys.
+func setBackground(r *lipgloss.Renderer, background string) {
+	switch background {
+	case "dark":
+		r.SetHasDarkBackground(true)
+	case "light":
+		r.SetHasDarkBackground(false)
+	default:
+		r.SetHasDarkBackground(r.HasDarkBackground())
+	}
 }
 
 func run(argv []string, stdout, stderr io.Writer) int {
@@ -104,29 +162,100 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "trellis-tui:", err)
 		return 1
 	}
+	// The terminal's colour depth and background, read once, before the
+	// child starts and before Bubble Tea owns the terminal. Lip Gloss's
+	// default renderer writes to the terminal Bubble Tea draws on, and
+	// Bubble Tea's own init has already asked it for the background through
+	// that renderer, so the theme is built from it rather than asking again.
+	r := lipgloss.DefaultRenderer()
+	r.SetColorProfile(r.ColorProfile())
+	setBackground(r, a.theme)
+	th := theme.New(r)
 	c, err := rpc.Start(a.trellis, root)
 	if err != nil {
 		fmt.Fprintln(stderr, "trellis-tui:", err)
 		return 1
 	}
-	m := model.New(model.Options{Task: a.task, ModelSpec: a.model})
+	m := model.New(model.Options{Task: a.task, ModelSpec: a.model, Theme: th, Playful: a.reg == "playful", Control: a.control})
 	app := model.NewApp(m, c)
-	if _, err := tea.NewProgram(app, tea.WithAltScreen()).Run(); err != nil {
-		fmt.Fprintln(stderr, "trellis-tui:", err)
-		// The screen failed, not trellis: still quit and wait, so a run in
-		// flight rolls back rather than being left to a killed process.
-		if serr := c.Shutdown(); serr != nil {
-			fmt.Fprintln(stderr, "trellis-tui:", serr)
+	_, err = tea.NewProgram(app, tea.WithAltScreen()).Run()
+	// The program has ended, on whatever path: what it left waiting on the
+	// child's lines and the clock ends with it (#847).
+	app.Close()
+	return finish(c, m.Quitting, err, stderr, shutdownWithin)
+}
+
+// child is what finish needs of the `trellis rpc` child: *rpc.Client, or a
+// test's stand-in.
+type child interface {
+	Exited() <-chan struct{}
+	Shutdown() error
+	Stderr() ([]string, int)
+}
+
+// shutdownWithin is how long finish waits for the child after quit. A run
+// in flight aborts, rolls back and writes its trail first, which takes
+// seconds; past this the program exits and leaves the child to finish on
+// its own, since nothing here kills it (ADR 0052).
+const shutdownWithin = 30 * time.Second
+
+// finish is every way out of the program once the child has started, and
+// the exit code. Run returns on four paths: the person quit and the child
+// exited (0); the child exited without being asked; the screen failed; or a
+// signal ended the program, which Bubble Tea turns into a quit with no
+// error (SIGTERM) or ErrInterrupted (SIGINT). Unless the child has exited,
+// it is sent quit and waited for, within `within`, so a run in flight rolls
+// back and writes its trail; and the message names what happened, rather
+// than blaming the child for a signal (#845).
+func finish(c child, quitting bool, runErr error, stderr io.Writer, within time.Duration) int {
+	select {
+	case <-c.Exited():
+		switch {
+		case runErr != nil:
+			fmt.Fprintln(stderr, "trellis-tui:", runErr)
+			return 1
+		case quitting:
+			return 0
 		}
-		return 1
-	}
-	if !m.Quitting {
-		// The child exited without being asked; say why on the way out.
-		lines, _ := c.Stderr()
+		fmt.Fprintln(stderr, "trellis-tui: trellis rpc exited without being asked to quit; its last messages:")
+		lines, dropped := c.Stderr()
+		if dropped > 0 {
+			fmt.Fprintf(stderr, "(%d earlier lines not kept)\n", dropped)
+		}
 		for _, l := range lines {
-			fmt.Fprintln(stderr, model.Plain(l))
+			fmt.Fprintln(stderr, view.Plain(l))
 		}
 		return 1
+	default:
 	}
-	return 0
+	switch {
+	case runErr != nil:
+		// The screen failed, or SIGINT interrupted the program
+		// (tea.ErrInterrupted, "program was interrupted"): not trellis.
+		fmt.Fprintln(stderr, "trellis-tui:", runErr)
+	case quitting:
+		fmt.Fprintln(stderr, "trellis-tui: stopped before trellis rpc finished quitting")
+	default:
+		fmt.Fprintln(stderr, "trellis-tui: stopped by a signal")
+	}
+	fmt.Fprintln(stderr, "trellis-tui: asking trellis rpc to quit; a run in flight rolls back first")
+	done := make(chan error, 1)
+	go func() { done <- c.Shutdown() }()
+	timer := time.NewTimer(within)
+	defer timer.Stop()
+	select {
+	case serr := <-done:
+		if serr != nil {
+			fmt.Fprintln(stderr, "trellis-tui:", serr)
+			return 1
+		}
+	case <-timer.C:
+		fmt.Fprintf(stderr, "trellis-tui: trellis rpc had not exited %s after quit; it is left to finish, not killed\n", within)
+		return 1
+	}
+	// The person had asked to quit, and the child has now exited cleanly.
+	if quitting && runErr == nil {
+		return 0
+	}
+	return 1
 }

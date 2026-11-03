@@ -37,18 +37,34 @@
 // Stop is one slip from Send, and what it does (abort, roll back, write a
 // trail) cannot be undone, so it is drawn apart in the danger colour and a
 // native dialog confirms it before any abort is sent (#637).
+//
+// While a run is in flight Send does one of three verbs, named on its
+// button (#830, the Queue card): Steer, before the next model call; Queue,
+// a `follow_up` that runs after this run; and Stop and send, which goes
+// through the same dialog as Stop and sends one `abort` carrying the
+// prompt as `then`. The core holds that prompt and sends it on the run's
+// `run_end` and the abort's answer, never on a timer and never when the
+// abort is refused (DESIGN.md §2.1); the page sequences nothing. The verb
+// goes back to Steer whenever a run starts or ends, so Stop and send is
+// never what Send does by default. The queue is the view's `pending`, the
+// reducer's reading of trellis's own list, drawn through ds.js.
+//
+// Take back (#838, ADR 0058 section 3) on a queued steer or follow-up
+// sends `withdraw` with the item's own id, which rpc reads as the message
+// to take back. The text comes back to the textarea only on the core's
+// `taken-back` event, which it emits once trellis has answered that the
+// message was withdrawn: never on the click, since trellis refuses one a
+// model request already carries, and a text put back then would be sent
+// twice. Edit and reorder are not built: rpc edits no queued message
+// (withdraw it and send again), and the desktop sends each follow-up at
+// once, so it holds none to reorder.
 
+import { queueItems, queueVerb } from "./ds.js";
+import { el } from "./dom.js";
+import { str } from "./fmt.js";
+import { enter } from "./keys.js";
+import { lineId, send } from "./rpc.js";
 import { exitText } from "./status.js";
-
-function el(doc, tag, text) {
-  const e = doc.createElement(tag);
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
-
-function str(v) {
-  return typeof v === "string" ? v : null;
-}
 
 // Whether a run is in flight, as the last view that carried it said. No
 // view yet is no run: the core refuses a prompt during one regardless.
@@ -61,12 +77,25 @@ let modelChosen = false;
 let stopped = null;
 // The starter chosen for the next task, `{ name, description }`, or null.
 let template = null;
-let nextId = 0;
+// What Send does while a run is in flight: "steer", "follow_up" or "stop".
+let verb = "steer";
+// The prompt a Stop and send asked the dialog about, while it is open; the
+// dialog's close takes it, whatever closed it.
+let afterStop = null;
 
-function lineId(kind) {
-  nextId += 1;
-  return `desktop-composer-${kind}-${nextId}`;
-}
+// The verbs, each `[verb, word on the button, what it does, cool]`.
+const VERBS = [
+  ["steer", "Steer", "delivered before the next model call", false],
+  ["follow_up", "Queue", "runs after this run ends, as a new prompt", true],
+  ["stop", "Stop and send", "stops this run (rollback), then runs this once it has ended", false],
+];
+
+// The label over the textarea for each verb.
+const VERB_LABELS = {
+  steer: "Steer the run in flight",
+  follow_up: "Queue a task for after this run",
+  stop: "Stop the run, then run this task",
+};
 
 // The composer's elements, looked up once.
 function parts(doc) {
@@ -76,6 +105,10 @@ function parts(doc) {
     text: doc.getElementById("composer-text"),
     control: doc.getElementById("composer-control"),
     send: doc.getElementById("composer-send"),
+    sendWord: doc.getElementById("composer-send-word"),
+    verbs: doc.getElementById("composer-verbs"),
+    queue: doc.getElementById("composer-queue"),
+    queueList: doc.getElementById("composer-queue-list"),
     stop: doc.getElementById("composer-stop"),
     note: doc.getElementById("composer-note"),
     undelivered: doc.getElementById("composer-undelivered"),
@@ -88,6 +121,7 @@ function parts(doc) {
     follow: doc.getElementById("composer-follow"),
     stopConfirm: doc.getElementById("stop-confirm"),
     stopCancel: doc.getElementById("stop-confirm-cancel"),
+    stopThen: doc.getElementById("stop-confirm-then"),
   };
 }
 
@@ -96,24 +130,29 @@ function control(p) {
   return p.control.value === "auto" ? "auto" : "approve";
 }
 
-// Sends one line through the core, and says why when it is refused.
-async function send(tauri, p, line) {
-  try {
-    await tauri.core.invoke("rpc_send", { line });
-    p.note.textContent = "";
-    return true;
-  } catch (err) {
-    p.note.textContent = String(err);
-    return false;
-  }
+// Sends one line through the core (rpc.js's send): the note says why when
+// it is refused, and is cleared when it is not.
+async function forward(tauri, p, line) {
+  const sent = await send(tauri, line, (why) => {
+    p.note.textContent = why;
+  });
+  if (sent) p.note.textContent = "";
+  return sent;
+}
+
+// Whether the starters and the control, which only a new prompt reads,
+// apply: with no run in flight, or for the prompt a Stop and send runs.
+function promptInput() {
+  return modelChosen && (!running || verb === "stop");
 }
 
 // What the composer looks like for whether a run is in flight and whether a
-// model is chosen: the label says what Send will do, Stop shows only during
-// a run, and the starters and the control, which only a new prompt reads,
-// are disabled while one runs, as colibri's settings are during a
-// generation. With no model chosen, the textarea and Send are disabled too;
-// with no child, the label says so before it says anything about a model.
+// model is chosen: the label and Send's word say what Send will do, Stop
+// and the verbs show only during a run, and the starters and the control
+// are disabled while one runs unless Stop and send will start a new one,
+// as colibri's settings are during a generation. With no model chosen, the
+// textarea and Send are disabled too; with no child, the label says so
+// before it says anything about a model.
 function drawRunning(doc) {
   const p = parts(doc);
   p.label.textContent = stopped !== null
@@ -121,15 +160,33 @@ function drawRunning(doc) {
     : !modelChosen
       ? "Task (choose a model first)"
       : running
-        ? "Steer the run in flight"
+        ? VERB_LABELS[verb]
         : "Task";
   p.stop.hidden = !running;
   p.text.disabled = !modelChosen;
   p.send.disabled = !modelChosen;
-  p.control.disabled = running || !modelChosen;
+  p.sendWord.textContent = running ? VERBS.find((v) => v[0] === verb)[1] : "Send";
+  p.control.disabled = !promptInput();
   for (const b of p.startersList.querySelectorAll("button")) {
-    b.disabled = running || !modelChosen;
+    b.disabled = !promptInput();
   }
+  p.verbs.hidden = !running;
+  p.verbs.replaceChildren(
+    ...VERBS.map(([v, word, does, cool]) => {
+      const b = queueVerb(doc, word, { on: v === verb, cool, title: does });
+      b.dataset.verb = v;
+      return b;
+    }),
+  );
+}
+
+// The queue: each item the view's `pending` holds, numbered, with its
+// state. Shown whenever it has an item (the Queue card: never hidden then).
+function drawPending(doc, list) {
+  const p = parts(doc);
+  const items = (Array.isArray(list) ? list : []).filter((q) => q !== null && typeof q === "object");
+  p.queueList.replaceChildren(...queueItems(doc, items));
+  p.queue.hidden = items.length === 0;
 }
 
 function drawUndelivered(doc, list) {
@@ -170,7 +227,7 @@ function drawStarters(doc, list) {
     const description = str(t.description);
     if (description !== null) b.title = description;
     b.setAttribute("aria-label", `Use the ${name} template for the next task`);
-    b.disabled = running || !modelChosen;
+    b.disabled = !promptInput();
     b.addEventListener("click", () => {
       template = { name, description };
       drawTemplate(doc);
@@ -193,13 +250,18 @@ function drawStarters(doc, list) {
 export function drawComposer(doc, view) {
   if (view === null || typeof view !== "object") return;
   if ("running" in view || "model" in view) {
-    if ("running" in view) running = view.running === true;
+    if ("running" in view) {
+      const now = view.running === true;
+      if (now !== running) verb = "steer";
+      running = now;
+    }
     if ("model" in view) {
       modelChosen = view.model !== null && typeof view.model === "object";
     }
     drawRunning(doc);
   }
   if ("undelivered" in view) drawUndelivered(doc, view.undelivered);
+  if ("pending" in view) drawPending(doc, view.pending);
   if ("starters" in view) drawStarters(doc, view.starters);
 }
 
@@ -207,7 +269,7 @@ export function drawComposer(doc, view) {
 // starters: on each child-started, and from main.js when the page loaded
 // after its child started and so saw none.
 export function askStarters(doc, tauri) {
-  send(tauri, parts(doc), { id: "desktop-commands", type: "get_commands" });
+  forward(tauri, parts(doc), { id: "desktop-commands", type: "get_commands" });
 }
 
 // No trellis rpc child is running, for `why`: from `no-child`, from
@@ -257,12 +319,35 @@ export async function wireComposer(doc, tauri) {
       return;
     }
     const text = p.text.value;
-    if (running) {
-      if (text.trim() === "") {
-        p.note.textContent = "Type the text to steer the run with.";
+    if (running && verb === "stop") {
+      if (text.trim() === "" && template === null) {
+        p.note.textContent = "Type the task to run once this run has stopped, or choose a starter.";
         return;
       }
-      if (await send(tauri, p, { id: lineId("steer"), type: "steer", message: text })) p.text.value = "";
+      // Asked as Stop is: the dialog's close sends the one abort, with
+      // this prompt, or nothing.
+      afterStop = { id: lineId("composer", "prompt"), type: "prompt", control: control(p) };
+      if (text.trim() !== "") afterStop.task = text;
+      if (template !== null) afterStop.prompt = template.name;
+      p.stopThen.hidden = false;
+      p.stopConfirm.returnValue = "";
+      p.stopConfirm.showModal();
+      p.stopCancel.focus();
+      return;
+    }
+    if (running) {
+      if (text.trim() === "") {
+        p.note.textContent = verb === "follow_up" ? "Type the task to run after this one." : "Type the text to steer the run with.";
+        return;
+      }
+      if (verb === "follow_up") {
+        if (await forward(tauri, p, { id: lineId("composer", "follow_up"), type: "follow_up", message: text })) {
+          p.text.value = "";
+          p.note.textContent = "Queued: trellis runs it after this run ends.";
+        }
+        return;
+      }
+      if (await forward(tauri, p, { id: lineId("composer", "steer"), type: "steer", message: text })) p.text.value = "";
       return;
     }
     if (text.trim() === "" && template === null) {
@@ -271,10 +356,10 @@ export async function wireComposer(doc, tauri) {
     }
     // A template with no text is a whole task; with text, rpc runs the
     // template with the text after it.
-    const line = { id: lineId("prompt"), type: "prompt", control: control(p) };
+    const line = { id: lineId("composer", "prompt"), type: "prompt", control: control(p) };
     if (text.trim() !== "") line.task = text;
     if (template !== null) line.prompt = template.name;
-    if (await send(tauri, p, line)) {
+    if (await forward(tauri, p, line)) {
       p.text.value = "";
       template = null;
       drawTemplate(doc);
@@ -287,24 +372,64 @@ export async function wireComposer(doc, tauri) {
     drawTemplate(doc);
     p.text.focus();
   });
-  // The rail's own Run button, so showing Run here is what the rail does.
-  p.follow.addEventListener("click", () => {
-    const run = doc.querySelector('nav.rail button[aria-controls="run"]');
-    if (run) run.click();
-  });
+  // Entering Run as the overview's Run panel does (keys.js), so the Trail,
+  // the sibling rail and the way back are the same.
+  p.follow.addEventListener("click", () => enter(doc, "run"));
   // Stop aborts the run and rolls its edits back, which cannot be undone,
   // so a click only asks (#637). The dialog's close is the one place an
   // abort is sent, and only when its Stop button closed it: Escape, Cancel
   // and any other close send nothing. Cancel takes the focus, so a stray
   // Enter stops nothing.
   p.stop.addEventListener("click", () => {
+    afterStop = null;
+    p.stopThen.hidden = true;
     p.stopConfirm.returnValue = "";
     p.stopConfirm.showModal();
     p.stopCancel.focus();
   });
+  // A Stop and send's prompt rides on the same abort as `then` (#830).
   p.stopConfirm.addEventListener("close", () => {
+    const then = afterStop;
+    afterStop = null;
+    p.stopThen.hidden = true;
     if (p.stopConfirm.returnValue !== "stop") return;
-    send(tauri, p, { id: lineId("abort"), type: "abort" });
+    const line = { id: lineId("composer", "abort"), type: "abort" };
+    if (then !== null) line.then = then;
+    forward(tauri, p, line).then((sent) => {
+      if (!sent || then === null) return;
+      p.text.value = "";
+      template = null;
+      drawTemplate(doc);
+      p.note.textContent = "Stopping; your task runs once trellis has ended this run.";
+    });
+  });
+  // One listener for the queue's Take back, which drawPending draws
+  // afresh: the withdraw names the item by the id it was sent with.
+  p.queueList.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-take-back]");
+    if (b === null || b.disabled) return;
+    forward(tauri, p, { id: b.dataset.takeBack, type: "withdraw" });
+  });
+  // trellis took a message back: its text returns to the textarea, after
+  // anything typed there since, and Send's verb is the one it was sent
+  // with while the run is still in flight.
+  await tauri.event.listen("taken-back", (event) => {
+    const t = event.payload;
+    const text = str(t && t.text);
+    if (text === null) return;
+    p.text.value = p.text.value.trim() === "" ? text : `${p.text.value}\n\n${text}`;
+    const kind = str(t.kind);
+    if (running && (kind === "steer" || kind === "follow_up")) verb = kind;
+    drawRunning(doc);
+    p.note.textContent = "Taken back: trellis will not deliver it, and its text is in the box above.";
+    p.text.focus();
+  });
+  // One listener for the verbs, which drawRunning draws afresh.
+  p.verbs.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-verb]");
+    if (b === null || !VERBS.some((v) => v[0] === b.dataset.verb)) return;
+    verb = b.dataset.verb;
+    drawRunning(doc);
   });
   drawRunning(doc);
 }

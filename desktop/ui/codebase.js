@@ -23,11 +23,19 @@
 // written through textContent, so text that carries markup is drawn as
 // characters.
 //
+// The figures are the design system's Stats and the index's saved state a
+// Status (ds.js, #910); each panel's count is its head's meta.
+//
 // index.html loads this as a module of its own. It asks trellis for the
 // graph through `rpc_send` when the view is shown and what it holds is
 // stale: no graph yet, a new child, or a run that has ended since.
 
-const SVG = "http://www.w3.org/2000/svg";
+// make(doc, tag, attrs) is dom.js's svg: an SVG element with its attributes.
+import { el, fill, muted, svg as make } from "./dom.js";
+import { dsStatus, figure, panelMeta, stats } from "./ds.js";
+import { isCount, notReported, plural, str } from "./fmt.js";
+import { onShown, send, start } from "./rpc.js";
+
 const REQUEST_ID = "desktop-codebase";
 // The modules asked for. With no `limit` rpc lists 40 (ADR 0025 section 5),
 // and past that whole packages went undrawn. rpc takes any count, so the
@@ -47,30 +55,6 @@ const PAN = 0.1;
 // A pointer that moves less than this many pixels between down and up is a
 // click, not a drag.
 const DRAG_PX = 3;
-
-function isCount(v) {
-  return typeof v === "number" && Number.isFinite(v);
-}
-
-function figure(v) {
-  return isCount(v) ? String(v) : "not reported";
-}
-
-function str(v) {
-  return typeof v === "string" ? v : null;
-}
-
-function el(doc, tag, text) {
-  const e = doc.createElement(tag);
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
-
-function make(doc, tag, attrs) {
-  const e = doc.createElementNS(SVG, tag);
-  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v));
-  return e;
-}
 
 // One string of the layout at its point, or nothing when the layout sent
 // no text or no position for it.
@@ -104,25 +88,43 @@ function status(doc, text) {
   doc.getElementById("cb-status").textContent = text;
 }
 
-// What the whole answer says, as trellis counted it: modules, then call
-// sites as three counts that are never divided (ADR 0014).
-function summary(d) {
-  const n = (v) => (isCount(v) ? String(v) : "not reported");
-  const parts = [`${n(d.modules_indexed)} modules indexed, ${n(d.modules_listed)} listed`];
+// What the whole answer says, as trellis counted it, or nothing with no
+// answer: the modules as Stats, then the call sites as three Stats that are
+// never divided (ADR 0014). Whether trellis saved this index where the
+// overview reads it (#654) is the graph panel's meta, said only as trellis
+// said it; an answer that said nothing says nothing.
+function drawFigures(doc, d) {
+  const pane = doc.getElementById("cb-figures");
+  if (d === null) {
+    pane.replaceChildren();
+    panelMeta(doc, "cb-graph-meta");
+    return;
+  }
+  const why = "trellis's answer did not carry it";
+  const modules = [
+    { label: "modules", value: figure(doc, d.modules_indexed, why), unit: "indexed" },
+    { label: "listed", value: figure(doc, d.modules_listed, why) },
+  ];
   if (isCount(d.modules_not_drawn) && d.modules_not_drawn > 0) {
-    parts[0] += ` (${d.modules_not_drawn} past the limit, not drawn)`;
+    modules.push({ label: "not drawn", value: String(d.modules_not_drawn), unit: "past the limit" });
   }
-  parts.push(
-    `${n(d.bound_call_sites)} call sites bound across modules, ${n(d.ambiguous)} ambiguous, ` +
-      `${n(d.unresolved)} unresolved: three counts, not a ratio`,
-  );
-  // Whether trellis saved this index where the overview reads it (#654).
-  // Said only as trellis said it; an answer that said nothing says nothing.
-  if (d.index_saved === true) parts.push("saved to .trellis/index.bin");
+  const out = [
+    stats(doc, modules),
+    stats(doc, [
+      { label: "bound", value: figure(doc, d.bound_call_sites, why), unit: "call sites" },
+      { label: "ambiguous", value: figure(doc, d.ambiguous, why) },
+      { label: "unresolved", value: figure(doc, d.unresolved, why) },
+    ]),
+    muted(doc, "p", "Three counts, not a ratio."),
+  ];
+  let saved = null;
+  if (d.index_saved === true) saved = dsStatus(doc, "cool", "index saved", { title: "saved to .trellis/index.bin" });
   else if (d.index_saved === false && typeof d.index_not_saved === "string") {
-    parts.push(`not saved: ${d.index_not_saved}`);
+    saved = dsStatus(doc, "warn", "index not saved", { title: d.index_not_saved });
+    out.push(muted(doc, "p", `Not saved to .trellis/index.bin: ${d.index_not_saved}`));
   }
-  return parts.join(" · ");
+  pane.replaceChildren(...out);
+  panelMeta(doc, "cb-graph-meta", saved);
 }
 
 // Whether a drag just ended: the click that follows it is not a click.
@@ -163,6 +165,13 @@ function applyView(ctx) {
 function resetView(ctx) {
   if (ctx.base) ctx.view = { ...ctx.base };
   applyView(ctx);
+}
+
+// Whether the view is the whole picture, as resetView leaves it.
+function atBase(ctx) {
+  const v = ctx.view;
+  const b = ctx.base;
+  return !b || (v.x === b.x && v.y === b.y && v.w === b.w && v.h === b.h);
 }
 
 // The view's centre stays over the picture, so it cannot be panned away.
@@ -299,11 +308,17 @@ function markSelected(ctx) {
   }
 }
 
-// A module's edges in as the details say it: a floor when trellis left
-// modules out of the answer.
+// Whether a module's edges in is a floor: trellis left modules out of the
+// answer, and a caller among them is not counted. The list and the details
+// both ask here, so the two say it the same way.
+function edgesInFloor(ctx) {
+  return ctx.data.edges_in_complete !== true;
+}
+
+// A module's edges in as the list says it.
 function edgesIn(ctx, m) {
   if (!isCount(m && m.edges_in)) return "not reported";
-  return ctx.data.edges_in_complete === true ? String(m.edges_in) : `at least ${m.edges_in}`;
+  return edgesInFloor(ctx) ? `at least ${m.edges_in}` : String(m.edges_in);
 }
 
 // The graph's level as a list: with no package open the packages, each
@@ -318,6 +333,7 @@ function drawList(doc, ctx) {
   head.textContent = p === null ? "Packages" : `Modules in ${str(p.package) ?? "this package"}`;
   if (ctx.data === null) {
     out.replaceChildren();
+    panelMeta(doc, "cb-modules-meta");
     return;
   }
   const row = (name, act, said) => {
@@ -337,22 +353,19 @@ function drawList(doc, ctx) {
       const said = n === null ? "modules not reported" : `${n} module${n === 1 ? "" : "s"} listed`;
       return row(str(pk && pk.package) ?? "package", () => enter(doc, ctx, i, null), said)[0];
     });
+    panelMeta(doc, "cb-modules-meta", plural(rows.length, "package", "packages"));
   } else {
     rows = (Array.isArray(p.modules) ? p.modules : []).map((m, k) => {
       const said =
-        `edges in ${edgesIn(ctx, m)} · edges out ${figure(m && m.edges_out)} · ` +
-        `doubt ${figure(m && m.doubt)}`;
+        `edges in ${edgesIn(ctx, m)} · edges out ${notReported(m && m.edges_out)} · ` +
+        `doubt ${notReported(m && m.doubt)}`;
       const [li, b] = row(str(m && m.module) ?? "module", () => select(doc, ctx, ctx.pkg, k), said);
       ctx.items[k] = b;
       return li;
     });
+    panelMeta(doc, "cb-modules-meta", plural(rows.length, "module", "modules"));
   }
-  if (rows.length === 0) {
-    const li = el(doc, "li", "Nothing listed.");
-    li.className = "empty";
-    rows.push(li);
-  }
-  out.replaceChildren(...rows);
+  fill(doc, out, rows, "Nothing listed.");
   markSelected(ctx);
 }
 
@@ -382,47 +395,41 @@ function drawCrumbs(doc, ctx) {
   doc.getElementById("cb-back").disabled = p === null;
 }
 
-// The selected module's three numbers: edges in and edges out, which count
+// The selected module's three Stats: edges in and edges out, which count
 // modules, and doubt, which counts call sites. Different populations, so
-// they are shown side by side and never combined.
+// they stand side by side and are never combined. Edges in reads "at least"
+// where it is a floor, with why as its title.
 function drawDetails(doc, ctx) {
   const pane = doc.getElementById("cb-details");
   const m = selectedModule(ctx);
   if (m === null) {
-    const p = el(doc, "p", "Select a module to see its edges and doubt.");
-    p.className = "empty";
-    pane.replaceChildren(p);
+    fill(doc, pane, [], "Select a module to see its edges and doubt.", "p");
     return;
   }
-  const head = el(doc, "h4", str(m.module) ?? "module");
   const path = el(doc, "p");
   path.append(el(doc, "code", str(m.path) ?? "path not reported"));
-  const dl = el(doc, "dl");
-  const row = (name, value) => dl.append(el(doc, "dt", name), el(doc, "dd", value));
-  const complete = ctx.data.edges_in_complete === true;
-  row("edges in", edgesIn(ctx, m));
-  row("edges out", figure(m.edges_out));
-  row("doubt", figure(m.doubt));
-  const note = el(
-    doc,
-    "p",
-    "Edges count modules the resolver bound a call between; doubt counts this module's call " +
-      "sites it bound to no single definition. They come from different populations and are " +
-      "not divided. An edge's absence is the absence of a binding, not of a call.",
-  );
-  note.className = "muted";
-  const parts = [head, path, dl, note];
-  if (!complete) {
-    const floor = el(
+  const why = "trellis's answer did not carry it";
+  const floor = edgesInFloor(ctx);
+  pane.replaceChildren(
+    el(doc, "h4", str(m.module) ?? "module"),
+    path,
+    stats(doc, [
+      {
+        label: "edges in",
+        meta: floor ? "at least" : null,
+        value: figure(doc, m.edges_in, why),
+        title: floor ? "A floor: trellis left modules out of this answer, and their calls are not counted." : null,
+      },
+      { label: "edges out", value: figure(doc, m.edges_out, why) },
+      { label: "doubt", value: figure(doc, m.doubt, why), unit: "call sites" },
+    ]),
+    muted(
       doc,
       "p",
-      "Edges in count only the modules this answer lists, and trellis left some out, so the " +
-        "figure is a floor.",
-    );
-    floor.className = "muted";
-    parts.push(floor);
-  }
-  pane.replaceChildren(...parts);
+      "Edges count modules a call is bound between; doubt counts call sites bound to no single definition. " +
+        "Never divided. No edge means no binding, not no call.",
+    ),
+  );
 }
 
 function drawResults(doc, ctx) {
@@ -498,6 +505,7 @@ function clear(doc, ctx, said) {
   ctx.pkg = null;
   ctx.selected = null;
   status(doc, said);
+  drawFigures(doc, null);
   doc.getElementById("cb-graph").replaceChildren();
   ctx.svg = null;
   ctx.view = null;
@@ -534,7 +542,8 @@ export function drawCodebase(doc, ctx, payload) {
       if (selName !== null && m.module === selName) ctx.selected = { pkg: i, module: k };
     });
   });
-  status(doc, summary(payload));
+  status(doc, "");
+  drawFigures(doc, payload);
   draw(doc, ctx);
   drawResults(doc, ctx);
 }
@@ -568,6 +577,9 @@ function wirePanZoom(doc, ctx) {
         zoom(ctx, 1 / ZOOM);
         break;
       case "Escape":
+        // A view already reset leaves ESC to the page, which goes out a
+        // level (keys.js); otherwise ESC resets it first.
+        if (atBase(ctx)) return;
         resetView(ctx);
         break;
       default:
@@ -616,15 +628,11 @@ async function ask(doc, tauri, ctx) {
   ctx.pending = true;
   ctx.stale = false;
   status(doc, "Reading the module graph: trellis indexes the repository for it.");
-  try {
-    await tauri.core.invoke("rpc_send", {
-      line: { id: REQUEST_ID, type: "get_codebase", limit: MODULES_ASKED },
-    });
-  } catch (err) {
+  await send(tauri, { id: REQUEST_ID, type: "get_codebase", limit: MODULES_ASKED }, (why) => {
     ctx.pending = false;
     ctx.stale = true;
-    status(doc, `Open a repository to see its graph. ${err}`);
-  }
+    status(doc, `Open a repository to see its graph. ${why}`);
+  });
 }
 
 function shown(doc) {
@@ -676,19 +684,13 @@ export async function wireCodebase(doc, tauri) {
       if (shown(doc)) ask(doc, tauri, ctx);
     }
   });
-  const button = doc.querySelector('nav.rail button[aria-controls="codebase"]');
-  if (button) {
-    button.addEventListener("click", () => {
-      if (ctx.stale) ask(doc, tauri, ctx);
-    });
-  }
-}
-
-function start() {
-  wireCodebase(document, window.__TAURI__).catch((err) => console.error("trellis desktop codebase:", err));
+  // Entering the Codebase level shows the section (keys.js): a stale graph
+  // is read then (#826).
+  onShown(doc, "codebase", () => {
+    if (ctx.stale) ask(doc, tauri, ctx);
+  });
 }
 
 if (typeof window !== "undefined" && window.__TAURI__) {
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
-  else start();
+  start("the codebase view", () => wireCodebase(document, window.__TAURI__));
 }

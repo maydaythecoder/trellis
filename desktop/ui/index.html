@@ -2,7 +2,7 @@
 <!--
   The TRELLIS desktop page (ADR 0048 section 5).
 
-  Static: Tauri serves this file, style.css and the ES modules from
+  Static: Tauri serves this file, the stylesheets and the ES modules from
   desktop/ui/ with no Node, npm or bundler; `trellis-desktop --web` serves
   the same files over HTTP on 127.0.0.1 (ADR 0050 section 5), where web.js,
   loaded first, stands in for Tauri's window.__TAURI__ over the page's own
@@ -12,8 +12,8 @@
   render.js, overview.js and main.js through textContent or createElement,
   never parsed as HTML (ADR 0007, S10). The run section's action graph is
   SVG that graph.js builds with createElementNS from the layout the core
-  computes (#303); render.js imports it, and the page loads it as a module
-  of its own, which the browser evaluates once either way. The codebase
+  computes (#303); render.js imports it, so it has no script tag of its
+  own (#833). The codebase
   section is drawn by codebase.js from the layout the core computes from a
   get_codebase answer (#307), and its symbol radius pane by radius.js from
   a get_radius answer the core types into reach and doubt (#308). The
@@ -27,14 +27,21 @@
   atlas.js on a canvas from the view's atlas key, which the core computes
   from get_history, get_codebase, get_symbols and get_radius answers, the
   map's layout included (atlas.rs); the owner asked for it on 2026-10-11,
-  beside the other sections. It only reads.
+  beside the other sections. It only reads. The code and code-file
+  sections, the levels below Run, are drawn by code.js from the view's code
+  key (#831); a diff there is shown as text, never parsed as markup. The
+  summary section, the level below Run reached also from the Now strip
+  while a run is in flight, is drawn by summary.js from the view's summary
+  key (#832); the model's closing words there are fenced as its own text.
 
-  The rail's buttons each name, with aria-controls, the one section they
-  show; the others carry the hidden attribute. Pressing one moves focus to
-  the shown section's heading, which takes focus (tabindex -1) without
-  joining the tab order, so a keyboard user lands on what they chose; the
-  page's one h1 is drawn for screen readers only (#646). The overview section is the
-  landing section: its four panes (recent repositories, last run, codebase,
+  The overview's panels (button[data-enter]) are the ways into the other
+  sections, one level each (#826): keys.js shows the level's section and
+  hides the others with the hidden attribute, and a section's module reads
+  what it shows when its section is shown (rpc.js's onShown). Entering
+  moves focus to the shown section's heading, which takes focus (tabindex
+  -1) without joining the tab order, so a keyboard user lands on what they
+  chose; the page's one h1 is drawn for screen readers only (#646). The
+  overview section is the landing level: its four panes (recent repositories, last run, codebase,
   board) are drawn by overview.js from trellis's overview object (#562).
   A pane added to the run or overview section that nothing writes to fails
   view_renders_every_run_section or view_renders_every_overview_pane in
@@ -64,7 +71,14 @@
 
   The composer (#301) sits below every section, so a task can be sent from
   whichever one is shown. composer.js sends a prompt while no run is in
-  flight and a steer while one is, by the view's own record; Stop shows only
+  flight; while one is, Send does the verb chosen above it (#830): Steer
+  (a steer, before the next model call), Queue (a follow_up, after this
+  run) or Stop and send (an abort carrying the prompt, which the core sends
+  once the run has ended), by the view's own record. The queue under it is
+  the view's `pending`: what trellis lists as waiting, each with its state;
+  Take back sends withdraw, and the text returns to the textarea once
+  trellis has taken it back (#838); edit and reorder are marked not built.
+  Stop shows only
   during a run, set apart from Send in the danger colour, and asks through
   the stop-confirm dialog before an abort is sent, since the rollback it
   causes cannot be undone (#637). The core refuses what does not fit that record, whatever
@@ -78,10 +92,16 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>trellis</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="ds.css">
     <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="run.css">
+    <link rel="stylesheet" href="codebase.css">
+    <link rel="stylesheet" href="trails.css">
+    <link rel="stylesheet" href="atlas.css">
+    <link rel="stylesheet" href="code.css">
     <script type="module" src="web.js"></script>
     <script type="module" src="main.js"></script>
-    <script type="module" src="graph.js"></script>
     <script type="module" src="codebase.js"></script>
     <script type="module" src="radius.js"></script>
     <script type="module" src="trails.js"></script>
@@ -89,62 +109,81 @@
     <script type="module" src="queue.js"></script>
     <script type="module" src="atlas.js"></script>
   </head>
-  <body>
-    <nav class="rail" aria-label="Views">
-      <button type="button" aria-controls="overview" aria-current="page">Overview</button>
-      <button type="button" aria-controls="run">Run</button>
-      <button type="button" aria-controls="trails">Trails</button>
-      <button type="button" aria-controls="codebase">Codebase</button>
-      <button type="button" aria-controls="atlas">Atlas</button>
-      <button type="button" aria-controls="board">Board</button>
-      <button type="button" aria-controls="vault">Vault</button>
-    </nav>
-    <main>
+  <body class="cd-shell">
+    <!-- The icon set (docs/design/system/icons, #835), one <symbol> each,
+    drawn where a label uses one with <use href>: an icon is never the
+    only carrier of a meaning, so each sits beside its word, and the
+    set itself is hidden from assistive technology. -->
+    <svg class="icon-sprite" aria-hidden="true" focusable="false">
+      <symbol id="icon-agent" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="9" height="9"></rect><circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none"></circle><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2"></path></g></symbol>
+      <symbol id="icon-blast-radius" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none"></circle><circle cx="8" cy="8" r="4.5"></circle><path d="M2.5 8A5.5 5.5 0 0 1 8 2.5" stroke-dasharray="1.2 2.4"></path></g></symbol>
+      <symbol id="icon-budget" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12a5.5 5.5 0 1 1 11 0"></path><path d="M8 12l3-4.5"></path><path d="M1.5 14.5h13"></path></g></symbol>
+      <symbol id="icon-burrow-in" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2h5v5M14 2L9 7"></path><path d="M7 14H2V9M2 14l5-5"></path></g></symbol>
+      <symbol id="icon-burrow-out" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 7V2H8M13 2L8 7"></path><path d="M3 9v5h5M3 14l5-5"></path></g></symbol>
+      <symbol id="icon-call-graph" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="3.5" cy="3.5" r="1.5"></circle><circle cx="12.5" cy="3.5" r="1.5"></circle><circle cx="8" cy="12.5" r="1.5"></circle><path d="M4.5 5L7 11M11.5 5L9 11M5 3.5h6"></path></g></symbol>
+      <symbol id="icon-commit" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2.5"></circle><path d="M1.5 8h4M10.5 8h4"></path></g></symbol>
+      <symbol id="icon-context" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="5.5" width="13" height="5"></rect><path d="M4 5.5v5M6.5 5.5v5M9 5.5v5" stroke-width="2.5"></path></g></symbol>
+      <symbol id="icon-desktop" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2.5" width="13" height="9"></rect><path d="M5.5 14h5M8 11.5V14"></path></g></symbol>
+      <symbol id="icon-diff" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4.5h5M5 2v5"></path><path d="M8.5 11.5h5"></path></g></symbol>
+      <symbol id="icon-error" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"></circle><path d="M5.5 5.5l5 5M10.5 5.5l-5 5"></path></g></symbol>
+      <symbol id="icon-file" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 1.5h5l3 3v10h-8z"></path><path d="M9.5 1.5v3h3"></path></g></symbol>
+      <symbol id="icon-keyboard" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="4" width="13" height="8" rx="1"></rect><path d="M4 6.5h.5M6.5 6.5H7M9 6.5h.5M11.5 6.5h.5M5 9.5h6"></path></g></symbol>
+      <symbol id="icon-model-escalated" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.5a3 3 0 0 1-.4-6 4 4 0 0 1 7.8 1 2.5 2.5 0 0 1-.4 5z"></path><path d="M8 11.5V7.5M6.2 9.3L8 7.5l1.8 1.8"></path></g></symbol>
+      <symbol id="icon-model-local" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="2.5" width="11" height="11" rx="1"></rect><rect x="5.5" y="5.5" width="5" height="5"></rect><path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15"></path></g></symbol>
+      <symbol id="icon-ok" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"></circle><path d="M5 8.2l2 2 4-4.4"></path></g></symbol>
+      <symbol id="icon-pause" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 3v10M10.5 3v10" stroke-width="2"></path></g></symbol>
+      <symbol id="icon-play" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.5v13M1.5 8h13M3.4 3.4l9.2 9.2M12.6 3.4l-9.2 9.2" stroke-width="1.25"></path><circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none"></circle></g></symbol>
+      <symbol id="icon-queue" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M2.5 8h11M2.5 12h7"></path><circle cx="13" cy="12" r="1" fill="currentColor" stroke="none"></circle></g></symbol>
+      <symbol id="icon-resume" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v10"></path><path d="M6 3v10l7-5z"></path></g></symbol>
+      <symbol id="icon-run" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3v10l8-5z"></path></g></symbol>
+      <symbol id="icon-search" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="4.5"></circle><path d="M10.5 10.5L14 14"></path></g></symbol>
+      <symbol id="icon-settings" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2"></circle><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"></path></g></symbol>
+      <symbol id="icon-stop" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="9" height="9"></rect></g></symbol>
+      <symbol id="icon-subagent" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 2.5v6a2 2 0 0 0 2 2h2"></path><rect x="7.5" y="7.5" width="6" height="6"></rect><circle cx="10.5" cy="10.5" r="1" fill="currentColor" stroke="none"></circle></g></symbol>
+      <symbol id="icon-task-done" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="5.5"></circle><path d="M5.5 8l1.8 1.8L10.5 6.5"></path></g></symbol>
+      <symbol id="icon-task" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="5.5"></circle></g></symbol>
+      <symbol id="icon-terminal" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="3" width="13" height="10"></rect><path d="M4 6l2.5 2L4 10M8 10h4"></path></g></symbol>
+      <symbol id="icon-trail" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 1.5v13"></path><circle cx="4" cy="4" r="1.5" fill="#0000" stroke="currentColor"></circle><circle cx="4" cy="8" r="1.5" fill="currentColor" stroke="none"></circle><circle cx="4" cy="12" r="1.5" fill="#0000"></circle><path d="M8 4h5M8 8h5M8 12h5"></path></g></symbol>
+      <symbol id="icon-vault" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="2.5" width="11" height="11"></rect><circle cx="8" cy="8" r="2"></circle><path d="M8 3.5v2M8 10.5v2M3.5 8h2M10.5 8h2"></path></g></symbol>
+      <symbol id="icon-warning" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2l6.5 11.5h-13z"></path><path d="M8 6.5v3.5"></path><circle cx="8" cy="12" r=".6" fill="currentColor" stroke="none"></circle></g></symbol>
+    </svg>
+    <!-- The shell (#826; ADR 0048 section 5 as amended 2026-10-26): the
+    Trail across the top, the sibling rail on the left, the stage, and the
+    status bar along the bottom. keys.js draws the Trail and the rail for
+    the level shown and owns the keys that move between levels. -->
+    <header class="cd-shell-top">
+      <nav id="trail" class="cd-trail" aria-label="Trail">
+        <ol id="trail-path" class="cd-trail-path">
+          <li><span class="cd-trail-current" aria-current="location">Overview</span></li>
+        </ol>
+        <p class="cd-trail-depth">
+          <span id="trail-ticks" class="cd-trail-ticks" aria-hidden="true"><span class="cd-trail-tick cd-trail-tick-on"></span><span class="cd-trail-tick"></span><span class="cd-trail-tick"></span><span class="cd-trail-tick"></span></span>
+          <span id="trail-level">L1 / 4</span>
+          <span class="cd-key-row"><kbd class="cd-key">ESC</kbd><span>out</span></span>
+        </p>
+      </nav>
+    </header>
+    <div class="cd-shell-stage">
+      <nav id="siblings" class="cd-shell-rail" aria-label="Siblings" hidden></nav>
+    <main id="stage" class="cd-shell-body">
       <h1 class="visually-hidden">trellis</h1>
       <p id="status" class="status"></p>
-      <dl id="status-bar" class="status-bar" aria-label="Status">
-        <dt>trellis</dt><dd id="status-trellis">not started yet</dd>
-        <dt>root</dt><dd id="status-root">none open</dd>
-        <dt>model</dt><dd id="status-model">none chosen yet</dd>
-        <dt>run</dt><dd id="status-run">no run in flight</dd>
-        <dt>phase</dt><dd id="status-phase">none</dd>
-        <dt>child</dt><dd id="status-child">not started yet</dd>
-      </dl>
       <div id="alert" class="alert" role="alert" hidden>
         <p id="alert-text"></p>
         <button type="button" id="alert-dismiss">Dismiss</button>
       </div>
 
-      <details id="model-pane" class="model-pane" open>
-        <summary id="model-summary">Model: none chosen yet</summary>
-        <form id="model" class="model-form" aria-labelledby="model-summary">
-          <p id="model-current"></p>
-          <ul id="model-options" class="rows model-options"></ul>
-          <label for="model-typed">Model spec</label>
-          <input id="model-typed" name="spec" type="text" spellcheck="false" autocomplete="off">
-          <div class="composer-row">
-            <input id="model-save" name="save" type="checkbox">
-            <label for="model-save">Save to my user config (never the repository's)</label>
-          </div>
-          <div class="composer-row">
-            <button type="submit" id="model-use">Use this model</button>
-            <button type="button" id="model-refresh">Look again</button>
-          </div>
-          <p id="model-note" class="muted" role="status"></p>
-          <h3 id="model-probed-title">Where trellis looked</h3>
-          <ul id="model-probed" class="rows" aria-labelledby="model-probed-title"></ul>
-          <h3 id="model-providers-title">Your providers</h3>
-          <ul id="model-providers" class="rows" aria-labelledby="model-providers-title"></ul>
-          <details id="model-catalog-pane">
-            <summary id="model-catalog-title">Catalogue: weights trellis model pull fetches</summary>
-            <ul id="model-catalog" class="rows" aria-labelledby="model-catalog-title"></ul>
-          </details>
-        </form>
-      </details>
-
       <section id="overview" aria-labelledby="overview-title">
-        <h2 id="overview-title" tabindex="-1">Overview</h2>
-        <p id="ov-root" class="muted">Reading the overview.</p>
+        <h2 id="overview-title" class="visually-hidden" tabindex="-1">Overview</h2>
+        <p id="ov-root" class="ov-root">Reading the overview.</p>
+        <ul class="levels" aria-label="Ways in">
+          <li><button type="button" class="cd-panel level-tile" data-enter="run" title="The run in flight: its log, actions, edits and checks."><span class="cd-panel-head"><span class="cd-panel-title level-name"><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-run"></use></svg>Run</span><span class="cd-drill" aria-hidden="true">⤢</span></span><span id="lv-run" class="cd-panel-body level-figure"></span></button></li>
+          <li><button type="button" class="cd-panel level-tile" data-enter="trails" title="Each past run's committed record."><span class="cd-panel-head"><span class="cd-panel-title level-name"><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-trail"></use></svg>Trails</span><span class="cd-drill" aria-hidden="true">⤢</span></span><span id="lv-trails" class="cd-panel-body level-figure"></span></button></li>
+          <li><button type="button" class="cd-panel level-tile" data-enter="codebase" title="The module graph trellis indexed, and a symbol's radius."><span class="cd-panel-head"><span class="cd-panel-title level-name"><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-call-graph"></use></svg>Codebase</span><span class="cd-drill" aria-hidden="true">⤢</span></span><span id="lv-codebase" class="cd-panel-body level-figure"></span></button></li>
+          <li><button type="button" class="cd-panel level-tile" data-enter="atlas" title="The map of the repository over its history."><span class="cd-panel-head"><span class="cd-panel-title level-name"><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-blast-radius"></use></svg>Atlas</span><span class="cd-drill" aria-hidden="true">⤢</span></span></button></li>
+          <li><button type="button" class="cd-panel level-tile" data-enter="board" title="The task queue, and PR and CI state."><span class="cd-panel-head"><span class="cd-panel-title level-name"><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-queue"></use></svg>Board</span><span class="cd-drill" aria-hidden="true">⤢</span></span><span id="lv-board" class="cd-panel-body level-figure"></span></button></li>
+          <li><button type="button" class="cd-panel level-tile" data-enter="vault" title="The note vault: search a note, read its relations."><span class="cd-panel-head"><span class="cd-panel-title level-name"><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-vault"></use></svg>Vault</span><span class="cd-drill" aria-hidden="true">⤢</span></span></button></li>
+        </ul>
         <div class="overview-grid">
           <div class="pane" role="region" aria-labelledby="ov-recent-title">
             <h3 id="ov-recent-title">Recent repositories</h3>
@@ -160,6 +199,19 @@
               </div>
               <p id="repo-note" class="muted" role="status"></p>
             </form>
+            <!-- The register dial (#836): serious by default; playful adds
+            one face where a screen would otherwise show nothing, and moves
+            no figure, state word or check row. Served disabled: it does
+            nothing until settings.js has read the stored position. -->
+            <fieldset id="register-dial" class="register-dial" disabled>
+              <legend>Register</legend>
+              <div class="composer-row">
+                <input id="register-serious" name="register" type="radio" value="serious" checked>
+                <label for="register-serious">serious</label>
+                <input id="register-playful" name="register" type="radio" value="playful">
+                <label for="register-playful">playful</label>
+              </div>
+            </fieldset>
           </div>
           <div class="pane" role="region" aria-labelledby="ov-last-run-title">
             <h3 id="ov-last-run-title">Last run</h3>
@@ -183,53 +235,94 @@
       </section>
 
       <section id="run" aria-labelledby="run-title" hidden>
-        <h2 id="run-title" tabindex="-1">Run</h2>
-        <div class="run-grid">
-          <div class="pane pane-log" role="region" aria-labelledby="log-title">
-            <h3 id="log-title">Actions log</h3>
-            <div id="pane-transcript" class="log" role="log" aria-labelledby="log-title" tabindex="0"></div>
-            <button type="button" id="log-jump" hidden>New lines below · Jump to the end</button>
+        <h2 id="run-title" class="visually-hidden" tabindex="-1">Run</h2>
+        <!-- The Now strip (#828; the NowStrip card): what is happening right
+        now, drawn by now.js from the view's now key, which the core derives
+        from the run's events. It stays at the top while the level scrolls.
+        The role is on this element, which stays while the strip is drawn
+        afresh, so a change is announced. -->
+        <div id="pane-now" class="now" role="status" aria-label="Now"></div>
+        <!-- The run view as the design system draws it (docs/design/system/
+        components/RunView.md; #909): three columns, the run's figures on the
+        left, the log and the graph in the middle, what it changed and how
+        it ended on the right. -->
+        <div class="cd-rv-grid run-grid">
+          <div class="cd-rv-col">
+            <div class="pane" role="region" aria-labelledby="where-title">
+              <h3 id="where-title">Where it is</h3>
+              <div id="pane-where"></div>
+            </div>
+            <div class="pane" role="region" aria-labelledby="budget-title">
+              <h3 id="budget-title">Budget</h3>
+              <div id="pane-budget"></div>
+            </div>
+            <div class="pane" role="region" aria-labelledby="tier-title">
+              <h3 id="tier-title">Tier</h3>
+              <div id="pane-tier"></div>
+            </div>
+            <div class="pane" role="region" aria-labelledby="runtime-title">
+              <h3 id="runtime-title">Runtime</h3>
+              <div id="pane-runtime"></div>
+            </div>
+            <div class="pane" role="region" aria-labelledby="session-tokens-title">
+              <h3 id="session-tokens-title">Session tokens</h3>
+              <div id="pane-session-tokens"></div>
+            </div>
           </div>
-          <div class="pane" role="region" aria-labelledby="tier-title">
-            <h3 id="tier-title">Tier</h3>
-            <p id="pane-tier"></p>
+          <div class="cd-rv-col">
+            <!-- The model's plan (#838; the Plan card): plan.js draws the
+            view's plan key, the run's latest plan event, and sends a
+            person's edit to it as a steer. -->
+            <div class="pane" role="region" aria-labelledby="plan-title">
+              <h3 id="plan-title">Plan</h3>
+              <div id="pane-plan"></div>
+            </div>
+            <div class="pane pane-log" role="region" aria-labelledby="log-title">
+              <h3 id="log-title">Actions log</h3>
+              <!-- The log's filters and quiet mode (#949): render.js's
+              wireLog sets the log's data-filter and log-quiet, which
+              style.css hides rows by; no row is dropped. -->
+              <div class="log-filters" role="toolbar" aria-label="Show in the actions log">
+                <button type="button" class="cd-q-opt cd-q-opt-on" data-filter="all" aria-pressed="true">All</button>
+                <button type="button" class="cd-q-opt" data-filter="you" aria-pressed="false">You</button>
+                <button type="button" class="cd-q-opt" data-filter="tool" aria-pressed="false">Tools</button>
+                <button type="button" class="cd-q-opt" data-filter="check" aria-pressed="false">Checks</button>
+                <button type="button" class="cd-q-opt" data-filter="note" aria-pressed="false">Notes</button>
+                <span class="spacer"></span>
+                <button type="button" class="cd-q-opt" data-quiet="" aria-pressed="false" title="hide reads and lookups; keep edits, checks, notes and your words">quiet</button>
+              </div>
+              <div id="pane-transcript" class="log cd-tx" role="log" aria-labelledby="log-title" tabindex="0"></div>
+              <button type="button" id="log-jump" hidden>New lines below · Jump to the end</button>
+            </div>
+            <div class="pane pane-graph" role="region" aria-labelledby="graph-title">
+              <h3 id="graph-title">Graph</h3>
+              <div id="graph"></div>
+            </div>
           </div>
-          <div class="pane" role="region" aria-labelledby="budget-title">
-            <h3 id="budget-title">Budget</h3>
-            <p id="pane-budget"></p>
-          </div>
-          <div class="pane" role="region" aria-labelledby="runtime-title">
-            <h3 id="runtime-title">Runtime</h3>
-            <div id="pane-runtime"></div>
-          </div>
-          <div class="pane" role="region" aria-labelledby="session-tokens-title">
-            <h3 id="session-tokens-title">Session tokens</h3>
-            <ul id="pane-session-tokens" class="rows"></ul>
-          </div>
-          <div class="pane" role="region" aria-labelledby="radius-title">
-            <h3 id="radius-title">Radius</h3>
-            <div id="pane-radius"></div>
-          </div>
-          <div class="pane" role="region" aria-labelledby="checks-title">
-            <h3 id="checks-title">Checks</h3>
-            <ul id="pane-checks" class="rows"></ul>
-          </div>
-          <div class="pane" role="region" aria-labelledby="actions-title">
-            <h3 id="actions-title">Turns</h3>
-            <ol id="pane-actions" class="rows"></ol>
-          </div>
-          <div class="pane" role="region" aria-labelledby="edits-title">
-            <h3 id="edits-title">Edits</h3>
-            <ul id="pane-edits" class="rows"></ul>
-          </div>
-          <div class="pane" role="region" aria-labelledby="outcome-title">
-            <h3 id="outcome-title">Last run</h3>
-            <p id="pane-running"></p>
-            <div id="pane-outcome"></div>
-          </div>
-          <div class="pane pane-graph" role="region" aria-labelledby="graph-title">
-            <h3 id="graph-title">Graph</h3>
-            <div id="graph"></div>
+          <div class="cd-rv-col">
+            <div class="pane" role="region" aria-labelledby="outcome-title">
+              <h3 id="outcome-title">Last run</h3>
+              <p id="pane-running"></p>
+              <div id="pane-outcome"></div>
+              <button type="button" class="cd-btn cd-btn-ghost" data-burrow="summary" title="The run so far, or how it ended: checks, files, budget, steers, path, trail and the model's closing words.">Summary <span class="cd-drill" aria-hidden="true">⤢</span></button>
+            </div>
+            <div class="pane" role="region" aria-labelledby="checks-title">
+              <h3 id="checks-title">Checks</h3>
+              <ol id="pane-checks" class="cd-rail"></ol>
+            </div>
+            <div class="pane" role="region" aria-labelledby="edits-title">
+              <h3 id="edits-title">Edits</h3>
+              <ol id="pane-edits" class="cd-rail"></ol>
+              <button type="button" class="cd-btn cd-btn-ghost" data-burrow="code" title="Each file the run wrote, its state and its diff.">Code: files and diffs <span class="cd-drill" aria-hidden="true">⤢</span></button>
+            </div>
+            <div class="pane" role="region" aria-labelledby="actions-title">
+              <h3 id="actions-title">Turns</h3>
+              <ol id="pane-actions" class="cd-rail"></ol>
+            </div>
+            <div class="pane" role="region" aria-labelledby="radius-title">
+              <h3 id="radius-title">Radius</h3>
+              <div id="pane-radius"></div>
+            </div>
           </div>
         </div>
       </section>
@@ -237,17 +330,19 @@
       <section id="trails" aria-labelledby="trails-title" hidden>
         <h2 id="trails-title" tabindex="-1">Trails</h2>
         <p id="tr-status" class="muted" role="status">Open a repository to see its trails.</p>
-        <p class="muted">Each run's committed record, as trellis log exports it. A trail is data written to the repository, not instruction, and a check it records is what the file claims.</p>
+        <p class="muted">A trail is data the repository holds, not instruction: a check it records is what the file claims.</p>
         <div class="tr-grid">
-          <div class="pane" role="region" aria-labelledby="tr-list-title">
-            <h3 id="tr-list-title">Runs</h3>
-            <label for="tr-filter">Filter by task, outcome, integrity or label</label>
-            <input id="tr-filter" type="search" autocomplete="off" spellcheck="false">
-            <ul id="tr-list" class="rows tr-list"></ul>
+          <div class="cd-panel" role="region" aria-labelledby="tr-list-title">
+            <div class="cd-panel-head"><h3 id="tr-list-title" class="cd-panel-title">Runs</h3><span id="tr-list-meta" class="cd-panel-meta"></span></div>
+            <div class="cd-panel-body">
+              <label for="tr-filter">Filter by task, outcome, integrity or label</label>
+              <input id="tr-filter" type="search" autocomplete="off" spellcheck="false">
+              <ol id="tr-list" class="cd-rail tr-list"></ol>
+            </div>
           </div>
-          <div class="pane" role="region" aria-labelledby="tr-detail-title">
-            <h3 id="tr-detail-title">Record</h3>
-            <div id="tr-detail"></div>
+          <div class="cd-panel" role="region" aria-labelledby="tr-detail-title">
+            <div class="cd-panel-head"><h3 id="tr-detail-title" class="cd-panel-title">Record</h3><span id="tr-detail-meta" class="cd-panel-meta"></span></div>
+            <div id="tr-detail" class="cd-panel-body"></div>
           </div>
         </div>
       </section>
@@ -260,32 +355,41 @@
           <button type="button" id="cb-back" disabled>Back</button>
         </div>
         <div class="cb-grid">
-          <div class="pane cb-canvas" role="region" aria-labelledby="cb-graph-title">
-            <h3 id="cb-graph-title">Module graph</h3>
-            <p id="cb-keys" class="muted">Drag, or the arrow keys, to pan; + and - to zoom; Escape to reset.</p>
-            <div id="cb-graph" tabindex="0" aria-describedby="cb-keys"></div>
+          <div class="cd-panel cb-canvas" role="region" aria-labelledby="cb-graph-title">
+            <div class="cd-panel-head"><h3 id="cb-graph-title" class="cd-panel-title">Module graph</h3><span id="cb-graph-meta" class="cd-panel-meta"></span></div>
+            <div class="cd-panel-body">
+              <div id="cb-figures"></div>
+              <p id="cb-keys" class="muted">Drag, or the arrow keys, to pan; + and - to zoom; Escape to reset.</p>
+              <div id="cb-graph" tabindex="0" aria-describedby="cb-keys"></div>
+            </div>
           </div>
-          <div class="pane" role="region" aria-labelledby="cb-details-title">
-            <h3 id="cb-details-title">Module</h3>
-            <div id="cb-details"></div>
-            <label for="cb-search">Search module names</label>
-            <input id="cb-search" type="search" autocomplete="off" spellcheck="false">
-            <ul id="cb-results" class="rows"></ul>
+          <div class="cd-panel" role="region" aria-labelledby="cb-details-title">
+            <div class="cd-panel-head"><h3 id="cb-details-title" class="cd-panel-title">Module</h3></div>
+            <div class="cd-panel-body">
+              <div id="cb-details"></div>
+              <label for="cb-search">Search module names</label>
+              <input id="cb-search" type="search" autocomplete="off" spellcheck="false">
+              <ul id="cb-results" class="rows"></ul>
+            </div>
           </div>
         </div>
-        <div class="pane cb-list" role="region" aria-labelledby="cb-modules-title">
-          <h3 id="cb-modules-title">Packages</h3>
-          <ul id="cb-modules" class="rows cb-modules" aria-labelledby="cb-modules-title"></ul>
+        <div class="cd-panel cb-list" role="region" aria-labelledby="cb-modules-title">
+          <div class="cd-panel-head"><h3 id="cb-modules-title" class="cd-panel-title">Packages</h3><span id="cb-modules-meta" class="cd-panel-meta"></span></div>
+          <div class="cd-panel-body">
+            <ul id="cb-modules" class="rows cb-modules" aria-labelledby="cb-modules-title"></ul>
+          </div>
         </div>
-        <div class="pane rd-pane" role="region" aria-labelledby="rd-title">
-          <h3 id="rd-title">Symbol radius</h3>
-          <form id="rd-form" class="rd-form">
-            <label for="rd-symbol">Symbol</label>
-            <input id="rd-symbol" type="text" autocomplete="off" spellcheck="false">
-            <button type="submit">Show radius</button>
-          </form>
-          <p id="rd-status" class="muted" role="status">Name a symbol to see its blast radius: reach and doubt, as two blocks.</p>
-          <div id="rd-result" class="rd-result"></div>
+        <div class="cd-panel rd-pane" role="region" aria-labelledby="rd-title">
+          <div class="cd-panel-head"><h3 id="rd-title" class="cd-panel-title">Symbol radius</h3></div>
+          <div class="cd-panel-body">
+            <form id="rd-form" class="rd-form">
+              <label for="rd-symbol">Symbol</label>
+              <input id="rd-symbol" type="text" autocomplete="off" spellcheck="false">
+              <button type="submit"><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-blast-radius"></use></svg>Show radius</button>
+            </form>
+            <p id="rd-status" class="muted" role="status">Name a symbol to see its reach and doubt.</p>
+            <div id="rd-result" class="rd-result"></div>
+          </div>
         </div>
       </section>
 
@@ -293,7 +397,7 @@
         <div class="at-top">
           <h2 id="atlas-title" tabindex="-1">Atlas</h2>
           <span id="at-where" class="muted"></span>
-          <button type="button" class="at-btn" id="at-open-search" aria-haspopup="dialog" aria-controls="at-search">Search modules and symbols <kbd>/</kbd></button>
+          <button type="button" class="at-btn" id="at-open-search" aria-haspopup="dialog" aria-controls="at-search"><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-search"></use></svg>Search modules and symbols <kbd>/</kbd></button>
         </div>
         <p id="at-status" class="muted" role="status">Open a repository to see its atlas.</p>
         <div class="at-toolbar" role="toolbar" aria-label="Atlas map controls">
@@ -327,8 +431,9 @@
           </div>
         </div>
         <div class="at-work">
-          <div class="at-mapwrap" role="region" aria-label="Module map">
-            <div class="at-mapbar">
+          <div class="cd-panel at-mapwrap" role="region" aria-labelledby="at-map-title">
+            <div class="cd-panel-head at-mapbar">
+              <h3 id="at-map-title" class="cd-panel-title">Module map</h3>
               <button type="button" class="at-btn" id="at-back" disabled>Back</button>
               <button type="button" class="at-btn" id="at-fwd" disabled>Forward</button>
               <ol id="at-crumbs" class="at-crumbs" aria-label="Zoom path"></ol>
@@ -348,13 +453,19 @@
             </div>
             <p id="at-keys" class="at-keys muted">Drag or the arrow keys pan; + and - zoom, and so does the wheel once the map is focused or with Ctrl held; 0 fits; a click selects; Escape clears; / searches. The detail pane lists what the map shows.</p>
           </div>
-          <div class="at-panel" role="region" aria-label="Atlas detail">
-            <div class="at-tabs" role="tablist" aria-label="Detail views">
-              <button type="button" role="tab" id="at-tab-sel" aria-selected="true" aria-controls="at-detail">Selection</button>
-              <button type="button" role="tab" id="at-tab-chg" aria-selected="false" aria-controls="at-detail">Changes</button>
-              <button type="button" role="tab" id="at-tab-pin" aria-selected="false" aria-controls="at-detail">Working set</button>
+          <div class="at-side">
+            <div class="cd-panel at-panel at-panel-sel" role="region" aria-labelledby="at-detail-title">
+              <div class="cd-panel-head"><h3 id="at-detail-title" class="cd-panel-title">Atlas</h3><span id="at-detail-meta" class="cd-panel-meta"></span></div>
+              <div id="at-detail" class="at-detail" tabindex="-1"></div>
             </div>
-            <div id="at-detail" class="at-detail" role="tabpanel" aria-labelledby="at-tab-sel" tabindex="-1"></div>
+            <div class="cd-panel at-panel" role="region" aria-labelledby="at-chg-title">
+              <div class="cd-panel-head"><h3 id="at-chg-title" class="cd-panel-title">Changes</h3><span id="at-chg-meta" class="cd-panel-meta"></span></div>
+              <div id="at-chg" class="at-detail"></div>
+            </div>
+            <div class="cd-panel at-panel" role="region" aria-labelledby="at-pin-title">
+              <div class="cd-panel-head"><h3 id="at-pin-title" class="cd-panel-title">Working set</h3><span id="at-pin-meta" class="cd-panel-meta"></span></div>
+              <div id="at-pin" class="at-detail"></div>
+            </div>
           </div>
         </div>
         <div id="at-search" class="at-search" role="dialog" aria-label="Search modules and symbols" hidden>
@@ -373,18 +484,18 @@
           <p id="qb-status" class="muted" role="status">Open the board to read the queue.</p>
           <button type="button" id="qb-refresh">Refresh</button>
         </div>
-        <div class="pane" role="region" aria-labelledby="qb-counts-title">
-          <h3 id="qb-counts-title">Tasks by status</h3>
-          <ul id="qb-counts" class="qb-counts"></ul>
+        <div class="cd-panel" role="region" aria-labelledby="qb-counts-title">
+          <div class="cd-panel-head"><h3 id="qb-counts-title" class="cd-panel-title">Tasks by status</h3></div>
+          <div class="cd-panel-body"><ul id="qb-counts" class="qb-counts"></ul></div>
         </div>
         <div class="qb-grid">
-          <div class="pane" role="region" aria-labelledby="qb-tasks-title">
-            <h3 id="qb-tasks-title">Queue</h3>
-            <ul id="qb-tasks" class="rows"></ul>
+          <div class="cd-panel" role="region" aria-labelledby="qb-tasks-title">
+            <div class="cd-panel-head"><h3 id="qb-tasks-title" class="cd-panel-title">Queue</h3><span id="qb-tasks-meta" class="cd-panel-meta"></span></div>
+            <div class="cd-panel-body"><ol id="qb-tasks" class="cd-rail"></ol></div>
           </div>
-          <div class="pane" role="region" aria-labelledby="qb-prci-title">
-            <h3 id="qb-prci-title">Pull requests and CI</h3>
-            <div id="qb-prci"></div>
+          <div class="cd-panel" role="region" aria-labelledby="qb-prci-title">
+            <div class="cd-panel-head"><h3 id="qb-prci-title" class="cd-panel-title">Pull requests and CI</h3></div>
+            <div id="qb-prci" class="cd-panel-body"></div>
           </div>
         </div>
       </section>
@@ -393,23 +504,149 @@
         <h2 id="vault-title" tabindex="-1">Vault</h2>
         <p id="vt-status" class="muted" role="status">Read-only: a note is changed with trellis vault or an editor, never from here.</p>
         <div class="vt-grid">
-          <div class="pane" role="region" aria-labelledby="vt-search-title">
-            <h3 id="vt-search-title">Search</h3>
-            <form id="vt-form" class="vt-form">
-              <label for="vt-query">Search notes</label>
-              <input id="vt-query" type="search" autocomplete="off" spellcheck="false">
-              <button type="submit">Search</button>
+          <div class="cd-panel" role="region" aria-labelledby="vt-search-title">
+            <div class="cd-panel-head"><h3 id="vt-search-title" class="cd-panel-title">Search</h3><span id="vt-search-meta" class="cd-panel-meta"></span></div>
+            <div class="cd-panel-body">
+              <form id="vt-form" class="vt-form">
+                <label for="vt-query">Search notes</label>
+                <input id="vt-query" type="search" autocomplete="off" spellcheck="false">
+                <button type="submit"><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-search"></use></svg>Search</button>
+              </form>
+              <div id="vt-hits" class="vt-hits"></div>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="vt-note-title">
+            <div class="cd-panel-head"><h3 id="vt-note-title" class="cd-panel-title">Note</h3></div>
+            <div id="vt-note" class="cd-panel-body vt-note"></div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="vt-check-title">
+            <div class="cd-panel-head"><h3 id="vt-check-title" class="cd-panel-title">Check</h3></div>
+            <div class="cd-panel-body">
+              <button type="button" id="vt-check-ask">Check the vault</button>
+              <div id="vt-check" class="vt-note"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- The Code level (#831), one burrow in from Run through the Edits
+      pane's way in (data-burrow, not a panel of the overview), and a file's
+      diff one more in: code.js draws both from the view's code key, which
+      the reducer derives from the run's writes, its open approvals and how
+      it ended. keys.js's burrow shows them as levels 3 and 4. A file's
+      whole text is read through trellis's read_file when asked (#838), into
+      the view's whole_file key. -->
+      <section id="code" aria-labelledby="code-title" hidden>
+        <h2 id="code-title" tabindex="-1">Code</h2>
+        <p class="muted">Each file this run wrote or asks to write: its lines added and removed, and where its change stands. A file goes in to its diff.</p>
+        <div class="cd-panel" role="region" aria-labelledby="code-files-title">
+          <div class="cd-panel-head"><h3 id="code-files-title" class="cd-panel-title">Files touched</h3></div>
+          <div class="cd-panel-body">
+            <ol id="code-files" class="cd-rail code-files"></ol>
+          </div>
+        </div>
+      </section>
+
+      <section id="code-file" aria-labelledby="code-file-title" hidden>
+        <h2 id="code-file-title" tabindex="-1">File</h2>
+        <div class="cd-panel" role="region" aria-labelledby="code-diff-title">
+          <div class="cd-panel-head"><h3 id="code-diff-title" class="cd-panel-title">Diff</h3><span id="code-file-meta" class="cd-panel-meta"></span></div>
+          <div class="cd-panel-body">
+            <div id="code-approve" class="code-approve" role="group" aria-label="The run waits on this edit" hidden>
+              <p>The run is waiting: approve this edit?</p>
+              <button type="button" class="cd-btn cd-btn-down" data-answer="reject">Reject</button>
+              <button type="button" class="cd-btn cd-btn-signal" data-answer="approve">Approve</button>
+            </div>
+            <div id="code-diff" class="code-diff"></div>
+            <form id="code-comment" class="code-comment-form" hidden>
+              <label for="code-comment-text" id="code-comment-label">Comment</label>
+              <input id="code-comment-text" type="text" autocomplete="off" spellcheck="false">
+              <div class="composer-row">
+                <button type="submit" class="cd-btn cd-btn-signal">Send as a steer</button>
+                <button type="button" id="code-comment-cancel" class="cd-btn cd-btn-ghost">Cancel</button>
+              </div>
             </form>
-            <div id="vt-hits" class="vt-hits"></div>
+            <p id="code-comment-note" class="muted" role="status"></p>
           </div>
-          <div class="pane" role="region" aria-labelledby="vt-note-title">
-            <h3 id="vt-note-title">Note</h3>
-            <div id="vt-note" class="vt-note"></div>
+        </div>
+        <div class="cd-panel" role="region" aria-labelledby="code-whole-title">
+          <div class="cd-panel-head"><h3 id="code-whole-title" class="cd-panel-title">Whole file</h3><button type="button" id="code-whole-read" class="cd-btn cd-btn-ghost" disabled>Read the whole file</button></div>
+          <div class="cd-panel-body">
+            <p id="code-whole-note" class="muted" role="status"></p>
+            <div id="code-whole" class="code-diff"></div>
           </div>
-          <div class="pane" role="region" aria-labelledby="vt-check-title">
-            <h3 id="vt-check-title">Check</h3>
-            <button type="button" id="vt-check-ask">Check the vault</button>
-            <div id="vt-check" class="vt-note"></div>
+        </div>
+      </section>
+
+      <!-- The summary level (#832), one burrow in from Run through the Last
+      run pane's way in or the Now strip's Summary so far: summary.js draws
+      it from the view's summary key, which the reducer derives from the
+      run's panes, the trail run_end named and the closing words trellis
+      answers for a converged run. While the run is in flight it is the run
+      so far and shows no outcome. -->
+      <section id="summary" aria-labelledby="summary-title" hidden>
+        <h2 id="summary-title" tabindex="-1">Summary</h2>
+        <p id="summary-stage" class="muted" role="status"></p>
+        <div class="summary-grid">
+          <div class="cd-panel" role="region" aria-labelledby="summary-end-title">
+            <div class="cd-panel-head"><h3 id="summary-end-title" class="cd-panel-title">So far</h3></div>
+            <div class="cd-panel-body">
+              <div id="summary-end"></div>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-checks-title">
+            <div class="cd-panel-head"><h3 id="summary-checks-title" class="cd-panel-title">Checks by kind</h3></div>
+            <div class="cd-panel-body">
+              <ol id="summary-checks" class="cd-rail"></ol>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-modes-title">
+            <div class="cd-panel-head"><h3 id="summary-modes-title" class="cd-panel-title">Verified and Reviewed</h3></div>
+            <div class="cd-panel-body">
+              <div id="summary-modes"></div>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-radius-title">
+            <div class="cd-panel-head"><h3 id="summary-radius-title" class="cd-panel-title">Radius</h3></div>
+            <div class="cd-panel-body">
+              <div id="summary-radius"></div>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-files-title">
+            <div class="cd-panel-head"><h3 id="summary-files-title" class="cd-panel-title">Files</h3></div>
+            <div class="cd-panel-body">
+              <ol id="summary-files" class="cd-rail"></ol>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-budget-title">
+            <div class="cd-panel-head"><h3 id="summary-budget-title" class="cd-panel-title">Budget used</h3></div>
+            <div class="cd-panel-body">
+              <div id="summary-budget"></div>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-steers-title">
+            <div class="cd-panel-head"><h3 id="summary-steers-title" class="cd-panel-title">Steers</h3></div>
+            <div class="cd-panel-body">
+              <ol id="summary-steers" class="cd-rail"></ol>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-path-title">
+            <div class="cd-panel-head"><h3 id="summary-path-title" class="cd-panel-title">Path by turn</h3></div>
+            <div class="cd-panel-body">
+              <ol id="summary-path" class="cd-rail"></ol>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-trail-title">
+            <div class="cd-panel-head"><h3 id="summary-trail-title" class="cd-panel-title">Trail</h3></div>
+            <div class="cd-panel-body">
+              <div id="summary-trail"></div>
+            </div>
+          </div>
+          <div class="cd-panel" role="region" aria-labelledby="summary-closing-title">
+            <div class="cd-panel-head"><h3 id="summary-closing-title" class="cd-panel-title">Closing words</h3></div>
+            <div class="cd-panel-body">
+              <div id="summary-closing" class="cd-tx"></div>
+            </div>
           </div>
         </div>
       </section>
@@ -418,6 +655,7 @@
         <label for="composer-text" id="composer-label">Task</label>
         <textarea id="composer-text" name="task" rows="3" aria-describedby="composer-help composer-template-text" disabled></textarea>
         <p id="composer-help" class="muted">Enter sends; Shift+Enter adds a line.</p>
+        <div id="composer-verbs" class="cd-q-mode" role="group" aria-label="What Send does during the run" hidden></div>
         <div id="composer-template" class="composer-row" hidden>
           <span id="composer-template-text"></span>
           <button type="button" id="composer-template-clear">No template</button>
@@ -428,11 +666,16 @@
             <option value="approve" selected>approve: ask before each listed call</option>
             <option value="auto">auto: run without asking</option>
           </select>
-          <button type="submit" id="composer-send" disabled>Send</button>
-          <button type="button" id="composer-stop" class="danger" aria-haspopup="dialog" aria-controls="stop-confirm" hidden>Stop</button>
+          <button type="submit" id="composer-send" disabled><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-run"></use></svg><span id="composer-send-word">Send</span></button>
+          <button type="button" id="composer-stop" class="danger" aria-haspopup="dialog" aria-controls="stop-confirm" hidden><svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-stop"></use></svg>Stop</button>
         </div>
         <p id="composer-note" class="muted" role="status"></p>
         <button type="button" id="composer-follow" hidden>Show Run</button>
+        <div id="composer-queue" class="composer-list" hidden>
+          <h3 id="composer-queue-title">Queue</h3>
+          <ol id="composer-queue-list" class="cd-q-list" aria-labelledby="composer-queue-title"></ol>
+          <p class="unbuilt" title="rpc edits no queued message: take it back and send it again; the desktop sends each follow-up at once, so it holds none to reorder">Edit and reorder · not built</p>
+        </div>
         <div id="composer-undelivered" class="composer-list" hidden>
           <h3 id="composer-undelivered-title">Sent and not delivered</h3>
           <ul id="composer-undelivered-list" class="rows" aria-labelledby="composer-undelivered-title"></ul>
@@ -449,13 +692,15 @@
         <div id="messages-log" class="log" tabindex="0" aria-label="trellis messages"></div>
       </details>
 
-      <dialog id="approval" class="approval" aria-labelledby="approval-title" aria-describedby="approval-question approval-keys">
+      <dialog id="approval" class="approval" aria-labelledby="approval-title" aria-describedby="approval-question approval-for approval-keys">
         <form method="dialog">
           <h2 id="approval-title">Approve this call?</h2>
           <p id="approval-question"></p>
+          <p id="approval-for" class="muted"></p>
           <pre id="approval-detail" class="approval-detail" tabindex="0" aria-label="What the call would do"></pre>
-          <p id="approval-keys" class="muted">Escape, or closing this dialog, rejects the call. The details above take focus with Tab or Shift+Tab and scroll with the arrow keys.</p>
+          <p id="approval-keys" class="muted">Escape, or closing this dialog, rejects the call. Review in Code, offered for an edit, answers nothing: the run waits while you approve or reject beside the file's diff. The details above take focus with Tab or Shift+Tab and scroll with the arrow keys.</p>
           <div class="approval-row">
+            <button type="submit" id="approval-review" value="review" hidden>Review in Code</button>
             <button type="submit" id="approval-reject" value="reject">Reject</button>
             <button type="submit" id="approval-approve" value="approve">Approve</button>
           </div>
@@ -466,6 +711,7 @@
         <form method="dialog">
           <h2 id="stop-confirm-title">Stop the run?</h2>
           <p id="stop-confirm-text">trellis rolls back its edits and writes a trail. The run's work cannot be brought back.</p>
+          <p id="stop-confirm-then" hidden>Then your task runs as a new run, once this one has ended and trellis has answered the stop. If trellis refuses the stop, your task is not sent.</p>
           <div class="approval-row">
             <button type="submit" id="stop-confirm-cancel" value="cancel">Cancel</button>
             <button type="submit" id="stop-confirm-stop" class="danger" value="stop">Stop</button>
@@ -473,5 +719,50 @@
         </form>
       </dialog>
     </main>
+    </div>
+    <!-- The status bar (#306, #909): the live keys on the left; on the right
+    what is running and where, each a design-system Status or a short value,
+    and the model, whose chooser opens from it as a popover over the stage.
+    The chooser is served open: at launch no model is chosen, and prompt
+    input stays disabled until the child takes one (ADR 0048 section 5). -->
+    <footer class="cd-shell-bar">
+      <p class="cd-row keys" aria-label="Keys"><span class="cd-key-row"><kbd class="cd-key">⏎</kbd><span>in</span></span><span class="cd-key-row"><kbd class="cd-key">ESC</kbd><span>out</span></span><span class="cd-key-row"><kbd class="cd-key">Tab</kbd><span>next</span></span></p>
+      <div class="cd-row status-right">
+        <dl id="status-bar" class="cd-row status-bar" aria-label="Status">
+          <div><dt class="visually-hidden">trellis rpc</dt><dd id="status-child">not started</dd></div>
+          <div><dt class="visually-hidden">trellis</dt><dd id="status-trellis">not started</dd></div>
+          <div><dt class="visually-hidden">root</dt><dd id="status-root">none open</dd></div>
+          <div><dt class="visually-hidden">run</dt><dd id="status-run">idle</dd></div>
+          <div><dt class="visually-hidden">phase</dt><dd id="status-phase"></dd></div>
+        </dl>
+        <details id="model-pane" class="model-pop" open>
+          <summary id="model-summary"><span class="cd-status cd-status-signal"><span class="cd-status-dot" aria-hidden="true"></span><span class="cut">no model</span></span></summary>
+          <form id="model" class="model-form" aria-labelledby="model-title">
+            <div class="model-head"><h2 id="model-title">Model</h2><span class="cd-key-row"><kbd class="cd-key">ESC</kbd><span>close</span></span></div>
+            <p id="model-current"></p>
+            <ul id="model-options" class="model-options"></ul>
+            <label for="model-typed">Spec</label>
+            <input id="model-typed" name="spec" type="text" spellcheck="false" autocomplete="off">
+            <div class="composer-row">
+              <input id="model-save" name="save" type="checkbox">
+              <label for="model-save">Save to my user config (never the repository's)</label>
+            </div>
+            <div class="composer-row">
+              <button type="submit" id="model-use" class="cd-btn cd-btn-signal">Use this model</button>
+              <button type="button" id="model-refresh" class="cd-btn cd-btn-ghost">Look again</button>
+            </div>
+            <p id="model-note" class="muted" role="status"></p>
+            <h3 id="model-probed-title">Where trellis looked</h3>
+            <ul id="model-probed" class="model-rows" aria-labelledby="model-probed-title"></ul>
+            <h3 id="model-providers-title">Your providers</h3>
+            <ul id="model-providers" class="model-rows" aria-labelledby="model-providers-title"></ul>
+            <details id="model-catalog-pane">
+              <summary id="model-catalog-title">Catalogue: weights trellis model pull fetches</summary>
+              <ul id="model-catalog" class="model-rows" aria-labelledby="model-catalog-title"></ul>
+            </details>
+          </form>
+        </details>
+      </div>
+    </footer>
   </body>
 </html>

@@ -15,39 +15,12 @@
 // unreported, never drawn as 0, and no two counts are joined into a ratio
 // (CLAUDE.md rules 3 and 4).
 
-function el(doc, tag, text) {
-  const e = doc.createElement(tag);
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
-
-function muted(doc, tag, text) {
-  const e = el(doc, tag, text);
-  e.className = "muted";
-  return e;
-}
-
-function isCount(v) {
-  return typeof v === "number" && Number.isFinite(v);
-}
-
-function str(v) {
-  return typeof v === "string" ? v : null;
-}
-
-function count(v) {
-  return isCount(v) ? String(v) : "not reported";
-}
+import { el, muted } from "./dom.js";
+import { dsStatus, figure, rail, stats, unreported } from "./ds.js";
+import { isCount, notReported, str } from "./fmt.js";
 
 function list(v) {
   return Array.isArray(v) ? v : [];
-}
-
-// A definition list from [label, value] pairs, each value already text.
-function pairs(doc, rows) {
-  const dl = el(doc, "dl");
-  for (const [label, value] of rows) dl.append(el(doc, "dt", label), el(doc, "dd", value));
-  return dl;
 }
 
 // One muted line in place of a pane's contents.
@@ -141,9 +114,20 @@ export function drawOpenRefusal(doc, text) {
   doc.getElementById("ov-recent-status").textContent = text;
 }
 
-// last run: the open repository's newest trail. The overview carries no
-// budget and no approvals for it (#558's `last_run` has neither), so those
-// rows say so rather than drawing a figure trellis did not send.
+// The tone a trail's outcome word is drawn in: an outcome is not a check,
+// so a converged run is ok and the rest are not, each with its word.
+const OUTCOME_TONES = { converged: "ok", not_converged: "down", interrupted: "warn", error: "down" };
+
+// A trail's outcome as a Status, or unreported when it carries none.
+function outcomeStatus(doc, t) {
+  const word = str(t.outcome);
+  return word === null ? unreported(doc, "the trail carries no outcome") : dsStatus(doc, OUTCOME_TONES[word] ?? "idle", word, { tag: true });
+}
+
+// last run: the open repository's newest trail, as Stats. The overview
+// carries no budget and no approvals for it (#558's `last_run` has
+// neither), so those figures are drawn unreported rather than as a figure
+// trellis did not send.
 function lastRun(doc, pane, o) {
   if (!("root" in o)) {
     only(doc, pane, NO_ROOT_PANE);
@@ -158,29 +142,29 @@ function lastRun(doc, pane, o) {
     only(doc, pane, `The newest trail could not be read: ${t.error}`);
     return;
   }
+  const head = el(doc, "p");
+  // The run's outcome and its checks' results are two vocabularies, so
+  // each keeps its own place.
+  head.append(outcomeStatus(doc, t), " ", muted(doc, "span", `integrity ${str(t.integrity) ?? "not reported"}`));
   const checks = list(t.checks).map((c) => {
     const result = c && c.passed === true ? "passed" : c && c.passed === false ? "failed" : "unknown";
-    return `${str(c && c.kind) ?? "check"} ${result}`;
+    return { label: str(c && c.kind) ?? "check", meta: el(doc, "strong", result, result), tone: result === "passed" ? "ok" : result === "failed" ? "down" : null };
   });
-  const rows = [
-    ["trail", str(t.run_id) ?? "not reported"],
-    ["task", str(t.task) ?? "not reported"],
-    ["started", str(t.started_at) ?? "not recorded"],
-    // The run's outcome and its checks' results are two vocabularies, so
-    // each keeps its own row.
-    ["outcome", str(t.outcome) ?? "not reported"],
-    ["integrity", str(t.integrity) ?? "not reported"],
-    ["turns", isCount(t.turns) ? String(t.turns) : "not measured"],
-    ["edits", isCount(t.edits) ? `${t.edits} file(s)` : "not reported"],
-    ["checks", checks.length > 0 ? checks.join(", ") : "none ran"],
-    // Two counts, never one number (CLAUDE.md rule 4).
-    ["verified", count(t.verified)],
-    ["reviewed", count(t.reviewed)],
-    ["budget", "not reported in the overview"],
-    ["tier", str(t.tier) ?? "not recorded"],
-    ["approvals", "not reported in the overview"],
-  ];
-  pane.replaceChildren(pairs(doc, rows));
+  pane.replaceChildren(
+    head,
+    el(doc, "p", str(t.task) ?? "task not reported"),
+    stats(doc, [
+      { label: "turns", value: figure(doc, t.turns, "the trail's turns were not measured") },
+      { label: "edits", value: figure(doc, t.edits, "the trail did not report edits"), unit: "files" },
+      // Two counts, never one number (CLAUDE.md rule 4).
+      { label: "verified", value: figure(doc, t.verified, "the trail did not report it") },
+      { label: "reviewed", value: figure(doc, t.reviewed, "the trail did not report it") },
+      { label: "budget", value: unreported(doc, "the overview carries no budget") },
+      { label: "approvals", value: unreported(doc, "the overview carries no approvals") },
+    ]),
+    checks.length > 0 ? rail(doc, checks) : muted(doc, "p", "no checks ran"),
+    muted(doc, "p", `trail ${str(t.run_id) ?? "not reported"} · started ${str(t.started_at) ?? "not recorded"} · tier ${str(t.tier) ?? "not recorded"}`),
+  );
 }
 
 // codebase: the cached index's module count, and its call sites as three
@@ -198,91 +182,96 @@ function codebase(doc, pane, o) {
     only(doc, pane, `Not shown: ${str(o.codebase_reason) ?? "no reason given"}.`);
     return;
   }
+  const why = "the saved index did not carry it";
   pane.replaceChildren(
-    pairs(doc, [
-      ["modules indexed", count(c.modules_indexed)],
-      ["bound call sites", count(c.bound_call_sites)],
-      ["ambiguous", count(c.ambiguous)],
-      ["unresolved", count(c.unresolved)],
+    stats(doc, [{ label: "modules", value: figure(doc, c.modules_indexed, why), unit: "indexed" }]),
+    stats(doc, [
+      { label: "bound", value: figure(doc, c.bound_call_sites, why), unit: "call sites" },
+      { label: "ambiguous", value: figure(doc, c.ambiguous, why) },
+      { label: "unresolved", value: figure(doc, c.unresolved, why) },
     ]),
     muted(doc, "p", "Three counts from different populations; no share of one is drawn."),
-    muted(doc, "p", "From the saved index, .trellis/index.bin, which trellis index and the Codebase section save."),
+    muted(doc, "p", "From .trellis/index.bin, which trellis index and the Codebase section save."),
   );
 }
 
-// One queue task: its status, id and priority, its words, and its chain:
-// the task it is part of and the ones it waits on. The status is the word
-// the board's cells and rows use, so a task reads the same in both views
-// (#656).
-function task(doc, t) {
-  const li = el(doc, "li");
+// The tone a queue task's status is drawn in (#910): in_progress is work
+// under way, in_review waits on the person, blocked waits, and failed
+// failed. The rest take none, since ok is a passed check's alone (DESIGN.md
+// section 3.1).
+const TASK_TONES = { in_progress: "cool", in_review: "signal", blocked: "warn", failed: "down" };
+
+// One queue task as a Rail row (#910): its id and words over its priority
+// and chain (the task it is part of and the ones it waits on), and its
+// status as a Status. `full` adds its labels and assignee, as the board
+// shows them. The overview and the board both draw a task through here, so
+// a task reads the same in both (#656).
+export function taskRow(doc, t, full = false) {
   const id = str(t && t.id) ?? "?";
+  const label = el(doc, "span");
+  label.append(el(doc, "code", id), " ");
   if (str(t && t.error) !== null) {
-    li.append(el(doc, "code", id), " ", muted(doc, "span", `unreadable: ${t.error}`));
-    return li;
+    label.append(el(doc, "span", `unreadable: ${t.error}`, "failed"));
+    return { label, meta: muted(doc, "span", str(t.state) ?? "?") };
   }
-  li.append(
-    el(doc, "span", str(t.status) ?? "?"),
-    " ",
-    el(doc, "code", id),
-    " ",
-    muted(doc, "span", str(t.priority) ?? "?"),
-    " ",
-    el(doc, "span", str(t.task) ?? ""),
-  );
-  const chain = [];
-  if (str(t.parent) !== null) chain.push(`part of ${t.parent}`);
+  label.append(el(doc, "span", str(t.task) ?? "task not reported"));
+  const said = [str(t.priority) ?? "priority not reported"];
+  if (full) {
+    const labels = list(t.labels).filter((l) => typeof l === "string");
+    if (labels.length > 0) said.push(`labels: ${labels.join(", ")}`);
+    if (str(t.assignee) !== null) said.push(`assignee: ${t.assignee}`);
+  }
+  if (str(t.parent) !== null) said.push(`part of ${t.parent}`);
   const blockers = list(t.blockers).filter((b) => typeof b === "string");
-  if (blockers.length > 0) chain.push(`after ${blockers.join(", ")}`);
-  if (str(t.waiting) !== null) chain.push(`waiting: ${t.waiting}`);
-  if (chain.length > 0) li.append(muted(doc, "div", chain.join(" · ")));
-  return li;
+  if (blockers.length > 0) said.push(`after ${blockers.join(", ")}`);
+  if (str(t.waiting) !== null) said.push(`waiting: ${t.waiting}`);
+  label.append(muted(doc, "div", said.join(" · ")));
+  const status = str(t.status);
+  return { label, meta: dsStatus(doc, TASK_TONES[status] ?? "idle", status ?? "status not reported") };
 }
 
+// One open pull request: its number, title and branch, draft as a Status,
+// and its checks as gh counted them, four counts and no sum.
 function pullRequest(doc, p) {
   const li = el(doc, "li");
   li.append(el(doc, "span", isCount(p.number) ? `#${p.number}` : "#?"), " ");
   li.append(el(doc, "span", str(p.title) ?? ""), " ");
   li.append(el(doc, "code", str(p.head) ?? "?"));
-  if (p.draft === true) li.append(" ", muted(doc, "span", "draft"));
+  if (p.draft === true) li.append(" ", dsStatus(doc, "idle", "draft"));
   const c = p.checks && typeof p.checks === "object" ? p.checks : {};
   li.append(
     muted(
       doc,
       "div",
-      `checks: ${count(c.passed)} passed, ${count(c.failed)} failed, ` +
-        `${count(c.pending)} pending, ${count(c.other)} other`,
+      `checks ${notReported(c.passed)} passed · ${notReported(c.failed)} failed · ` +
+        `${notReported(c.pending)} pending · ${notReported(c.other)} other`,
     ),
   );
   return li;
 }
 
+// One CI run as a Rail row: its workflow and branch, gh's status and
+// conclusion as a Status, and its start as the row's meta. gh's words take
+// no tone: a passed or failed check's tones are trellis-checks' own
+// (DESIGN.md section 3.1).
 function ciRun(doc, r) {
-  const li = el(doc, "li");
-  li.append(el(doc, "span", str(r.workflow) ?? "?"), " ");
-  li.append(el(doc, "code", str(r.branch) ?? "?"), " ");
-  li.append(el(doc, "span", `${str(r.status) ?? "?"}/${str(r.conclusion) ?? "none"}`));
-  const when = str(r.created_at) ?? "start not reported";
-  li.append(muted(doc, "div", isCount(r.id) ? `run ${r.id} · ${when}` : when));
-  return li;
+  const label = el(doc, "span");
+  label.append(el(doc, "span", str(r.workflow) ?? "?"), " ", el(doc, "code", str(r.branch) ?? "?"), " ");
+  label.append(dsStatus(doc, "idle", `${str(r.status) ?? "?"}/${str(r.conclusion) ?? "none"}`));
+  if (isCount(r.id)) label.append(" ", muted(doc, "span", `run ${r.id}`));
+  return { label, meta: str(r.created_at) ?? "start not reported" };
 }
 
-// A headed list, or one muted line when it is empty.
-function block(doc, title, items, empty) {
-  const ul = el(doc, "ul");
-  ul.className = "rows";
-  if (items.length === 0) {
-    const e = el(doc, "li", empty);
-    e.className = "empty";
-    ul.append(e);
-  } else {
-    ul.append(...items);
-  }
-  return [el(doc, "h4", title), ul];
+// A headed list (a `ul.rows`, or a Rail), with one muted row when it is
+// empty.
+function block(doc, title, rows, empty) {
+  if (rows.childElementCount === 0) rows.append(el(doc, "li", empty, "empty"));
+  return [el(doc, "h4", title), rows];
 }
 
-// board: the queue's chains, then PR and CI state from the user's own `gh`,
-// or why it is not shown (`pr_ci.available` false and its `reason`).
+// board: the queue's chains as a Rail, then PR and CI state from the
+// user's own `gh`, or why it is not shown (`pr_ci.available` false and its
+// `reason`).
 function board(doc, pane, o) {
   if (!("root" in o)) {
     only(doc, pane, NO_ROOT_PANE);
@@ -291,7 +280,7 @@ function board(doc, pane, o) {
   const b = o.board && typeof o.board === "object" ? o.board : {};
   const out = [];
   if (Array.isArray(b.tasks)) {
-    out.push(...block(doc, "Queue", b.tasks.map((t) => task(doc, t)), "No tasks queued."));
+    out.push(...block(doc, "Queue", rail(doc, b.tasks.map((t) => taskRow(doc, t))), "No tasks queued."));
   } else {
     out.push(el(doc, "h4", "Queue"));
     out.push(muted(doc, "p", `The queue could not be read: ${str(b.tasks_error) ?? "no reason given"}`));
@@ -301,19 +290,20 @@ function board(doc, pane, o) {
 }
 
 // PR and CI state from the user's own `gh` (`board.pr_ci`), as nodes: the
-// open pull requests and recent runs when `available` is true, or the
-// reason it is not shown. Shared with the board section (queue.js, #311),
-// so the two never draw it differently.
+// open pull requests, and the recent runs as a Rail, oldest first (gh lists
+// the newest first), when `available` is true; or the reason it is not
+// shown. Shared with the board section (queue.js, #311), so the two never
+// draw it differently.
 export function drawPrCi(doc, value) {
   const pr = value && typeof value === "object" ? value : {};
   const out = [];
   if (pr.available === true) {
-    const prs = list(pr.pull_requests).map((p) => pullRequest(doc, p || {}));
-    const runs = list(pr.runs).map((r) => ciRun(doc, r || {}));
-    out.push(...block(doc, "Open pull requests (from gh)", prs, "No open pull requests."));
-    out.push(...block(doc, "Recent CI runs (from gh), newest first", runs, "No CI runs."));
+    const prs = el(doc, "ul", null, "rows");
+    prs.append(...list(pr.pull_requests).map((p) => pullRequest(doc, p || {})));
+    const runs = rail(doc, list(pr.runs).map((r) => ciRun(doc, r || {})).reverse());
+    out.push(...block(doc, "Open pull requests, from gh", prs, "No open pull requests."));
+    out.push(...block(doc, "CI runs, from gh", runs, "No CI runs."));
   } else {
-    out.push(el(doc, "h4", "Pull requests and CI"));
     out.push(muted(doc, "p", `PR and CI state unavailable: ${str(pr.reason) ?? "no reason given"}`));
   }
   return out;
@@ -339,6 +329,49 @@ function rootLine(doc, pane, o, actions) {
   }
 }
 
+// The level tiles' figures (#909): one live figure per tile from the parts
+// of the object it already reads, or nothing where the overview carries
+// none (the Atlas and the Vault tiles have no slot). Each is drawn small,
+// under the tile's name, and says nothing the pane below does not.
+function levelRun(doc, pane, o) {
+  const t = o.last_run;
+  if (!("root" in o) || t === null || t === undefined) pane.replaceChildren();
+  else if (str(t.error) !== null) pane.replaceChildren(dsStatus(doc, "down", "trail unreadable", { title: t.error }));
+  else pane.replaceChildren(outcomeStatus(doc, t));
+}
+
+function levelTrails(doc, pane, o) {
+  const t = o.last_run;
+  const at = t && typeof t === "object" ? str(t.started_at) : null;
+  if (at === null) pane.replaceChildren();
+  else pane.replaceChildren(muted(doc, "span", `newest ${at.replace("T", " ").replace(/:\d\dZ$/, "Z")}`));
+}
+
+function levelCodebase(doc, pane, o) {
+  const c = o.codebase;
+  if (!("root" in o)) pane.replaceChildren();
+  else if (c === null || typeof c !== "object") pane.replaceChildren(unreported(doc, str(o.codebase_reason) ?? "no reason given"));
+  else pane.replaceChildren(stats(doc, [{ label: "modules", value: figure(doc, c.modules_indexed, "the saved index did not carry it") }]));
+}
+
+function levelBoard(doc, pane, o) {
+  const b = o.board && typeof o.board === "object" ? o.board : null;
+  if (!("root" in o) || b === null) {
+    pane.replaceChildren();
+    return;
+  }
+  const pr = b.pr_ci && typeof b.pr_ci === "object" ? b.pr_ci : {};
+  pane.replaceChildren(
+    stats(doc, [
+      { label: "tasks", value: Array.isArray(b.tasks) ? String(b.tasks.length) : unreported(doc, "the queue could not be read") },
+      {
+        label: "open prs",
+        value: pr.available === true ? String(list(pr.pull_requests).length) : unreported(doc, str(pr.reason) ?? "gh is not available"),
+      },
+    ]),
+  );
+}
+
 // element id -> drawing function, each given the whole object.
 const PANES = {
   "ov-root": rootLine,
@@ -346,6 +379,10 @@ const PANES = {
   "ov-last-run": lastRun,
   "ov-codebase": codebase,
   "ov-board": board,
+  "lv-run": levelRun,
+  "lv-trails": levelTrails,
+  "lv-codebase": levelCodebase,
+  "lv-board": levelBoard,
 };
 
 // Draws every pane from one overview object. `actions.open(path)` is what

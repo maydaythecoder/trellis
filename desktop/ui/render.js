@@ -18,74 +18,52 @@
 // The actions log follows its end only while the reader is there (#643):
 // a reader who scrolled back is not pulled down at each turn, and a button
 // offers the end instead. main.js wires that button through `wireLog`.
+//
+// The DOM helpers and the value readers are the page's shared ones (dom.js
+// and fmt.js, #817), and each pane is drawn with the design system's
+// components (ds.js, #909): Stats for figures, Rails for what happened in
+// order, Statuses for states. A figure trellis did not report is ds.js's
+// unreported: a dash with the reason as its title, never 0.
 
+import { atEnd, drawFeed, el, fill, muted } from "./dom.js";
+import { budgetRows, dsStatus, figure, railRows, stats, txEntry, unreported } from "./ds.js";
+import { isCount, str } from "./fmt.js";
 import { drawGraph } from "./graph.js";
+import { drawNow, drawWhere } from "./now.js";
+import { drawPlan } from "./plan.js";
+import { lineId, send } from "./rpc.js";
 
-function el(doc, tag, text) {
-  const e = doc.createElement(tag);
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
-
-function isCount(v) {
-  return typeof v === "number" && Number.isFinite(v);
-}
-
-function str(v) {
-  return typeof v === "string" ? v : null;
-}
-
-// `pane` replaced by `children`, or by one muted line saying it is empty.
-function fill(doc, pane, children, empty, emptyTag = "li") {
-  if (children.length === 0) {
-    const e = el(doc, emptyTag, empty);
-    e.className = "empty";
-    pane.replaceChildren(e);
-  } else {
-    pane.replaceChildren(...children);
-  }
-}
-
-// How far from a log's end still counts as at it, in px: a fractional
-// scroll position or a zoom level can leave the end a pixel short. A pane
-// that is not laid out (its section hidden) measures 0 and 0, and is at it.
-const AT_END_SLACK = 2;
-
-// Whether `pane` is scrolled to its end, read before it is redrawn so a
-// reader who scrolled back keeps their place (#643). dialogs.js uses it for
-// the messages pane, so the two logs follow by one rule.
-export function atEnd(pane) {
-  return pane.scrollHeight - pane.clientHeight - pane.scrollTop <= AT_END_SLACK;
-}
-
-// The actions log: the transcript, as the TUI's, one line per element. It
-// follows its end only while the reader is there (#643, as the TUI has
-// since #244); otherwise their place is kept and the jump button under the
-// log says new lines arrived. The view carries the whole transcript each
-// turn, but only the lines beyond those drawn are appended: replacing every
-// child of a role="log" region may have a screen reader read the whole log
-// again. A list that does not extend the drawn one (the cap dropped its
-// oldest lines, or the transcript was cleared) is drawn afresh.
-function transcript(doc, pane, lines) {
-  const list = (Array.isArray(lines) ? lines : []).map(String);
-  const follow = atEnd(pane);
-  const drawn = [...pane.children].filter((c) => c.className !== "empty");
-  const grows = list.length >= drawn.length && drawn.every((c, i) => c.textContent === list[i]);
-  const rows = (grows ? list.slice(drawn.length) : list).map((l) => el(doc, "div", l));
-  if (grows && drawn.length > 0) pane.append(...rows);
-  else fill(doc, pane, rows, "Nothing has run yet.", "div");
+// The actions log: the transcript as the design system's Transcript
+// (#827), one entry per row the core sent, typed by what it came from, the
+// reducer's turn entry the rule ahead of each turn's rows (#949). The core
+// sends each row once, and
+// again only when it changes, and dom.js's drawFeed appends or replaces
+// rows rather than redrawing the log. It follows its end only while the
+// reader is there (#643, as the TUI has since #244); otherwise their place
+// is kept and the jump button under the log says new rows arrived. Answers
+// true when rows are missing (the page fell behind its event stream), so
+// drawView's caller asks for the whole run again.
+function transcript(doc, pane, feed) {
+  const { followed, drawn, missing } = drawFeed(doc, pane, feed, {
+    draw: (row) => txEntry(doc, row),
+    empty: "Nothing has run yet.",
+  });
   const jump = doc.getElementById("log-jump");
-  if (follow) {
-    pane.scrollTop = pane.scrollHeight;
-    jump.hidden = true;
-  } else if (rows.length > 0) {
-    jump.hidden = false;
-  }
+  if (followed) jump.hidden = true;
+  else if (drawn > 0) jump.hidden = false;
+  return missing;
 }
 
 // Wires the actions log once: the jump button takes the reader to the end,
-// and scrolling there by hand puts the button away, since what it offered
-// is done.
+// scrolling there by hand puts the button away, since what it offered is
+// done, and the filter bar's buttons set what the log shows. A tool row's
+// raw call and observation is a <details> (ds.js's txEntry), which opens
+// with no listener, so the log's rows add none.
+//
+// A filter or quiet mode only marks the log (#949): its data-filter and its
+// log-quiet class, which style.css hides rows by. No row is removed or
+// redrawn, so turning a filter off shows every row again, and the feed
+// goes on appending under it.
 export function wireLog(doc) {
   const pane = doc.getElementById("pane-transcript");
   const jump = doc.getElementById("log-jump");
@@ -97,216 +75,307 @@ export function wireLog(doc) {
   pane.addEventListener("scroll", () => {
     if (atEnd(pane)) jump.hidden = true;
   });
+  const bar = pane.parentElement.querySelector(".log-filters");
+  bar.addEventListener("click", (e) => {
+    const button = e.target.closest("button");
+    if (button === null || !bar.contains(button)) return;
+    if (button.dataset.quiet !== undefined) {
+      const quiet = pane.classList.toggle("log-quiet");
+      button.classList.toggle("cd-q-opt-on", quiet);
+      button.setAttribute("aria-pressed", String(quiet));
+      return;
+    }
+    pane.dataset.filter = button.dataset.filter;
+    for (const option of bar.querySelectorAll("button[data-filter]")) {
+      const on = option === button;
+      option.classList.toggle("cd-q-opt-on", on);
+      option.setAttribute("aria-pressed", String(on));
+    }
+  });
 }
 
-// One row per turn: the tool, its target, and its own figures, each with
-// its unit. The prompt is in bytes and the reply in tokens (#312), never
-// joined into one figure.
+// One Rail row per turn, in order: the tool and its target, signal when it
+// wrote, and its own figures, each with its unit. The prompt is in bytes and
+// the reply in tokens (#312), never joined into one figure.
 function actions(doc, pane, list) {
-  const rows = (Array.isArray(list) ? list : []).map((a) => {
-    const li = el(doc, "li");
-    li.append(el(doc, "span", str(a.tool) ?? "?"));
+  const rows = (Array.isArray(list) ? list : []).map((a, i) => {
+    const label = el(doc, "span");
+    label.append(el(doc, "b", str(a.tool) ?? "?"));
     const target = str(a.target);
-    if (target) li.append(" ", el(doc, "code", target));
-    if (a.wrote === true) li.append(" ", el(doc, "span", "wrote"));
-    const figures = [];
-    if (isCount(a.prompt_bytes)) figures.push(`${a.prompt_bytes} B prompt`);
-    if (isCount(a.completion_tokens)) figures.push(`${a.completion_tokens} tok out`);
-    if (figures.length > 0) {
-      const f = el(doc, "span", ` · ${figures.join(" · ")}`);
-      f.className = "muted";
-      li.append(f);
-    }
-    return li;
+    if (target) label.append(" ", el(doc, "code", target));
+    const meta = [];
+    if (a.wrote === true) meta.push("wrote");
+    if (isCount(a.prompt_bytes)) meta.push(`${a.prompt_bytes} B prompt`);
+    if (isCount(a.completion_tokens)) meta.push(`${a.completion_tokens} tok out`);
+    meta.push(`t${i + 1}`);
+    return { label, meta: meta.join(" · "), tone: a.wrote === true ? "signal" : "cool" };
   });
-  fill(doc, pane, rows, "No turns this run.");
+  fill(doc, pane, railRows(doc, rows), "none yet");
 }
 
 function edits(doc, pane, list) {
-  const rows = (Array.isArray(list) ? list : []).map((p) => {
-    const li = el(doc, "li");
-    li.append(el(doc, "code", String(p)));
-    return li;
-  });
-  fill(doc, pane, rows, "No edits this run.");
+  const rows = (Array.isArray(list) ? list : []).map((p) => ({ label: el(doc, "code", String(p)), tone: "signal" }));
+  fill(doc, pane, railRows(doc, rows), "none yet");
 }
 
-// A check row is its kind and the word trellis's verdict maps to,
-// `passed` or `failed` (DESK-08). The page decides nothing about it.
+// A check row is its kind and the word trellis's verdict maps to, `passed`
+// or `failed` (DESK-08), in the ok or down tone. The page decides nothing
+// about it.
 function checks(doc, pane, list) {
   const rows = (Array.isArray(list) ? list : []).map((c) => {
-    const li = el(doc, "li");
-    li.append(el(doc, "span", str(c.kind) ?? "check"), " ");
     const result = c.result === "passed" || c.result === "failed" ? c.result : "unknown";
-    const r = el(doc, "strong", result);
-    r.className = result;
-    li.append(r);
-    return li;
+    return {
+      label: str(c.kind) ?? "check",
+      meta: el(doc, "strong", result, result),
+      tone: result === "passed" ? "ok" : result === "failed" ? "down" : null,
+    };
   });
-  fill(doc, pane, rows, "No checks ran this run.");
+  fill(doc, pane, railRows(doc, rows), "none yet");
 }
 
-// Three counts, never a ratio, a percentage or a sum (CLAUDE.md rule 3):
-// the reach counts and the doubt count come from different populations.
+// Three counts side by side, never a ratio, a percentage or a sum (CLAUDE.md
+// rule 3): the reach counts and the doubt count come from different
+// populations, and the caption says what the reach is.
 function radius(doc, pane, r) {
   if (r === null || typeof r !== "object") {
-    fill(doc, pane, [], "No blast radius this run.", "p");
+    fill(doc, pane, [], "none this run", "p");
     return;
   }
-  const dl = el(doc, "dl");
-  for (const [key, label] of [
-    ["resolved", "resolved"],
-    ["candidates", "candidates"],
-    ["unresolved", "unresolved"],
-  ]) {
-    dl.append(el(doc, "dt", label), el(doc, "dd", isCount(r[key]) ? String(r[key]) : "not reported"));
-  }
-  const note = el(doc, "p", "a floor on reach, not a boundary");
-  note.className = "muted";
-  pane.replaceChildren(dl, note);
+  const why = "this radius did not carry it";
+  pane.replaceChildren(
+    stats(doc, [
+      { label: "resolved", value: figure(doc, r.resolved, why) },
+      { label: "candidates", value: figure(doc, r.candidates, why) },
+      { label: "unresolved", value: figure(doc, r.unresolved, why) },
+    ]),
+    muted(doc, "p", "a floor on reach, not a boundary"),
+  );
 }
 
-// The budget line: `iteration n/max · <bytes> B prompt · ...`. The view
-// carries no elapsed time (DESK-08's budget has none), so the line says so
-// rather than drawing one the core did not send; the per-turn usage
-// figures follow #312's rule, and a null figure writes nothing.
-export function budgetLine(b) {
-  if (b === null || typeof b !== "object") return "No budget reported yet.";
-  const parts = [];
-  if (isCount(b.turn)) {
-    parts.push(`iteration ${b.turn}/${isCount(b.max_turns) ? b.max_turns : "max not reported"}`);
-  } else if (isCount(b.max_turns)) {
-    // No turn reported is not turn 0.
-    parts.push(`no iteration yet of ${b.max_turns}`);
-  } else {
-    parts.push("no iteration yet");
+// The budget (#829): one row per ceiling the run enforces, as the reducer
+// built it (`budget.limits`): turns, wall clock, completion tokens and the
+// prompt against the context ceiling, each two figures and a Meter, the
+// wall clock trellis's own elapsed_ms. Below them, the last turn's reply in
+// tokens and its rate and queue wait as Stats; the prompt is in bytes and
+// the reply in tokens (#312), never joined. A figure trellis did not report
+// is a dash with its reason, never 0.
+//
+// Each row the reducer's `raise` names carries ds.js's input and Raise
+// (#837), which send set_budget through wireBudget's listener. The row's
+// ceiling is redrawn only from the next view, the latest run budget's,
+// never from the number typed or set_budget's answer. The pane is drawn
+// afresh at each turn, so what the person has typed, and where they were
+// typing, is put back.
+function budget(doc, pane, b) {
+  const v = b !== null && typeof b === "object" ? b : {};
+  const list = [{ label: "last turn out", value: figure(doc, v.completion_tokens, "the last turn sent no token count"), unit: "tok" }];
+  const rate = str(v.tokens_per_second);
+  if (rate !== null) list.push({ label: "rate", value: rate, unit: "tok/s" });
+  const queued = str(v.queued_seconds);
+  if (queued !== null) list.push({ label: "queued", value: queued, unit: "s" });
+  if (v.raise === null || typeof v.raise !== "object") {
+    typed.clear();
+    raiseSaid = null;
   }
-  parts.push(isCount(b.prompt_bytes) ? `${b.prompt_bytes} B prompt` : "prompt size not reported");
-  parts.push("elapsed not reported");
-  const rate = str(b.tokens_per_second);
-  if (isCount(b.completion_tokens) && rate !== null) {
-    parts.push(`${b.completion_tokens} tok, ${rate} tok/s`);
-  } else if (isCount(b.completion_tokens)) {
-    parts.push(`${b.completion_tokens} tok`);
+  const focused = doc.activeElement && pane.contains(doc.activeElement) ? doc.activeElement.dataset.raise : undefined;
+  const out = [budgetRows(doc, Array.isArray(v.limits) ? v.limits : [], v.raise), stats(doc, list)];
+  if (raiseSaid !== null) out.push(saidLine(doc));
+  pane.replaceChildren(...out);
+  for (const input of pane.querySelectorAll("input[data-raise]")) {
+    input.value = typed.get(input.dataset.raise) ?? "";
+    if (input.dataset.raise === focused) input.focus();
   }
-  const queued = str(b.queued_seconds);
-  if (queued !== null) parts.push(`queued ${queued} s`);
-  return parts.join(" · ");
 }
 
-// A figure of `get_session_stats`, or `unknown` for one a run of that
-// model did not report: null is never drawn as 0 (#313).
-function tokens(v) {
-  return isCount(v) ? String(v) : "unknown";
+// What the person has typed in each raise input, by set_budget field, and
+// what the page last said about a raise: kept across the budget's redraws
+// and dropped once nothing may be raised.
+const typed = new Map();
+let raiseSaid = null;
+
+// The page's last word on a raise, as a line marked for raiseLimit to find.
+function saidLine(doc) {
+  const line = el(doc, "p", raiseSaid.text, raiseSaid.refused ? "failed" : "muted");
+  line.dataset.raiseSaid = "";
+  return line;
+}
+
+// Sends one raise (#837) from the row of `control`, a raise input or its
+// button. The number is a whole one above 0 in the row's unit, sent in the
+// field's unit (the wall clock: seconds typed, milliseconds sent), and
+// above the ceiling drawn, since rpc refuses a lower one and changes
+// nothing for an equal one. rpc answers with every ceiling after the raise;
+// the row is not drawn from that answer but from the run budget the loop
+// sends again when the raise takes effect, and a refusal reaches the log.
+async function raiseLimit(doc, tauri, control) {
+  const pane = doc.getElementById("pane-budget");
+  const say = (text, refused) => {
+    raiseSaid = { text, refused };
+    const old = pane.querySelector("p[data-raise-said]");
+    if (old) old.replaceWith(saidLine(doc));
+    else pane.append(saidLine(doc));
+  };
+  const { raise: field, unit, label } = control.dataset;
+  const perUnit = Number(control.dataset.perUnit);
+  const raw = (typed.get(field) ?? "").trim();
+  if (!/^[1-9][0-9]*$/.test(raw)) {
+    say(`Type the new ${label} ceiling as a whole number above 0, in ${unit}.`, true);
+    return;
+  }
+  const value = Number(raw) * perUnit;
+  if (!Number.isSafeInteger(value)) {
+    say(`${raw} ${unit} is past the largest ceiling the page can send.`, true);
+    return;
+  }
+  const ceiling = control.dataset.ceiling === undefined ? null : Number(control.dataset.ceiling);
+  if (ceiling !== null && value <= ceiling) {
+    say(`A ceiling is raised, never lowered: type more than the ${label} ceiling shown.`, true);
+    return;
+  }
+  const line = { id: lineId("budget", "raise"), type: "set_budget", [field]: value };
+  if (await send(tauri, line, (why) => say(why, true))) {
+    typed.delete(field);
+    for (const input of pane.querySelectorAll("input[data-raise]")) {
+      if (input.dataset.raise === field) input.value = "";
+    }
+    say(`Sent: ${label} to ${raw} ${unit}. The row shows it once trellis sends run budget at its next budget check.`, false);
+  }
+}
+
+// Wires the budget's raises once (#837): one listener each on the pane for
+// what is typed, the Raise buttons and Enter in an input, so the rows drawn
+// add none.
+export function wireBudget(doc, tauri) {
+  const pane = doc.getElementById("pane-budget");
+  pane.addEventListener("input", (e) => {
+    const input = e.target.closest("input[data-raise]");
+    if (input !== null) typed.set(input.dataset.raise, input.value);
+  });
+  pane.addEventListener("click", (e) => {
+    const button = e.target.closest("button[data-raise]");
+    if (button !== null) raiseLimit(doc, tauri, button);
+  });
+  pane.addEventListener("keydown", (e) => {
+    const input = e.target.closest("input[data-raise]");
+    if (input === null || e.key !== "Enter") return;
+    e.preventDefault();
+    raiseLimit(doc, tauri, input);
+  });
 }
 
 // The session's prompt and completion tokens per model, as trellis's
-// `get_session_stats` answered them (#313, PI-10): one row per model, the
-// model name and two figures, never added together. The rows cover the
-// runs since this repository was opened (one `trellis rpc` per repository),
-// and a run's start leaves them as they are. The model name is trail text
-// (ADR 0007), drawn as text.
+// `get_session_stats` answered them (#313, PI-10): per model, its name and
+// two Stats, never added together. The rows cover the runs since this
+// repository was opened (one `trellis rpc` per repository), and a run's
+// start leaves them as they are. The model name is trail text (ADR 0007),
+// drawn as text, whole in its title where the pane cuts it.
 function sessionTokens(doc, pane, t) {
   if (t === null || typeof t !== "object") {
-    fill(doc, pane, [], "Not asked yet: no trellis rpc has answered get_session_stats.");
+    fill(doc, pane, [], "not asked yet", "p");
     return;
   }
   if (str(t.error) !== null) {
-    fill(doc, pane, [], `get_session_stats refused: ${t.error}`);
+    fill(doc, pane, [], `get_session_stats refused: ${t.error}`, "p");
     return;
   }
-  const rows = (Array.isArray(t.models) ? t.models : []).flatMap((m) => {
+  const why = "trellis's answer did not carry it";
+  const blocks = (Array.isArray(t.models) ? t.models : []).flatMap((m) => {
     const model = str(m && m.model);
     if (model === null) return [];
-    const li = el(doc, "li");
-    li.append(
-      el(doc, "code", model),
-      el(doc, "span", ` · prompt ${tokens(m.prompt_tokens)}`),
-      el(doc, "span", ` · completion ${tokens(m.completion_tokens)}`),
-    );
-    return [li];
+    const name = el(doc, "code", model, "cut");
+    name.title = model;
+    return [
+      name,
+      stats(doc, [
+        { label: "prompt", value: figure(doc, m.prompt_tokens, why), unit: "tok" },
+        { label: "completion", value: figure(doc, m.completion_tokens, why), unit: "tok" },
+      ]),
+    ];
   });
   if (isCount(t.runs_not_counted) && t.runs_not_counted > 0) {
-    const li = el(
-      doc,
-      "li",
-      `${t.runs_not_counted} run(s) not counted: their trail did not read back.`,
-    );
-    li.className = "muted";
-    rows.push(li);
+    blocks.push(el(doc, "p", `${t.runs_not_counted} run(s) not counted: their trail did not read back.`, "failed"));
   }
-  fill(doc, pane, rows, "No run of this trellis rpc has ended yet.");
+  fill(doc, pane, blocks, "no run has ended yet", "p");
 }
 
 // colibri's self-report for this run (`runtime identified`, #628): what
 // it serves, its KV slots and its experts per tier, each as colibri sent
-// it. A count it did not report is "not reported", never 0, and the three
-// tier counts are drawn apart: nothing here adds them or takes a share
-// (ADR 0048 §8). Only a run against colibri sends the event, so before
-// one the pane says so.
+// it. A count it did not report is unreported, never 0, and the three tier
+// counts are three numerals: nothing here adds them or takes a share (ADR
+// 0048 §8). Only a run against colibri sends the event, so before one the
+// pane says so.
 function runtime(doc, pane, r) {
   if (r === null || typeof r !== "object") {
-    fill(doc, pane, [], "Not reported: no runtime has identified itself for this run.", "p");
+    pane.replaceChildren(unreported(doc, "no runtime has identified itself for this run"));
     return;
   }
-  const dl = el(doc, "dl");
-  const count = (v) => (isCount(v) ? String(v) : "not reported");
-  for (const [label, value] of [
-    ["runtime", str(r.runtime) ?? "not reported"],
-    ["served", str(r.served) ?? "not reported"],
-    ["KV slots", count(r.kv_slots)],
-    ["experts in VRAM", count(r.tiers_vram)],
-    ["experts in RAM", count(r.tiers_ram)],
-    ["experts on disk", count(r.tiers_disk)],
-  ]) {
-    dl.append(el(doc, "dt", label), el(doc, "dd", value));
-  }
-  pane.replaceChildren(dl);
+  const why = "colibri did not report it";
+  const head = el(doc, "p");
+  head.append(dsStatus(doc, "cool", str(r.runtime) ?? "runtime not reported"), " ", el(doc, "code", str(r.served) ?? "not reported"));
+  pane.replaceChildren(
+    head,
+    stats(doc, [
+      { label: "kv slots", value: figure(doc, r.kv_slots, why) },
+      { label: "vram", value: figure(doc, r.tiers_vram, why), unit: "experts" },
+      { label: "ram", value: figure(doc, r.tiers_ram, why), unit: "experts" },
+      { label: "disk", value: figure(doc, r.tiers_disk, why), unit: "experts" },
+    ]),
+  );
 }
 
 // The tier `get_state` last reported, as trellis labels it; a status bar
 // writes `tier ` before the label (client_contract.json). Null means no run
 // of this rpc process has decided one, and it is never guessed.
 function tier(doc, pane, t) {
-  pane.textContent =
-    str(t) !== null ? `tier ${t}` : "Not reported: no run of this trellis rpc has decided a tier yet.";
+  pane.replaceChildren(
+    str(t) !== null ? dsStatus(doc, "cool", `tier ${t}`) : unreported(doc, "no run of this trellis rpc has decided a tier yet"),
+  );
 }
 
 function running(doc, pane, r) {
-  pane.textContent = r === true ? "A run is in flight." : "No run in flight.";
+  pane.replaceChildren(r === true ? dsStatus(doc, "signal", "running", { live: true }) : dsStatus(doc, "idle", "no run in flight"));
 }
+
+// The tone each `run_end` outcome word is drawn in: an outcome is not a
+// check, so a converged run is ok and the rest are not, each with its word.
+// The summary level (summary.js, #832) draws the outcome in the same.
+export const OUTCOME_TONES = { converged: "ok", not_converged: "down", interrupted: "warn", error: "down" };
 
 // The last run's `run_end`, field by field as trellis sent it.
 function outcome(doc, pane, o) {
   if (o === null || typeof o !== "object") {
-    fill(doc, pane, [], "No run has ended yet.", "p");
+    fill(doc, pane, [], "no run has ended yet", "p");
     return;
   }
-  const dl = el(doc, "dl");
-  const row = (label, value) => dl.append(el(doc, "dt", label), el(doc, "dd", value));
-  row("outcome", str(o.outcome) ?? "not reported");
-  row("exit", isCount(o.exit) ? String(o.exit) : "not reported");
-  if (str(o.run_id) !== null) row("trail", o.run_id);
-  if (typeof o.restored === "boolean") row("restored", o.restored ? "yes" : "no");
-  if (str(o.error) !== null) row("error", o.error);
-  pane.replaceChildren(dl);
+  const word = str(o.outcome);
+  const head = el(doc, "p");
+  head.append(word === null ? unreported(doc, "run_end carried no outcome") : dsStatus(doc, OUTCOME_TONES[word] ?? "idle", word, { tag: true }));
+  const out = [head, stats(doc, [{ label: "exit", value: figure(doc, o.exit, "run_end carried no exit code") }])];
+  const meta = [];
+  if (typeof o.restored === "boolean") meta.push(o.restored ? "tree restored" : "tree not restored");
+  if (str(o.run_id) !== null) meta.push(`trail ${o.run_id}`);
+  if (meta.length > 0) out.push(muted(doc, "p", meta.join(" · ")));
+  if (str(o.error) !== null) out.push(el(doc, "p", o.error, "failed"));
+  pane.replaceChildren(...out);
 }
 
 // view key -> [element id, drawing function]. The view's other keys are
 // drawn by the modules that read them from the same event: `approvals`,
 // `alert` and `stderr` by dialogs.js; `running`, `model`, `starters` and
 // `undelivered` by composer.js; `model`, `models` and `available` by
-// model.js; `available` by settings.js; `model` and `running` by status.js;
-// `vault` by vault.js; `queue` by queue.js. The view_renders_ tests in
-// src/lockdown.rs fail when a key the reducer sends is read by none of
-// them, or when a pane in the run section is one this table never names.
+// model.js; `available` by settings.js; `model`, `running` and `phase` by
+// status.js; `vault` by vault.js; `queue` by queue.js; `atlas` by atlas.js.
+// `now` and `where` are drawn here by now.js's functions (#828).
+// The view_renders_ tests in src/lockdown.rs fail when a key the reducer
+// sends is read by none of them, or when a pane in the run section is one
+// this table never names.
 const PANES = {
   transcript: ["pane-transcript", transcript],
   actions: ["pane-actions", actions],
   edits: ["pane-edits", edits],
   checks: ["pane-checks", checks],
   radius: ["pane-radius", radius],
-  budget: ["pane-budget", (doc, pane, b) => (pane.textContent = budgetLine(b))],
+  budget: ["pane-budget", budget],
   tier: ["pane-tier", tier],
   runtime: ["pane-runtime", runtime],
   running: ["pane-running", running],
@@ -314,16 +383,22 @@ const PANES = {
   session_tokens: ["pane-session-tokens", sessionTokens],
   // The action graph's layout, computed by the core (`graph.rs`).
   graph: ["graph", drawGraph],
+  now: ["pane-now", drawNow],
+  where: ["pane-where", drawWhere],
+  // The model's latest plan and its Edit (#838).
+  plan: ["pane-plan", drawPlan],
 };
 
 // Draws every pane the event carries; a key this page does not know is
-// left alone.
-export function drawView(doc, view) {
+// left alone. `onMissing` is called when the transcript found rows missing,
+// so the caller asks the core for the whole run again (#827).
+export function drawView(doc, view, onMissing) {
   if (view === null || typeof view !== "object") return;
   for (const [key, value] of Object.entries(view)) {
     const entry = PANES[key];
     if (!entry) continue;
     const pane = doc.getElementById(entry[0]);
-    if (pane) entry[1](doc, pane, value);
+    // Only a feed's drawing answers, and only true for missing rows.
+    if (pane && entry[1](doc, pane, value) === true) onMissing();
   }
 }

@@ -232,11 +232,11 @@ fn read_request(s: &mut TcpStream) -> String {
     }
 }
 
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("trellis-colibri-run-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+mod common;
+use common::Scratch;
+
+fn scratch(name: &str) -> Scratch {
+    common::scratch_dir(&format!("trellis-colibri-run-{name}"))
 }
 
 fn git(root: &Path, args: &[&str]) {
@@ -258,7 +258,7 @@ fn user_dir(repo: &Path) -> PathBuf {
 
 /// A committed repository whose typecheck exits 0, with `model` appended to
 /// its `.trellis/config.toml`, and `user` as the user's own config.
-fn repo(name: &str, model: &str, user: &str) -> PathBuf {
+fn repo(name: &str, model: &str, user: &str) -> Scratch {
     let d = scratch(name);
     git(&d, &["init", "-q"]);
     git(&d, &["config", "user.email", "t@example.invalid"]);
@@ -340,7 +340,7 @@ fn run_with(
 }
 
 /// A run with `--model openai-chat:<base>/v1#<id>` against a stub.
-fn chat_run(name: &str, base: &str, id: &str) -> (PathBuf, Ran) {
+fn chat_run(name: &str, base: &str, id: &str) -> (Scratch, Ran) {
     let d = repo(name, "", "");
     let r = run(&d, Some(&format!("openai-chat:{base}/v1#{id}")), None, &[]);
     (d, r)

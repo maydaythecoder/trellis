@@ -191,9 +191,14 @@ pub struct Layout {
     pub aria_label: String,
 }
 
-/// One decimal place: enough for a `viewBox`, and the JSON stays short.
-pub(crate) fn round(v: f64) -> f64 {
-    (v * 10.0).round() / 10.0
+/// `v` to `places` decimals, so a layout's numbers come out the same on
+/// every run and its JSON stays short: one place is enough for a `viewBox`
+/// (this file's and `codebase.rs`'s), and the Atlas keeps six for its
+/// fractions of the world (`atlas.rs`). The scale is an integer power, so
+/// it is exact.
+pub(crate) fn round(v: f64, places: u32) -> f64 {
+    let scale = 10_u64.pow(places) as f64;
+    (v * scale).round() / scale
 }
 
 /// `s` cut to `max` characters, saying so with an ellipsis rather than
@@ -205,7 +210,8 @@ pub(crate) fn cut(s: &str, max: usize) -> String {
     s.chars().take(max - 1).chain(['…']).collect()
 }
 
-fn plural(n: u64, one: &str, many: &str) -> String {
+/// "1 call", "2 calls": a count said with its noun, for every view's text.
+pub(crate) fn plural(n: u64, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
@@ -253,8 +259,8 @@ pub fn layout<'a>(actions: impl IntoIterator<Item = Called<'a>>) -> Layout {
     // `TOOLS` is never empty, so there is at least one gap.
     let gaps = (rows - 1) as f64;
     let height = TOP + BOTTOM + ROW * gaps;
-    let row_y = |i: usize| round(TOP + ROW * i as f64);
-    let focus = (FOCUS_X, round(TOP + ROW * gaps / 2.0));
+    let row_y = |i: usize| round(TOP + ROW * i as f64, 1);
+    let focus = (FOCUS_X, round(TOP + ROW * gaps / 2.0, 1));
 
     let node = |i: usize, label: String, n_folded: u64| {
         let y = row_y(i);
@@ -265,7 +271,7 @@ pub fn layout<'a>(actions: impl IntoIterator<Item = Called<'a>>) -> Layout {
             name: Text {
                 text: cut(&label, NAME_CHARS),
                 x: NAME_X,
-                y: round(y + 4.0),
+                y: round(y + 4.0, 1),
                 anchor: "start",
             },
             tool: label,
@@ -277,7 +283,7 @@ pub fn layout<'a>(actions: impl IntoIterator<Item = Called<'a>>) -> Layout {
             counts: Text {
                 text: counts_text(calls, writes),
                 x: COUNTS_X,
-                y: round(y + 4.0),
+                y: round(y + 4.0, 1),
                 anchor: "end",
             },
             folded: n_folded,
@@ -325,7 +331,7 @@ pub fn layout<'a>(actions: impl IntoIterator<Item = Called<'a>>) -> Layout {
             let t = Text {
                 text,
                 x: LABEL_X,
-                y: round(baseline),
+                y: round(baseline, 1),
                 anchor: "start",
             };
             (t, rect)
@@ -369,7 +375,7 @@ pub fn layout<'a>(actions: impl IntoIterator<Item = Called<'a>>) -> Layout {
 
     Layout {
         width: WIDTH,
-        height: round(height),
+        height: round(height, 1),
         nodes,
         edges,
         labels,
@@ -377,13 +383,13 @@ pub fn layout<'a>(actions: impl IntoIterator<Item = Called<'a>>) -> Layout {
         focus_label: Text {
             text: plural(n, "action", "actions"),
             x: FOCUS_X + FOCUS_R + 5.0,
-            y: round(focus.1 + 4.0),
+            y: round(focus.1 + 4.0, 1),
             anchor: "start",
         },
         caption: Text {
             text: caption,
             x: NAME_X,
-            y: round(height - 10.0),
+            y: round(height - 10.0, 1),
             anchor: "start",
         },
         aria_label: aria,
@@ -428,13 +434,21 @@ impl Layout {
     }
 }
 
-/// For the page tests: how many rules in `ui/style.css` sit under a
-/// selector containing `word` (an `@media` block's rules count under it),
-/// and those of them that declare a `transition` or an `animation`.
+/// For the page tests: how many rules in the page's own stylesheets sit
+/// under a selector containing `word` (an `@media` block's rules count
+/// under it), and those of them that declare a `transition` or an
+/// `animation`. The sheets are every `.css` the page is served but the
+/// design system's `ds.css`, so a rule split out of `style.css` (#978) is
+/// still read.
 #[cfg(test)]
 pub(crate) fn motion_in_rules_naming(word: &str) -> (usize, Vec<String>) {
-    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/style.css");
-    let css = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    let css: String = crate::web::PAGE
+        .iter()
+        .filter(|(name, _)| name.ends_with(".css") && *name != "ds.css")
+        .map(|(name, bytes)| {
+            std::str::from_utf8(bytes).unwrap_or_else(|e| panic!("ui/{name}: {e}"))
+        })
+        .collect();
     let mut text = String::new();
     let mut rest = css.as_str();
     while let Some(i) = rest.find("/*") {
@@ -477,6 +491,45 @@ pub(crate) fn motion_in_rules_naming(word: &str) -> (usize, Vec<String>) {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn plural_and_round_are_defined_once() {
+        // The risk (#824): a second copy drifts, so two views word a count
+        // or place a coordinate two ways. Every `.rs` file under src/ is
+        // read, and `plural` and `round` are each defined in this file only.
+        fn walk(dir: &Path, found: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let p = entry.unwrap().path();
+                if p.is_dir() {
+                    walk(&p, found);
+                } else if p.extension().is_some_and(|e| e == "rs") {
+                    let src = std::fs::read_to_string(&p).unwrap();
+                    for line in src.lines() {
+                        let t = line.trim_start();
+                        let t = t.strip_prefix("pub(crate) ").unwrap_or(t);
+                        let t = t.strip_prefix("pub ").unwrap_or(t);
+                        for name in ["plural", "round"] {
+                            if t.starts_with(&format!("fn {name}(")) {
+                                let file = p.file_name().unwrap().to_string_lossy();
+                                found.push(format!("{file}: {name}"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut found = Vec::new();
+        walk(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut found,
+        );
+        found.sort();
+        assert_eq!(found, ["graph.rs: plural", "graph.rs: round"]);
+        assert_eq!(plural(1, "call", "calls"), "1 call");
+        assert_eq!(plural(0, "call", "calls"), "0 calls");
+        assert_eq!(round(12.345_67, 1), 12.3);
+        assert_eq!(round(0.123_456_789, 6), 0.123_457);
+    }
 
     fn called<'a>(tool: &'a str, target: &'a str, wrote: bool) -> Called<'a> {
         Called {
@@ -659,7 +712,7 @@ mod tests {
 
     #[test]
     fn edit_counts_applied_writes_apart_from_calls() {
-        // The risk (tui_bridge.rs): a refused edit counted as a write, or
+        // The risk: a refused edit counted as a write, or
         // writes folded into calls, so the graph says the run changed the
         // tree more (or less) than it did.
         let l = layout([
@@ -798,7 +851,7 @@ mod tests {
         // The risk: an animated graph, which a user who asked for reduced
         // motion still sees moving; nothing in it needs to move.
         let (rules, moving) = motion_in_rules_naming("graph");
-        assert!(rules > 0, "style.css has no rule naming the graph");
+        assert!(rules > 0, "no page stylesheet has a rule naming the graph");
         assert!(moving.is_empty(), "graph rules that move: {moving:?}");
     }
 }
