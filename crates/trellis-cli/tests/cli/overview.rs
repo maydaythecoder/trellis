@@ -870,8 +870,10 @@ fn overview_names_the_first_line_gh_wrote_when_it_fails() {
     // of the line that says what went wrong.
     let d = repo("overview-gh-fails");
     let user = scratch("overview-gh-fails-user");
+    // The redirect leads on Windows: cmd reads `echo.1>&2` as echoing "1",
+    // which made the "blank first line" a non-blank one.
     let gh = Gh::Stub {
-        windows: "@echo off\r\necho.1>&2\r\necho HTTP 502: Bad Gateway 1>&2\r\nexit /b 1\r\n",
+        windows: "@echo off\r\n1>&2 echo.\r\necho HTTP 502: Bad Gateway 1>&2\r\nexit /b 1\r\n",
         unix: "#!/bin/sh\necho >&2\necho '  HTTP 502: Bad Gateway' >&2\nexit 1\n",
     };
     let args = ["--json", "overview"];
