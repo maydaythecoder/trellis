@@ -144,14 +144,17 @@ fi
 root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "FAIL: not in a git repository"; exit 2; }
 ledger="$root/CORRECTNESS_LEDGER.md"
 
-# Read the block once into mutant -> ledger line. The mutant text is whatever
-# follows the last ` | crates/`; the reason before it may itself contain ` | `,
-# and so may the mutant text.
-declare -A by_mutant=()
+# Read the block once into a file of its mutant lines. The mutant text is
+# whatever follows the last ` | crates/`; the reason before it may itself
+# contain ` | `, and so may the mutant text. A file and an exact-match awk,
+# not `declare -A`: that is bash 4, and on bash 3.2 (macOS /bin/bash) the
+# map failed to declare and the check exited 0 having compared nothing.
+block_file=$(mktemp) || { echo "FAIL: mktemp failed"; exit 2; }
+trap 'rm -f "$block_file"' EXIT
 block_found=0
 load_block() {
   [ -f "$ledger" ] || return 0
-  local start line key
+  local start line
   # The ledger may be checked out with CRLF on the Git Bash host.
   start=$(tr -d '\r' < "$ledger" | grep -n -F -x -- "$block_summary" | head -1 | cut -d: -f1)
   [ -n "$start" ] || return 0
@@ -163,13 +166,24 @@ load_block() {
     # line names its file under crates/, and ` | ` alone would cut a mutant
     # of a bitwise `|` in half.
     case $line in
-      *' | crates/'*) key="crates/${line##* | crates/}" ;;
-      *) continue ;;
+      *' | crates/'*) printf '%s\n' "$line" >> "$block_file" ;;
     esac
-    [ -n "$key" ] || continue
-    # First line wins, so a duplicate cannot change the answer silently.
-    [ -n "${by_mutant[$key]+x}" ] || by_mutant[$key]=$line
   done < <(tail -n +"$((start + 1))" "$ledger")
+}
+
+# ledger_line <mutant>: the first block line whose text after its last
+# ` | crates/` is exactly <mutant>, or nothing. First line wins, so a
+# duplicate cannot change the answer silently. The mutant goes through the
+# environment, not -v, which would rewrite its backslashes; index() and ==
+# are fixed-string comparisons.
+ledger_line() {
+  MUTANT=$1 awk '
+    BEGIN { want = ENVIRON["MUTANT"]; sep = " | crates/" }
+    {
+      rest = $0; key = ""
+      while ((i = index(rest, sep)) > 0) { key = "crates/" substr(rest, i + length(sep)); rest = substr(rest, i + 1) }
+      if (key == want) { print; exit }
+    }' "$block_file"
 }
 
 # Why a ledger line does not account for its mutant, or empty if it does.
@@ -204,7 +218,7 @@ fault_in() {
 
 # check_shard <dir>: prints one OK or FAIL report; returns 0, 1 or 2.
 check_shard() {
-  local dir=$1 commit n=0 line why fault f
+  local dir=$1 commit n=0 line why fault f found
   local -a faults=()
   [ -d "$dir" ] || { echo "FAIL: $dir is not a directory"; return 2; }
   if [ ! -f "$dir/COMMIT" ]; then
@@ -226,11 +240,12 @@ check_shard() {
     line=${line%$'\r'}
     [ -n "$line" ] || continue
     n=$((n + 1))
-    if [ -z "${by_mutant[$line]+x}" ]; then
+    found=$(ledger_line "$line")
+    if [ -z "$found" ]; then
       faults+=("not in block: $line")
       continue
     fi
-    fault=$(fault_in "${by_mutant[$line]}")
+    fault=$(fault_in "$found")
     [ -z "$fault" ] || faults+=("$fault: $line")
   # awk, not cat: a missed.txt without a final newline would otherwise
   # join its last line to timeout.txt's first.
