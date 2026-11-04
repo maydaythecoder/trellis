@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -217,6 +218,16 @@ func (c *Client) Quit() error {
 	c.quit = true
 	_, werr := c.stdin.Write([]byte(`{"type":"quit"}` + "\n"))
 	cerr := c.stdin.Close()
+	// exec.Cmd.Wait closes this pipe too, and only once the child has
+	// exited: os.ErrClosed means the child is gone and needs no quit, and
+	// Wait says how it ended. The child reading quit and exiting between
+	// the write and the close is the usual order, not a failure (#1062).
+	if errors.Is(werr, os.ErrClosed) {
+		werr = nil
+	}
+	if errors.Is(cerr, os.ErrClosed) {
+		cerr = nil
+	}
 	if werr != nil {
 		// A child that already exited closed its end; Wait says how it ended.
 		return fmt.Errorf("rpc: write quit: %w", werr)
