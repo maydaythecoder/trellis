@@ -430,9 +430,19 @@ fn under_pty_with_display(
     let user = scratch(&format!("{name}-user"));
     let shown = user.join("terminal.txt");
     let cmd = format!("'{}'{after}", exe.display());
+    // util-linux takes the command as one `-c` string and `-e` passes its
+    // exit status through; BSD `script` (macOS) rejects `-f`, `-e` and `-c`,
+    // takes argv after the transcript file, and passes the status through
+    // unasked. `cmd` may carry a redirection, so BSD gets it via `sh -c`
+    // (#1076). Same split as the colour and first-run pty tests in bare.rs.
+    let args: Vec<&str> = if cfg!(target_os = "linux") {
+        vec!["-qfec", &cmd, "/dev/null"]
+    } else {
+        vec!["-q", "/dev/null", "/bin/sh", "-c", &cmd]
+    };
     let mut script = Command::new("script");
     script
-        .args(["-qfec", &cmd, "/dev/null"])
+        .args(&args)
         .current_dir(cwd)
         .env("NO_COLOR", "1")
         // Plain line input: no editor escape sequences to read around.
@@ -449,7 +459,7 @@ fn under_pty_with_display(
         .stdout(std::fs::File::create(&shown).unwrap())
         .stderr(Stdio::null())
         .spawn()
-        .expect("util-linux `script` must be on PATH for the pty tests");
+        .expect("`script` must be on PATH for the pty tests");
     child
         .stdin
         .take()
