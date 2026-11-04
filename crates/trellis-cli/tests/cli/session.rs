@@ -33,6 +33,26 @@ fn session_bang_says_only_a_failing_exit_and_prompts_and_models_print_their_list
 }
 
 #[test]
+fn the_prompt_counts_uncommitted_changes_only_when_there_are_some() {
+    // The risk: the prompt saying "[0 pending]" over a clean tree, or
+    // nothing over a dirty one, so a person types a task without knowing a
+    // run will refuse it for the changes already there. `TERM=dumb`:
+    // rustyline prints the prompt on stdout itself for a terminal it does
+    // not drive, so a pipe sees it.
+    let d = repo("session-pending-prompt");
+    let dumb = [("TERM", Path::new("dumb"))];
+    let clean = session_with_env(&d, "/exit\n", &dumb);
+    let s = String::from_utf8_lossy(&clean.stdout);
+    assert!(s.contains("> "), "the prompt was not printed: {s}");
+    assert!(!s.contains("pending]"), "{s}");
+    std::fs::write(d.join("new.txt"), "x\n").unwrap();
+    let dirty = session_with_env(&d, "/exit\n", &dumb);
+    let s = String::from_utf8_lossy(&dirty.stdout);
+    assert!(s.contains("[1 pending] > "), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn every_command_help_lists_is_routed_somewhere() {
     // Each of these is one match arm, and deleting any of them leaves the
     // command falling through to "unknown command" — a command the tool

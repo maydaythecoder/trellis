@@ -1,0 +1,7 @@
+crates/trellis-cli/src/first_run.rs:121:5: replace probe -> Vec<Probed> with vec![]
+crates/trellis-cli/src/first_run.rs:316:40: replace == with != in pick
+crates/trellis-cli/src/first_run.rs:343:5: replace choose -> Result<Option<String>> with Ok(None)
+crates/trellis-cli/src/first_run.rs:343:5: replace choose -> Result<Option<String>> with Ok(Some(String::new()))
+crates/trellis-cli/src/first_run.rs:343:5: replace choose -> Result<Option<String>> with Ok(Some("xyzzy".into()))
+crates/trellis-cli/src/first_run.rs:428:5: replace get -> std::result::Result<String, String> with Ok(String::new())
+crates/trellis-cli/src/first_run.rs:428:5: replace get -> std::result::Result<String, String> with Ok("xyzzy".into())

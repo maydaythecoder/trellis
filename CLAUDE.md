@@ -49,6 +49,9 @@ the work is worse than one that says it is not built yet.
   merge a green branch into `audit`, promote `audit` into `dev`; `dev` reaches
   `main` only by the owner's pull request, squash-merged. Never push `main` or
   a `v*` tag. The permanent branches are `main`, `dev` and `audit`, no others.
+- Open a draft pull request into `audit` the moment work on a ticket starts,
+  and mark it ready only once Verify and the gates pass (ADR 0061; the rule in
+  full is in `docs/BUILD_SYSTEM.md`, "Branches").
 - Run gates from Git Bash, not WSL. One cargo process at a time: the host has
   15 GB shared with a local model, and parallel builds have been killed for
   memory. G2b needs the local runtime listening on 127.0.0.1:11434.

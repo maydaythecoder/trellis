@@ -34,17 +34,22 @@ check() { # [<base>]; run from the repository root
   local base="${1:-}" fails=0 f name num slug first other held_slug held_num
   local dir=docs/adr
   [ -d "$dir" ] || { echo "OK: no $dir"; return 0; }
-  declare -A seen=()
+  # "<number> <file>" per line, not an array: `declare -A` is bash 4, and an
+  # indexed array reads 0008 as bad octal, so on bash 3.2 (macOS /bin/bash)
+  # the check died and compared nothing. Numbers stay strings.
+  local seen="" prev
   for f in "$dir"/[0-9][0-9][0-9][0-9]-*.md; do
     [ -e "$f" ] || continue
     name=$(basename "$f" .md)
     num=${name%%-*}
     slug=${name#*-}
-    if [ -n "${seen[$num]:-}" ]; then
-      echo "FAIL $f: number $num is also ${seen[$num]}"
+    prev=$(printf '%s' "$seen" | awk -v n="$num" '$1 == n { print $2; exit }')
+    if [ -n "$prev" ]; then
+      echo "FAIL $f: number $num is also $prev"
       fails=$((fails + 1))
     else
-      seen[$num]=$f
+      seen="$seen$num $f
+"
     fi
     first=$(head -n 1 "$f" | tr -d '\r')
     case "$first" in

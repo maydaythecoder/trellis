@@ -205,7 +205,8 @@ Each ticket gets its own `t<n>-<slug>` branch and worktree, and goes through
 `audit` → `dev` → `main` (ADR 0051). The lettered tickets are filed once this
 ADR is accepted. `∥` marks tickets that can run in parallel. (The plan is
 kept as written; the self-hosted runners it names were set aside on
-2026-10-19, #736, after every ticket but T9 had landed.)
+2026-10-19, #736, after every ticket but T9 had landed; #219 closed as not
+planned on 2026-11-02, when the last runner registration was deleted.)
 
 - **Owner actions (P0, not tickets):** apply #219 on WSL; install
   `libwebkit2gtk-4.1-dev`, `libxdo-dev` and `pkg-config` on WSL; check for
@@ -247,3 +248,15 @@ Owner decision, 2026-10-07: bare `trellis` at a terminal opens the desktop and p
 G7 record: the owner approved #289 and #296, each with the scope added to it on 2026-10-07, and #560 and #561, on 2026-10-07.
 
 *As built 2026-10-20 (#516):* the retirement section 7 describes is done: `crates/tui-demo`, `tui_run.rs`, `tui_bridge.rs` and the fallback branches in `main.rs` are gone, `ratatui` and `crossterm` have left the root `Cargo.lock`, and the crate table in CLAUDE.md lists `tui/` and no `tui-demo`. Without `trellis-tui` beside the binary, `--tui`, `trellis tui` and bare `trellis` with no desktop refuse, naming where it was looked for and `trellis session` as the line interface, and exit non-zero; nothing runs in their place. The rows of `tui/PARITY.md` stay as the record of the rules the retired tests held; the "not ported" rows and their reasons are unchanged, and this line does not accept them. The ticket's Done-when asks that the release shipped with the fallback be named here: that release is the owner's to tag and is named in the pull request.
+
+## Amendment 2026-11-03: colibri's streamed tokens reach rpc clients (#1059)
+
+#281 turned streaming on for an openai-chat endpoint identified as colibri, and each content delta became a `model token` tracing event (#280) at DEBUG. That was deliberate: the stdout layer `rpc` and `--json` share was fixed at `trellis=info`, and at INFO a reply would put one event per token in front of every `run --json` reader (ADR 0025) and one line per token on stderr. As a result no client could read the deltas, and the Go TUI showed nothing during a colibri turn that can last minutes. The owner's answer (a) on #281 split showing them into #1059.
+
+Decision. The event keeps its level, DEBUG, and its message, `model token`, with one field, `text`. It gets a target of its own, `trellis_model::token` (`trellis_model::TOKEN_TARGET`). The stdout layer's filter is `trellis=info` for `--json` as before. Under `trellis rpc` the filter also admits that one target at DEBUG (`startup.rs`). Nothing else changes: `--json` writes no per-token event, and stderr and `--log-json` keep `RUST_LOG`'s filter, whose default is `trellis=info`, so a token line appears there only when someone asks for DEBUG, as before. The event is not emitted separately for rpc. Its source is the same tracing record, so there is still one telemetry path (CLAUDE.md, Style).
+
+Why `--json` does not carry it: a `run --json` reader is a script or a CI log, and has no turn in progress to draw. One event per token would multiply its input by the reply's length for nothing it reads. An rpc client is a live view, and the deltas are what it shows during the wait.
+
+What a client may rely on is in `client_contract.json`, under `rpc.not_every_client.events["model token"]`. The deltas come in order. They come after the `model call` event that asked for the reply and before the `turn` event that reports it. Only a streamed reply sends them, and in the ticket's words they come "before the run's model call record" only in that sense: the loop sends `model call` before the request, so the turn event is what follows the reply. `event_line.level_values` gains DEBUG, which only this event has. `read_by` names the TUI alone. The TUI draws the deltas below the transcript under a label saying they are the model's words and not a verdict, made plain, and drops them when the turn's event, `run_end` or the child's exit arrives (`tui/internal/model/stream.go`). The desktop drops the event, as it drops every event it has no record for (`parse_stdout`). Drawing it there is a ticket of its own. The trail does not record the deltas.
+
+Held by `colibri_stream_tokens_reach_rpc`, `colibri_stream_tokens_stay_off_json_and_stderr` and `colibri_stream_tokens_absent_for_a_server_not_identified_as_colibri` in `crates/trellis-cli/tests/modes.rs`; `colibri_stream_emits_each_content_delta` and `colibri_stream_token_events_are_below_info` in trellis-model, which now read the event only under its target; `TestFramesReadEveryContractField`, `TestStreamedTokensDrawnUntilTheTurnReplacesThem` and `TestStreamedReplyKeepsItsNewestBytes` in `tui/`; and the `tui/PARITY.md` rows for #1059.
