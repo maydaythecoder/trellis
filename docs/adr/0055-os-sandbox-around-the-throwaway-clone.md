@@ -222,6 +222,16 @@ fail on a machine with a working `bwrap` (checked while writing them).
   confine would not be caught by the trial run. The `sandboxed_writer_`
   tests run `sandbox-exec` for real on macOS and are the check: run them
   there before relying on it.
+- **Amended 2026-11-04 (#1074), from the first run on a Mac.** Seatbelt
+  hides the home by denying reads, which fail with EPERM; `bwrap`'s empty
+  tmpfs gives ENOENT. git dies on an unreadable `~/.gitconfig` unless it is
+  missing, so every `git` a sandboxed command ran exited 128. Under
+  `sandbox-exec` with a home to hide, the command now gets
+  `GIT_CONFIG_GLOBAL=/dev/null` (`OsSandbox::env`), set after everything
+  else at both spawn sites, a profile's `pass_env` included: git reads no
+  user config, as under `bwrap`, and the home stays unreadable. A user
+  with `~/.config/git/ignore` or `attributes` sees git warn that it cannot
+  read them; it still runs.
 - **Ubuntu 24.04's AppArmor refusal** is simulated by a stand-in binary.
   The suite ran as root, in a container without that restriction; a
   manual trial run as `nobody` there succeeded too.

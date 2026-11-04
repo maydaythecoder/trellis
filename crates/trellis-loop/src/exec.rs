@@ -205,6 +205,11 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, ExecError> {
     // where git does not ignore it, it moves the per-call worktree digest
     // and voids a pass (ADR 0023 §4). Last, so `spec.env` cannot undo it.
     cmd.env("PYTHONDONTWRITEBYTECODE", "1");
+    // What the sandbox needs its command to have (`OsSandbox::env`), last
+    // for the same reason.
+    if let Some(os) = spec.os {
+        cmd.envs(os.env().iter().copied());
+    }
     // Its own process group, so a timeout can kill what it started too
     // (`kill_tree`). Safe std; the signal goes through `kill(1)`.
     #[cfg(unix)]

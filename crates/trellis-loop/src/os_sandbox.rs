@@ -188,6 +188,28 @@ impl OsSandbox {
         }
     }
 
+    /// Variables the command is given under this sandbox, set after
+    /// everything else the caller sets so none of it can undo them.
+    ///
+    /// Seatbelt hides the home directory by denying reads, which fail with
+    /// EPERM where `bwrap`'s empty tmpfs gives ENOENT. git takes an
+    /// unreadable `~/.gitconfig` as fatal unless it is missing, so every
+    /// `git` the command ran exited 128 (#1074). Pointing git's global
+    /// config at `/dev/null` gives it what it has under `bwrap`: no user
+    /// config, and with it no `$XDG_CONFIG_HOME/git/config` either. The home
+    /// stays unreadable; opening `~/.gitconfig` instead would hand the
+    /// command whatever the user keeps there (credential helpers, tokens
+    /// in remote URLs).
+    pub fn env(&self) -> &'static [(&'static str, &'static str)] {
+        match self.state {
+            State::Ready {
+                kind: OsSandboxKind::SandboxExec,
+                ..
+            } if self.home.is_some() => &[("GIT_CONFIG_GLOBAL", "/dev/null")],
+            _ => &[],
+        }
+    }
+
     /// The argv that runs `argv` under the sandbox, confined to `clone`;
     /// `argv` itself when there is no sandbox. The caller spawns it with
     /// `clone` as its working directory and scrubs it as any other spawn.
@@ -627,5 +649,20 @@ mod tests {
             hideable_home(d.path()),
             Some(std::fs::canonicalize(d.path()).unwrap())
         );
+    }
+
+    #[test]
+    fn os_sandbox_seatbelt_gives_git_no_global_config_and_nothing_else_changes() {
+        // The risk (#1074): under Seatbelt the hidden home's `~/.gitconfig`
+        // fails with EPERM and every `git` the command runs dies. The fix
+        // must not reach `bwrap`, whose empty home git already reads as
+        // absent, nor an unsandboxed command, whose user config is its own.
+        let mac = ready(OsSandboxKind::SandboxExec, Some("/Users/u"), "/private/tmp");
+        assert_eq!(mac.env(), [("GIT_CONFIG_GLOBAL", "/dev/null")]);
+        let mac_no_home = ready(OsSandboxKind::SandboxExec, None, "/private/tmp");
+        assert!(mac_no_home.env().is_empty());
+        let linux = ready(OsSandboxKind::Bwrap, Some("/home/u"), "/tmp");
+        assert!(linux.env().is_empty());
+        assert!(OsSandbox::none("control").env().is_empty());
     }
 }
