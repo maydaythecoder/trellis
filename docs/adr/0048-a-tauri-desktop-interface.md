@@ -436,6 +436,14 @@ the summary level's (#790). Held by
 `a_trail_without_controls_keeps_its_digest` in trellis-trail, and
 `a_follow_up_withdrawn_after_the_drain_is_in_controls_not_steering` in
 trellis-loop.
+*Added 2026-11-03 (#1059):* the `model token` event, one per content
+delta of a reply colibri streams, with `text`, at level DEBUG, which
+`event_line.level_values` now lists. Only `trellis rpc` sends it: its
+stdout layer admits the event's own target, `trellis_model::token`, at
+DEBUG, and `--json` keeps `trellis=info`. ADR 0052's amendment of this date
+says why. It is listed under `rpc.not_every_client.events` with `read_by`
+naming the TUI. The desktop drops it, as every event it has no record for.
+Held by the `colibri_stream_tokens_` tests in `tests/modes.rs`.
 
 ### 7. Auditing Tauri's tree
 
