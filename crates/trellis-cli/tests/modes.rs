@@ -714,7 +714,9 @@ fn provider_stub_with_headers(
         let mut got = Vec::new();
         let mut replies = replies.into_iter().peekable();
         while let Some(r) = replies.peek() {
-            let Ok((mut s, _)) = l.accept() else { break };
+            let Some(mut s) = accept_within(&l) else {
+                break;
+            };
             let (raw, body) = read_request(&mut s);
             // A runtime driver opens one connection and sends nothing on it
             // to see that something listens (`reachable`), before its first
@@ -737,6 +739,34 @@ fn provider_stub_with_headers(
         got
     });
     (format!("http://{addr}"), h)
+}
+
+/// The next connection to `l`, or None once 30 s pass with none. A stub
+/// waiting on `accept` for a request the code under test never sent (it
+/// refused the command, or answered without asking) blocked the test's
+/// `join` on it forever, and the suite with it, where the test should go on
+/// and fail on what the stub got: `cargo mutants` read such a mutant as a
+/// timeout, not a kill (#1031; `rpc::tests::accept_one` is the same bound).
+fn accept_within(l: &std::net::TcpListener) -> Option<std::net::TcpStream> {
+    const NO_REQUEST: std::time::Duration = std::time::Duration::from_secs(30);
+    l.set_nonblocking(true).ok()?;
+    let deadline = std::time::Instant::now() + NO_REQUEST;
+    loop {
+        match l.accept() {
+            Ok((s, _)) => {
+                // An accepted socket can inherit the listener's mode.
+                s.set_nonblocking(false).ok()?;
+                return Some(s);
+            }
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(_) => return None,
+        }
+    }
 }
 
 fn openai_call(id: &str, name: &str, args: Value) -> String {
@@ -1242,12 +1272,24 @@ fn rpc_a_prompt_right_after_run_end_is_accepted_and_runs() {
                                 "model": f.spec}),
     );
     rpc.next(|v| v["type"] == "run_end" && v["id"] == "p");
+    let ended = std::time::Instant::now();
     rpc.send(
         serde_json::json!({"id": "q", "type": "prompt", "task": "change f again",
                                 "model": f.spec}),
     );
     let q = rpc.next(|v| v["type"] == "response" && v["id"] == "q");
     assert_eq!(q["success"], true, "{q}");
+    // The second risk: the prompt is taken only once p's thread has
+    // finished its tail, so it waited out the seam's 1500 ms. Answered
+    // sooner, either the seam no longer holds the tail open (and this test
+    // no longer reaches the window it is about) or the server took the
+    // prompt while p's thread was still running. 1000 ms leaves the reader
+    // thread's latency in hand.
+    let waited = ended.elapsed();
+    assert!(
+        waited >= std::time::Duration::from_millis(1000),
+        "q was answered {waited:?} after p's run_end, inside the 1500 ms tail"
+    );
     let end = rpc.next(|v| v["type"] == "run_end" && v["id"] == "q");
     assert_eq!(end["outcome"], "not_converged", "{end}");
     let rs = rpc.finish();
@@ -4932,30 +4974,50 @@ fn rpc_get_state_tier_after_a_colibri_refusal_is_the_refusal_the_run_decided() {
 /// is a `done` call. As `tests/colibri_run.rs`'s `stub_health` does for
 /// `run --json`.
 fn colibri_health_stub(health: &'static str) -> String {
+    colibri_stub(health, None)
+}
+
+/// [`colibri_health_stub`], or with `said`, one whose first run reply is a
+/// `read_file a.py` call carrying `said` beside it, streamed a word to a
+/// content delta, and whose later ones are `done` (#1059): a turn event
+/// then reports the reply the deltas were part of.
+fn colibri_stub(health: &'static str, said: Option<&'static str>) -> String {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
+    let mut runs = 0;
     std::thread::spawn(move || {
         for s in l.incoming() {
             let Ok(mut s) = s else { break };
             let (raw, body) = read_request(&mut s);
             let first = raw.lines().next().unwrap_or_default();
-            let reply = if is_models_get(&raw) {
-                r#"{"object":"list","data":[{"id":"glm-5.2","object":"model","created":1758800000,"owned_by":"colibri"}]}"#.to_string()
+            let request = serde_json::from_str::<Value>(&body).unwrap_or(Value::Null);
+            let (kind, reply) = if is_models_get(&raw) {
+                ("application/json", r#"{"object":"list","data":[{"id":"glm-5.2","object":"model","created":1758800000,"owned_by":"colibri"}]}"#.to_string())
             } else if first.starts_with("GET ") && first.contains("/health ") {
-                health.to_string()
-            } else if serde_json::from_str::<Value>(&body).is_ok_and(|v| v["max_tokens"] == 1) {
+                ("application/json", health.to_string())
+            } else if request["max_tokens"] == 1 {
                 // The tools probe (ADR 0047 decision 4): accepted.
-                r#"{"id":"chatcmpl-1","object":"chat.completion","created":1758800000,"model":"glm-5.2","choices":[{"index":0,"message":{"role":"assistant","content":"I"},"finish_reason":"length"}],"usage":{"prompt_tokens":40,"completion_tokens":1,"total_tokens":41}}"#.to_string()
+                ("application/json", r#"{"id":"chatcmpl-1","object":"chat.completion","created":1758800000,"model":"glm-5.2","choices":[{"index":0,"message":{"role":"assistant","content":"I"},"finish_reason":"length"}],"usage":{"prompt_tokens":40,"completion_tokens":1,"total_tokens":41}}"#.to_string())
             } else {
-                openai_call(
-                    "c1",
-                    "done",
-                    serde_json::json!({"summary": "nothing to do"}),
-                )
+                // The run's request, answered as a stream whatever it asked:
+                // a client `build` made for colibri reads nothing else, and a
+                // client that did not ask cannot read this (#281).
+                runs += 1;
+                let whole = match said {
+                    Some(said) if runs == 1 => {
+                        openai_said("c1", "read_file", serde_json::json!({"path": "a.py"}), said)
+                    }
+                    _ => openai_call(
+                        "c2",
+                        "done",
+                        serde_json::json!({"summary": "nothing to do"}),
+                    ),
+                };
+                ("text/event-stream", sse(&whole))
             };
             let _ = s.write_all(
                 format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{reply}",
+                    "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\r\n{reply}",
                     reply.len()
                 )
                 .as_bytes(),
@@ -4963,6 +5025,54 @@ fn colibri_health_stub(health: &'static str) -> String {
         }
     });
     format!("http://{addr}")
+}
+
+/// [`openai_call`] with `said`, the model's words, beside the call.
+fn openai_said(id: &str, name: &str, args: Value, said: &str) -> String {
+    let mut whole: Value = serde_json::from_str(&openai_call(id, name, args)).unwrap();
+    whole["choices"][0]["message"]["content"] = said.into();
+    whole.to_string()
+}
+
+/// `whole`, a `chat.completion`, as colibri streams it when the request
+/// asks (ce370e8, c/openai_server.py:4940-5150): the content in deltas,
+/// each tool call in one delta, the finish chunk, the usage chunk
+/// `include_usage` asks for, and `data: [DONE]`.
+fn sse(whole: &str) -> String {
+    use serde_json::json;
+    let v: Value = serde_json::from_str(whole).unwrap();
+    let m = &v["choices"][0]["message"];
+    let chunk = |delta: Value, finish: Value| {
+        json!({"object": "chat.completion.chunk",
+               "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]})
+    };
+    let mut events = vec![chunk(json!({"role": "assistant"}), Value::Null)];
+    for word in m["content"]
+        .as_str()
+        .unwrap_or_default()
+        .split_inclusive(' ')
+    {
+        events.push(chunk(json!({"content": word}), Value::Null));
+    }
+    for (i, c) in m["tool_calls"].as_array().into_iter().flatten().enumerate() {
+        events.push(chunk(
+            json!({"tool_calls": [{"index": i, "id": c["id"], "type": "function",
+                                   "function": c["function"]}]}),
+            Value::Null,
+        ));
+    }
+    let finish = if m["tool_calls"].is_array() {
+        "tool_calls"
+    } else {
+        "stop"
+    };
+    events.push(chunk(json!({}), json!(finish)));
+    events.push(json!({"object": "chat.completion.chunk", "choices": [], "usage": v["usage"]}));
+    events
+        .iter()
+        .map(|e| format!("data: {e}\n\n"))
+        .chain(["data: [DONE]\n\n".to_string()])
+        .collect()
 }
 
 /// One rpc run against [`colibri_health_stub`] answering `health`: the
@@ -5052,6 +5162,159 @@ fn rpc_runtime_identified_leaves_unreported_counts_absent_never_0() {
             "the contract says when {k} is absent"
         );
     }
+}
+// ---- #1059: colibri's streamed tokens reach rpc clients, and only them ----
+
+/// The words the colibri stub's run reply carries, and the content deltas
+/// its stream splits them into (`sse`, a word to a delta).
+const STREAMED: &str = "I have nothing to change here.";
+const DELTAS: [&str; 6] = ["I ", "have ", "nothing ", "to ", "change ", "here."];
+
+#[test]
+fn colibri_stream_tokens_reach_rpc() {
+    // The risk (#1059): a colibri turn of minutes during which a client
+    // reads nothing, because the deltas stopped at `trellis=info`; or
+    // deltas that arrive out of order, after the turn they belong to, or
+    // carrying something other than the delta's text.
+    let f = fixture("rpc-stream-tokens");
+    let base = colibri_stub(r#"{"status":"ok"}"#, Some(STREAMED));
+    let key_env = user_provider(&f, "coli", &format!("{base}/v1"));
+    let mut cmd = trellis(&f);
+    cmd.env_remove(key_env);
+    let mut rpc = Rpc::start(cmd);
+    rpc.choose("provider:coli#glm-5.2");
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                                "model": "provider:coli#glm-5.2"}),
+    );
+    rpc.next(|v| v["type"] == "run_end" && v["id"] == "p");
+    let records = rpc.finish();
+    let is = |r: &Value, m: &str| r["fields"]["message"] == m;
+    let tokens: Vec<(usize, &Value)> = records
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| is(r, "model token"))
+        .collect();
+    let texts: Vec<&str> = tokens
+        .iter()
+        .map(|(_, r)| r["fields"]["text"].as_str().expect("text is a string"))
+        .collect();
+    assert_eq!(texts, DELTAS, "one event per delta, in order: {records:?}");
+    // The turn in progress: after the `model call` that asked for the
+    // reply and before the `turn` event that reports it, so a client can
+    // drop the deltas when the turn arrives.
+    let call = records
+        .iter()
+        .position(|r| is(r, "model call") && r["fields"]["turn"] == 1)
+        .expect("a model call for turn 1");
+    let turn = records
+        .iter()
+        .position(|r| is(r, "turn") && r["fields"]["turn"] == 1)
+        .expect("a turn 1 event");
+    for (at, r) in &tokens {
+        assert!(
+            call < *at && *at < turn,
+            "{r} at {at}, not in ({call}, {turn})"
+        );
+    }
+    // Every field the contract lists, and the level the contract names.
+    let c = contract();
+    let later = &c["rpc"]["not_every_client"];
+    let event = &later["events"]["model token"];
+    let levels = names(&later["event_line"]["level_values"]);
+    assert!(levels.contains(&"DEBUG"), "{levels:?}");
+    for (_, r) in &tokens {
+        assert!(
+            missing(&r["fields"], &event["always"], "model token").is_empty(),
+            "{r}"
+        );
+        assert_eq!(r["level"], "DEBUG", "{r}");
+    }
+}
+
+#[test]
+fn colibri_stream_tokens_stay_off_json_and_stderr() {
+    // The risk (#1059, ADR 0025): letting the deltas past rpc's filter put
+    // a new event per token in front of every `run --json` reader, or a
+    // line per token on stderr at the default filter.
+    let f = fixture("json-stream-tokens");
+    let base = colibri_stub(r#"{"status":"ok"}"#, Some(STREAMED));
+    let key_env = user_provider(&f, "coli", &format!("{base}/v1"));
+    let o = trellis(&f)
+        .env_remove(key_env)
+        .args([
+            "run",
+            "change f",
+            "--model",
+            "provider:coli#glm-5.2",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    let lines = jsonl(&o);
+    let err = String::from_utf8_lossy(&o.stderr);
+    // The run streamed: colibri was identified and its reply was read.
+    assert!(
+        lines
+            .iter()
+            .any(|l| l["fields"]["message"] == "runtime identified"),
+        "{lines:?}\n{err}"
+    );
+    assert!(
+        lines.iter().any(|l| l["fields"]["message"] == "turn"),
+        "{lines:?}\n{err}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l["fields"]["message"] == "model token"),
+        "{lines:?}"
+    );
+    assert!(!err.contains("model token"), "{err}");
+}
+
+#[test]
+fn colibri_stream_tokens_absent_for_a_server_not_identified_as_colibri() {
+    // The risk: a `model token` event a client would draw as streamed text
+    // for a reply that was never streamed. Only a colibri endpoint over
+    // openai-chat streams (#281); the provider stub is not colibri (its
+    // /v1/models is a 404), so its whole reply sends none, words or not.
+    let f = fixture("rpc-no-stream-tokens");
+    let (base, server) = provider_stub(vec![
+        openai_said(
+            "c1",
+            "read_file",
+            serde_json::json!({"path": "a.py"}),
+            STREAMED,
+        ),
+        openai_call(
+            "c2",
+            "done",
+            serde_json::json!({"summary": "nothing to do"}),
+        ),
+    ]);
+    let key_env = user_provider(&f, "stub", &base);
+    let mut cmd = trellis(&f);
+    cmd.env_remove(key_env);
+    let mut rpc = Rpc::start(cmd);
+    rpc.choose("provider:stub#m");
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                                "model": "provider:stub#m"}),
+    );
+    rpc.next(|v| v["type"] == "run_end" && v["id"] == "p");
+    let records = rpc.finish();
+    assert_eq!(server.join().unwrap().len(), 2, "{records:?}");
+    assert!(
+        records.iter().any(|r| r["fields"]["message"] == "turn"),
+        "{records:?}"
+    );
+    assert!(
+        !records
+            .iter()
+            .any(|r| r["fields"]["message"] == "model token"),
+        "{records:?}"
+    );
 }
 
 // ---- #564: a session's model is chosen before its first prompt ----

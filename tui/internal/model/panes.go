@@ -197,7 +197,7 @@ func (m *Model) viewState() view.State {
 	return view.State{
 		Model:      m.ModelName,
 		Tier:       m.Tier,
-		Transcript: m.Transcript,
+		Transcript: m.transcriptRows(),
 		Filter:     m.filter,
 		Quiet:      m.quiet,
 		CallOpen:   m.call != nil,

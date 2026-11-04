@@ -176,6 +176,18 @@ those pull requests and on a push to `main`, not on a push to `dev`: the
 and a cancelled duplicate run on the `dev` push showed as failed checks on
 the `dev → main` pull request (#473; ADR 0051 item 4, amended by #477).
 
+**A draft pull request when work starts** (ADR 0061, the owner's rule of
+2026-11-03). The moment work on a ticket starts: cut `t<n>-<slug>` or
+`feature/<slug>` from `origin/dev`, push it at once (an empty commit is
+fine), and run `gh pr create --draft --base audit` with a body that links
+the ticket. Run `gh pr ready` only once the ticket's Verify lines and the
+gates pass; then merge the branch into `audit` with `git merge --no-ff` and
+push. The draft gets no CI, since nothing runs on a pull request into
+`audit` ("CI runners", below); a ticket's evidence is still its gates and
+the CI of the `audit → dev` pull request that carries it. No gate checks
+that the draft exists: it would need the network, and a gate that cannot
+run fails.
+
 The pre-push hook (`scripts/hooks/pre-push`,
 installed by `scripts/hooks/install.sh`; `scripts/checks/pre-push-selftest.sh`
 shows it firing) refuses every push to `main`, and to the deleted `v0.1-resolver` and `drain` so an old clone cannot re-create them, and of any `v*` tag (ADR 0051 item 3), from a clone that has
@@ -268,7 +280,9 @@ The self-hosted runners below are set aside as of 2026-10-19: the runner
 host stopped taking jobs on 2026-10-12, every run queued until the next push
 cancelled it, and #736 moved the jobs off them so promotion PRs could merge
 again. The table and the procedure that follow are kept as the record of
-that setup; the low-privilege account move is #219, open and parked. What
+that setup; the low-privilege account move is #219, closed as not planned
+on 2026-11-02 when the last runner registration (`trellis-wsl`) was
+deleted, and to be reopened if a self-hosted runner returns. What
 was true until then: GitHub-hosted jobs stopped starting on 2026-09-28
 ("recent account payments have failed or your spending limit needs to be
 increased") and CI ran on two self-hosted runners on the owner's machine
