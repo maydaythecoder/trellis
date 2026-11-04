@@ -13,7 +13,7 @@ existing command, not a flag or a command.
 
 ## Context
 
-CI on `main` at b49920e failed on 2026-10-24 (run 40056551866) in the
+CI on `main` at 2dc763f failed on 2026-10-24 (run 40056551866) in the
 `supply-chain` job, on two findings no commit caused: tokio 1.53.1
 (RUSTSEC-2026-0386, published after the lock was written) and clipboard-win
 5.4.1 (yanked after it). `dev` already carried both fixes (#770, #775), so
@@ -101,7 +101,7 @@ repository supplies.
   writes it) and `deny.toml`'s `[advisories].ignore` are now read by
   trellis. A report shape change reads as "not checked", with the reason,
   never as clean; the fixture in `doctor_supply.rs` is the report for
-  `main`'s lock at b49920e, run on 2026-10-25, and is the shape to update
+  `main`'s lock at 2dc763f, run on 2026-10-25, and is the shape to update
   when CI's pinned cargo-audit moves.
 - The policy is applied twice, by cargo-deny in CI and by this line, from
   the same ignore list. cargo-deny's other advisory settings (a severity

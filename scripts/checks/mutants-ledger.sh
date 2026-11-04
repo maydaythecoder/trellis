@@ -9,7 +9,7 @@
 # A shard directory holds `COMMIT`, `missed.txt` and `timeout.txt` as
 # `trellis-cli` sharded runs write them (ADR 0060 §5). Each line of missed.txt
 # and timeout.txt must appear, after the last ` | crates/`, on one line of the
-# ledger's 6b804cb block (the `<details>` whose summary names that commit), and
+# ledger's cf821cd block (the `<details>` whose summary names that commit), and
 # that line must start with a disposition: killed, equivalent, unexercisable,
 # windows-only, unix-only or not applicable. A kill is only as good as the
 # test it names, so "killed … by <path::to::test>" also needs `fn <test>`
@@ -23,14 +23,14 @@
 # all ten are present and pass, so a dropped shard cannot read as a clean run.
 #
 # Exit 0: every line is dispositioned. Exit 1: some are not (each is printed
-# with why), COMMIT does not read 6b804cb, a shard file or the ledger block is
+# with why), COMMIT does not read cf821cd, a shard file or the ledger block is
 # missing, or a shard is missing under --all. Exit 2: wrong arguments, or not
 # in a git repository.
 set -uo pipefail
 
 usage='usage: mutants-ledger.sh <shard-dir> | --all <dir> | --self-test'
-want_commit=6b804cb
-block_summary='<summary>trellis-cli at 6b804cb, workspace suite on Linux (#248)</summary>'
+want_commit=cf821cd
+block_summary='<summary>trellis-cli at cf821cd, workspace suite on Linux (#248)</summary>'
 # Git Bash rewrites a path-looking argument otherwise.
 export MSYS_NO_PATHCONV=1
 

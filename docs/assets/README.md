@@ -1,7 +1,7 @@
 # Pictures, and how each one was made
 
 Every image under `docs/assets/` was produced from this repository's own
-binaries against real repositories, on 2026-10-19 from `dev` at `062f3e2`
+binaries against real repositories, on 2026-10-19 from `dev` at `aea26e3`
 (`trellis 0.1.0`, rustc 1.93.0, go 1.24.7, Linux x86-64). Nothing is mocked
 up. Where a model appears, it is the `scripted:` model, and the caption says
 so.

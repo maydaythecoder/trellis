@@ -41,7 +41,7 @@ loop does not honour, a limit the budget does not enforce, a cancel the
 model still receives. DESIGN.md §2 forbids that: every control on screen is
 one rpc answers, drawn as it works, or marked not built.
 
-What the engine has to build on, on `dev` at e51f277:
+What the engine has to build on, on `dev` at 4b9509c:
 
 - `run_seeded` checks the budget at the top of each iteration, then drains
   the steering channel, then makes the model request. That drain,

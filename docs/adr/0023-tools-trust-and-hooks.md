@@ -732,7 +732,7 @@ this amendment a hook that wrote at any of those points left bytes in a
     - Settings that run commands only in commands trellis does not run
       during a run (`diff.external`, textconv, `core.pager`,
       `core.sshCommand`, credential helpers) are not overridden.
-      *[2026-10-11, security finding F1 in AUDIT-2026-10-11 at 5f6de094: the premise
+      *[2026-10-11, security finding F1 in AUDIT-2026-10-11 at 0fbcc6fc: the premise
       was false for `core.sshCommand`, and for `remote.<r>.uploadpack`,
       which this list left out. In a partial clone, a git command that
       reads an object the store lacks fetches it from the promisor remote
@@ -1338,7 +1338,7 @@ names are in the code beside each.
 - **`coverage_report` is an opt-in built-in** (#129), after `callees_of`:
   `doubt_in_files` over the named paths as counts only, never the
   index-wide `resolved` figure or a percentage.
-- **No lazy fetch (security finding F1, AUDIT-2026-10-11 at 5f6de094).** `command()`,
+- **No lazy fetch (security finding F1, AUDIT-2026-10-11 at 0fbcc6fc).** `command()`,
   `command_with_hooks()` and the environment `grep` and `find` hand
   `exec::run` with their `git_argv` argv all set `GIT_NO_LAZY_FETCH=1`
   (`trellis_vcs::ENV`). A planted promisor remote (`remote.<r>.uploadpack`
