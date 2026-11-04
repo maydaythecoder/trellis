@@ -43,6 +43,9 @@ Linux and macOS: the pipe is passed as fds 3 and 4, which Windows lacks.
 `--self-test` runs the same checks against three small pages it serves
 itself: one clean, one that logs a console error, one that adds a listener
 it never removes; the clean one must pass and the other two must fail.
+Before it looks for Chrome, it spawns a stand-in child on the same pipe with
+fds 3 and 4 closed in this process at the fork, and the message must come
+back (#1063).
 
 Exit 0: clean. Exit 1: an error on the page, a count that did not come
 back, or the self-test did not hold. Exit 2: Chrome, a binary or the fixture
@@ -95,16 +98,6 @@ class Chrome:
 
     def __init__(self, binary):
         self.profile = tempfile.mkdtemp(prefix="trellis-smoke-chrome-")
-        # Chrome reads commands on its fd 3 and writes on its fd 4. Each end
-        # is first moved above fd 10, so placing it at 3 or 4 in the child
-        # cannot overwrite the other.
-        to_chrome_r, to_chrome_w = (_high(fd) for fd in os.pipe())
-        from_chrome_r, from_chrome_w = (_high(fd) for fd in os.pipe())
-
-        def place():
-            os.dup2(to_chrome_r, 3)
-            os.dup2(from_chrome_w, 4)
-
         args = [
             binary,
             "--headless=new",
@@ -122,14 +115,7 @@ class Chrome:
             "--no-sandbox",
             "about:blank",
         ]
-        self.proc = subprocess.Popen(
-            args, preexec_fn=place, pass_fds=(3, 4),
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        for fd in (to_chrome_r, from_chrome_w):
-            os.close(fd)
-        self.out = os.fdopen(to_chrome_w, "wb", buffering=0)
-        self.inp = os.fdopen(from_chrome_r, "rb", buffering=0)
+        self.proc, self.out, self.inp = spawn_on_pipe(args)
         self.next_id = 0
         self.answers = {}
         self.answered = threading.Condition()
@@ -194,6 +180,37 @@ class Chrome:
         if not self.reader.is_alive():
             self.inp.close()
         shutil.rmtree(self.profile, ignore_errors=True)
+
+
+def spawn_on_pipe(args):
+    """Starts `args` with a pipe from this process on its fd 3 and one back
+    to this process on its fd 4. Returns the process, the writer to its fd 3
+    and the reader from its fd 4.
+
+    Each end is first moved to fd 10 or above, so placing one at 3 or 4 in
+    the child cannot overwrite the other. They are placed by `preexec_fn`,
+    and the spawn passes no `pass_fds` and keeps `close_fds` off (#1063):
+    CPython's child makes every `pass_fds` descriptor inheritable before it
+    calls `preexec_fn` (`make_inheritable` in `_posixsubprocess.c`), so
+    `pass_fds=(3, 4)` needed fds 3 and 4 open in this process at the fork,
+    and nothing here holds them: when neither was, Popen raised EBADF.
+    `dup2` makes fds 3 and 4 inheritable in the child itself, and every
+    other descriptor Python opens is non-inheritable (PEP 446), so with
+    `close_fds` off nothing else reaches the child."""
+    to_child_r, to_child_w = (_high(fd) for fd in os.pipe())
+    from_child_r, from_child_w = (_high(fd) for fd in os.pipe())
+
+    def place():
+        os.dup2(to_child_r, 3)
+        os.dup2(from_child_w, 4)
+
+    proc = subprocess.Popen(
+        args, preexec_fn=place, close_fds=False,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    for fd in (to_child_r, from_child_w):
+        os.close(fd)
+    return proc, os.fdopen(to_child_w, "wb", buffering=0), os.fdopen(from_child_r, "rb", buffering=0)
 
 
 def _high(fd):
@@ -623,6 +640,54 @@ def self_test(chrome_bin):
     return 0
 
 
+def pipe_self_test():
+    """#1063: the spawn holds when fds 3 and 4 are not open in this process
+    at the fork, as when whatever sat there was closed by another thread or
+    a garbage collection between Popen's own opens and its fork. Fds 3 and 4
+    are held while Popen opens its descriptors, so none of them lands
+    there, and closed just before the fork; a stand-in child then echoes a
+    message from its fd 3 to its fd 4. The spawn before #1063 failed here
+    with EBADF. Needs no Chrome."""
+    for fd in (3, 4):
+        try:
+            os.fstat(fd)
+        except OSError:
+            continue
+        return [f"fd {fd} is open in this process before the check; it cannot be closed under the fork"]
+    held = _high(os.open(os.devnull, os.O_RDONLY))
+    os.dup2(held, 3)
+    os.dup2(held, 4)
+    os.close(held)
+    fork_exec = subprocess._fork_exec
+    closed = []
+
+    def closing_first(*a):
+        os.close(3)
+        os.close(4)
+        closed.append(True)
+        return fork_exec(*a)
+
+    echo = [sys.executable, "-I", "-c", "import os; os.write(4, os.read(3, 64))"]
+    subprocess._fork_exec = closing_first
+    try:
+        proc, out, inp = spawn_on_pipe(echo)
+    except OSError as e:
+        return [f"the spawn failed with fds 3 and 4 closed in this process: {e}"]
+    finally:
+        subprocess._fork_exec = fork_exec
+        if not closed:
+            os.close(3)
+            os.close(4)
+    out.write(b"ping")
+    out.close()
+    got = inp.read()
+    inp.close()
+    code = proc.wait(timeout=WAIT)
+    if got != b"ping" or code != 0:
+        return [f"the stand-in child read fd 3 and wrote fd 4 as {got!r}, exit {code}; want b'ping', exit 0"]
+    return []
+
+
 def find_chrome(given):
     if given:
         if shutil.which(given) or os.path.isfile(given):
@@ -647,6 +712,13 @@ def main(argv):
     if os.name != "posix":
         print("smoke: the DevTools pipe is fds 3 and 4, which this platform lacks; run it on Linux or macOS")
         return 2
+    if a.self_test:
+        bad = pipe_self_test()
+        for b in bad:
+            print(f"FAIL: self-test: {b}")
+        if bad:
+            return 1
+        print("OK: self-test (the DevTools pipe reaches a child's fds 3 and 4 with neither open here at the fork)")
     try:
         chrome = find_chrome(a.chrome)
         if a.self_test:
