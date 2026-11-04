@@ -1172,7 +1172,7 @@ mod doctor_tests {
     #[cfg(unix)]
     #[test]
     fn coverage_is_available_when_a_pytest_on_disk_offers_cov() {
-        // #248 (6b804cb, shard 1). The risk: `coverage_available` answering
+        // #248 (cf821cd, shard 1). The risk: `coverage_available` answering
         // false for a pytest whose `--help` offers `--cov`, so `doctor`
         // reports no coverage plugin to a user who has one, and every run
         // reads as `0 verified` for a missing tool that is there.

@@ -167,7 +167,7 @@ jobs:
       # and the upload still has time to run.
       #
       # On Linux the step runs inside a memory-capped cgroup (#1026). A mutant
-      # whose test allocates without bound (two in trellis-cli at 6b804cb:
+      # whose test allocates without bound (two in trellis-cli at cf821cd:
       # `pick` never returning at end of input, `answer` always returning an
       # empty line) took every byte of the runner before `--timeout 300`
       # could fire; the runner service died, the job was cancelled, the

@@ -1,4 +1,4 @@
-# `file=crates/trellis-cli/src/run_cmd.rs` at 6b804cb
+# `file=crates/trellis-cli/src/run_cmd.rs` at cf821cd
 
 The four outcome files of `mutants.yml` run 41290111656
 (`crate=trellis-cli os=linux file=crates/trellis-cli/src/run_cmd.rs`,

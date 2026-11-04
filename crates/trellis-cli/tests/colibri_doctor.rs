@@ -243,7 +243,7 @@ fn colibri_doctor_reports_one_kv_slot_as_single_stream() {
     assert!(line(&s, "batching:").contains("single-stream"), "{s}");
     // Not llama.cpp's advice: colibri has no --parallel.
     assert!(!s.contains("--parallel"), "{s}");
-    // #248 (6b804cb, shard 1). The risk: the note that explains a slot
+    // #248 (cf821cd, shard 1). The risk: the note that explains a slot
     // count above one appearing under a single slot, where there is no
     // batching figure for it to qualify.
     assert!(!s.contains("colibri's configured KV slot count"), "{s}");
@@ -251,7 +251,7 @@ fn colibri_doctor_reports_one_kv_slot_as_single_stream() {
 
 #[test]
 fn colibri_doctor_card_lines_carry_the_capabilities_and_modalities_colibri_listed() {
-    // #248 (6b804cb, shard 1). The risk: the card lines missing, empty or
+    // #248 (cf821cd, shard 1). The risk: the card lines missing, empty or
     // made up, so what the run's preflight will refuse on (#626) is not
     // what doctor shows. Both lists are colibri's own words, passed through.
     let models = r#"{"object":"list","data":[{"id":"glm-5.2","object":"model","created":1758800000,"owned_by":"colibri","capabilities":["chat","tools"],"input_modalities":["text","image"]}]}"#;
@@ -278,7 +278,7 @@ fn colibri_doctor_card_lines_carry_the_capabilities_and_modalities_colibri_liste
 
 #[test]
 fn colibri_doctor_puts_colibri_s_lines_right_after_the_batching_line() {
-    // #248 (6b804cb, shard 1). The risk: colibri's lines spliced before
+    // #248 (cf821cd, shard 1). The risk: colibri's lines spliced before
     // the model's batching line instead of after it, so the report reads
     // colibri's health before the line that says what model answered.
     let (base, _) = colibri();
@@ -296,7 +296,7 @@ fn colibri_doctor_puts_colibri_s_lines_right_after_the_batching_line() {
 
 #[test]
 fn colibri_doctor_says_models_was_read_on_this_machine_and_not_for_https() {
-    // #248 (6b804cb, shard 1). The risk: the note inverted, telling the
+    // #248 (cf821cd, shard 1). The risk: the note inverted, telling the
     // person a loopback endpoint was not asked and an https one was read,
     // when it is the loopback base alone that is read (ADR 0047 decision 3).
     let (base, _) = colibri();

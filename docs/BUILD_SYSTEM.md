@@ -497,7 +497,7 @@ outcomes it has. On Linux the `cargo mutants` step runs inside a cgroup
 capped at 12 GB with swap off (#1026), so a mutant whose test allocates
 without bound is killed there, where before it took the runner down ahead of
 `--timeout 300` and the shard's outcomes with it. The measured case is two
-mutants of `trellis-cli` at `6b804cb`, `first_run.rs:316:40: replace == with
+mutants of `trellis-cli` at `cf821cd`, `first_run.rs:316:40: replace == with
 != in pick` and `start_screen.rs:261:5: replace answer -> Result<Option<String>>
 with Ok(Some(String::new()))`, which ended shards 2 and 7 three times each
 (#995). Measured by the `file=crates/trellis-cli/src/start_screen.rs`
