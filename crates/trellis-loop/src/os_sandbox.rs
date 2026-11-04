@@ -396,7 +396,13 @@ fn bwrap_args(home: Option<&Path>, temp: &Path, clone: &Path) -> Vec<OsString> {
 /// Every rule is a `deny` whose filter excludes what stays allowed
 /// (`require-not`), on top of `(allow default)`, so no rule depends on the
 /// order Seatbelt resolves overlapping rules in.
-pub(crate) fn seatbelt_profile(hide_home: bool) -> String {
+///
+/// `temp_inside_home` is the case `bwrap_args` handles by mounting the
+/// home first: the temporary directory is excepted from the hidden home
+/// only when it lies inside it. A home inside the temporary directory (a
+/// test's fake `HOME`) gets no such exception, or `(subpath TEMP)` would
+/// cover the whole home and leave it readable.
+pub(crate) fn seatbelt_profile(hide_home: bool, temp_inside_home: bool) -> String {
     let mut p = String::from(
         "(version 1)\n\
          (allow default)\n\
@@ -413,9 +419,12 @@ pub(crate) fn seatbelt_profile(hide_home: bool) -> String {
             "(deny file-read*\n  \
                (require-all\n    \
                  (subpath (param \"HOME\"))\n    \
-                 (require-not (subpath (param \"CLONE\")))\n    \
-                 (require-not (subpath (param \"TEMP\")))))\n",
+                 (require-not (subpath (param \"CLONE\")))",
         );
+        if temp_inside_home {
+            p.push_str("\n    (require-not (subpath (param \"TEMP\")))");
+        }
+        p.push_str("))\n");
     }
     p
 }
@@ -429,7 +438,7 @@ fn seatbelt_args(home: Option<&Path>, temp: &Path, clone: &Path) -> Vec<OsString
     };
     let mut a: Vec<OsString> = vec![
         "-p".into(),
-        seatbelt_profile(home.is_some()).into(),
+        seatbelt_profile(home.is_some(), home.is_some_and(|h| temp.starts_with(h))).into(),
         "-D".into(),
         param("CLONE", clone),
         "-D".into(),
@@ -537,7 +546,7 @@ mod tests {
         // The macOS path cannot run here; its text and argv are what can be
         // held. The risk: a path spliced into the profile, where a quote in
         // it would rewrite a rule.
-        let p = seatbelt_profile(true);
+        let p = seatbelt_profile(true, true);
         assert!(p.starts_with("(version 1)\n(allow default)\n"), "{p}");
         assert!(p.contains("(deny network*)"), "{p}");
         assert!(p.contains("(deny file-write*"), "{p}");
@@ -549,7 +558,7 @@ mod tests {
         assert_eq!(p.matches("(allow").count(), 1, "{p}");
         // Parentheses balance, or sandbox-exec refuses the profile.
         assert_eq!(p.matches('(').count(), p.matches(')').count(), "{p}");
-        let no_home = seatbelt_profile(false);
+        let no_home = seatbelt_profile(false, false);
         assert!(!no_home.contains("HOME"), "{no_home}");
         assert_eq!(
             no_home.matches('(').count(),
@@ -584,6 +593,36 @@ mod tests {
             ]
         );
         assert_eq!(s.label(), "sandbox-exec");
+    }
+
+    #[test]
+    fn os_sandbox_seatbelt_excepts_temp_from_the_hidden_home_only_when_temp_is_inside_it() {
+        // The risk (#1075): a home inside the temporary directory (a test's
+        // fake `HOME`) read as open, because the rule excepting the
+        // temporary directory from the hidden home covered all of it. The
+        // Seatbelt counterpart of `bwrap_args` mounting the outer first.
+        let except_temp = "(require-not (subpath (param \"TEMP\")))";
+        let profile = |home: &str, temp: &str| {
+            let s = ready(OsSandboxKind::SandboxExec, Some(home), temp);
+            let got = strs(&s.wrap(&["true".to_string()], Path::new("/c")));
+            assert_eq!(got[1], "-p");
+            let p = got[2].clone();
+            assert!(p.contains("(subpath (param \"HOME\"))"), "{p}");
+            assert_eq!(p.matches('(').count(), p.matches(')').count(), "{p}");
+            p
+        };
+        // A home inside the temporary directory: hidden with no exception.
+        let inner_home = profile("/private/tmp/h", "/private/tmp");
+        assert!(!inner_home.contains(except_temp), "{inner_home}");
+        // A temporary directory inside the home: still open inside it.
+        let inner_temp = profile("/Users/u", "/Users/u/tmp");
+        assert!(inner_temp.contains(except_temp), "{inner_temp}");
+        // Neither inside the other: the exception would change nothing.
+        let apart = profile("/Users/u", "/private/var/folders/x/T");
+        assert!(!apart.contains(except_temp), "{apart}");
+        // A shared prefix is not containment (`starts_with` is by component).
+        let sibling = profile("/Users/u", "/Users/u2/tmp");
+        assert!(!sibling.contains(except_temp), "{sibling}");
     }
 
     #[test]

@@ -135,6 +135,13 @@ profile:
 ```
 
 The last rule is present only when there is a home directory to hide.
+Its `TEMP` exception is present only when the temporary directory lies
+inside the home (amended 2026-11-04, #1075): with a home inside the
+temporary directory (a test's fake `HOME`), `(subpath TEMP)` covered the
+whole home and left it readable, which the first run on a Mac showed. It
+is the case `bwrap_args` handles by mounting the outer of the two first.
+Writes into such a home stay allowed, as the rest of `TEMP` is; under
+`bwrap` they land in its tmpfs instead.
 Paths reach the profile only as `-D` parameters, never spliced into its
 text, so a path holding a quote or a parenthesis cannot change a rule.
 Every rule is a `deny` whose filter excludes what stays allowed, on top of
