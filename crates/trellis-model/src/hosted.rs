@@ -530,6 +530,12 @@ fn no_tool_call_error(text: &str) -> String {
     )
 }
 
+/// The tracing target of the `model token` event, one per content delta of
+/// a streamed reply (#280). Its own target so that `trellis rpc`'s stdout
+/// layer can admit it at DEBUG while `--json`'s and stderr keep
+/// `trellis=info` (#1059, ADR 0052's amendment of 2026-11-03).
+pub const TOKEN_TARGET: &str = "trellis_model::token";
+
 /// An openai-chat reply put back together from its stream (#280), in the
 /// shape the same reply has sent whole, so [`parse_reply`] reads both.
 #[derive(Default)]
@@ -557,7 +563,8 @@ impl StreamedReply {
     /// Each content delta is a DEBUG event, `model token`, carrying its
     /// text. Below INFO on purpose: the CLI's stderr and `--json` layers are
     /// fixed at `trellis=info`, and at INFO one reply would put a line per
-    /// token on both and a new `--json` event per token (ADR 0025).
+    /// token on both and a new `--json` event per token (ADR 0025). Under
+    /// [`TOKEN_TARGET`], which only rpc's stdout layer admits at DEBUG.
     fn add(&mut self, data: &str) -> Result<(), String> {
         let v: Value = serde_json::from_str(data)
             .map_err(|e| format!("a stream event is not JSON ({e}): {}", cut(data)))?;
@@ -576,7 +583,7 @@ impl StreamedReply {
         };
         let delta = &choice["delta"];
         if let Some(text) = delta["content"].as_str() {
-            tracing::debug!(text = %text, "model token");
+            tracing::debug!(target: TOKEN_TARGET, text = %text, "model token");
             self.content.get_or_insert_default().push_str(text);
         }
         for d in delta["tool_calls"].as_array().into_iter().flatten() {
@@ -2564,7 +2571,9 @@ mod stream_tests {
             }
             let mut v = V(None, None);
             event.record(&mut v);
-            if v.0.as_deref() == Some("model token") {
+            // Only under its own target, which rpc's stdout layer admits
+            // at DEBUG and `--json`'s does not (#1059).
+            if v.0.as_deref() == Some("model token") && event.metadata().target() == TOKEN_TARGET {
                 tokens
                     .0
                     .lock()

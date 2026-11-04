@@ -56,6 +56,7 @@ mark changes its row.
 | event | `resumed` | The Now strip and Where it is leave `paused` (`apply`). `turn` and `paused_ms` parsed, not shown. | `· resumed after a hold of <paused_ms> s` in the transcript (`resumedEvent`). `turn` parsed, not shown. |
 | event | `compacted` | Where it is's `context` row counts it, `<n> compactions`, and gives `request <request_bytes> B · budget <budget> B` from the latest, two figures and no share; the run's start clears both (`apply`, `where_it_is`, `now.js` `drawWhere`, #954). `turn`, `elided_turns` and `elided_bytes` parsed, not shown. | Where it is's `context` row, last, below the runtime, in the desktop's words (`frame`, `view.where`, `contextText`, #954). `turn`, `elided_turns` and `elided_bytes` parsed, not shown. |
 | event | `compacted on request` | Counted in Where it is's compactions (`apply`, #954); its figures parsed, not shown. The page never sends `compact`, so none arrives today. | Counted in Where it is's compactions (`frame`, #954); its figures parsed, not shown. The TUI never sends `compact`, so none arrives today. |
+| event | `model token` | None: the event is dropped, as every event the desktop has no record for is (`parse_stdout` returns `Ignored`). | The deltas of the turn in progress, joined into lines under `· model reply so far, streamed; its words, not a verdict`, each line made plain, below the transcript's rows and dropped when the turn's event, `run_end` or the child's exit arrives (`modelToken`, `transcriptRows`, #1059). |
 
 ## The event line
 
