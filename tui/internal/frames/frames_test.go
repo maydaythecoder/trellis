@@ -81,6 +81,7 @@ var kindOf = map[string]Kind{
 	"approval_request": ApprovalRequest, "model call": ModelCall,
 	"runtime identified": RuntimeIdentified, "paused": Paused, "resumed": Resumed,
 	"plan": Plan, "compacted": Compacted, "compacted on request": CompactedOnRequest,
+	"model token": ModelToken,
 }
 
 // The risk (ADR 0048 section 6): trellis keeps a field the contract
@@ -122,8 +123,20 @@ func TestFramesReadEveryContractField(t *testing.T) {
 	later := rpcSpec["not_every_client"].(map[string]any)
 	for _, group := range []string{"events", "framing"} {
 		laterGroup, _ := later[group].(map[string]any)
+		// A record only not_every_client lists, as model token is (#1059),
+		// has no always fields of its own: its TUI fields are its record,
+		// as the desktop's every_field_in_the_rpc_contract_is_read builds
+		// them, so a read_by naming the TUI is held there too.
+		specs := map[string]map[string]any{}
 		for name, sp := range rpcSpec[group].(map[string]any) {
-			spec := sp.(map[string]any)
+			specs[name] = sp.(map[string]any)
+		}
+		for name := range laterGroup {
+			if _, ok := specs[name]; !ok {
+				specs[name] = map[string]any{}
+			}
+		}
+		for name, spec := range specs {
 			type field struct {
 				name string
 				spec map[string]any
@@ -147,6 +160,9 @@ func TestFramesReadEveryContractField(t *testing.T) {
 						}
 					}
 				}
+			}
+			if _, listed := rpcSpec[group].(map[string]any)[name]; !listed && len(fields) == 0 {
+				continue
 			}
 			m := map[string]any{}
 			for _, f := range fields {
