@@ -143,7 +143,7 @@ impl FromStr for ModelSpec {
             Dialect::parse(kind).ok_or_else(|| SpecError::UnknownRuntime(kind.to_string()))?;
         // The weight name, if the runtime needs telling which to load.
         let (rest, model) = match rest.split_once('#') {
-            Some((b, m)) if m.trim().is_empty() => {
+            Some((_, m)) if m.trim().is_empty() => {
                 return Err(SpecError::EmptyModel(s.to_string()));
             }
             Some((b, m)) => (b, Some(m.to_string())),
@@ -232,6 +232,26 @@ mod tests {
         // first turn instead of at the spec.
         let e = "vllm:http://host:8000#".parse::<ModelSpec>().unwrap_err();
         assert!(matches!(e, SpecError::EmptyModel(_)), "{e:?}");
+    }
+
+    #[test]
+    fn an_empty_base_is_refused_beside_either_kind_of_weight_name() {
+        // The empty-weight arm discards the base it split off (#1068). That
+        // is only sound if an empty base is still refused on every path:
+        // with no weight, the arm returns EmptyModel first, and with one,
+        // the base check after the match has to see the base, not skip it.
+        assert!(matches!(
+            "llamacpp:#".parse::<ModelSpec>(),
+            Err(SpecError::EmptyModel(_))
+        ));
+        assert!(matches!(
+            "llamacpp:#qwen3".parse::<ModelSpec>(),
+            Err(SpecError::EmptyBase(_))
+        ));
+        assert!(matches!(
+            "llamacpp: #qwen3".parse::<ModelSpec>(),
+            Err(SpecError::EmptyBase(_))
+        ));
     }
 
     #[test]
