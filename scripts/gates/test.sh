@@ -34,8 +34,16 @@ bounded() {
   local code=0
   # `timeout` from coreutils (Git Bash and Linux alike). --kill-after, for a
   # cargo that ignores TERM; 124 is timeout's own code for an expiry, and
-  # 137 is the KILL that followed it.
-  timeout --kill-after=30 "$limit" "$@" || code=$?
+  # 137 is the KILL that followed it. macOS has no `timeout` (#1070): there
+  # it is Homebrew coreutils' `gtimeout` when installed, else watchdog.pl,
+  # which keeps the same arguments and exit codes.
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --kill-after=30 "$limit" "$@" || code=$?
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout --kill-after=30 "$limit" "$@" || code=$?
+  else
+    perl "$ROOT/scripts/gates/watchdog.pl" 30 "$limit" "$@" || code=$?
+  fi
   case "$code" in
     0) ;;
     124 | 137) fail "\`$*\` did not finish within GATE_TEST_TIMEOUT_S=${limit}s: a test waiting on something, or a host too loaded to finish (#173)" ;;
