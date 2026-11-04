@@ -553,6 +553,7 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
           BEFORE: ${{ github.event.before }}
+          FORCED: ${{ github.event.forced }}
         run: |
           set -euo pipefail
           dir="$RUNNER_TEMP/gitleaks"
@@ -562,7 +563,14 @@ jobs:
           echo "5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba  $tgz" | sha256sum -c -
           tar -xzf "$tgz" -C "$dir" gitleaks
           export PATH="$dir:$PATH"
-          if [ -n "$BASE_REF" ]; then base="origin/$BASE_REF"; else base="$BEFORE"; fi
+          # A force push leaves `before` naming a commit the clone no longer
+          # has. Failing there would block every later run on that push, and
+          # skipping would scan nothing, so the scan widens to the whole
+          # branch: every commit from the root is checked.
+          if [ -n "$BASE_REF" ]; then base="origin/$BASE_REF"
+          elif [ "$FORCED" = "true" ] && ! git rev-parse --verify --quiet "$BEFORE^{commit}" >/dev/null; then
+            base=$(git rev-list --max-parents=0 HEAD | tail -n 1)
+          else base="$BEFORE"; fi
           scripts/checks/gitleaks-range.sh --self-test
           scripts/checks/gitleaks-range.sh "$base"
 
@@ -575,9 +583,16 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
           BEFORE: ${{ github.event.before }}
+          FORCED: ${{ github.event.forced }}
         run: |
           set -euo pipefail
-          if [ -n "$BASE_REF" ]; then base="origin/$BASE_REF"; else base="$BEFORE"; fi
+          # After a force push whose `before` is gone, the commit the branch
+          # stood on before this tip is its first parent: on main, the
+          # previous squash.
+          if [ -n "$BASE_REF" ]; then base="origin/$BASE_REF"
+          elif [ "$FORCED" = "true" ] && ! git rev-parse --verify --quiet "$BEFORE^{commit}" >/dev/null; then
+            base=$(git rev-parse HEAD^)
+          else base="$BEFORE"; fi
           GATE_BASE="$base" bash scripts/checks/ci-jobs-unchanged.sh "$base"
           bash scripts/checks/adr-numbers.sh "$base"
 
