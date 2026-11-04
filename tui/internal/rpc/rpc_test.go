@@ -2,12 +2,14 @@ package rpc
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -18,7 +20,8 @@ import (
 // TestMain lets the test binary stand in for trellis: started as
 // `<test binary> --root <dir> rpc` with <dir> ending in "fake-nonjson", it
 // prints a line that is not JSON, then a JSON line, then answers quit and
-// exits. This keeps a fake child cross-platform without a shell script and
+// exits; with <dir> ending in "fake-exits" it prints one line and exits
+// without reading stdin (#1062). This keeps a fake child cross-platform without a shell script and
 // without changing any child's environment (go-guards.sh `cmd-env`).
 //
 // After the tests, the goroutineleak profile is read (leaktest.Main): a
@@ -29,6 +32,11 @@ func TestMain(m *testing.M) {
 		strings.HasSuffix(os.Args[2], "fake-nonjson") {
 		fakeTrellis()
 		return
+	}
+	if len(os.Args) == 4 && os.Args[1] == "--root" && os.Args[3] == "rpc" &&
+		strings.HasSuffix(os.Args[2], "fake-exits") {
+		fmt.Println(`{"type":"response","command":"hello","id":"0","success":true}`)
+		os.Exit(0)
 	}
 	os.Exit(leaktest.Main(m))
 }
@@ -286,5 +294,86 @@ func TestRPCSessionsLeaveNoGoroutineBehind(t *testing.T) {
 		if err := c.Shutdown(); err != nil {
 			t.Fatalf("session %d: %v", i, err)
 		}
+	}
+}
+
+// #1062: exec.Cmd.Wait closes the stdin pipe once the child has exited, so
+// a Quit after that finds its own end already closed (os.ErrClosed). The
+// child is gone and needs no quit; Quit and Shutdown failing on it made
+// TestRPCSessionsLeaveNoGoroutineBehind fail in CI (run 41891326693).
+func TestRPCQuitAfterTheChildExited(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "fake-exits")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Start(self, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range c.Lines() {
+	}
+	select {
+	case <-c.Exited():
+	case <-time.After(60 * time.Second):
+		t.Fatal("the fake child did not exit within 60 s")
+	}
+	if err := c.Quit(); err != nil {
+		t.Fatalf("Quit after the child exited: %v", err)
+	}
+	if err := c.Shutdown(); err != nil {
+		t.Fatalf("Shutdown after the child exited: %v", err)
+	}
+}
+
+// stdinStub is a child's stdin whose write and close fail as told.
+type stdinStub struct {
+	wrote              strings.Builder
+	writeErr, closeErr error
+}
+
+func (s *stdinStub) Write(p []byte) (int, error) {
+	if s.writeErr != nil {
+		return 0, s.writeErr
+	}
+	return s.wrote.Write(p)
+}
+
+func (s *stdinStub) Close() error { return s.closeErr }
+
+// #1062: the CI failure's own order. The quit line is written, the child
+// reads it and exits, and Cmd.Wait closes the pipe before Quit does. That
+// close is not a failure; any other write or close error still is, so a
+// child that never got its quit is not reported as quit.
+func TestRPCQuitCloseRacingWait(t *testing.T) {
+	closedByWait := &os.PathError{Op: "close", Path: "|1", Err: os.ErrClosed}
+	planted := errors.New("planted close failure")
+	for _, tc := range []struct {
+		name               string
+		writeErr, closeErr error
+		want               error
+	}{
+		{"close after Wait closed it", nil, closedByWait, nil},
+		{"write after Wait closed it", &os.PathError{Op: "write", Path: "|1", Err: os.ErrClosed}, closedByWait, nil},
+		{"another close error", nil, planted, planted},
+		{"a broken pipe on the write", &os.PathError{Op: "write", Path: "|1", Err: syscall.EPIPE}, nil, syscall.EPIPE},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := &stdinStub{writeErr: tc.writeErr, closeErr: tc.closeErr}
+			c := &Client{stdin: in}
+			err := c.Quit()
+			if tc.want == nil && err != nil {
+				t.Fatalf("Quit: %v, want nil", err)
+			}
+			if tc.want != nil && !errors.Is(err, tc.want) {
+				t.Fatalf("Quit: %v, want %v", err, tc.want)
+			}
+			if tc.writeErr == nil && in.wrote.String() != `{"type":"quit"}`+"\n" {
+				t.Fatalf("wrote %q, want the quit line", in.wrote.String())
+			}
+		})
 	}
 }
