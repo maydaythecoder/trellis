@@ -587,21 +587,6 @@ mod tests {
     }
 
     #[test]
-    fn os_sandbox_seatbelt_gives_git_no_global_config_and_nothing_else_changes() {
-        // The risk (#1074): under Seatbelt the hidden home's `~/.gitconfig`
-        // fails with EPERM and every `git` the command runs dies. The fix
-        // must not reach `bwrap`, whose empty home git already reads as
-        // absent, nor an unsandboxed command, whose user config is its own.
-        let mac = ready(OsSandboxKind::SandboxExec, Some("/Users/u"), "/private/tmp");
-        assert_eq!(mac.env(), [("GIT_CONFIG_GLOBAL", "/dev/null")]);
-        let mac_no_home = ready(OsSandboxKind::SandboxExec, None, "/private/tmp");
-        assert!(mac_no_home.env().is_empty());
-        let linux = ready(OsSandboxKind::Bwrap, Some("/home/u"), "/tmp");
-        assert!(linux.env().is_empty());
-        assert!(OsSandbox::none("control").env().is_empty());
-    }
-
-    #[test]
     fn os_sandbox_failed_trial_reason_is_one_clean_line() {
         assert_eq!(
             first_line("\n  bwrap: setting up uid map: Permission denied\nmore\n").as_deref(),
@@ -625,5 +610,20 @@ mod tests {
             hideable_home(d.path()),
             Some(std::fs::canonicalize(d.path()).unwrap())
         );
+    }
+
+    #[test]
+    fn os_sandbox_seatbelt_gives_git_no_global_config_and_nothing_else_changes() {
+        // The risk (#1074): under Seatbelt the hidden home's `~/.gitconfig`
+        // fails with EPERM and every `git` the command runs dies. The fix
+        // must not reach `bwrap`, whose empty home git already reads as
+        // absent, nor an unsandboxed command, whose user config is its own.
+        let mac = ready(OsSandboxKind::SandboxExec, Some("/Users/u"), "/private/tmp");
+        assert_eq!(mac.env(), [("GIT_CONFIG_GLOBAL", "/dev/null")]);
+        let mac_no_home = ready(OsSandboxKind::SandboxExec, None, "/private/tmp");
+        assert!(mac_no_home.env().is_empty());
+        let linux = ready(OsSandboxKind::Bwrap, Some("/home/u"), "/tmp");
+        assert!(linux.env().is_empty());
+        assert!(OsSandbox::none("control").env().is_empty());
     }
 }
