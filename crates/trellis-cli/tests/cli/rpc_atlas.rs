@@ -795,7 +795,7 @@ fn rpc_atlas_get_history_measures_churn_back_from_head_and_lists_commits_and_tag
 
 #[test]
 fn rpc_atlas_get_history_counts_a_commit_exactly_a_window_old_inside_that_window() {
-    // The risk (#248, 6b804cb shard 0): the window edge. A commit made
+    // The risk (#248, cf821cd shard 0): the window edge. A commit made
     // exactly 30 days before HEAD is 30 days old, so it is in the 30-day
     // window; a `<=` at the boundary would drop it to the 90-day one, and
     // the Atlas would say a file nobody touched this month.

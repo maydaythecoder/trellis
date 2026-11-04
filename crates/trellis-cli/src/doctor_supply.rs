@@ -427,7 +427,7 @@ mod tests {
     use super::*;
 
     /// cargo-audit 0.22.2's `--json` report for the lock `main` carried at
-    /// b49920e, as run on 2026-10-25 against the database of 2026-10-24 and
+    /// 2dc763f, as run on 2026-10-25 against the database of 2026-10-24 and
     /// trimmed to the keys read here. CI run 40056551866 failed on it: the
     /// tokio advisory is an `unsound` warning to cargo-audit (which exits 0
     /// on it) and an error to `cargo deny` under `deny.toml`; the yanked
@@ -461,7 +461,7 @@ mod tests {
 
     const CLEAN: &str = r#"{"database": {"last-updated": "2026-10-25T01:00:00Z"}, "vulnerabilities": {"found": false, "count": 0, "list": []}, "warnings": {}}"#;
 
-    /// The ignore list `deny.toml` carried at b49920e.
+    /// The ignore list `deny.toml` carried at 2dc763f.
     const IGNORED: &[&str] = &["RUSTSEC-2023-0089"];
 
     fn ignored() -> Vec<String> {
@@ -697,7 +697,7 @@ mod tests {
 
     #[test]
     fn a_program_that_exists_but_cannot_start_is_not_called_absent() {
-        // #248 (6b804cb, shard 1). The risk: every spawn failure reported
+        // #248 (cf821cd, shard 1). The risk: every spawn failure reported
         // as "not on PATH", which sends a user to install a tool that is
         // there. A directory is found, and refused, on both platforms.
         let dir = crate::testutil::scratch("doctor-supply-not-a-program");

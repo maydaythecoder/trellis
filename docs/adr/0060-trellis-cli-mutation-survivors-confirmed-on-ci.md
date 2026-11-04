@@ -1,4 +1,4 @@
-# ADR 0060 — trellis-cli's mutation survivors: one workspace run on CI at 6b804cb, dispositioned shard by shard
+# ADR 0060 — trellis-cli's mutation survivors: one workspace run on CI at cf821cd, dispositioned shard by shard
 
 **Status:** Accepted (owner-directed). Not built.
 **Date:** 2026-10-31
@@ -24,7 +24,7 @@ method beside it.
 Four passes and a ledger backfill (#431, #455, #459, #462, #471, #668) gave
 every one a line in CORRECTNESS_LEDGER.md. Counted with
 `grep '| crates' <the trellis-cli 407 block> | sed 's/ (#248).*//; s/ |.*//'
-| sort | uniq -c` at `7f18af43` (origin/dev, 2026-10-31): 353 killed, 19
+| sort | uniq -c` at `112af193` (origin/dev, 2026-10-31): 353 killed, 19
 unexercisable plus 1 "unexercisable by `cargo test`", 17 not examined, 8
 equivalent, 5 unix-only, 4 not applicable. 407 in all.
 
@@ -41,15 +41,15 @@ Three things are open.
    ("unix-only").
 3. **The CI run has started and found new survivors.** `mutants.yml`
    (`--test-workspace true --timeout 300 -j 1`, cargo-mutants 27.1.0) ran
-   shard 0/10 on `ubuntu-latest` at `6b804cb` on 2026-10-25 (run
+   shard 0/10 on `ubuntu-latest` at `cf821cd` on 2026-10-25 (run
    40208964899). Its summary line: `252 mutants tested in 4h: 12 missed, 217
    caught, 22 unviable, 1 timeouts`. None of the 13 missed or timed-out
    lines is in the ledger (each checked with `git grep -F` against
-   CORRECTNESS_LEDGER.md at `7f18af43`): they are in code written after
+   CORRECTNESS_LEDGER.md at `112af193`): they are in code written after
    `989b2a2`. Shards 1–9 have not run. The artifact is kept 30 days, to
    about 2026-11-24.
 
-`main` has moved since `6b804cb` (#898). cargo-mutants generates its mutant
+`main` has moved since `cf821cd` (#898). cargo-mutants generates its mutant
 list from the source tree and `--shard k/n` splits that list, so shards
 dispatched against a different tree do not complete shard 0's run: they
 split a different list.
@@ -60,13 +60,13 @@ owner's 2026-10-06 decision.
 
 ## Decision
 
-1. **One measurement, at `6b804cb`.** Shards 1/10 to 9/10 run on Linux at
+1. **One measurement, at `cf821cd`.** Shards 1/10 to 9/10 run on Linux at
    the same commit as shard 0, with the same inputs (`crate=trellis-cli
    os=linux`, `n=10`). A dispatch names a ref, not a commit, so a temporary
-   branch `t248-mutants-6b804cb` is pushed at `6b804cb` (an ancestor of
+   branch `t248-mutants-6b804cb` is pushed at `cf821cd` (an ancestor of
    `origin/dev`, checked with `git merge-base --is-ancestor`) and every
    shard is dispatched with `--ref t248-mutants-6b804cb`. The artifact name
-   carries the short sha; a shard whose artifact does not name `6b804cb` is
+   carries the short sha; a shard whose artifact does not name `cf821cd` is
    not part of the run. The branch is deleted when shard 9 has uploaded.
    Shards are dispatched one after another, as docs/BUILD_SYSTEM.md "Mutation
    testing on CI" says, by the worker on the dispatch ticket under the
@@ -75,7 +75,7 @@ owner's 2026-10-06 decision.
 
 2. **Each shard's outcome is committed as text.** Its `caught.txt`,
    `missed.txt`, `timeout.txt` and `unviable.txt`, and a `COMMIT` file
-   reading `6b804cb`, go under
+   reading `cf821cd`, go under
    `docs/bench/mutants-by-crate-ws/trellis-cli/shard-<k>-of-10/`, the layout
    the other crates' workspace results already use. The ledger is the
    record; the artifact expires and the repository does not.
@@ -85,7 +85,7 @@ owner's 2026-10-06 decision.
    survivor, and the owner's 2026-10-31 instruction is to kill the survivors.
    The 407-line block stays as it is, a record of `989b2a2`; the new lines go
    in a second block in CORRECTNESS_LEDGER.md, a `<details>` whose summary
-   reads `trellis-cli at 6b804cb, workspace suite on Linux (#248)`. Each line
+   reads `trellis-cli at cf821cd, workspace suite on Linux (#248)`. Each line
    has the existing form, `<disposition> (#248)…: <reason> | <line exactly
    as missed.txt or timeout.txt prints it>`.
 
@@ -111,22 +111,22 @@ owner's 2026-10-06 decision.
      or a 989b2a2 pass line that killed it on Windows), or with the reason
      no hosted runner reaches it.
    - **not applicable (#248): `<the commit that rewrote or removed it>`**,
-     for a mutant at `6b804cb` whose code no longer exists at the batch's
+     for a mutant at `cf821cd` whose code no longer exists at the batch's
      base.
    A timed-out mutant gets a disposition like a missed one. A hang is not a
    kill: "killed" needs a test that fails within the 300 s limit, which for
    `config.rs:1208:9` (`model_timeout -> Default::default()`) means a test
    that reads the default and fails on zero rather than waiting on it.
    A 989b2a2 line that said "killed" and whose mutant (function and
-   mutation, `line:col` ignored) appears in a 6b804cb `missed.txt` is a
+   mutation, `line:col` ignored) appears in a cf821cd `missed.txt` is a
    refuted kill: the new line says so and gives the new disposition.
 
 5. **A check script holds it.** `scripts/checks/mutants-ledger.sh
    <shard-dir>` exits 0 exactly when every line of that directory's
    `missed.txt` and `timeout.txt` appears, after ` | `, on one line inside
-   the 6b804cb block, that line starts with one of the dispositions above,
+   the cf821cd block, that line starts with one of the dispositions above,
    and, for "killed … by `<name>`", `fn <last segment of name>` exists under
-   `crates/`. `COMMIT` must read `6b804cb`. `--all <dir>` does the same for
+   `crates/`. `COMMIT` must read `cf821cd`. `--all <dir>` does the same for
    every `shard-*-of-10` directory and fails unless all ten are present.
    `--self-test` runs it against fixtures, as the other `scripts/checks/`
    scripts do. A script and not a Verify line of greps, because G6 refuses a
@@ -136,10 +136,10 @@ owner's 2026-10-06 decision.
 6. **The 22 lines of Context item 2 are settled by the Linux
    run.** Each of the 17 `#[cfg(unix)]` lines is in some shard's
    `caught.txt` or `missed.txt`. Caught: its 989b2a2 line becomes "killed
-   (#248) by the workspace suite: caught at 6b804cb, shard <k> of 10".
-   Missed: it gets a 6b804cb line under point 4. `probe_ps` is compiled on
+   (#248) by the workspace suite: caught at cf821cd, shard <k> of 10".
+   Missed: it gets a cf821cd line under point 4. `probe_ps` is compiled on
    every target (its choice is `cfg!` at run time, liveness.rs lines 29–45 at
-   `7f18af43`), so a Linux-only test calling it directly against the
+   `112af193`), so a Linux-only test calling it directly against the
    runner's procps `ps`, on the test's own pid and on a pid that is not
    running, is tried first; "unix-only" stays only if that test cannot tell
    the mutants apart, with the reason.
@@ -163,8 +163,8 @@ owner's 2026-10-06 decision.
    Template for a shard batch:
 
        ## Done when
-       - docs/bench/mutants-by-crate-ws/trellis-cli/shard-<k>-of-10/ is tracked and its COMMIT reads 6b804cb.
-       - Every line of its missed.txt and timeout.txt has a line in CORRECTNESS_LEDGER.md's "trellis-cli at 6b804cb" block with a disposition and its evidence as ADR 0060 §4 defines them.
+       - docs/bench/mutants-by-crate-ws/trellis-cli/shard-<k>-of-10/ is tracked and its COMMIT reads cf821cd.
+       - Every line of its missed.txt and timeout.txt has a line in CORRECTNESS_LEDGER.md's "trellis-cli at cf821cd" block with a disposition and its evidence as ADR 0060 §4 defines them.
 
        ## Verify
        ```
@@ -183,8 +183,8 @@ owner's 2026-10-06 decision.
   40208964899's log); nine more shards of similar size is 9 × 3h42m. Shards
   split the list by position, not by cost, so a shard can take longer; the
   job limit is 360 minutes.
-- Kills written after `6b804cb` are shown by hand or by a per-file dispatch,
-  not by the 6b804cb run. The ledger names the base each was shown at.
+- Kills written after `cf821cd` are shown by hand or by a per-file dispatch,
+  not by the cf821cd run. The ledger names the base each was shown at.
 - The ledger gains a second trellis-cli block, and `docs/bench/` gains ten
   directories of plain text, about 260 lines each (shard 0's four files hold
   252 lines, `wc -l`).
@@ -193,7 +193,7 @@ owner's 2026-10-06 decision.
 
 ### Failure modes of this decision
 
-- **`6b804cb` is a week old.** A survivor in code changed since is
+- **`cf821cd` is a week old.** A survivor in code changed since is
   dispositioned "not applicable" with the commit, which is bookkeeping
   spent on nothing. The cost was judged lower than rerunning shard 0.
 - **A shard reaches the step's 345-minute limit.** Its mutants with no
@@ -211,7 +211,7 @@ owner's 2026-10-06 decision.
 ## Alternatives rejected
 
 - **Finish the run on `--ref main` or `--ref dev`.** Both have moved past
-  `6b804cb`, so shards 1–9 would split a different mutant list from shard
+  `cf821cd`, so shards 1–9 would split a different mutant list from shard
   0's and the ten would not cover the crate exactly once. `dev` also moves
   between dispatches.
 - **Rerun all ten shards on current `dev`.** One consistent run at a newer
@@ -250,7 +250,7 @@ rerunning all ten shards there (about 37 hours by shard 0's rate).
 
 ## What would change it
 
-- The shard 0 artifact expiring uncommitted, or a shard of the 6b804cb run
+- The shard 0 artifact expiring uncommitted, or a shard of the cf821cd run
   failing in a way a rerun cannot finish: then all ten shards run at one
   newer commit, and this ADR's commit is replaced.
 - The owner deciding #248 may close on hand-shown kills, as #245–#247 did:

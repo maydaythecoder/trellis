@@ -2317,8 +2317,16 @@ fn an_approve_mode_agent_is_not_held_back_when_work_has_a_terminal() {
     let shown = home.join("terminal.txt");
     std::fs::create_dir_all(&home).unwrap();
     let cmd = format!("'{}' work --once", env!("CARGO_BIN_EXE_trellis"));
+    // util-linux's flags on Linux; BSD `script` (macOS) has no `-f`, `-e`
+    // or `-c` and takes argv after the transcript file, as #1076 split
+    // `under_pty_with_display` in tests/cli.
+    let args: Vec<&str> = if cfg!(target_os = "linux") {
+        vec!["-qfec", &cmd, "/dev/null"]
+    } else {
+        vec!["-q", "/dev/null", "/bin/sh", "-c", &cmd]
+    };
     let mut child = Command::new("script")
-        .args(["-qfec", &cmd, "/dev/null"])
+        .args(&args)
         .current_dir(&d)
         .env_remove("TRELLIS_RUN_ID")
         .env_remove("TRELLIS_TASK_ID")
@@ -2333,7 +2341,7 @@ fn an_approve_mode_agent_is_not_held_back_when_work_has_a_terminal() {
         .stdout(std::fs::File::create(&shown).unwrap())
         .stderr(Stdio::null())
         .spawn()
-        .expect("util-linux `script` must be on PATH for the pty tests");
+        .expect("`script` must be on PATH for the pty tests");
     // One line, `n`: the edit the run asks about is declined, and nothing is
     // left for `script` to turn into an end of input the question might miss.
     child.stdin.take().unwrap().write_all(b"n\n").unwrap();

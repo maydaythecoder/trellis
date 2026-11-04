@@ -3416,7 +3416,7 @@ mod tests {
     /// Bounded because a stub whose request never comes (the client
     /// refused its config, say) otherwise blocks `accept` for good, and the
     /// test's `join` with it: under mutation that reads as a timeout, which
-    /// is neither caught nor missed (#248, 6b804cb `config.rs:1208:9`;
+    /// is neither caught nor missed (#248, cf821cd `config.rs:1208:9`;
     /// docs/bench/mutants-by-crate-ws/README.md met the same in
     /// trellis-model).
     fn accept_one(l: &std::net::TcpListener) -> std::net::TcpStream {
