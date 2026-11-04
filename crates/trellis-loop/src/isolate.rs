@@ -1505,6 +1505,43 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sandboxed_writer_bash_runs_git_and_reads_no_gitconfig_in_the_hidden_home() {
+        // The risk (#1074): under Seatbelt a `~/.gitconfig` in the hidden
+        // home failed with EPERM and every `git` the command ran exited
+        // 128. The fix must not be to let git read the user's config: git
+        // runs and finds none. That the home's files stay unreadable is
+        // `sandboxed_writer_bash_cannot_read_a_file_under_a_fake_home`'s.
+        let d = committed();
+        let root = d.path();
+        let (home, _, _) = fake_home();
+        let name = "gitconfig-name-1074";
+        std::fs::write(
+            home.path().join(".gitconfig"),
+            format!("[user]\n\tname = {name}\n"),
+        )
+        .unwrap();
+        let line = format!(
+            "export HOME='{}'; git status --short >/dev/null && echo GIT-RAN; \
+             git config --global user.name",
+            home.path().display()
+        );
+
+        let open = with_bash_under(root, crate::os_sandbox::OsSandbox::none("control"));
+        let (said, _) = bash(&open, &line).await;
+        assert!(said.contains("GIT-RAN") && said.contains(name), "{said}");
+
+        let os = platform_sandbox(home.path());
+        let (said, _) = bash(&with_bash_under(root, os.clone()), &line).await;
+        if os.is_active() {
+            assert!(said.contains("GIT-RAN"), "{}: {said}", os.label());
+            assert!(!said.contains(name), "{}: {said}", os.label());
+        } else {
+            unconfined_said_why(&os);
+        }
+    }
+
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn sandboxed_writer_bash_cannot_see_trellis_s_process() {

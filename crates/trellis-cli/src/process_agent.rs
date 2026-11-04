@@ -310,6 +310,9 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             cmd.env(name, v);
         }
     }
+    // Last, so a profile's `pass_env` cannot hand git back a global config
+    // the sandbox cannot read (`OsSandbox::env`, #1074).
+    cmd.envs(os.env().iter().copied());
     // In trellis's own process group, the terminal's foreground group: it
     // is the user's command on the user's terminal. In a group of its own
     // (round 8) it was a background job, stopped by SIGTTOU or SIGTTIN the
