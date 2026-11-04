@@ -213,13 +213,10 @@ pub fn plan(index: &Index, units: Vec<WorkUnit>) -> Plan {
 
     // Rule 2, to a fixpoint: absorbing a unit widens `shared`'s file set and
     // can pull in another that was previously clear of it.
-    loop {
-        let Some(i) = rest
-            .iter()
-            .position(|u| !shared.files.is_disjoint(&u.files))
-        else {
-            break;
-        };
+    while let Some(i) = rest
+        .iter()
+        .position(|u| !shared.files.is_disjoint(&u.files))
+    {
         shared.absorb(rest.remove(i));
     }
 
