@@ -189,6 +189,12 @@ type Model struct {
 	quiet  bool
 	call   *callOpen
 
+	// streamed is the reply of the turn in progress as colibri streams it,
+	// its newest StreamCap bytes, and streamCut whether older ones were
+	// dropped (stream.go, #1059).
+	streamed  string
+	streamCut bool
+
 	// theme is what the screen and the modal are painted with (Options).
 	theme theme.Theme
 
@@ -555,6 +561,8 @@ func (m *Model) frame(f frames.Frame) {
 		m.strip.RequestBytes, m.strip.BudgetBytes = f.CompactedFields.RequestBytes, f.CompactedFields.Budget
 	case frames.CompactedOnRequest:
 		m.strip.Compactions++
+	case frames.ModelToken:
+		m.modelToken(*f.TokenText)
 	case frames.RunBudget:
 		m.runBudget(f)
 	case frames.RunEnd:
@@ -581,6 +589,8 @@ func (m *Model) frame(f frames.Frame) {
 // verdict is shown, never computed (ADR 0004), and it alone makes a check
 // row and its role; the call's own row stays a call whatever it says.
 func (m *Model) turn(t *frames.TurnFields) {
+	// The turn's rows take the place of its streamed reply.
+	m.streamEnded()
 	n := int(t.Turn)
 	// One turn can send two turn events (the audit's follows the last
 	// call's, under its number): its rows share one divider.
@@ -688,6 +698,7 @@ func (m *Model) runEnd(e *frames.RunEndFields) {
 	// A held run's hold ends with it, before this view's clock is read
 	// below; and the raise and the plan edit go with the run.
 	m.controlsEnded()
+	m.streamEnded()
 	m.Running = false
 	m.promptID = ""
 	m.verb = view.VerbSteer
@@ -977,6 +988,7 @@ func (m *Model) exited(err error) {
 	}
 	m.dropHeld("trellis rpc exited before the run ended")
 	m.controlsEnded()
+	m.streamEnded()
 	m.Running = false
 	m.closeModal()
 	m.approvals = nil

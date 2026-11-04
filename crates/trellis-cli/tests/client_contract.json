@@ -115,11 +115,16 @@
       "about": "What trellis emits and a client may rely on, which not every client reads yet: listed so a rename fails trellis's tests, and kept out of rpc.events and rpc.framing, every field of which both clients' tests require their parser to keep. A record here has the keys a record there has, for the fields it adds; read_by names, per field, the clients that read it today (desktop, tui), and [] is neither yet. A field moves to rpc.events or rpc.framing once both clients read it.",
       "event_line": {
         "always": ["level"],
-        "level_values": ["INFO", "WARN", "ERROR"],
+        "level_values": ["DEBUG", "INFO", "WARN", "ERROR"],
         "read_by": {"level": ["tui"]},
-        "about": "the key of every event's line beside fields, as tracing's JSON layer writes it. The stdout layer passes trellis's events at info and above whatever RUST_LOG says (startup.rs), so level is one of level_values. The TUI shows a WARN or ERROR event it has no record for as a warning."
+        "about": "the key of every event's line beside fields, as tracing's JSON layer writes it. The stdout layer passes trellis's events at info and above whatever RUST_LOG says (startup.rs), so level is one of level_values; DEBUG is the model token event's alone, which rpc's layer admits from its own target and run --json's does not (#1059). The TUI shows a WARN or ERROR event it has no record for as a warning."
       },
       "events": {
+        "model token": {
+          "always": ["text"],
+          "read_by": {"text": ["tui"]},
+          "about": "one content delta of a reply colibri streams (#280, #281, #1059): text is the delta's text as the server sent it, in order, after the model call event that asked for the reply and before the turn event that reports it. Sent only by trellis rpc, at level DEBUG, under the target trellis_model::token, which rpc's stdout layer admits and run --json's and stderr's default filter do not (ADR 0052, amendment of 2026-11-03). Only a reply that streamed sends it: an openai-chat endpoint identified as colibri; never a whole reply, an anthropic spec, the local runtime driver or a scripted run. A reply retried as a format failure streamed too, so its deltas are among the ones before that turn. The deltas are model output, not the turn's result: the turn event says what the step was, and a client shows them as text, the model's words and not a verdict, and drops them once the turn arrives (CLAUDE.md rules 1 and 10). The trail does not record them. The desktop drops the event, as it drops every event it has no record for."
+        },
         "turn": {
           "always": [],
           "model_call_only": [],

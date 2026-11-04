@@ -36,6 +36,7 @@ func (m *Model) newRun() {
 	m.steers = nil
 	m.deliveries = 0
 	m.dividedTurn = 0
+	m.streamEnded()
 }
 
 // steer sends a line typed mid-run as `steer {message}`. A /command is

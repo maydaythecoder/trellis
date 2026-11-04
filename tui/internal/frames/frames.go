@@ -63,6 +63,10 @@ const (
 	// that the request after a client's compact folded a turn (#954).
 	Compacted
 	CompactedOnRequest
+	// ModelToken is one content delta of a reply colibri streams (#1059),
+	// sent by rpc alone and at DEBUG: the model's words of the turn in
+	// progress, never its result, which the turn event carries.
+	ModelToken
 )
 
 // Frame is one typed line. Only the fields of its Kind are set.
@@ -100,6 +104,8 @@ type Frame struct {
 	// a CompactedOnRequest one's.
 	CompactedFields          *CompactedFields
 	CompactedOnRequestFields *CompactedOnRequestFields
+	// TokenText is a ModelToken's delta, as the server sent it.
+	TokenText *string
 }
 
 // CompactedFields is a compacted event as sent: the turn the request
@@ -377,6 +383,13 @@ func Parse(l rpc.Line) Frame {
 	case msg != nil && *msg == "plan":
 		return Frame{Kind: Plan, PlanFields: &PlanFields{Turn: u(f, "turn"), Steps: s(f, "steps"),
 			StepsCut: u(f, "steps_cut"), TextsCut: u(f, "texts_cut")}}
+	case msg != nil && *msg == "model token":
+		// Without its text it carries nothing to draw.
+		text := s(f, "text")
+		if text == nil {
+			return Frame{Kind: Ignored}
+		}
+		return Frame{Kind: ModelToken, TokenText: text}
 	case msg != nil:
 		if lvl := s(o, "level"); lvl != nil && (*lvl == "WARN" || *lvl == "ERROR") {
 			return Frame{Kind: Warning, Text: *msg}

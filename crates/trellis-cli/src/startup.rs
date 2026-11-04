@@ -90,15 +90,27 @@ pub(crate) fn init_tracing(cli: &Cli) -> Result<()> {
     // Not for `overview`: its stdout is one JSON object, which an event line
     // beside it would turn into something no client can parse.
     let is_overview = matches!(cli.command, Some(Command::Overview));
+    //
+    // rpc alone also admits colibri's `model token` deltas, from their own
+    // target at DEBUG (#1059, ADR 0052's amendment of 2026-11-03): a client
+    // draws the turn in progress from them. `--json` keeps `trellis=info`,
+    // since a `run --json` reader would get one new event per token, and
+    // stderr's filter is `RUST_LOG`'s, untouched here.
+    let stdout_filter = {
+        let t =
+            tracing_subscriber::filter::Targets::new().with_target("trellis", tracing::Level::INFO);
+        if is_rpc {
+            t.with_target(trellis_model::TOKEN_TARGET, tracing::Level::DEBUG)
+        } else {
+            t
+        }
+    };
     let stdout_json = (output::json() && !is_overview).then(|| {
         tracing_subscriber::fmt::layer()
             .json()
             .with_ansi(false)
             .with_writer(std::io::stdout)
-            .with_filter(
-                tracing_subscriber::filter::Targets::new()
-                    .with_target("trellis", tracing::Level::INFO),
-            )
+            .with_filter(stdout_filter)
     });
     tracing_subscriber::registry()
         .with(
